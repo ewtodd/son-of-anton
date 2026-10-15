@@ -11548,11 +11548,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # ── Relay: a messaging chat drives terminal sessions ──────────────────
     #
     # ``relay_bindings`` says which chat relays a session and who runs its
-    # turns right now (``host``: 'headless' for a worker the gateway spawned;
-    # NULL when idle). ``relay_inbox`` holds messages that arrived while the
-    # host was busy. Every method keys by the session's compaction-lineage
-    # root — the same key the turn lease uses — so a worker that compacts
-    # mid-run stays bound under the id the chat knows.
+    # turns right now (``host``: 'headless' for a worker the gateway spawned,
+    # 'tui' for the user's open TUI after /handoff; NULL when idle).
+    # ``relay_inbox`` holds messages that arrived while the host was busy —
+    # for a TUI host, every message until the TUI claims it. ``relay_outbox``
+    # holds what a TUI host tells the relay chat (handoff, turn ends,
+    # questions, pickup) until the gateway delivers it. Every method keys by
+    # the session's compaction-lineage root — the same key the turn lease
+    # uses — so a worker that compacts mid-run stays bound under the id the
+    # chat knows.
     #
     # The two decisions a race could double — "start a run or queue behind
     # the one in flight" and "a run ended: start the next or go idle" — are
@@ -11561,6 +11565,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # A host claimed for a spawn that has not reported its pid yet counts as
     # live this long; past it the claim is stale (the spawner died).
     RELAY_HOST_PENDING_GRACE_S = 120.0
+    # A TUI host refreshes host_heartbeat every few seconds while bound; one
+    # older than this is a hung or crashed TUI, whatever its pid says.
+    RELAY_TUI_STALE_S = 30.0
+    # An outbox event claimed by a gateway that died before delivering it is
+    # claimable again after this long.
+    RELAY_OUTBOX_LEASE_S = 120.0
 
     @staticmethod
     def _relay_pid_alive(pid: Optional[int]) -> bool:
@@ -11588,6 +11598,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def _relay_host_live(cls, row: Optional[Dict[str, Any]], now: float) -> bool:
         if not row or not row.get("host"):
             return False
+        if row.get("host") == "tui":
+            heartbeat = float(row.get("host_heartbeat") or 0.0)
+            return now - heartbeat < cls.RELAY_TUI_STALE_S and cls._relay_pid_alive(
+                row.get("host_pid")
+            )
         if row.get("host_pid"):
             return cls._relay_pid_alive(row["host_pid"])
         heartbeat = float(row.get("host_heartbeat") or 0.0)
@@ -11619,7 +11634,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ]
 
     @classmethod
-    def _relay_claim_on_conn(cls, conn, root: str, now: float) -> List[Dict[str, Any]]:
+    def _relay_claim_on_conn(
+        cls, conn, root: str, now: float, *, controls: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Consume every unconsumed inbox row; return them oldest first.
+
+        A ``stop`` row is a control for a TUI host's running turn, not a
+        message: only the TUI asks for those (``controls``). A headless run
+        starting from the queue consumes a leftover one and moves on — the
+        turn it was meant to stop is gone.
+        """
         rows = cls._relay_unconsumed(conn, root)
         if rows:
             conn.execute(
@@ -11632,7 +11656,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             "DELETE FROM relay_inbox WHERE consumed_at IS NOT NULL AND consumed_at < ?",
             (now - 7 * 86400,),
         )
-        return rows
+        if controls:
+            return rows
+        return [r for r in rows if r.get("mode") != "stop"]
 
     def bind_relay_session(self, session_id: str, chat_key: str) -> Dict[str, Any]:
         """Relay ``session_id`` through ``chat_key`` (moves it from any other chat)."""
@@ -11680,10 +11706,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return [self._relay_row(r, now) for r in rows]
 
     def unbind_relay_session(self, session_id: str) -> Dict[str, Any]:
-        """Unbind a session from its chat; refused while a run is live.
+        """Unbind a session from its chat; refused while a headless run is live.
 
-        Queued messages go with the binding (they were for this chat's relay).
-        Returns ``{"unbound": bool, "dropped": n}`` or, while a run is live,
+        A TUI host is no run to wait for: the TUI keeps its session and sees
+        on its next poll that it no longer relays. Queued messages go with the
+        binding (they were for this chat's relay). Returns
+        ``{"unbound": bool, "dropped": n}`` or, while a headless run is live,
         ``{"unbound": False, "running": True}``.
         """
         now = time.time()
@@ -11695,7 +11723,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchone()
             if row is None:
                 return {"unbound": False, "dropped": 0}
-            if self._relay_host_live(dict(row), now):
+            if row["host"] != "tui" and self._relay_host_live(dict(row), now):
                 return {"unbound": False, "running": True}
             dropped = conn.execute(
                 "DELETE FROM relay_inbox WHERE session_id = ? AND consumed_at IS NULL",
@@ -11753,13 +11781,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     def relay_start_or_enqueue(
         self, session_id: str, chat_key: str, text: str, *, host: str = "headless",
+        mode: str = "queue",
     ) -> Dict[str, Any]:
         """Bind, queue ``text``, and decide in one transaction who runs it.
 
         No live host: claim the host (pid unknown until the spawn reports
         it) and take every queued message, this one last —
         ``{"action": "start", "messages": [...]}``. A live host: the message
-        waits — ``{"action": "queued", "position": n}`` (1 = next).
+        waits — ``{"action": "queued", "position": n, "host": ...}`` (1 =
+        next); a TUI host claims it on its next poll. ``mode='now'`` asks a
+        TUI host to steer its running turn with it instead of queueing.
         """
         now = time.time()
 
@@ -11773,8 +11804,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             conn.execute(
                 "INSERT INTO relay_inbox (session_id, text, mode, created_at) "
-                "VALUES (?, ?, 'queue', ?)",
-                (root, text, now),
+                "VALUES (?, ?, ?, ?)",
+                (root, text, mode, now),
             )
             row = dict(conn.execute(
                 "SELECT * FROM relay_bindings WHERE session_id = ?", (root,)
@@ -11782,10 +11813,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if self._relay_host_live(row, now):
                 position = conn.execute(
                     "SELECT COUNT(*) FROM relay_inbox "
-                    "WHERE session_id = ? AND consumed_at IS NULL",
+                    "WHERE session_id = ? AND consumed_at IS NULL AND mode != 'stop'",
                     (root,),
                 ).fetchone()[0]
-                return {"action": "queued", "session_id": root, "position": int(position)}
+                return {
+                    "action": "queued", "session_id": root, "position": int(position),
+                    "host": row["host"],
+                }
             conn.execute(
                 "UPDATE relay_bindings SET host = ?, host_pid = NULL, "
                 "host_heartbeat = ?, updated_at = ? WHERE session_id = ?",
@@ -11825,7 +11859,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``{"action": "start", "messages": [...]}`` (the host stays claimed for
         the next spawn), ``{"action": "idle"}``, or ``{"action": "none"}``
         when this run no longer owns the host (stopped, or already handled).
-        ``chat_key`` is the chat the session is bound to now.
+        ``chat_key`` is the chat the session is bound to now. A TUI host that
+        went away (``host_pid`` its pid) ends the same way: what it left
+        queued becomes a headless run.
         """
         now = time.time()
 
@@ -11841,8 +11877,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             messages = self._relay_claim_on_conn(conn, root, now)
             if messages:
                 conn.execute(
-                    "UPDATE relay_bindings SET host_pid = NULL, host_heartbeat = ?, "
-                    "updated_at = ? WHERE session_id = ?",
+                    "UPDATE relay_bindings SET host = 'headless', host_pid = NULL, "
+                    "host_heartbeat = ?, updated_at = ? WHERE session_id = ?",
                     (now, now, root),
                 )
                 return {**out, "action": "start", "messages": messages}
@@ -11873,6 +11909,277 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return conn.execute(sql, params).rowcount > 0
 
         return bool(self._execute_write(_do))
+
+    # ── Relay: the open TUI hosts a handed-off session ────────────────────
+    #
+    # /handoff binds the TUI's session with host='tui' and host_pid = the TUI
+    # process; the TUI refreshes host_heartbeat while bound, claims what the
+    # chat sends it, and writes what the chat should hear to relay_outbox.
+    # Every TUI-side write is fenced on (host='tui', host_pid), so a TUI that
+    # lost the session — detached, moved to a headless worker after a stale
+    # heartbeat — can never act on it again.
+
+    @staticmethod
+    def _relay_add_event_on_conn(
+        conn, root: str, chat_key: str, kind: str, payload: Optional[Dict[str, Any]], now: float,
+    ) -> int:
+        return int(conn.execute(
+            "INSERT INTO relay_outbox (chat_key, session_id, kind, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (chat_key, root, kind, json.dumps(payload or {}, ensure_ascii=False), now),
+        ).lastrowid)
+
+    @staticmethod
+    def _relay_tui_row(conn, root: str, host_pid: int):
+        return conn.execute(
+            "SELECT * FROM relay_bindings WHERE session_id = ? AND host = 'tui' "
+            "AND host_pid = ?",
+            (root, int(host_pid)),
+        ).fetchone()
+
+    def latest_relay_chat(self, sources: Tuple[str, ...]) -> Optional[Dict[str, Any]]:
+        """The messaging chat on these platforms with the most recent activity.
+
+        On a ``gateway.single_user`` instance that is the user's chat: the
+        one they last talked to the bot in, which is where they will read.
+        Returns ``{"session_key", "source", "session_id"}`` or None.
+        """
+        if not sources:
+            return None
+        marks = ",".join("?" for _ in sources)
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                f"SELECT s.id AS session_id, s.source, s.session_key, "
+                f"{_sql_session_last_active('s')} AS last_active "
+                f"FROM sessions s WHERE s.source IN ({marks}) "
+                f"AND s.session_key IS NOT NULL AND s.session_key != '' "
+                f"ORDER BY last_active DESC LIMIT 1",
+                tuple(sources),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "session_key": row["session_key"],
+            "source": row["source"],
+            "session_id": row["session_id"],
+        }
+
+    def relay_tui_bind(
+        self, session_id: str, chat_key: str, host_pid: int,
+        event: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Hand ``session_id`` off to ``chat_key`` with this TUI as its host.
+
+        One transaction: bind, claim the host, and queue the ``handoff``
+        event. Refused while another live host runs the session —
+        ``{"bound": False, "host": ..., "host_pid": ...}``.
+        """
+        now = time.time()
+
+        def _do(conn):
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT * FROM relay_bindings WHERE session_id = ?", (root,)
+            ).fetchone()
+            if row is not None:
+                current = dict(row)
+                ours = current.get("host") == "tui" and current.get("host_pid") == int(host_pid)
+                if not ours and self._relay_host_live(current, now):
+                    return {
+                        "bound": False, "session_id": root,
+                        "host": current.get("host"), "host_pid": current.get("host_pid"),
+                    }
+            conn.execute(
+                "INSERT INTO relay_bindings (session_id, chat_key, host, host_pid, "
+                "host_heartbeat, created_at, updated_at) VALUES (?, ?, 'tui', ?, ?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET chat_key = excluded.chat_key, "
+                "host = 'tui', host_pid = excluded.host_pid, "
+                "host_heartbeat = excluded.host_heartbeat, updated_at = excluded.updated_at",
+                (root, chat_key, int(host_pid), now, now, now),
+            )
+            if event is not None:
+                self._relay_add_event_on_conn(conn, root, chat_key, "handoff", event, now)
+            return {"bound": True, "session_id": root, "chat_key": chat_key}
+
+        return self._execute_write(_do)
+
+    def relay_tui_poll(self, session_id: str, host_pid: int) -> Optional[Dict[str, Any]]:
+        """One read per TUI tick: the chat it relays to and how much is waiting.
+
+        None when this TUI no longer hosts the session.
+        """
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT b.chat_key, (SELECT COUNT(*) FROM relay_inbox i "
+                "WHERE i.session_id = b.session_id AND i.consumed_at IS NULL) AS waiting "
+                "FROM relay_bindings b WHERE b.session_id = ? AND b.host = 'tui' "
+                "AND b.host_pid = ?",
+                (session_id, int(host_pid)),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"chat_key": row["chat_key"], "waiting": int(row["waiting"] or 0)}
+
+    def relay_tui_beat(self, session_id: str, host_pid: int) -> bool:
+        """Refresh the TUI host's heartbeat; False when it no longer hosts."""
+        now = time.time()
+
+        def _do(conn):
+            return conn.execute(
+                "UPDATE relay_bindings SET host_heartbeat = ? WHERE session_id = ? "
+                "AND host = 'tui' AND host_pid = ?",
+                (now, session_id, int(host_pid)),
+            ).rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    def relay_tui_claim(self, session_id: str, host_pid: int) -> Optional[List[Dict[str, Any]]]:
+        """Take every waiting inbox row (messages and controls), oldest first.
+
+        None when this TUI no longer hosts the session (nothing is taken).
+        """
+        now = time.time()
+
+        def _do(conn):
+            if self._relay_tui_row(conn, session_id, host_pid) is None:
+                return None
+            conn.execute(
+                "UPDATE relay_bindings SET host_heartbeat = ? WHERE session_id = ?",
+                (now, session_id),
+            )
+            return self._relay_claim_on_conn(conn, session_id, now, controls=True)
+
+        return self._execute_write(_do)
+
+    def relay_tui_release(self, session_id: str, host_pid: int) -> bool:
+        """The TUI is exiting: stop hosting, keep the binding.
+
+        Later sends start headless workers, as before the handoff. With
+        messages still waiting, the host is left in place instead: the
+        gateway sees it gone once this process has exited and runs them
+        headless then (``relay_finish_run``), so none is stranded.
+        """
+        now = time.time()
+
+        def _do(conn):
+            if self._relay_tui_row(conn, session_id, host_pid) is None:
+                return False
+            if any(r.get("mode") != "stop" for r in self._relay_unconsumed(conn, session_id)):
+                return False
+            return conn.execute(
+                "UPDATE relay_bindings SET host = NULL, host_pid = NULL, "
+                "host_heartbeat = NULL, updated_at = ? WHERE session_id = ?",
+                (now, session_id),
+            ).rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    def relay_pickup(
+        self, session_id: str, host_pid: int, event: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """The user is back at the terminal: end relaying for this session.
+
+        Allowed when this TUI hosts it or no live host runs it. One
+        transaction: take what is still waiting (returned as ``messages`` for
+        the TUI to run — never dropped), unbind, and queue the ``pickup``
+        event to the chat it was bound to. ``{"picked_up": False, "host":
+        ...}`` while another live host runs it; ``{"picked_up": False}``
+        when it was not relayed at all.
+        """
+        now = time.time()
+
+        def _do(conn):
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT * FROM relay_bindings WHERE session_id = ?", (root,)
+            ).fetchone()
+            if row is None:
+                return {"picked_up": False, "session_id": root}
+            current = dict(row)
+            ours = current.get("host") == "tui" and current.get("host_pid") == int(host_pid)
+            if not ours and self._relay_host_live(current, now):
+                return {
+                    "picked_up": False, "session_id": root,
+                    "host": current.get("host"), "host_pid": current.get("host_pid"),
+                }
+            messages = self._relay_claim_on_conn(conn, root, now)
+            conn.execute("DELETE FROM relay_bindings WHERE session_id = ?", (root,))
+            if event is not None:
+                self._relay_add_event_on_conn(
+                    conn, root, current["chat_key"], "pickup", event, now,
+                )
+            return {
+                "picked_up": True, "session_id": root,
+                "chat_key": current["chat_key"], "messages": messages,
+            }
+
+        return self._execute_write(_do)
+
+    def add_relay_event(
+        self, session_id: str, host_pid: int, kind: str, payload: Optional[Dict[str, Any]] = None,
+    ) -> Optional[int]:
+        """Queue ``kind`` for the chat this TUI relays to; None when it no longer does."""
+        now = time.time()
+
+        def _do(conn):
+            row = self._relay_tui_row(conn, session_id, host_pid)
+            if row is None:
+                return None
+            return self._relay_add_event_on_conn(
+                conn, session_id, row["chat_key"], kind, payload, now,
+            )
+
+        return self._execute_write(_do)
+
+    def claim_relay_outbox(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Claim undelivered events, oldest first, for one delivery pass.
+
+        Each is claimed by one caller at a time; one claimed by a deliverer
+        that died is claimable again after ``RELAY_OUTBOX_LEASE_S``.
+        """
+        now = time.time()
+
+        def _do(conn):
+            rows = [
+                dict(r) for r in conn.execute(
+                    "SELECT * FROM relay_outbox WHERE delivered_at IS NULL "
+                    "AND (claimed_at IS NULL OR claimed_at < ?) ORDER BY id LIMIT ?",
+                    (now - self.RELAY_OUTBOX_LEASE_S, int(limit)),
+                ).fetchall()
+            ]
+            for row in rows:
+                conn.execute(
+                    "UPDATE relay_outbox SET claimed_at = ? WHERE id = ?", (now, row["id"]),
+                )
+                try:
+                    row["payload"] = json.loads(row.get("payload") or "{}")
+                except (TypeError, ValueError):
+                    row["payload"] = {}
+            conn.execute(
+                "DELETE FROM relay_outbox WHERE delivered_at IS NOT NULL AND delivered_at < ?",
+                (now - 7 * 86400,),
+            )
+            return rows
+
+        return self._execute_write(_do)
+
+    def finish_relay_outbox(self, event_id: int, *, delivered: bool) -> None:
+        """Mark a claimed event delivered, or release it for the next pass."""
+        now = time.time()
+
+        def _do(conn):
+            if delivered:
+                conn.execute(
+                    "UPDATE relay_outbox SET delivered_at = ? WHERE id = ?", (now, int(event_id)),
+                )
+            else:
+                conn.execute(
+                    "UPDATE relay_outbox SET claimed_at = NULL WHERE id = ? "
+                    "AND delivered_at IS NULL",
+                    (int(event_id),),
+                )
+
+        self._execute_write(_do)
 
 
 class AsyncSessionDB:

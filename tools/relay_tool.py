@@ -85,27 +85,28 @@ RELAY_SCHEMA = {
     "name": "relay",
     "description": (
         "This chat is a relay to the user's terminal coding sessions. Project "
-        "work — code, files, commands in a repository — is done by a worker "
-        "session that runs in its own directory, never in this chat: hand it "
-        "over with this tool and report back.\n\n"
+        "work — code, files, commands in a repository — is done by a terminal "
+        "session in its own directory, never in this chat: hand it over with "
+        "this tool and report back.\n\n"
         "Actions:\n"
         "- list: terminal sessions, most recent first (optional `workspace` "
-        "path filter), each marked bound to this chat and/or running.\n"
+        "path filter), each marked bound to this chat, with its host: tui "
+        "(handed off from the user's open TUI, which runs it), headless (a "
+        "worker is running a turn) or none (idle).\n"
         "- send: give `message` to a session. `session` (id or title) defaults "
         "to the one bound to this chat; `new_in` (a directory) starts a new "
-        "session there instead. A busy session queues the message and runs it "
-        "after its current turn.\n"
-        "- status: running or idle, recent activity, queued messages, pending "
-        "approvals.\n"
-        "- stop: stop the running worker; the session stays bound.\n"
+        "session there instead. A busy session runs the message after its "
+        "current turn; `now` steers the running turn with it instead.\n"
+        "- status: host, recent activity, queued messages, pending approvals.\n"
+        "- stop: stop the running turn; the session stays bound.\n"
         "- detach: unbind the session from this chat.\n\n"
         "Relay the user's words faithfully: pass their request as they gave "
         "it, without rewriting it or adding instructions of your own. Before "
         "choosing between continuing an existing session and starting a new "
-        "one, ask the user. When a worker finishes, its final reply arrives "
-        "here as a notification; tell the user the result briefly. A worker's "
-        "approval requests also arrive here, and the user answers them with "
-        "/approve or /deny."
+        "one, ask the user. A session's results, its questions (answer one by "
+        "sending the user's reply) and handoffs arrive here as notifications; "
+        "tell the user briefly. Its approval requests also arrive here, and "
+        "the user answers them with /approve or /deny."
     ),
     "parameters": {
         "type": "object",
@@ -125,6 +126,13 @@ RELAY_SCHEMA = {
             "new_in": {
                 "type": "string",
                 "description": "send: start a new session in this directory instead.",
+            },
+            "now": {
+                "type": "boolean",
+                "description": (
+                    "send: steer the running turn instead of queueing; only when "
+                    "the user asks for it now."
+                ),
             },
             "workspace": {
                 "type": "string",

@@ -9200,6 +9200,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # The TUI opens a picker over its queue before dispatch; reaching
             # here means there is no queue to pick from.
             _cprint("  Nothing queued.")
+        elif canonical in ("handoff", "pickup"):
+            # The TUI hosts a handed-off session (son_of_anton_cli/relay_host.py).
+            handler = getattr(self, f"_handle_{canonical}_command", None)
+            if handler is None:
+                _cprint(f"  /{canonical} works in the interactive TUI.")
+            else:
+                handler(cmd_original)
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
         elif canonical == "skin":
@@ -11333,6 +11340,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             }
             deadline = None if timeout <= 0 else _time.monotonic() + timeout
             self._approval_deadline = deadline or 0  # 0: no countdown
+            # Handed off (/handoff): the relay chat can answer this too.
+            relay_ticket = self._relay_approval_open(
+                command, description, self._approval_state["choices"],
+            )
 
             # Modal prompt — paint immediately, bypassing the throttle/resize
             # guard. A throttled paint here can be silently dropped (250ms
@@ -11342,33 +11353,44 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._paint_now()
 
             _last_countdown_refresh = _time.monotonic()
-            while True:
-                try:
-                    result = response_queue.get(timeout=1)
-                    self._approval_state = None
-                    self._approval_deadline = 0
-                    self._paint_now()
-                    _outcome_labels = {
-                        "once": "allowed once",
-                        "session": "allowed for session",
-                        "always": "added to allowlist",
-                        "deny": "denied",
-                    }
-                    self._persist_prompt_summary(
-                        "!", "Approval", command,
-                        _outcome_labels.get(result, str(result)),
-                    )
-                    return result
-                except queue.Empty:
-                    if deadline is not None and deadline - _time.monotonic() <= 0:
-                        break
-                    now = _time.monotonic()
-                    if notify_at is not None and now >= notify_at:
-                        notify_at = None
-                        notify_waiting(command, title="Son of Anton needs approval to run a command")
-                    if now - _last_countdown_refresh >= 1.0:
-                        _last_countdown_refresh = now
+            try:
+                while True:
+                    try:
+                        result = response_queue.get(timeout=1)
+                        # First answer wins: the chat's, if it got there first.
+                        result = self._relay_approval_settle(relay_ticket, result)
+                        relay_ticket = None
+                        self._approval_state = None
+                        self._approval_deadline = 0
                         self._paint_now()
+                        _outcome_labels = {
+                            "once": "allowed once",
+                            "session": "allowed for session",
+                            "always": "added to allowlist",
+                            "deny": "denied",
+                        }
+                        self._persist_prompt_summary(
+                            "!", "Approval", command,
+                            _outcome_labels.get(result, str(result)),
+                        )
+                        return result
+                    except queue.Empty:
+                        relayed = self._relay_approval_poll(relay_ticket)
+                        if relayed:
+                            response_queue.put(relayed)
+                            continue
+                        if deadline is not None and deadline - _time.monotonic() <= 0:
+                            break
+                        now = _time.monotonic()
+                        if notify_at is not None and now >= notify_at:
+                            notify_at = None
+                            notify_waiting(command, title="Son of Anton needs approval to run a command")
+                        if now - _last_countdown_refresh >= 1.0:
+                            _last_countdown_refresh = now
+                            self._paint_now()
+            finally:
+                # Unanswered (timeout, an exception): withdraw the chat's copy.
+                self._relay_approval_settle(relay_ticket, None)
 
             self._approval_state = None
             self._approval_deadline = 0
@@ -11378,6 +11400,18 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 "!", "Approval", command, "timed out (no response)",
             )
             return "timeout"
+
+    # Relay hooks: a TUI that handed its session off to a chat (/handoff,
+    # son_of_anton_cli/relay_host.py) also routes approvals there. No-ops
+    # everywhere else.
+    def _relay_approval_open(self, command: str, description: str, choices: list):
+        return None
+
+    def _relay_approval_poll(self, ticket):
+        return None
+
+    def _relay_approval_settle(self, ticket, result):
+        return result
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True,
                           smart_denied: bool = False) -> list[str]:
@@ -12318,6 +12352,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    pickup: bool = False,
 ):
     """
     Son of Anton Agent CLI - Interactive AI Assistant
@@ -12341,6 +12376,8 @@ def main(
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
         worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
         w: Shorthand for --worktree
+        pickup: With ``resume``: end the relaying of that session (as /pickup)
+                once the TUI starts (``son-of-anton --pickup``).
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -12507,6 +12544,8 @@ def main(
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
     )
+    # ``son-of-anton --pickup``: the TUI picks the session up as it starts.
+    cli._relay_pickup_on_start = bool(pickup) and not (query or image)
 
     # Join the background worktree creation (started above) before anything
     # consumes TERMINAL_CWD / wt_info — the SonOfAntonCLI construction it

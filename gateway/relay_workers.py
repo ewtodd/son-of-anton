@@ -23,6 +23,13 @@ is visible to every process and survives a gateway restart:
   chat (``/approve <id>``), and a clarify question is answered at once with
   "put it in your reply" (son_of_anton_cli/relay_worker.py), so a headless
   run never waits on a terminal nobody is at.
+
+``/handoff`` in the TUI (son_of_anton_cli/relay_host.py) makes the open TUI
+the session's host instead: sends queue to it and it runs them, and what the
+chat should hear — the handoff, each turn's reply, a question, the pickup —
+arrives through ``relay_outbox``, which ``relay_event_loop`` here delivers
+into the chat as internal events. A TUI host that goes away (exit, crash, a
+heartbeat gone stale) falls back to headless workers.
 """
 
 from __future__ import annotations
@@ -46,6 +53,12 @@ logger = logging.getLogger(__name__)
 
 # How often the completion watcher polls a worker.
 WATCH_INTERVAL_S = 3
+# How often the gateway delivers TUI-host events, and every how many of those
+# passes it looks for TUI hosts that went away.
+EVENT_POLL_S = 2.0
+TUI_SWEEP_EVERY = 5
+# Characters of a TUI turn's final reply the chat receives.
+TURN_REPLY_CHARS = 3000
 # Transcript rows ``status`` shows.
 STATUS_ROWS = 8
 # Sessions ``list`` returns.
@@ -205,6 +218,11 @@ async def _target(runner, chat_key: str, ref: Optional[str]) -> str:
             "them) or start one in a directory"
         )
     return bound[0]["session_id"]
+
+
+def _live_host(binding: Dict[str, Any]) -> Optional[str]:
+    """'tui' (handed off from the user's open TUI), 'headless', or None (idle)."""
+    return binding.get("host") if binding.get("host") and binding.get("live") else None
 
 
 async def _pending_approvals(db, chat_key: str, root: str) -> List[Dict[str, Any]]:
@@ -433,8 +451,8 @@ async def reconcile_hosts(runner) -> None:
     """
     db = _db(runner)
     for binding in await db.list_relay_bindings():
-        if not binding.get("host"):
-            continue
+        if not binding.get("host") or binding.get("host") == "tui":
+            continue  # idle, or the user's TUI: sweep_tui_hosts watches those
         root = binding["session_id"]
         pid = binding.get("host_pid")
         proc = _find_process(pid)
@@ -471,6 +489,150 @@ async def _await_exit(runner, root: str, pid: int) -> None:
         logger.warning("Relay reconcile for %s failed: %s", root, exc)
 
 
+# ── a TUI host ───────────────────────────────────────────────────────────
+
+
+def format_relay_event(event: Dict[str, Any], brief: Dict[str, Any]) -> str:
+    """The internal event a relay chat receives for one TUI-host event."""
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    title = brief.get("title") or payload.get("title")
+    named = f"terminal session {brief.get('session') or event.get('session_id')}" + (
+        f" ('{title}')" if title else ""
+    )
+    subject = named[:1].upper() + named[1:]
+    cwd = brief.get("cwd") or payload.get("cwd") or "?"
+    kind = event.get("kind")
+    if kind == "handoff":
+        if payload.get("busy"):
+            doing = "it is running a turn right now" + (
+                f" (current step: {_clip(payload['activity'], 160)})"
+                if payload.get("activity") else ""
+            )
+        else:
+            doing = "it is idle"
+        return (
+            f"[System note: The user handed {named}, in {cwd}, to this chat from "
+            f"their TUI and left the terminal. The TUI keeps running it; {doing}. "
+            "Relay the user's messages for it with the relay tool; its turn "
+            "results, questions and approval requests arrive here. Tell the user "
+            "briefly that you have it.]"
+        )
+    if kind == "turn_end":
+        reply = str(payload.get("reply") or "").strip()
+        if len(reply) > TURN_REPLY_CHARS:
+            reply = "…" + reply[-(TURN_REPLY_CHARS - 1):]
+        how = "was interrupted" if payload.get("interrupted") else "finished a turn"
+        return (
+            f"[System note: {subject}, handed off from the "
+            f"TUI, {how}. Its final reply:\n{reply or '(no reply)'}\n"
+            "Tell the user the result briefly.]"
+        )
+    if kind == "question":
+        questions = payload.get("questions") or [
+            {"question": payload.get("question"), "choices": payload.get("choices")}
+        ]
+        lines = []
+        for index, entry in enumerate(questions, 1):
+            entry = entry if isinstance(entry, dict) else {}
+            choices = [str(c) for c in entry.get("choices") or []]
+            text = _clip(entry.get("question"), 600)
+            prefix = f"{index}. " if len(questions) > 1 else ""
+            lines.append(prefix + text + (f" (choices: {' | '.join(choices)})" if choices else ""))
+        several = (
+            " The user's next message answers the first question; the session "
+            "asks again for the rest if it needs them."
+            if len(questions) > 1 else ""
+        )
+        return (
+            f"[System note: {subject} is waiting for the "
+            "user to answer:\n" + "\n".join(lines) + "\nAsk the user, and send "
+            "their answer with the relay tool: the session takes the next message "
+            f"as the answer.{several}]"
+        )
+    if kind == "pickup":
+        return (
+            f"[System note: The user picked {named} back up at the terminal; this "
+            "chat no longer relays it. Acknowledge briefly.]"
+        )
+    return f"[System note: {named}: {kind}.]"
+
+
+def _single_user(runner) -> bool:
+    return bool(getattr(getattr(runner, "config", None), "single_user", False))
+
+
+async def deliver_relay_events(runner) -> int:
+    """One pass: deliver the TUI-host events waiting for their chats.
+
+    In order per chat: once one event for a chat cannot be delivered, the
+    rest for that chat wait for the next pass behind it. An event is marked
+    delivered only after the chat took it; otherwise it goes back unclaimed.
+    """
+    if not _single_user(runner):
+        return 0
+    db = _db(runner)
+    events = await db.claim_relay_outbox()
+    held: set = set()
+    delivered = 0
+    for event in events:
+        chat_key = event["chat_key"]
+        accepted = False
+        if chat_key not in held:
+            try:
+                _origin, chat_session_id = _chat_route(runner, chat_key)
+                text = format_relay_event(event, await _session_brief(db, event["session_id"]))
+                accepted = bool(await runner._inject_watch_notification(
+                    text, {"session_key": chat_key, "parent_session_id": chat_session_id},
+                ))
+            except RelayError:
+                accepted = False  # no route yet: retry next pass
+            except Exception as exc:
+                logger.warning("Relay event %s for %s failed: %s", event["id"], chat_key, exc)
+                accepted = False
+        if accepted:
+            await db.finish_relay_outbox(event["id"], delivered=True)
+            delivered += 1
+        else:
+            held.add(chat_key)
+            await db.finish_relay_outbox(event["id"], delivered=False)
+    return delivered
+
+
+async def sweep_tui_hosts(runner) -> None:
+    """A TUI host that went away hands its session back to headless workers.
+
+    Gone means its process exited without releasing (a crash) or its
+    heartbeat went stale (hung). What it left queued runs headless now, as
+    after a headless run ends (``relay_finish_run`` is fenced on its pid, so
+    a TUI that comes back cannot double it); with nothing queued the session
+    goes idle and the next send starts a worker.
+    """
+    db = _db(runner)
+    for binding in await db.list_relay_bindings():
+        if binding.get("host") != "tui" or binding.get("live") or not binding.get("host_pid"):
+            continue
+        root = binding["session_id"]
+        outcome = await _after_exit(runner, root, int(binding["host_pid"]), cwd_hint=None)
+        logger.info("Relay: the TUI host of %s went away (%s)", root, outcome.get("action"))
+
+
+async def relay_event_loop(runner) -> None:
+    """Deliver TUI-host events (~every 2s) and watch for TUI hosts that went away."""
+    await asyncio.sleep(3)  # let adapters connect
+    passes = 0
+    while getattr(runner, "_running", True):
+        try:
+            await deliver_relay_events(runner)
+            if passes % TUI_SWEEP_EVERY == 0 and _single_user(runner):
+                await sweep_tui_hosts(runner)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Relay event pass failed: %s", exc, exc_info=True)
+        passes += 1
+        await asyncio.sleep(EVENT_POLL_S)
+
+
 # ── actions ──────────────────────────────────────────────────────────────
 
 
@@ -492,16 +654,34 @@ async def _send(runner, chat_key: str, args: Dict[str, Any]) -> Dict[str, Any]:
         root = await _target(runner, chat_key, args.get("session"))
     _chat_route(runner, chat_key)  # fail before queueing if the chat cannot be answered
 
-    decision = await db.relay_start_or_enqueue(root, chat_key, message)
+    now = bool(args.get("now"))
+    decision = await db.relay_start_or_enqueue(
+        root, chat_key, message, mode="now" if now else "queue",
+    )
     root = decision["session_id"]
     brief = await _session_brief(db, root)
     if new_in:
         brief["cwd"] = brief.get("cwd") or cwd_hint
+    if decision["action"] == "queued" and decision.get("host") == "tui":
+        return {
+            "status": "sent to the TUI",
+            "host": "tui",
+            "note": (
+                "the user's TUI runs this session; it steers the running turn "
+                "with this, or runs it next when idle" if now else
+                "the user's TUI runs this session; it runs this as its next turn, "
+                "or takes it as the answer when the session is asking a question"
+            ),
+            **brief,
+        }
     if decision["action"] == "queued":
         return {
             "status": "queued",
+            "host": "headless",
             "position": decision["position"],
-            "note": "the worker is busy; this runs after its current turn",
+            "note": "the worker is busy; this runs after its current turn" + (
+                " (a headless worker cannot be steered mid-turn)" if now else ""
+            ),
             **brief,
         }
     started = await start_run(
@@ -521,7 +701,7 @@ async def _status(runner, chat_key: str, args: Dict[str, Any]) -> Dict[str, Any]
     db = _db(runner)
     root = await _target(runner, chat_key, args.get("session"))
     binding = await db.get_relay_binding(root) or {}
-    running = bool(binding.get("host")) and bool(binding.get("live"))
+    host = _live_host(binding)
     tip = await db.get_compaction_tip(root) or root
     rows = await db.get_messages(tip, limit=STATUS_ROWS, latest=True)
     recent = []
@@ -539,12 +719,16 @@ async def _status(runner, chat_key: str, args: Dict[str, Any]) -> Dict[str, Any]
                 for c in calls if isinstance(c, dict)
             ]
         recent.append(entry)
-    queued = await db.list_relay_inbox(root)
+    queued = [m for m in await db.list_relay_inbox(root) if m.get("mode") != "stop"]
     return {
         **(await _session_brief(db, root)),
         "bound_to_this_chat": binding.get("chat_key") == chat_key,
-        "state": "running" if running else "idle",
-        "running_since": _when(binding.get("host_heartbeat")) if running else None,
+        "host": host,
+        "state": {
+            "tui": "handed off: the user's open TUI runs it",
+            "headless": "running in a headless worker",
+        }.get(host, "idle"),
+        "running_since": _when(binding.get("host_heartbeat")) if host == "headless" else None,
         "recent": recent,
         "queued": [_clip(m["text"], 160) for m in queued],
         "pending_approvals": await _pending_approvals(db, chat_key, root),
@@ -560,6 +744,18 @@ async def _stop(runner, chat_key: str, args: Dict[str, Any]) -> Dict[str, Any]:
     binding = await db.get_relay_binding(root) or {}
     if not binding.get("host"):
         return {"stopped": False, "reason": "not running", **(await _session_brief(db, root))}
+    if binding.get("host") == "tui":
+        # The host is the user's own TUI process: never kill it. Ask it to
+        # interrupt its running turn instead; it stays the host.
+        if not binding.get("live"):
+            return {"stopped": False, "reason": "not running", **(await _session_brief(db, root))}
+        await db.enqueue_relay_message(root, "", mode="stop")
+        return {
+            "stopped": True,
+            "host": "tui",
+            "note": "the user's TUI interrupts its running turn, if any; the session stays handed off",
+            **(await _session_brief(db, root)),
+        }
     pid = binding.get("host_pid")
     # Release the host first, fenced on this run: its exit then starts nothing.
     await db.clear_relay_host(root, pid if pid else None)
@@ -584,9 +780,12 @@ async def _stop(runner, chat_key: str, args: Dict[str, Any]) -> Dict[str, Any]:
 async def _detach(runner, chat_key: str, args: Dict[str, Any]) -> Dict[str, Any]:
     db = _db(runner)
     root = await _target(runner, chat_key, args.get("session"))
+    host = _live_host(await db.get_relay_binding(root) or {})
     result = await db.unbind_relay_session(root)
     if result.get("running"):
         raise RelayError("the session is running; stop it first or wait for it to finish")
+    if result.get("unbound") and host == "tui":
+        result["note"] = "the user's TUI keeps the session; it is just no longer relayed here"
     return {**result, **(await _session_brief(db, root))}
 
 
@@ -611,7 +810,7 @@ async def _list(runner, chat_key: str, args: Dict[str, Any]) -> Dict[str, Any]:
             "last_active": _when(row.get("last_active")),
             "messages": row.get("message_count"),
             "bound_here": binding.get("chat_key") == chat_key,
-            "running": bool(binding.get("host")) and bool(binding.get("live")),
+            "host": _live_host(binding),
         })
     return {"sessions": sessions}
 
@@ -659,13 +858,17 @@ async def attach_terminal_session(runner, chat_key: str, session_row: Dict[str, 
 __all__ = [
     "RelayError",
     "attach_terminal_session",
+    "deliver_relay_events",
     "format_completion",
+    "format_relay_event",
     "handle_relay_action",
     "on_worker_exit",
     "reconcile_at_startup",
     "reconcile_hosts",
+    "relay_event_loop",
     "spawn_worker",
     "start_run",
+    "sweep_tui_hosts",
     "worker_argv",
     "worker_env",
 ]

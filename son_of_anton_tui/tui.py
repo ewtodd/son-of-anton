@@ -84,6 +84,9 @@ FEED_PADDING = 2  # #feed has `padding: 0 2`
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
+# How often a handed-off session (/handoff) checks for its relay chat's messages.
+RELAY_TICK_S = 1.5
+
 # opencode gives each tool a one-glyph icon in a two-cell column
 # (INLINE_TOOL_ICON_WIDTH), so labels align no matter the tool.
 _TOOL_ICONS = {
@@ -215,16 +218,38 @@ def _provider_label(provider: dict) -> str:
     return str(p.get("label") or p.get("name") or p.get("slug") or "?")
 
 
+class RelayedText(str):
+    """A message the relay chat sent to a handed-off session (/handoff).
+
+    Always a user turn: it is never run as a slash command or ``!`` line,
+    whatever it starts with — the chat relays the user's words, it does not
+    drive the terminal. ``platform`` labels it in the transcript.
+    """
+
+    platform: str = ""
+
+    def __new__(cls, text: str, platform: str = "") -> "RelayedText":
+        obj = super().__new__(cls, text)
+        obj.platform = platform
+        return obj
+
+    def stripped(self) -> "RelayedText":
+        return RelayedText(self.strip(), self.platform)
+
+
 def _runs_locally(value: str) -> bool:
     """Whether the prompt runs ``value`` itself instead of sending it to the agent.
 
     Slash commands, ``:q`` and ``!`` shell lines never become a user message
     (see ``_dispatch``), so none of them may ride a redirect into the live
-    turn either: steered, they reach the model as literal text.
+    turn either: steered, they reach the model as literal text. A relayed
+    message is always a message.
     """
     import cli as _cli
     from son_of_anton_cli.bang_shell import is_bang_command
 
+    if isinstance(value, RelayedText):
+        return False
     text = value.strip()
     return _cli._looks_like_slash_command(text) or text in (":q", ":quit") or is_bang_command(text)
 
@@ -867,6 +892,8 @@ if _TEXTUAL_AVAILABLE:
             # are dispatched after the turn unless /sendnow redirects the live
             # turn onto one of them first.
             self._queued_items: list[str] = []
+            # Set by exit(): the app is closing (Textual's own flag is private).
+            self._relay_closing = False
             # The queue while the /cancel picker is open: out of the queue so
             # a turn that ends meanwhile cannot send what is being dropped.
             self._held_for_cancel: Optional[list] = None
@@ -875,6 +902,15 @@ if _TEXTUAL_AVAILABLE:
             # chain runs queues behind it instead of starting a second chain:
             # two chains run turns concurrently on one session.
             self._dispatch_chains = 0
+            # The backend prompt a modal being opened answers ((attr, state)),
+            # stamped on its screen so a prompt answered elsewhere — from the
+            # relay chat, or an interrupt — takes its modal down with it.
+            self._opening_owner: Optional[tuple] = None
+            # A handed-off session's poll is in flight (see _relay_tick).
+            self._relay_ticking = False
+            # Relayed messages that reached their turn while the app was
+            # exiting: never run, returned to the inbox on unmount.
+            self._relay_unrun: list = []
             self._last_ctrl_c = 0.0
             self._snap_cache: Optional[tuple] = None
             self._log_handlers: list[tuple[logging.Handler, Any]] = []
@@ -985,7 +1021,14 @@ if _TEXTUAL_AVAILABLE:
                 self._render_resumed_history()
             self.set_interval(0.12, self._tick_spinner)
             self.set_interval(1.0, self._tick_chrome)
+            # Independent of the idle tick, which skips while a turn runs: a
+            # handed-off session hears from its chat mid-turn too.
+            self.set_interval(RELAY_TICK_S, self._relay_tick)
             self._refresh_chrome()
+
+        def exit(self, *args: Any, **kwargs: Any) -> None:
+            self._relay_closing = True
+            super().exit(*args, **kwargs)
 
         def on_unmount(self) -> None:
             if self.backend is not None:
@@ -994,6 +1037,7 @@ if _TEXTUAL_AVAILABLE:
                 # stall the quit. Unwind it (and any blocked prompt) first.
                 self.backend.interrupt_turn()
                 self.backend.cancel_pending_prompts()
+                self._give_back_relayed()
             self._restore_log_handlers()
             try:
                 self.end_capture_print(self)
@@ -1335,6 +1379,86 @@ if _TEXTUAL_AVAILABLE:
                 return
             self._start_dispatch_chain(self._after_dispatch())
 
+        async def _relay_tick(self) -> None:
+            """A handed-off session (/handoff): take what its relay chat sent.
+
+            Free and silent when nothing is handed off — no I/O at all. While
+            handed off, the poll (one small read; a write only to claim or for
+            the heartbeat) runs off the event loop.
+            """
+            backend = self.backend
+            if backend is None or self._relay_ticking or self._relay_closing:
+                return  # exiting: take nothing more from the chat
+            active = getattr(backend, "relay_active", None)
+            if not callable(active) or not active():
+                return
+            self._relay_ticking = True
+            try:
+                rows = await asyncio.to_thread(backend.relay_poll)
+            except Exception:
+                rows = []
+            finally:
+                self._relay_ticking = False
+            for row in rows or []:
+                self._relay_deliver(row)
+            if rows:
+                self._update_status()
+
+        def _relay_deliver(self, row: dict) -> None:
+            """Run one message from the relay chat the way a typed one would run.
+
+            An open clarify takes it as the answer. Otherwise: idle, it starts
+            a turn; mid-turn it queues like a typed follow-up, unless the chat
+            asked for ``now`` — then it steers the live turn (falling back to
+            the queue, like /sendnow). ``stop`` interrupts the running turn.
+            """
+            backend = self.backend
+            mode = str(row.get("mode") or "queue")
+            label = str(row.get("platform") or "the relay chat")
+            text = str(row.get("text") or "")
+            if mode == "stop":
+                if self._busy == "turn" and backend.interrupt_turn():
+                    self._note(f"{label}: stop — interrupting the running turn", muted=True)
+                return
+            if not text.strip():
+                return
+            if backend.relay_answer_clarify(text):
+                preview = " ".join(text.split())
+                self._note(f"{label} answered the question: {preview[:120]}", muted=True)
+                return
+            if mode == "now" and self._busy == "turn" and self._redirect_into_turn(text):
+                self._redirect_feedback(text)
+                self._note(f"↳ sent from {label}", muted=True)
+                return
+            relayed = RelayedText(text, label)
+            if self._busy or self._dispatch_chains or self._modal_open:
+                self._queued_items.append(relayed)
+                self._note(f"{label} sent a message — queued for the next turn", muted=True)
+                self._update_status()
+                return
+            self._start_dispatch_chain(self._dispatch(relayed))
+
+        def _give_back_relayed(self) -> None:
+            """Closing: relayed messages that never ran go back to the inbox.
+
+            Whoever hosts the session next — a headless run once this process
+            is gone — runs them; they are taken out of the local queue so a
+            dispatch during shutdown cannot run them as well.
+            """
+            pending = list(self._held_for_cancel or []) + list(self._queued_items)
+            unsent = self._relay_unrun + [i for i in pending if isinstance(i, RelayedText)]
+            if not unsent:
+                return
+            self._relay_unrun = []
+            self._queued_items = [i for i in self._queued_items if not isinstance(i, RelayedText)]
+            if self._held_for_cancel is not None:
+                self._held_for_cancel = [
+                    i for i in self._held_for_cancel if not isinstance(i, RelayedText)
+                ]
+            give_back = getattr(self.backend, "relay_return_unsent", None)
+            if callable(give_back):
+                give_back([str(i) for i in unsent])
+
         def _start_dispatch_chain(self, coro: Any) -> None:
             """Run ``coro`` as a dispatch chain, counted while it runs."""
             self._dispatch_chains += 1
@@ -1464,7 +1588,7 @@ if _TEXTUAL_AVAILABLE:
                 body.append("\n")
                 body.append(f"   +{hidden} more", style="dim")
             body.append("\n")
-            messages = sum(1 for item in items if not _runs_locally(str(item)))
+            messages = sum(1 for item in items if not _runs_locally(item))
             if messages > 1:
                 hint = "/sendnow sends the oldest · /sendall sends all"
             elif messages == 1:
@@ -1549,7 +1673,10 @@ if _TEXTUAL_AVAILABLE:
         def _service_modals(self) -> None:
             """Show a modal for whichever backend prompt is waiting (one at a time)."""
             backend = self.backend
-            if backend is None or self._modal_open:
+            if backend is None:
+                return
+            if self._modal_open:
+                self._dismiss_answered_modal()
                 return
             for attr, opener in (
                 ("_approval_state", self._open_approval),
@@ -1570,15 +1697,49 @@ if _TEXTUAL_AVAILABLE:
                     continue
                 self._serviced[attr] = state
                 self._modal_open = True
-                opener(state)
+                self._opening_owner = (attr, state)
+                try:
+                    opener(state)
+                finally:
+                    self._opening_owner = None
                 return
 
+        # Prompts another surface can answer first: the relay chat (approval,
+        # clarify) or an interrupt (all three).
+        _ANSWERABLE_ELSEWHERE = ("_approval_state", "_clarify_state", "_sudo_state")
+
+        def _dismiss_answered_modal(self) -> None:
+            """Take down a modal whose prompt was answered somewhere else.
+
+            The backend clears its ``_*_state`` once a prompt is resolved; a
+            modal still up for a cleared state would only answer into a queue
+            nobody reads. Its callbacks check the state's identity first, so
+            dismissing it answers nothing.
+            """
+            screen = self.screen
+            owner = getattr(screen, "_soa_owner", None)
+            if not owner or owner[0] not in self._ANSWERABLE_ELSEWHERE:
+                return
+            attr, state = owner
+            if getattr(self.backend, attr, None) is state:
+                return
+            try:
+                screen.dismiss(None)
+            except Exception:
+                pass
+
         def _push(self, screen: Any, callback: Any) -> None:
+            # A modal opened from another modal's answer (clarify → "Other…")
+            # answers the same prompt.
+            screen._soa_owner = self._opening_owner
+
             def _done(result: Any) -> None:
                 self._modal_open = False
+                self._opening_owner = getattr(screen, "_soa_owner", None)
                 try:
                     callback(result)
                 finally:
+                    self._opening_owner = None
                     self._prompt.focus()
                     self._schedule_refresh()
 
@@ -1877,6 +2038,17 @@ if _TEXTUAL_AVAILABLE:
             elif head == "/cancel":
                 self._open_cancel_picker()
                 return
+            elif head in ("/handoff", "/pickup") and (self._busy or self._dispatch_chains):
+                # The point of /handoff is leaving mid-task: it must not wait
+                # behind the turn it hands off. Neither touches the turn.
+                self._reset_note_block()
+                self._feed.add_rich(Text(f"⚙ {value}", style="dim"))
+                self._transcript_scroll()
+                self.run_worker(
+                    partial(self.backend.run_slash, value),
+                    thread=True, exit_on_error=False, group="relay", exclusive=False,
+                )
+                return
 
             if self._busy or self._dispatch_chains:
                 # The agent is mid-turn (or between the turns of a running
@@ -2008,6 +2180,20 @@ if _TEXTUAL_AVAILABLE:
             backend = self.backend
             import cli as _cli
 
+            if isinstance(value, RelayedText):
+                if self._relay_closing:
+                    # Its turn came while the app is closing: it would never
+                    # run. on_unmount gives it back to the chat's queue.
+                    self._relay_unrun.append(value)
+                    return
+                # From the relay chat: a user turn, whatever it looks like.
+                text = str(value)
+                self._add_user_turn(text)
+                self._note(f"↳ sent from {value.platform or 'the relay chat'}", muted=True)
+                await self._run_in_worker("turn", partial(backend.run_turn, text, images))
+                await self._after_dispatch()
+                return
+
             # A bare number right after a bare `/resume` picks that session, so
             # it must not be sent to the agent as a message.
             if backend.consume_resume_selection(value):
@@ -2103,7 +2289,9 @@ if _TEXTUAL_AVAILABLE:
             self._queued_items = []
             self._update_status()
             for item in queued:
-                await self._dispatch(item.strip(), None)
+                await self._dispatch(
+                    item.stripped() if isinstance(item, RelayedText) else item.strip(), None
+                )
             for item in pending:
                 images = None
                 if isinstance(item, tuple):

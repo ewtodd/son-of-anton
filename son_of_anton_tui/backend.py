@@ -30,6 +30,7 @@ from typing import Any, Callable, Optional
 
 import cli as _cli
 from cli import SonOfAntonCLI
+from son_of_anton_cli.relay_host import RelayHostMixin
 
 _MODAL_TIMEOUT = 120.0
 
@@ -83,8 +84,12 @@ def _looks_like_rule(text: str) -> bool:
     return bool(stripped) and set(stripped) <= {"─", "━", "-"}
 
 
-class TextualBackend(SonOfAntonCLI):
-    """``SonOfAntonCLI`` whose output seams feed a Textual app."""
+class TextualBackend(RelayHostMixin, SonOfAntonCLI):
+    """``SonOfAntonCLI`` whose output seams feed a Textual app.
+
+    It is also what ``/handoff`` makes the host of a relayed session
+    (son_of_anton_cli/relay_host.py).
+    """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self._sink: Optional[Sink] = None
@@ -96,6 +101,7 @@ class TextualBackend(SonOfAntonCLI):
         self._tui_picker_state: Optional[dict] = None
         self._tui_prepared = False
         self._perm_label: Optional[str] = None
+        self._relay_init()
         super().__init__(*args, **kwargs)
 
     # ------------------------------------------------------------------
@@ -318,6 +324,8 @@ class TextualBackend(SonOfAntonCLI):
                 target=_prewarm_agent_runtime, name="agent-runtime-prewarm", daemon=True
             ).start()
         self._tui_prepared = True
+        # ``son-of-anton --pickup``: end the relaying of the resumed session.
+        self.relay_pickup_at_start()
         return True
 
     def finish(self) -> None:
@@ -334,6 +342,13 @@ class TextualBackend(SonOfAntonCLI):
         self._should_exit = True
         try:
             print("Shutting down… (finalizing session)", flush=True)
+        except Exception:
+            pass
+
+        # A handed-off session loses its host: the relay chat's next send
+        # starts a headless worker, as before the handoff.
+        try:
+            self.relay_release_on_exit()
         except Exception:
             pass
 
@@ -454,8 +469,10 @@ class TextualBackend(SonOfAntonCLI):
         except Exception:
             pass
         self.emit("refresh")
+        reply: Optional[str] = None
         try:
-            return self.chat(message, images=images)
+            reply = self.chat(message, images=images)
+            return reply
         finally:
             # A drained delegation result is acknowledged only now, and only
             # if this turn took it; otherwise it goes back on the queue.
@@ -472,6 +489,13 @@ class TextualBackend(SonOfAntonCLI):
                 self._pending_tool_info.clear()
             except Exception:
                 pass
+            # Handed off: the relay chat hears how the turn ended.
+            try:
+                self.relay_after_turn(
+                    reply, interrupted=bool(getattr(self, "_last_turn_interrupted", False))
+                )
+            except Exception:
+                logging.debug("relaying the turn's end failed", exc_info=True)
             self._post_turn_hooks()
             self.emit("turn_end")
 

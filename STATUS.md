@@ -64,8 +64,10 @@ All of the following is merged to `main` and deployed on e-desktop:
   kills the worker, and the durable wait now honors interrupts. `/resume` of
   a terminal session binds it instead of switching the chat onto it. The old
   CLI→gateway handoff (watcher, SessionDB methods, `sessions.handoff_*`
-  columns) is deleted (schema v28). R2 (TUI `/handoff`) and R3
-  (yield/`/pickup`) are next.
+  columns) is deleted (schema v28). R2 (2026-10-15): TUI `/handoff` keeps the
+  open TUI running the session as its host while the chat relays it
+  (`relay_outbox`, schema v29); `/pickup` / `son-of-anton --pickup` end it.
+  R3 (yield/takeover of a busy headless worker) is next.
 - **RAG (optional).** `memory.rag` embeds journals and
   `notes/<scope>/**/*.md` through an OpenAI-compatible `/v1/embeddings`
   endpoint (Bifrost → bge-m3 on oracle) and injects the closest chunks into

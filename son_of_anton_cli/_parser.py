@@ -193,6 +193,15 @@ def build_top_level_parser():
         default=False,
         help="Run in an isolated git worktree (for parallel agents)",
     )
+    parser.add_argument(
+        "--pickup",
+        action="store_true",
+        default=False,
+        help=(
+            "Back at the terminal: open the session most recently handed off "
+            "(/handoff) or relayed from your messaging chat, and end the relaying"
+        ),
+    )
     _inherited_flag(
         parser,
         "--accept-hooks",
@@ -376,6 +385,15 @@ def build_top_level_parser():
         action="store_true",
         default=argparse.SUPPRESS,
         help="Run in an isolated git worktree (for parallel agents on the same repo)",
+    )
+    chat_parser.add_argument(
+        "--pickup",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "Open the session most recently handed off or relayed from your "
+            "messaging chat, and end the relaying"
+        ),
     )
     _inherited_flag(
         chat_parser,

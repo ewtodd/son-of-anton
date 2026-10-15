@@ -2598,10 +2598,11 @@ class _GatewayModelContext:
 
 
 def _format_durable_approval(record: dict) -> str:
-    """Render a pending headless-coder approval for its relay chat.
+    """Render a pending relayed-session approval for its relay chat.
 
-    The command text is what the coder will actually run (already redacted
-    when staged); the id addresses the pending record for /approve//deny.
+    The command text is what the session will actually run (already redacted
+    when staged); the id addresses the pending record for /approve//deny. A
+    headless worker and a handed-off TUI stage the same record.
     """
     record = record if isinstance(record, dict) else {}
     payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
@@ -2609,7 +2610,7 @@ def _format_durable_approval(record: dict) -> str:
     description = str(payload.get("description") or "dangerous command").strip()
     pending_id = str(record.get("id") or "")
     lines = [
-        "⚠️ Approval needed for a headless coding session.",
+        "⚠️ Approval needed for a terminal coding session.",
         description,
         "",
         "```",
@@ -11469,6 +11470,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self._spawn_supervised(
             lambda: _relay_reconcile(self), "relay_reconcile", restart=False,
         )
+        # A TUI that handed its session off (/handoff) writes what the relay
+        # chat should hear to state.db; deliver it as internal events, and
+        # hand sessions whose TUI went away back to headless workers.
+        from gateway.relay_workers import relay_event_loop as _relay_event_loop
+
+        self._spawn_supervised(lambda: _relay_event_loop(self), "relay_events")
 
         # Start the scale-to-zero idle watcher ONLY when this instance is opted
         # in (the NAS "Labs" SON_OF_ANTON_SCALE_TO_ZERO stamp), messaging is

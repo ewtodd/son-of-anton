@@ -122,6 +122,19 @@ instead, and your answer goes to it as the next message.
 relaying; it does not move the conversation into the chat. Resuming a chat
 session, or any `/resume` on a shared instance, switches the chat as before.
 <!---->
+Leaving the terminal mid-task, type `/handoff` in the TUI. Nothing stops or
+moves: the TUI keeps running the session, and the chat you last talked to
+the bot in takes over the conversation side. It tells you it has the
+session, passes your messages in — each runs as the next turn, or steers the
+running one when you say it can't wait; a reply while the session is asking
+a question answers it — and reports each turn's result. A dangerous command
+asks in the TUI and in the chat at once; the first answer wins. Back at the
+terminal, `/pickup` ends the relaying (the chat is told);
+`son-of-anton --pickup` reopens the session most recently handed off or
+relayed and does the same — if a headless run is still working on it, it
+offers to wait. Quitting the TUI while handed off leaves the chat relaying
+the session through headless runs.
+<!---->
 ### The journal
 <!---->
 `session.journal` (default on) mirrors every message row, as it is persisted,

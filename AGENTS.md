@@ -385,6 +385,21 @@ prompt and tool list stay byte-identical to a TUI session's; only its clarify ca
 differs (it answers at once — no one is at that terminal) and its dangerous commands
 become durable approvals answered in the chat with `/approve <id>`.
 
+`/handoff` (TUI, `cli_only`; `son_of_anton_cli/relay_host.py`) makes the *open TUI*
+the session's host instead of a headless worker: `relay_bindings.host = 'tui'`,
+`host_pid` the TUI process, a heartbeat refreshed every ~5s (stale after 30s or a dead
+pid = no host). Sends then queue to the TUI, which polls (`set_interval`, one small read
+per ~1.5s, nothing when not handed off), claims them and runs each as a real user turn
+between turns — queued like a typed follow-up, steered in via `agent.redirect` for
+`now`, or taken as the answer to an open clarify. What the chat should hear (`handoff`,
+`turn_end`, `question`, `pickup`) goes to `relay_outbox`, delivered by the gateway's
+`relay_event_loop` as internal events in order, marked delivered only once taken. An
+approval stages a durable record for the chat *and* shows the modal; a clarify shows
+the modal *and* asks the chat; first answer wins. The session's prompt and tools never
+change. `/pickup` and `son-of-anton --pickup` unbind; TUI exit only clears the host; a
+gone TUI's queue falls back to headless runs (`sweep_tui_hosts`). The relay tool never
+kills a TUI host: `stop` asks it to interrupt its turn.
+
 ---
 
 ## Physics Mode (autophysicist/)

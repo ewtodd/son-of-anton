@@ -52,7 +52,7 @@ def test_send_starts_once_then_queues_and_the_queue_runs_next(db) -> None:
     assert db.set_relay_host_pid("s1", _live_pid())
 
     assert db.relay_start_or_enqueue("s1", "chat-a", "two") == {
-        "action": "queued", "session_id": "s1", "position": 1,
+        "action": "queued", "session_id": "s1", "position": 1, "host": "headless",
     }
     assert db.relay_start_or_enqueue("s1", "chat-a", "three")["position"] == 2
 

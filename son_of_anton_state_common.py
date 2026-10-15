@@ -311,7 +311,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -511,7 +511,8 @@ CREATE TABLE IF NOT EXISTS async_delegations (
 
 -- Relay: a messaging chat drives terminal (source=cli) sessions. A binding
 -- says which chat relays a session and who runs its turns right now (host:
--- 'headless' for a gateway-spawned worker, NULL when idle). Keyed by the
+-- 'headless' for a gateway-spawned worker, 'tui' for the user's open TUI
+-- after /handoff, NULL when idle). Keyed by the
 -- session's compaction-lineage root, so a compaction does not unbind it. No
 -- foreign key: a new session is bound before its worker writes its row.
 CREATE TABLE IF NOT EXISTS relay_bindings (
@@ -525,7 +526,8 @@ CREATE TABLE IF NOT EXISTS relay_bindings (
 );
 
 -- Messages for a relayed session that arrived while its worker was busy,
--- run in id order as the next user turn once it finishes.
+-- run in id order as the next user turn once it finishes. A TUI host claims
+-- every one (mode 'queue', 'now' = steer the running turn, 'stop').
 CREATE TABLE IF NOT EXISTS relay_inbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
@@ -533,6 +535,20 @@ CREATE TABLE IF NOT EXISTS relay_inbox (
     mode TEXT NOT NULL DEFAULT 'queue',
     created_at REAL NOT NULL,
     consumed_at REAL
+);
+
+-- What a TUI host tells its relay chat (handoff, turn_end, question,
+-- pickup), delivered by the gateway as internal events in id order: claimed
+-- by one deliverer at a time, marked delivered only once the chat took it.
+CREATE TABLE IF NOT EXISTS relay_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_key TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    created_at REAL NOT NULL,
+    claimed_at REAL,
+    delivered_at REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -559,6 +575,8 @@ CREATE INDEX IF NOT EXISTS idx_relay_bindings_chat
     ON relay_bindings(chat_key, updated_at);
 CREATE INDEX IF NOT EXISTS idx_relay_inbox_session
     ON relay_inbox(session_id, consumed_at, id);
+CREATE INDEX IF NOT EXISTS idx_relay_outbox_pending
+    ON relay_outbox(delivered_at, id);
 """
 
 

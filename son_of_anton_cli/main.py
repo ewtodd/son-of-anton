@@ -1297,6 +1297,19 @@ def cmd_chat(args):
     # Resolve --continue into --resume with the latest session or by name
     _resolve_continue_arg(args)
 
+    # --pickup: resume the session most recently handed off or relayed from
+    # the messaging chat; the TUI ends the relaying as it starts.
+    if getattr(args, "pickup", False):
+        if getattr(args, "query", None) or getattr(args, "query_file", None):
+            print("Error: --pickup opens the TUI; it does not take a query.")
+            sys.exit(2)
+        from son_of_anton_cli.relay_host import resolve_pickup
+
+        _picked = resolve_pickup(interactive=sys.stdin.isatty())
+        if not _picked:
+            sys.exit(1)
+        args.resume = _picked
+
     # --resume @claude / @codex / @opencode: import a foreign session and
     # resume the newly created Son of Anton session.
     _resume_foreign = getattr(args, "resume", None)
@@ -1463,6 +1476,7 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),
         "compact": getattr(args, "compact", False),
+        "pickup": bool(getattr(args, "pickup", False)),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
