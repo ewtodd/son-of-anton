@@ -136,6 +136,8 @@ nix shell nixpkgs#uv -c env UV_PYTHON=<nix-python-3.12> uv lock
   (repo git config already set — do not change it)
 - Sole authorship. No `Co-authored-by:` trailers, for anyone — not the repo owner,
   not the model, not an upstream account.
+- Message: a short summary line (`area: what changed`), a blank line, then a body that
+  explains what changed and why. Never cram several changes into one long subject line.
 - Remote: `git@github.com:ewtodd/son-of-anton.git`, branch `main`
 - Before merging anything, make sure the branch is up to date with `main` — a stale
   branch's version of an unrelated file silently overwrites recent fixes on squash-merge.
@@ -382,6 +384,31 @@ alternation stays intact.
 
 Physics runs are **synchronous turns** — a session blocks until the run finishes. That is
 a known limitation, not a bug.
+
+### Physics run directories
+
+- A run lives in `<physics.workspace_root or $SON_OF_ANTON_HOME/workspaces>/<YYYYmmdd_HHMMSS>_<problem>_<model>_autophysicist/`
+  (owner's work instance: /home/e-work/workspace-soa/runs) and is a git repo,
+  one commit per iteration.
+- `EVENT_LOG.jsonl` is the ground truth: one `llm_call` record per round
+  (`agent`, `iter`, `round`, tokens, `stop_reason`, `duration_s`).
+  `config.json` = resolved config, `problem.toml` = spec, `computations/` =
+  each sub-agent's script and `.output`; `.iteration`, `METRICS.md`, and
+  `console.log` show progress.
+- `PERMANENT_MEMORY.md`, `SCRATCHPAD.md`, and `CRITIQUE_LOG.md` are the
+  Manager's and critic's own account. Treat the Manager's explanation of a
+  failure as a hypothesis and check it against EVENT_LOG.jsonl before changing
+  the harness. Keep one dataset's quirks out of harness code and prompts.
+
+---
+
+## Deployment (the owner's instances)
+
+- e-desktop's instances are built from `/etc/nixos`'s `son-of-anton` input;
+  merging to `main` deploys nothing until that input is updated and e-desktop
+  is rebuilt with `nrs` (see /etc/nixos/AGENTS.md). Those installs are
+  Nix-managed with `pruneUnmanagedSettings`: `config set` refuses, and settings
+  live in /etc/nixos/hosts/e-desktop/configuration.nix.
 
 ---
 
