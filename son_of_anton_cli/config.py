@@ -661,7 +661,7 @@ def ensure_son_of_anton_home():
         home.mkdir(parents=True, exist_ok=True)
         _secure_dir(home)
         for subdir in (
-            "cron", "sessions", "logs", "logs/curator", "memories",
+            "cron", "sessions", "logs", "memories",
             "pairing", "hooks", "image_cache", "audio_cache", "skills",
         ):
             d = home / subdir
@@ -682,10 +682,6 @@ def _ensure_son_of_anton_home_managed(home: Path):
         d = home / subdir
         if not d.is_dir():
             raise RuntimeError(f"{d} does not exist.")
-    # Curator reports dir is a sub-path of logs/; create it if missing.
-    # In managed mode the activation script may not know about this subdir,
-    # so we mkdir it ourselves (it's inside an already-secured logs/ dir).
-    (home / "logs" / "curator").mkdir(parents=True, exist_ok=True)
     # Inside umask(0o007) scope — SOUL.md will be created as 0660
     _ensure_default_soul_md(home)
 

@@ -509,8 +509,6 @@ def init_agent(
     # ``(summary_text, stats)`` — the host shows what a compaction kept.
     # Bound by the CLI/TUI; None keeps headless hosts (cron, gateway) quiet.
     agent.compaction_summary_callback = None
-    agent.background_review_callback = None  # Optional sync callback for gateway delivery
-    agent.memory_notifications = "on"  # Memory update notifications: "off", "on", "verbose"
     agent.skip_context_files = skip_context_files
     agent.load_soul_identity = load_soul_identity
     agent.pass_session_id = pass_session_id
@@ -641,14 +639,6 @@ def init_agent(
     agent._active_children = []      # Running child AIAgents (for interrupt propagation)
     agent._active_children_lock = threading.Lock()
 
-    # Background memory/skill review state (agent/background_review.py).
-    # ``_background_review_run`` is installed before the worker starts and
-    # fences its first provider-capable phase; the direct agent pointer keeps
-    # normal interrupt propagation available once the fork is constructed.
-    agent._background_review_agent = None
-    agent._background_review_run = None
-    agent._background_review_lock = threading.Lock()
-
     # Store toolset filtering options
     agent.enabled_toolsets = enabled_toolsets
     agent.disabled_toolsets = disabled_toolsets
@@ -739,10 +729,6 @@ def init_agent(
     agent._session_activity_last_persist_mono: float = 0.0
     agent._current_tool: str | None = None
     agent._api_call_count: int = 0
-    # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
-    # Set on internal forks (e.g. background_review) that must keep ``tools[]``
-    # byte-identical to a parent for provider cache parity.
-    agent._skip_mcp_refresh = False
     # Opening-turns window for that refresh (``mcp.refresh_turns``, read with
     # the rest of the agent config below). ``_mcp_refresh_resumed`` is decided
     # on the first turn from the conversation history it is handed.

@@ -55,7 +55,7 @@ from typing import List, Dict, Any, Optional, Callable
 # NOTE: `fire` is ONLY used in the `__main__` block below (for running
 # run_agent.py directly as a CLI) — it is NOT needed for library usage.
 # It is imported there, not here, so that importing run_agent from a
-# daemon thread (e.g. curator's forked review agent) never fails with
+# daemon thread (e.g. a delegated subagent) never fails with
 # ModuleNotFoundError on broken/partial installs where `fire` isn't present.
 from datetime import datetime
 from pathlib import Path
@@ -1557,79 +1557,6 @@ class AIAgent:
         from agent.chat_completion_helpers import cleanup_task_resources
         return cleanup_task_resources(self, task_id)
 
-    # ------------------------------------------------------------------
-    # Background memory/skill review — prompts live in agent.background_review
-    # ------------------------------------------------------------------
-    from agent.background_review import (
-        _MEMORY_REVIEW_PROMPT,
-        _SKILL_REVIEW_PROMPT,
-        _COMBINED_REVIEW_PROMPT,
-    )
-
-    @staticmethod
-    def _summarize_background_review_actions(
-        review_messages: List[Dict],
-        prior_snapshot: List[Dict],
-        notification_mode: str = "on",
-    ) -> List[str]:
-        """Forwarder — see ``agent.background_review.summarize_background_review_actions``."""
-        from agent.background_review import summarize_background_review_actions
-        return summarize_background_review_actions(
-            review_messages,
-            prior_snapshot,
-            notification_mode=notification_mode,
-        )
-
-    def _spawn_background_review(
-        self,
-        messages_snapshot: List[Dict],
-        review_memory: bool = False,
-        review_skills: bool = False,
-        focus: Optional[str] = None,
-    ) -> None:
-        """Spawn the ``/refine`` memory/skill review thread.
-
-        Thin wrapper — the heavy lifting lives in
-        ``agent.background_review.spawn_background_review_thread`` which
-        returns the thread target.  ``threading.Thread`` is constructed
-        here so existing tests that patch ``run_agent.threading.Thread``
-        keep working.
-
-        ``focus`` is optional user-supplied steering appended to the review
-        prompt — e.g. "save the deploy workflow as a skill". There is no
-        automatic post-turn review: ``/refine`` is the only caller.
-        """
-        from agent.background_review import (
-            finish_background_review_run,
-            prepare_background_review_run,
-            spawn_background_review_thread,
-        )
-        from tools.thread_context import propagate_context_to_thread
-
-        review_run = prepare_background_review_run(self)
-        if review_run is None:
-            return
-        try:
-            target, _prompt = spawn_background_review_thread(
-                self,
-                messages_snapshot,
-                review_memory=review_memory,
-                review_skills=review_skills,
-                focus=focus,
-                review_run=review_run,
-            )
-            # Carry the active profile into the review thread so MEMORY.md /
-            # skill review writes land in the right profile (#54937).
-            t = threading.Thread(
-                target=propagate_context_to_thread(target),
-                daemon=True,
-                name="bg-review",
-            )
-            t.start()
-        except Exception:
-            finish_background_review_run(self, review_run)
-            raise
-
     def _build_memory_write_metadata(
         self,
         *,
@@ -1638,15 +1565,23 @@ class AIAgent:
         task_id: Optional[str] = None,
         tool_call_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Forwarder — see ``agent.background_review.build_memory_write_metadata``."""
-        from agent.background_review import build_memory_write_metadata
-        return build_memory_write_metadata(
-            self,
-            write_origin=write_origin,
-            execution_context=execution_context,
-            task_id=task_id,
-            tool_call_id=tool_call_id,
-        )
+        """Build provenance metadata for external memory-provider mirrors."""
+        metadata: Dict[str, Any] = {
+            "write_origin": write_origin or getattr(self, "_memory_write_origin", "assistant_tool"),
+            "execution_context": (
+                execution_context
+                or getattr(self, "_memory_write_context", "foreground")
+            ),
+            "session_id": self.session_id or "",
+            "parent_session_id": self._parent_session_id or "",
+            "platform": self.platform or os.environ.get("SON_OF_ANTON_SESSION_SOURCE", "cli"),
+            "tool_name": "memory",
+        }
+        if task_id:
+            metadata["task_id"] = task_id
+        if tool_call_id:
+            metadata["tool_call_id"] = tool_call_id
+        return {k: v for k, v in metadata.items() if v not in {None, ""}}
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
@@ -1822,13 +1757,11 @@ class AIAgent:
         edits a persisted message's content/role in place expecting a re-write
         (in-place compaction resets the seed and re-diffs by identity).
         """
-        # Persistence-isolated agents (e.g. the background skill/memory review
-        # fork) must NEVER write into the canonical session store. The fork
-        # shares the parent's session_id for prompt-cache warmth, so any write
-        # here would land its harness turn ("Review the conversation above and
-        # update the skill library…") inside the user's real session history,
-        # where the next live turn re-reads it as an instruction and the agent
-        # "becomes" the curator. Hard-stop before any DB touch.
+        # Persistence-isolated agents must NEVER write into the canonical
+        # session store: a fork that shares its parent's session_id would land
+        # its own harness turns inside the user's real session history, where
+        # the next live turn re-reads them as instructions. Hard-stop before
+        # any DB touch.
         if getattr(self, "_persist_disabled", False):
             return None
         if not self._session_db:
@@ -6850,15 +6783,6 @@ class AIAgent:
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
-        # A review deliberately shares this agent's session_id for prompt-cache
-        # parity. Fence review startup or interrupt an admitted request, then
-        # await that request's exit before opening any live-turn Relay or task
-        # instrumentation for the same session. Foreground priority is retained
-        # if the review does not acknowledge within the bounded deadline (#84423).
-        from agent.background_review import cancel_background_review_for_live_turn
-
-        cancel_background_review_for_live_turn(self)
-
         from agent.aux_accounting import (
             reset_accounting_context,
             set_accounting_context,

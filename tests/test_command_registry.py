@@ -78,7 +78,7 @@ def test_busy_mode_commands_were_replaced_by_sendnow_and_sendall() -> None:
 
 def test_fork_commands_exist() -> None:
     names = {cmd.name for cmd in COMMAND_REGISTRY}
-    for expected in ("model", "perm", "skin", "cron", "curator", "help"):
+    for expected in ("model", "perm", "skin", "cron", "help"):
         assert expected in names, f"missing /{expected}"
 
 

@@ -1196,28 +1196,6 @@ class CLICommandsMixin:
         print("  Available: list, add, edit, pause, resume, run, remove")
 
 
-    def _handle_curator_command(self, cmd: str):
-        """Handle /curator slash command.
-
-        Delegates to son_of_anton_cli.curator so the CLI and the `son-of-anton curator`
-        subcommand share the same handler set.
-        """
-        import shlex
-
-        tokens = shlex.split(cmd)[1:] if cmd else []
-        if not tokens:
-            tokens = ["status"]
-
-        try:
-            from son_of_anton_cli.curator import cli_main
-            cli_main(tokens)
-        except SystemExit:
-            # argparse calls sys.exit() on --help or errors; swallow so we
-            # don't kill the interactive session.
-            pass
-        except Exception as exc:
-            print(f"(._.) curator: {exc}")
-
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to son_of_anton_cli.skills_hub."""
         from cli import ChatConsole
@@ -1512,46 +1490,6 @@ class CLICommandsMixin:
             f"Manage with `son-of-anton bundles`.{_RST}"
         )
 
-
-    def _handle_refine_command(self, cmd: str) -> None:
-        """Dispatch /refine — run the memory/skill review fork on demand.
-
-        Spawns ``AIAgent._spawn_background_review`` with optional focus
-        instructions; there is no automatic review. Writes go to the memory + skill stores
-        in a background fork; the live conversation and prompt cache are
-        never touched.
-        """
-        from cli import _DIM, _RST, _cprint
-
-        parts = (cmd or "").strip().split(None, 1)
-        focus = parts[1].strip() if len(parts) > 1 else ""
-
-        agent = getattr(self, "agent", None)
-        if agent is None:
-            _cprint(f"  {_DIM}Nothing to refine yet — send a message first.{_RST}")
-            return
-
-        snapshot = list(getattr(self, "conversation_history", None) or [])
-        if not snapshot:
-            _cprint(f"  {_DIM}Nothing to refine yet — the conversation is empty.{_RST}")
-            return
-
-        review_skills = "skill_manage" in getattr(agent, "valid_tool_names", set())
-        try:
-            agent._spawn_background_review(
-                messages_snapshot=snapshot,
-                review_memory=True,
-                review_skills=review_skills,
-                focus=focus or None,
-            )
-        except Exception as exc:
-            _cprint(f"  /refine failed to start: {exc}")
-            return
-        tail = f" (focus: {focus})" if focus else ""
-        _cprint(
-            f"  ⚗ Reviewing this conversation in the background{tail} — "
-            f"any memory/skill updates will be reported when done."
-        )
 
     def _handle_goal_command(self, cmd: str) -> None:
         """Dispatch /goal subcommands: set / draft / show / gate / status / pause / resume / clear."""

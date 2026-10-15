@@ -1165,20 +1165,6 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
-        # Curator — skill-usage review fork. Timeout is generous because the
-        # review pass can take several minutes on reasoning models (umbrella
-        # building over hundreds of candidate skills). "auto" = use main chat
-        # model; override via `son-of-anton model` → auxiliary → Curator to route
-        # to a cheaper aux model (e.g. deepseek-v4).
-        "curator": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 600,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
         # Monitor — urgency/importance classifier used by the important-mail
         # monitor catalog automation (cron/scripts/classify_items.py). Scores
         # candidate items 0-10 against the user's criteria so only above-
@@ -1191,26 +1177,6 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 60,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
-        # Background review — the fork /refine starts to decide whether to
-        # save a memory / patch a skill. "auto" (default) = run on
-        # the main chat model, replaying the full conversation, which is already
-        # warm in the prompt cache (cheap cache reads) — unchanged, optimal.
-        # Set provider/model to a cheaper model (e.g. deepseek, or a
-        # google/gemini-3-flash-preview) to run the review there for ~3-5x lower
-        # cost. A different model can't reuse the main prompt cache anyway, so
-        # the fork automatically replays a compact digest instead of the full
-        # transcript when routed (minimises the cold-write). Same model = full
-        # replay; different model = digest. Quality holds (memory capture
-        # identical, skill near-identical in benchmarks).
-        "background_review": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 120,
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
@@ -1259,12 +1225,6 @@ DEFAULT_CONFIG = {
         # collapses long thinking to the first 10 lines. Set true to print the
         # complete thinking text uncollapsed (live streaming is always full).
         "reasoning_full": False,
-        # Background self-improvement review notifications surfaced in chat.
-        #   "off"     — no chat notification (the review still runs and writes)
-        #   "on"      — generic "💾 Memory updated" line (default)
-        #   "verbose" — include a compact content preview of what changed
-        # Per-platform overrides via display.platforms.<platform>.memory_notifications.
-        "memory_notifications": "on",
         # Gateway notifications when a terminal(background=true) process
         # finishes:
         #   "concise" — one-line status message; failures append a short
@@ -1696,68 +1656,11 @@ DEFAULT_CONFIG = {
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
         # Per-mutation audit ledger (tracker #79686 P3). Every skill mutation
-        # — curator, agent, or user — appends one JSONL entry to
-        # ~/.son-of-anton/skills/.curator_ledger.jsonl with before/after file
-        # hashes; file contents are stored content-addressed (deduped) under
-        # ~/.son-of-anton/.curator_backups/blobs/. Enables `son-of-anton curator ledger`
-        # and single-mutation `son-of-anton curator rollback <entry-id>`.
+        # appends one JSONL entry to ~/.son-of-anton/skills/.curator_ledger.jsonl
+        # with before/after file hashes; file contents are stored
+        # content-addressed (deduped) under ~/.son-of-anton/.curator_backups/blobs/.
         # Telemetry, never a gate: ledger failures cannot block a mutation.
         "ledger": True,
-    },
-
-    # Curator — background skill maintenance.
-    #
-    # Periodically reviews AGENT-CREATED skills (never bundled or
-    # hub-installed) and keeps the collection tidy: marks long-unused skills
-    # as stale, archives genuinely obsolete ones (archive only, never
-    # deletes), and spawns a forked aux-model agent to consolidate overlaps
-    # and patch drift. Runs inactivity-triggered from session start — no
-    # cron daemon.
-    #
-    # See `son-of-anton curator status` for the last run summary.
-    "curator": {
-        "enabled": True,
-        # How long to wait between curator runs (hours).  Default: 7 days.
-        "interval_hours": 24 * 7,
-        # Only run when the agent has been idle at least this long (hours).
-        "min_idle_hours": 2,
-        # Mark a skill as "stale" after this many days without use.
-        "stale_after_days": 30,
-        # Archive a skill (move to skills/.archive/) after this many days
-        # without use. Archived skills are recoverable — no auto-deletion.
-        "archive_after_days": 90,
-        # Run the LLM consolidation (umbrella-building) pass. OFF by default.
-        # When off, a curator run does ONLY the deterministic inactivity prune
-        # (mark stale / archive long-unused skills) and skips the forked
-        # aux-model review entirely — no umbrella-building, no aux-model cost.
-        # Set to true to opt back into merging overlapping skills into
-        # class-level umbrellas. `son-of-anton curator run --consolidate` overrides
-        # this for a single invocation.
-        "consolidate": False,
-        # Also prune (archive) bundled built-in skills after the inactivity
-        # period, not just agent-created ones. ON by default. Built-ins are
-        # normally restored on every `son-of-anton update`, so pruning them only
-        # sticks because a suppression list tells the re-seeder to leave them
-        # archived. Hub-installed skills are NEVER pruned here — they have an
-        # external upstream owner. Built-ins accrue usage telemetry and their
-        # inactivity clock starts the first time the curator sees them, so a
-        # long-unused built-in is archived only after archive_after_days of
-        # genuine non-use (never a mass-prune on the first run). Set to false
-        # to keep all bundled built-ins permanently.
-        "prune_builtins": True,
-        # TTL purge of skills/.archive/. 0 (default) = never purge — archived
-        # skills are kept forever. When > 0, `son-of-anton curator purge` deletes
-        # archived skills older than this many days (explicit command only,
-        # never automatic; every purge is recorded in the audit ledger).
-        "archive_ttl_days": 0,
-        # Pre-run backup: before every real curator pass (dry-run is
-        # skipped), snapshot ~/.son-of-anton/skills/ into
-        # ~/.son-of-anton/skills/.curator_backups/<utc-iso>/skills.tar.gz so the
-        # user can roll back with `son-of-anton curator rollback`.
-        "backup": {
-            "enabled": True,
-            "keep": 5,  # retain last N regular snapshots
-        },
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.

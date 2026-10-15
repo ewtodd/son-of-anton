@@ -256,6 +256,18 @@ _REMOVED_SYMBOLS = (
     "scrub_kanban_env",
     "is_dispatcher_owned_worker_context",
     "build_kanban_stop_nudge",
+    # Memory/skill review fork and the skill curator
+    "_spawn_background_review",
+    "spawn_background_review_thread",
+    "cancel_background_review_for_live_turn",
+    "_handle_refine_command",
+    "maybe_run_curator",
+    "run_curator_review",
+    "apply_automatic_transitions",
+    "_handle_curator_command",
+    "snapshot_skills",
+    "referenced_skill_names",
+    "rewrite_skill_refs",
 )
 
 

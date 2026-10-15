@@ -735,8 +735,9 @@ def get_last_init_error() -> Optional[str]:
     return _last_init_error
 
 
-# Distinctive opening shared by both background-review harness prompts
-# (_SKILL_REVIEW_PROMPT and _MEMORY_REVIEW_PROMPT in agent/background_review.py).
+# Distinctive opening shared by both harness prompts of the removed memory/skill
+# review fork. Older builds persisted them into the reviewed session; nothing
+# writes them now, but such rows would otherwise replay as live user turns.
 # Matched case-sensitively against the leading content of a user/system message.
 _REVIEW_HARNESS_PREFIXES = (
     "Review the conversation above and update the skill library",

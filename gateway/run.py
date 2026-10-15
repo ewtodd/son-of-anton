@@ -5587,66 +5587,6 @@ class TurnRunner:
             self._runner._consume_pending_turn_sidecar_notes(ctx.session_key)
         )
 
-        _bg_review_release = threading.Event()
-        _bg_review_pending: list[str] = []
-        _bg_review_pending_lock = threading.Lock()
-
-        def _deliver_bg_review_message(message: str) -> None:
-            if not ctx._status_adapter or not ctx._run_still_current():
-                return
-            safe_schedule_threadsafe(
-                ctx._status_adapter.send(
-                    ctx._status_chat_id,
-                    message,
-                    metadata=_interim_metadata(_non_conversational_metadata(ctx._status_thread_metadata, platform=ctx.source.platform)),
-                ),
-                ctx._loop_for_step,
-                logger=logger,
-                log_message="background_review_callback scheduling error",
-            )
-
-        def _release_bg_review_messages() -> None:
-            _bg_review_release.set()
-            with _bg_review_pending_lock:
-                pending = list(_bg_review_pending)
-                _bg_review_pending.clear()
-            for queued in pending:
-                _deliver_bg_review_message(queued)
-
-        # Background review delivery — send "💾 Memory updated" etc. to user
-        def _bg_review_send(message: str) -> None:
-            if not ctx._status_adapter or not ctx._run_still_current():
-                return
-            if not _bg_review_release.is_set():
-                with _bg_review_pending_lock:
-                    if not _bg_review_release.is_set():
-                        _bg_review_pending.append(message)
-                        return
-            _deliver_bg_review_message(message)
-
-        agent.background_review_callback = _bg_review_send
-        # Register the release hook on the adapter so base.py's finally
-        # block can fire it after delivering the main response.
-        if ctx._status_adapter and ctx.session_key:
-            if getattr(type(ctx._status_adapter), "register_post_delivery_callback", None) is not None:
-                ctx._status_adapter.register_post_delivery_callback(
-                    ctx.session_key,
-                    _release_bg_review_messages,
-                    generation=ctx.run_generation,
-                )
-            else:
-                _pdc = getattr(ctx._status_adapter, "_post_delivery_callbacks", None)
-                if _pdc is not None:
-                    _pdc[ctx.session_key] = _release_bg_review_messages
-        # Memory update notifications in chat.  Config: display.memory_notifications
-        #   off     — no chat notification (still logged to stdout)
-        #   on      — generic "💾 Memory updated" (default)
-        #   verbose — content preview: "💾 Memory ➕ Son of Anton Repo..."
-        _mem_notif = ctx.user_config.get("display", {}).get("memory_notifications")
-        if isinstance(_mem_notif, bool):
-            _mem_notif = "on" if _mem_notif else "off"
-        agent.memory_notifications = str(_mem_notif).lower() if _mem_notif else "on"
-
         # ------------------------------------------------------------------
         # Clarify callback: present a clarify prompt and block on a response.
         #
@@ -15336,8 +15276,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return await self._handle_goal_command(event)
 
 
-        if canonical == "refine":
-            return await self._handle_refine_command(event)
 
 
         if self._draining:
@@ -25737,9 +25675,8 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
 
     Refreshes the channel directory every 5 minutes and prunes the
     image/audio/video/document/screenshot caches + expired ``son-of-anton debug
-    share`` pastes once per hour, polls the curator hourly (its inner
-    gate enforces the real weekly cadence), and keeps the ``memory.rag``
-    retrieval index fresh on its configured interval.
+    share`` pastes once per hour, and keeps the ``memory.rag`` retrieval
+    index fresh on its configured interval.
     """
     from gateway.platforms.base import (
         cleanup_audio_cache,
@@ -25754,7 +25691,6 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
-    CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
     AUTO_ARCHIVE_EVERY = 60  # ticks — poll hourly (state_meta gate owns the real cadence)
     MEMORY_TRIM_EVERY = 1    # shared helper cooldown bounds actual allocator work
     MISFIRE_SWEEP_EVERY = 5  # ticks — every 5 minutes (grace window gates real work)
@@ -25834,21 +25770,6 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
                     )
             except Exception as e:
                 logger.debug("Misfire catch-up sweep error: %s", e)
-
-        # Curator — piggy-back on the housekeeping loop so long-running
-        # gateways get weekly skill maintenance without needing restarts.
-        # maybe_run_curator() is internally gated by config.interval_hours
-        # (7 days by default), so CURATOR_EVERY is just the poll rate — the
-        # real work only fires once per config interval.
-        if tick_count % CURATOR_EVERY == 0:
-            try:
-                from agent.curator import maybe_run_curator
-                maybe_run_curator(
-                    idle_for_seconds=float("inf"),
-                    on_summary=lambda msg: logger.info("curator: %s", msg),
-                )
-            except Exception as e:
-                logger.debug("Curator tick error: %s", e)
 
         # Retrieval index refresh. maybe_refresh_index_async() is gated by
         # memory.rag.enabled and memory.rag.reindex_interval_minutes (against
@@ -26517,7 +26438,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     cron_thread.start()
 
     # Gateway-only periodic housekeeping (channel dir, cache cleanup, paste
-    # sweep, curator) — runs independently of which cron provider is active.
+    # sweep) — runs independently of which cron provider is active.
     # Shares cron_stop as the shutdown signal.
     housekeeping_thread = threading.Thread(
         target=_start_gateway_housekeeping,

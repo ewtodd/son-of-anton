@@ -137,8 +137,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("goal", "Set a standing goal Son of Anton works on across turns until achieved", "Session",
                args_hint="[text | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
                busy_policy="dispatch", busy_handler="goal"),
-    CommandDef("refine", "Review this conversation now and save lessons to memory/skills", "Session",
-               args_hint="[focus instructions]"),
     CommandDef("status", "Show session, model, token, and context info", "Session",
                busy_policy="dispatch"),
     CommandDef("context", "Show detailed context window view with usage gauge, category breakdown, compaction stats, and throughput", "Session",
@@ -210,12 +208,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
-    # cli_only: the gateway runs the curator on its own hourly timer
-    # (gateway/run.py maybe_run_curator) and has no slash dispatch for it, so
-    # surfacing /curator in chat offered a command that could never run.
-    CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",
-               "Tools & Skills", cli_only=True, args_hint="[subcommand]",
-               subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived")),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
@@ -327,7 +319,7 @@ HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
     ),
     "Background & Automation": (
         "background", "bg", "btw", "agents", "tasks", "sendnow", "sendall", "cancel",
-        "goal", "subgoal", "heartbeat", "hb", "refine", "loop", "proactive",
+        "goal", "subgoal", "heartbeat", "hb", "loop", "proactive",
         "journey", "learning", "memory-graph",
     ),
 }
@@ -802,9 +794,6 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     and silently clamps /update off, breaking Slack parity.
 #   - heartbeat: session heartbeat management; reached via /son-of-anton heartbeat
 #     on Slack. Added at the 50-cap — a native slot would clamp /insights.
-#   - refine: on-demand memory/skill review; reached via /son-of-anton refine on
-#     Slack. Added at the 50-cap — a native slot would clamp an existing
-#     native slash.
 #   - pause: global emergency stop; reached via /son-of-anton pause [off] on
 #     Slack. Added at the 50-cap — a native slot would clamp /platform.
 #   - whoami: one-off identity lookup; reached via /son-of-anton whoami on Slack.
@@ -817,7 +806,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_SON_OF_ANTON_ONLY = frozenset({"debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "whoami", "platform"})
+_SLACK_VIA_SON_OF_ANTON_ONLY = frozenset({"debug", "egress", "init", "version", "diff", "update", "heartbeat", "pause", "whoami", "platform"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

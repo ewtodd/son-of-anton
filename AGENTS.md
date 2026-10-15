@@ -581,17 +581,13 @@ Durability rule: background `delegate_task` is detached from the current turn bu
 process-local. For work that must survive process restart, use `cronjob` or
 `terminal(background=True, notify_on_complete=True)` instead.
 
-## Curator (skill lifecycle)
+## Self-improvement
 
-Background skill-maintenance that tracks usage on agent-created skills and auto-archives
-stale ones. Archives go to `~/.son-of-anton/skills/.archive/` and are restorable — never
-deletes. Only touches skills with `created_by: "agent"` provenance; pinned skills are
-exempt from every auto-transition. Config section `curator:`; CLI `son-of-anton curator
-<verb>`.
-
-There is no automatic post-turn memory/skill review. The fork that ran after every few
-turns was removed (2026-10-15): 84 of its 86 skill writes over five weeks were its own, and
-three in four of them failed. `/refine [focus]` runs the same review once, on request.
+There is no memory/skill review fork. The one that ran after every few turns was removed
+(2026-10-15): 84 of the 86 skill writes over five weeks were its own, and three in four of
+them failed. Its manual trigger, `/refine`, went with it, and so did the skill curator (the
+weekly pass that archived and consolidated agent-made skills). The agent saves memory itself,
+with the `memory` tool, when something is worth keeping.
 
 ## Cron (scheduled jobs)
 

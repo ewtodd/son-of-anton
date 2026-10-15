@@ -9284,8 +9284,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.save_conversation(cmd_original)
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
-        elif canonical == "curator":
-            self._handle_curator_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
@@ -9442,8 +9440,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint("  Nothing queued.")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
-        elif canonical == "refine":
-            self._handle_refine_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         else:

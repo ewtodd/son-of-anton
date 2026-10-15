@@ -1396,9 +1396,8 @@ def _compaction_lock_holder(agent: Any) -> str:
     live ones (expiry-based recovery uses the timestamp, but ``holder``
     is what shows up in diagnostics + log lines). The agent instance id
     and a per-acquire uuid disambiguate two co-resident agents on the
-    same thread (background_review forks run on a worker thread, but
-    on machines where compaction itself dispatches to a thread pool
-    we want each acquire to be unique).
+    same thread (on machines where compaction itself dispatches to a
+    thread pool we want each acquire to be unique).
     """
     import threading
     return (
@@ -2423,10 +2422,8 @@ def compact_context(
 
     # ── Compaction lock ────────────────────────────────────────────────
     # Atomic, state.db-backed lock per session_id.  Without this, two
-    # AIAgent instances that share the same session_id (most commonly the
-    # parent-turn agent and its background-review fork — see
-    # ``agent/background_review.py``: ``review_agent.session_id =
-    # agent.session_id``) can each call compact() on overlapping
+    # AIAgent instances that share the same session_id (e.g. two processes
+    # driving one session) can each call compact() on overlapping
     # snapshots of the same conversation.  Both succeed, both rotate
     # ``agent.session_id`` to a fresh id, both create child sessions in
     # state.db parented to the same old id.  The gateway's SessionEntry

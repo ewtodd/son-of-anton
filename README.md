@@ -136,7 +136,9 @@ carries shared plus personal. Each store has its own `memory.memory_char_limit`
 and `memory.user_char_limit` budget, writes can require approval
 (`memory.write_approval`), and an external provider can be layered on top
 (`memory.provider`). The files live in `~/.son-of-anton/memories/`; the agent
-edits them through the `memory` tool, and you can edit them directly.
+edits them through the `memory` tool, and you can edit them directly. Nothing
+reviews conversations in the background to add to them: an entry exists because
+the agent (or you) decided it was worth keeping.
 <!---->
 ### Retrieval (optional)
 <!---->

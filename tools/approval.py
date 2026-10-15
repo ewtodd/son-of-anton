@@ -2992,9 +2992,8 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
     # Deny fast and log loudly instead so the caller can surface a real
     # error to the agent. Any thread that needs interactive approval must
     # install a callback via tools.terminal_tool.set_approval_callback()
-    # before reaching this point (see delegate_tool.py, run_agent.py
-    # _execute_tool_calls_concurrent / _spawn_background_review for the
-    # established pattern).
+    # before reaching this point (see delegate_tool.py and run_agent.py
+    # _execute_tool_calls_concurrent for the established pattern).
     try:
         from son_of_anton_constants import is_frontend_active
 

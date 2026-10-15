@@ -2929,7 +2929,7 @@ class PluginContext:
             key: stable task key (snake_case). Used in config ``auxiliary.<key>``
                 and env vars ``AUXILIARY_<KEY_UPPER>_*``. Must not shadow a
                 built-in task key (vision, compaction, web_extract, approval,
-                mcp, title_generation, skills_hub, curator).
+                mcp, title_generation, skills_hub).
             display_name: human-readable name shown in the picker.
             description: short one-line description shown next to the name.
             defaults: optional dict of default routing fields. Recognized keys:
@@ -5873,27 +5873,12 @@ def fire_pre_command_hook(
         logger.debug("pre_command hook dispatch failed (non-fatal): %s", exc)
 
 
-_thread_tool_whitelist = threading.local()
-
-
 @dataclass(frozen=True)
 class _PreToolCallDirective:
     action: Optional[str] = None
     message: Optional[str] = None
     rule_key: Optional[str] = None
     modified_args: Optional[Dict[str, Any]] = None
-
-
-def set_thread_tool_whitelist(
-    allowed: Optional[Set[str]],
-    deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this thread's tool whitelist",
-) -> None:
-    _thread_tool_whitelist.allowed = allowed
-    _thread_tool_whitelist.fmt = deny_msg_fmt
-
-
-def clear_thread_tool_whitelist() -> None:
-    _thread_tool_whitelist.allowed = None
 
 
 def _get_pre_tool_call_directive_details(
@@ -5932,14 +5917,6 @@ def _get_pre_tool_call_directive_details(
     The first valid directive wins. Invalid or irrelevant hook return values
     are silently ignored so existing observer-only hooks are unaffected.
     """
-    allowed = getattr(_thread_tool_whitelist, "allowed", None)
-    if allowed is not None and tool_name not in allowed:
-        fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
-        return _PreToolCallDirective(
-            action="block",
-            message=fmt.format(tool_name=tool_name),
-        )
-
     from son_of_anton_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
 
     hook_results = invoke_lifecycle_hook(

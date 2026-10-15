@@ -463,9 +463,6 @@ def run_between_turns_mcp_refresh(
 
     Returns the names added to ``agent.tools`` (empty when frozen/unchanged).
     """
-    if getattr(agent, "_skip_mcp_refresh", False):
-        return set()
-
     # Count EVERY turn (not only ones with MCP tools registered) so a server
     # that connects on turn 7 is outside a 3-turn window.
     turns_seen = int(getattr(agent, "_mcp_refresh_turns_seen", 0) or 0)

@@ -2035,7 +2035,6 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("title_generation", "Title generation", "session titles"),
     ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
     ("skills_hub", "Skills hub", "skills search/install"),
-    ("curator", "Curator", "skill-usage review pass"),
 ]
 
 # Special non-auxiliary task surfaced in the same picker: subagent delegation.
