@@ -132,6 +132,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", busy_handler="sendnow"),
     CommandDef("sendall", "Steer the running turn onto every queued message at once", "Session",
                busy_policy="dispatch", busy_handler="sendall"),
+    CommandDef("cancel", "Pick queued messages to drop before they are sent", "Session",
+               cli_only=True),
     CommandDef("goal", "Set a standing goal Son of Anton works on across turns until achieved", "Session",
                args_hint="[text | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
                busy_policy="dispatch", busy_handler="goal"),
@@ -324,7 +326,7 @@ HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
         "compact", "context", "ctx", "status",
     ),
     "Background & Automation": (
-        "background", "bg", "btw", "agents", "tasks", "sendnow", "sendall",
+        "background", "bg", "btw", "agents", "tasks", "sendnow", "sendall", "cancel",
         "goal", "subgoal", "heartbeat", "hb", "refine", "loop", "proactive",
         "journey", "learning", "memory-graph",
     ),

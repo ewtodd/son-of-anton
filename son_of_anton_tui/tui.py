@@ -870,6 +870,9 @@ if _TEXTUAL_AVAILABLE:
             # are dispatched after the turn unless /sendnow redirects the live
             # turn onto one of them first.
             self._queued_items: list[str] = []
+            # The queue while the /cancel picker is open: out of the queue so
+            # a turn that ends meanwhile cannot send what is being dropped.
+            self._held_for_cancel: Optional[list] = None
             # Dispatch chains in flight (a turn/command plus the follow-ups and
             # backend work it dispatches after itself). Input arriving while a
             # chain runs queues behind it instead of starting a second chain:
@@ -1466,11 +1469,12 @@ if _TEXTUAL_AVAILABLE:
             body.append("\n")
             messages = sum(1 for item in items if not _runs_locally(str(item)))
             if messages > 1:
-                body.append("/sendnow sends the oldest · /sendall sends all", style="dim")
+                hint = "/sendnow sends the oldest · /sendall sends all"
             elif messages == 1:
-                body.append("/sendnow sends this now" if len(items) == 1 else "/sendnow sends the message now", style="dim")
+                hint = "/sendnow sends this now" if len(items) == 1 else "/sendnow sends the message now"
             else:
-                body.append("commands run when this turn ends", style="dim")
+                hint = "commands run when this turn ends"
+            body.append(hint + " · /cancel drops", style="dim")
             strip.update(body)
             strip.display = True
 
@@ -1888,6 +1892,9 @@ if _TEXTUAL_AVAILABLE:
             elif head == "/sendall":
                 self._send_queued_now(send_all=True)
                 return
+            elif head == "/cancel":
+                self._open_cancel_picker()
+                return
 
             if self._busy or self._dispatch_chains:
                 # The agent is mid-turn (or between the turns of a running
@@ -1903,6 +1910,40 @@ if _TEXTUAL_AVAILABLE:
                 self._update_status()
                 return
             self._start_dispatch_chain(self._dispatch(value))
+
+        def _open_cancel_picker(self) -> None:
+            """``/cancel``: check the queued messages to drop; the rest stay queued.
+
+            The queue is held while the picker is open, so a turn that ends
+            meanwhile cannot send a message the user is about to drop. What is
+            kept goes back in front, in order, and runs as it would have.
+            """
+            if not self._queued_items:
+                self._note("nothing queued", muted=True)
+                return
+            held = list(self._queued_items)
+            self._queued_items = []
+            self._held_for_cancel = held
+            self._update_status()
+            room = max(20, self._feed_width() - 12)
+            rows = []
+            for index, item in enumerate(held):
+                preview = " ".join(str(item).split())
+                if len(preview) > room:
+                    preview = preview[: room - 1] + "…"
+                rows.append((str(index), Text(preview)))
+
+            def _picked(result: Any) -> None:
+                drop = {int(key) for key in (result or [])}
+                self._held_for_cancel = None
+                self._queued_items = [item for index, item in enumerate(held) if index not in drop] + self._queued_items
+                if drop:
+                    self._note(f"dropped {len(drop)} queued message{'s' if len(drop) != 1 else ''}", muted=True)
+                self._update_status()
+                self._dispatch_idle_work()
+
+            self._modal_open = True
+            self._push(MultiChoiceModal("Drop queued messages", rows), _picked)
 
         def _redirect_into_turn(self, payload: str) -> bool:
             """Ask the live agent to absorb ``payload`` as a user correction.
@@ -2069,6 +2110,9 @@ if _TEXTUAL_AVAILABLE:
         async def _after_dispatch(self) -> None:
             self._schedule_refresh()
             if self.backend is None:
+                return
+            if self._held_for_cancel is not None:
+                # The /cancel picker holds the queue; closing it dispatches.
                 return
             pending = self.backend.drain_pending_input()
             # Follow-ups the user queued while the turn ran go first; backend

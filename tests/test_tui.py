@@ -1240,6 +1240,77 @@ def test_queued_commands_never_ride_a_redirect(backend) -> None:
     asyncio.run(run())
 
 
+def test_cancel_picks_queued_messages_to_drop(backend) -> None:
+    """``/cancel`` opens a picker over the queue; checked messages are dropped.
+
+    Esc keeps everything. The queue is held while the picker is open, so a
+    turn that ends meanwhile sends nothing until the pick is made, and then
+    only what was kept, in order.
+    """
+    _textual()
+    b, _rec = backend
+    b.detach()
+    released = threading.Event()
+    sent: list = []
+
+    def fake_chat(message, images=None):
+        sent.append(message)
+        if message == "long task":
+            released.wait(10)
+        return "done"
+
+    b.chat = fake_chat
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp(backend=b)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.3)
+            prompt = app.query_one("#input")
+            prompt.focus()
+
+            async def submit(text: str) -> None:
+                prompt.text = text
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+
+            await submit("/cancel")
+            assert not isinstance(app.screen, _tui.MultiChoiceModal), "nothing queued, no picker"
+
+            await submit("long task")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and app._busy != "turn":
+                await pilot.pause(0.05)
+            for text in ("first", "second", "third"):
+                await submit(text)
+            assert "/cancel drops" in app.query_one("#queued-strip").content.plain
+
+            await submit("/cancel")
+            assert isinstance(app.screen, _tui.MultiChoiceModal)
+            await pilot.press("escape")
+            await pilot.pause(0.2)
+            assert app._queued_items == ["first", "second", "third"], "esc must keep the queue"
+
+            await submit("/cancel")
+            assert isinstance(app.screen, _tui.MultiChoiceModal)
+            assert app._queued_items == [], "the queue is held while the picker is open"
+            # The turn ends while the picker is open: nothing may be sent yet.
+            released.set()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and app._busy is not None:
+                await pilot.pause(0.05)
+            await pilot.pause(0.3)
+            assert sent == ["long task"], sent
+
+            app.screen.query_one("#choices").select("1")
+            await pilot.press("enter")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and len(sent) < 3:
+                await pilot.pause(0.05)
+            assert sent == ["long task", "first", "third"], sent
+
+    asyncio.run(run())
+
+
 def test_after_dispatch_runs_queued_follow_ups_before_backend_work(backend) -> None:
     """User follow-ups queued during a turn preempt backend-scheduled work.
 

@@ -9436,6 +9436,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Mid-run this steers every queued message into the live turn;
             # idle there is nothing to steer.
             _cprint("  Nothing queued — no turn is running.")
+        elif canonical == "cancel":
+            # The TUI opens a picker over its queue before dispatch; reaching
+            # here means there is no queue to pick from.
+            _cprint("  Nothing queued.")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
         elif canonical == "refine":
