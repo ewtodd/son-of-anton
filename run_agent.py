@@ -3833,7 +3833,7 @@ class AIAgent:
         warming context for the next turn) in one shot.
 
         Uses ``original_user_message`` rather than ``user_message``
-        because the latter may carry injected skill content that bloats
+        because the latter may carry injected API-only content that bloats
         or breaks provider queries.
 
         Interrupted turns are skipped entirely (#15218).  A partial

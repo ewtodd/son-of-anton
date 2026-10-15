@@ -188,7 +188,7 @@ TOOL_CATEGORIES = {
     "web": {
         "name": "Web Search & Extract",
         "setup_title": "Select Search Provider",
-        "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need a premium provider.",
+        "setup_note": "A free DuckDuckGo search provider is also included — skip this if you don't need a premium provider.",
         "icon": "🔍",
         # Per-provider rows are injected at runtime from
         # plugins.web.<vendor>.provider via _plugin_web_search_providers()
@@ -633,7 +633,7 @@ def _get_platform_tools(
     agent_cfg = config.get("agent") or {}
     disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
     if disabled_toolsets:
-        from agent.skill_utils import parse_config_string_list
+        from utils import parse_config_string_list
 
         disabled_set = {
             name.strip() for name in parse_config_string_list(disabled_toolsets) if name.strip()
@@ -752,7 +752,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     if isinstance(agent_cfg, dict):
         disabled_toolsets = agent_cfg.get("disabled_toolsets")
         if disabled_toolsets:
-            from agent.skill_utils import parse_config_string_list
+            from utils import parse_config_string_list
 
             parsed_disabled = parse_config_string_list(disabled_toolsets)
             newly_enabled = enabled_toolset_keys - preserved_entries

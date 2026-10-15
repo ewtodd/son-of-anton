@@ -83,7 +83,6 @@ _PLUGIN_REFERENCE_PATTERN = re.compile(
 
 TRAILING_PUNCTUATION = ",.;!?"
 _SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh")
-_SENSITIVE_SON_OF_ANTON_DIRS = (Path("skills") / ".hub",)
 _SENSITIVE_HOME_FILES = (
     Path(".ssh") / "authorized_keys",
     Path(".ssh") / "id_rsa",
@@ -467,7 +466,6 @@ def _ensure_reference_path_allowed(path: Path) -> None:
     blocked_exact = {home / rel for rel in _SENSITIVE_HOME_FILES}
     blocked_exact.add(son_of_anton_home / ".env")
     blocked_dirs = [home / rel for rel in _SENSITIVE_HOME_DIRS]
-    blocked_dirs.extend(son_of_anton_home / rel for rel in _SENSITIVE_SON_OF_ANTON_DIRS)
 
     if path in blocked_exact:
         raise ValueError("path is a sensitive credential file and cannot be attached")
@@ -477,7 +475,7 @@ def _ensure_reference_path_allowed(path: Path) -> None:
             path.relative_to(blocked_dir)
         except ValueError:
             continue
-        raise ValueError("path is a sensitive credential or internal Son of Anton path and cannot be attached")
+        raise ValueError("path is a sensitive credential path and cannot be attached")
 
     # Anchor to the canonical read deny-list (agent/file_safety.get_read_block_error),
     # the single source of truth used by the file/terminal read path. The narrow

@@ -18,8 +18,8 @@ _MAX_CHANGED_PATHS_IN_NUDGE = 8
 # Non-code file extensions whose edits carry no verifiable runtime behavior:
 # documentation, prose, and data/markup that no test/build exercises. When a
 # turn touches ONLY these, verify-on-stop has nothing to check, so the nudge is
-# suppressed (this is fix "C" for the doc/markdown/skill false-positive — a
-# SKILL.md or README edit must never demand a /tmp verification script). A turn
+# suppressed (this is fix "C" for the doc/markdown false-positive — a
+# README edit must never demand a /tmp verification script). A turn
 # that edits any non-listed path (a real source/code/config file) still nudges.
 _NON_CODE_VERIFY_EXTENSIONS = frozenset(
     {
@@ -238,7 +238,7 @@ def build_verify_on_stop_nudge(
     max_attempts: int = 2,
 ) -> str | None:
     """Return a synthetic follow-up when edited code lacks fresh verification."""
-    # Drop documentation/prose paths (markdown, skills, README, LICENSE, ...) —
+    # Drop documentation/prose paths (markdown, README, LICENSE, ...) —
     # they carry no verifiable behavior, so a turn that touched only those has
     # nothing to verify and must not nudge.
     paths = sorted({str(p) for p in _filter_verifiable_paths(changed_paths)})

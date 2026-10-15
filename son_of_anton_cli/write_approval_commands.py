@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
-"""Shared handlers for the /memory and /skills write-approval subcommands.
+"""Shared handlers for the /memory write-approval subcommands.
 
 Both the interactive CLI (``cli.py``) and the gateway (``gateway/run.py``) call
-into this module so the pending-review UX (list / approve / reject / diff /
-mode) lives in one place. Each caller owns only its surface concerns:
-formatting the returned text and, for the gateway, persisting config + evicting
-the cached agent on a mode change.
+into this module so the pending-review UX (list / approve / reject / mode)
+lives in one place. Each caller owns only its surface concerns: formatting the
+returned text and, for the gateway, persisting config + evicting the cached
+agent on a mode change.
 
 Every public handler returns a plain text string suitable for both a terminal
-and a chat message. Skill diffs are intentionally NOT inlined here — the
-``diff`` handler returns the full diff for the CLI pager, but on a messaging
-platform the gateway truncates it and points the user at the dashboard / file.
+and a chat message.
 """
 
 from __future__ import annotations
 
-import json
 from typing import List, Optional
 
 from tools import write_approval as wa
@@ -36,14 +33,10 @@ def _fmt_pending_list(subsystem: str) -> str:
         return f"No pending {subsystem} writes."
     lines = [f"Pending {subsystem} writes ({len(records)}):"]
     for r in records:
-        origin = r.get("origin", "foreground")
-        tag = " [auto]" if origin == "background_review" else ""
-        lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
+        lines.append(f"  {r['id']}  {r.get('summary', '')}")
     where = "/{s} approve <id>".format(s=subsystem)
     lines.append("")
     lines.append(f"Apply: {where}   Reject: /{subsystem} reject <id>")
-    if subsystem == wa.SKILLS:
-        lines.append("Review full diff: /skills diff <id>")
     return "\n".join(lines)
 
 
@@ -58,10 +51,10 @@ def handle_pending_subcommand(
     memory_store=None,
     set_mode_fn=None,
 ) -> Optional[str]:
-    """Dispatch a /memory or /skills subcommand.
+    """Dispatch a /memory subcommand.
 
     Args:
-        subsystem: ``memory`` or ``skills``.
+        subsystem: ``memory``.
         args: tokens after the slash command (e.g. ``["approve", "a1b2"]``).
         memory_store: live MemoryStore for applying approved memory writes
             (CLI passes ``self.agent._memory_store``; gateway applies against a
@@ -71,11 +64,10 @@ def handle_pending_subcommand(
             this; CLI uses its own ``save_config_value`` and passes a closure).
 
     Returns a text string to show the user. Returns None when the args are not
-    a write-approval subcommand (caller falls through to its other handling,
-    e.g. /skills search).
+    a write-approval subcommand (caller falls through to its other handling).
     """
     if not args:
-        # Bare /memory or /skills with no sub → show pending + gate state.
+        # Bare /memory with no sub → show pending + gate state.
         return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem)
 
     sub = args[0].lower()
@@ -89,9 +81,6 @@ def handle_pending_subcommand(
 
     if sub in {"reject", "deny", "drop"}:
         return _reject(subsystem, rest)
-
-    if sub == "diff" and subsystem == wa.SKILLS:
-        return _diff(rest)
 
     if sub in {"approval", "mode"}:  # 'mode' kept as a back-compat alias
         return _set_approval(subsystem, rest, set_mode_fn)
@@ -141,16 +130,13 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
 def _apply_one(subsystem: str, rec, memory_store):
     payload = rec.get("payload", {})
     try:
-        if subsystem == wa.MEMORY:
-            if memory_store is None:
-                return False, "memory store unavailable"
-            from tools.memory_tool import apply_memory_pending
-            result = apply_memory_pending(payload, memory_store)
-            return bool(result.get("success")), result.get("error", "")
-        else:
-            from tools.skill_manager_tool import apply_skill_pending
-            result = json.loads(apply_skill_pending(payload))
-            return bool(result.get("success")), result.get("error", "")
+        if subsystem != wa.MEMORY:
+            return False, f"cannot apply a pending {subsystem} write"
+        if memory_store is None:
+            return False, "memory store unavailable"
+        from tools.memory_tool import apply_memory_pending
+        result = apply_memory_pending(payload, memory_store)
+        return bool(result.get("success")), result.get("error", "")
     except Exception as e:
         return False, str(e)
 
@@ -168,17 +154,6 @@ def _reject(subsystem: str, rest: List[str]) -> str:
     if wa.discard_pending(subsystem, target):
         return f"Rejected pending {subsystem} write '{target}'."
     return f"No pending {subsystem} write with id '{target}'."
-
-
-def _diff(rest: List[str]) -> str:
-    if not rest:
-        return "Usage: /skills diff <id>"
-    rec = wa.get_pending(wa.SKILLS, rest[0])
-    if not rec:
-        return f"No pending skill write with id '{rest[0]}'."
-    diff = wa.skill_pending_diff(rec)
-    header = f"# Pending skill write {rec['id']}: {rec.get('summary', '')}\n"
-    return header + "\n" + diff
 
 
 def _set_approval(subsystem: str, rest: List[str], set_mode_fn) -> str:

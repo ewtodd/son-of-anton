@@ -3196,7 +3196,7 @@ class ShellFileOperations(FileOperations):
         cmd_parts = ["grep", "-rnHE"]  # -H forces filenames; -E matches rg regex behavior
         
         # Exclude hidden directories (matching ripgrep's default behavior).
-        # This prevents searching inside .hub/index-cache/, .git/, etc.
+        # This prevents searching inside .git/, .venv/, etc.
         cmd_parts.append("--exclude-dir='.*'")
         
         # Add context if requested

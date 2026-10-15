@@ -1113,7 +1113,6 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
     record = wa.stage_write(
         wa.MEMORY, payload,
         summary=f"{summary}: {detail[:120]}",
-        origin=wa.current_origin(),
     )
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
@@ -1166,7 +1165,6 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]],
     record = wa.stage_write(
         wa.MEMORY, payload,
         summary=f"{summary}: {detail[:120]}",
-        origin=wa.current_origin(),
     )
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],

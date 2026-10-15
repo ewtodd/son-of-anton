@@ -581,8 +581,8 @@ class BaseEnvironment(ABC):
     def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
         """Return profile-scoped names that must not persist in the snapshot.
 
-        The set is monotonic for the environment lifetime. A skill/config
-        allowlist can be cleared after a value was captured; retaining the
+        The set is monotonic for the environment lifetime. A config
+        allowlist can change after a value was captured; retaining the
         exclusion prevents that old value from becoming visible to a later
         session through the shared snapshot.
         """

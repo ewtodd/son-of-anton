@@ -159,12 +159,6 @@ class TextualBackend(SonOfAntonCLI):
             _banner.cprint = lambda text: _tui_cprint(text)  # type: ignore[assignment]
         except Exception:
             pass
-        try:
-            from son_of_anton_cli import callbacks as _callbacks
-
-            _callbacks.cprint = lambda text: _tui_cprint(text)  # type: ignore[assignment]
-        except Exception:
-            pass
 
         class _TuiChatConsole:
             """Drop-in for ``cli.ChatConsole``: renderables go straight to the feed."""
@@ -292,8 +286,6 @@ class TextualBackend(SonOfAntonCLI):
         self._command_running = False
         self._command_blocks_input = False
         self._command_status = ""
-        self._secret_state = None
-        self._secret_deadline = 0
         self._attached_images = []
         self._image_counter = 0
         self._model_picker_state = getattr(self, "_model_picker_state", None)
@@ -366,7 +358,6 @@ class TextualBackend(SonOfAntonCLI):
         for setter in (
             "set_sudo_password_callback",
             "set_approval_callback",
-            "set_secret_capture_callback",
         ):
             try:
                 getattr(_cli, setter)(None)
@@ -1010,51 +1001,3 @@ class TextualBackend(SonOfAntonCLI):
             return int(result)
         except (TypeError, ValueError):
             return None
-
-    def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
-        from son_of_anton_cli.config import save_env_value_secure
-        from son_of_anton_constants import display_son_of_anton_home
-
-        response_queue: "queue.Queue[Any]" = queue.Queue()
-        self._secret_state = {
-            "var_name": var_name,
-            "prompt": prompt,
-            "metadata": metadata or {},
-            "response_queue": response_queue,
-        }
-        self._secret_deadline = time.monotonic() + _MODAL_TIMEOUT
-        try:
-            ok, value = self._wait_for_queue(
-                response_queue, _MODAL_TIMEOUT, still_open=lambda: self._secret_state is not None
-            )
-        finally:
-            self._secret_state = None
-            self._secret_deadline = 0
-            self.emit("refresh")
-        if not ok:
-            self.emit("ansi", text="  ⏱ Timeout — secret capture cancelled")
-            return {
-                "success": True,
-                "reason": "timeout",
-                "stored_as": var_name,
-                "validated": False,
-                "skipped": True,
-                "message": "Secret setup timed out and was skipped.",
-            }
-        if not value:
-            self.emit("ansi", text="  ⏭ Secret entry skipped")
-            return {
-                "success": True,
-                "reason": "cancelled",
-                "stored_as": var_name,
-                "validated": False,
-                "skipped": True,
-                "message": "Secret setup was skipped.",
-            }
-        stored = save_env_value_secure(var_name, value)
-        self.emit("ansi", text=f"  ✓ Stored secret in {display_son_of_anton_home()}/.env as {var_name}")
-        return {
-            **stored,
-            "skipped": False,
-            "message": "Secret stored securely. The secret value was not exposed to the model.",
-        }

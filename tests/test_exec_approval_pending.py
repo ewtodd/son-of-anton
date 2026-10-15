@@ -23,7 +23,6 @@ def test_staged_exec_request_round_trips() -> None:
             "command": "rm -rf /tmp/x",
         },
         summary="run rm -rf /tmp/x",
-        origin="foreground",
         expires_at=time.time() + 300,
         chat_key="agent:main:signal:group:G",
     )
@@ -35,7 +34,7 @@ def test_staged_exec_request_round_trips() -> None:
 
 def test_first_decision_wins() -> None:
     record = wa.stage_write(
-        wa.EXEC, {"action": "exec"}, summary="x", origin="foreground"
+        wa.EXEC, {"action": "exec"}, summary="x"
     )
     decided = wa.decide_pending(wa.EXEC, record["id"], "session", decided_by="user")
     assert decided["decision"] == "session"
@@ -47,7 +46,7 @@ def test_first_decision_wins() -> None:
 
 def test_notified_stamp_is_written_once() -> None:
     record = wa.stage_write(
-        wa.EXEC, {"action": "exec"}, summary="x", origin="foreground"
+        wa.EXEC, {"action": "exec"}, summary="x"
     )
     assert wa.mark_pending_notified(wa.EXEC, record["id"]) is True
     first = wa.get_pending(wa.EXEC, record["id"])["notified_at"]
@@ -61,7 +60,6 @@ def test_expired_requests_are_pruned_and_dead() -> None:
         wa.EXEC,
         {"action": "exec"},
         summary="x",
-        origin="foreground",
         expires_at=time.time() - 1,
     )
     assert wa.prune_expired_pending(wa.EXEC) == 1

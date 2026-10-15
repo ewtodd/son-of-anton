@@ -6748,9 +6748,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             except Exception as exc:
                 logger.debug("SessionDB close error during handle sweep: %s", exc)
 
-    # -- Setup skill availability ----------------------------------------
-
-
     async def _await_adapter_cleanup_with_timeout(
         self, awaitable: Awaitable[Any], timeout: float
     ) -> bool:
@@ -14973,9 +14970,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if canonical == "memory":
             return await self._handle_memory_command(event)
 
-        if canonical == "skills":
-            return await self._handle_skills_command(event)
-
         if canonical == "init":
             # /init: rewrite the turn to a guidance-laden prompt and fall
             # through to normal agent processing so role alternation is
@@ -17071,7 +17065,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                 finally:
                                     # Evict the cached agent so the next turn
                                     # rebuilds its system prompt from current
-                                    # SOUL.md, memory, and skills.
+                                    # SOUL.md and memory.
                                     self._evict_cached_agent(session_key)
                                     if not _hyg_cleanup_deferred:
                                         await self._cleanup_agent_resources_off_loop(
@@ -18845,7 +18839,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 user_config, source, platform_key
             )
             agent_cfg = user_config.get("agent") or {}
-            from agent.skill_utils import parse_config_string_list
+            from utils import parse_config_string_list
 
             disabled_toolsets = parse_config_string_list(agent_cfg.get("disabled_toolsets")) or None
 
@@ -20626,7 +20620,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     error = result.get("error", "unknown error")
                     # All failure branches: a single, minimal, neutral marker.
                     # Do NOT mention "no STT provider configured", "setup
-                    # instructions", or the "son-of-anton-setup" skill, and do
+                    # instructions", or any setup guide, and do
                     # NOT claim a direct message was sent — those phrases get
                     # persisted in conversation history and poison every later
                     # turn, so the model keeps volunteering STT-setup advice
@@ -23628,7 +23622,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             user_config, source, platform_key
         )
         agent_cfg_local = user_config.get("agent") or {}
-        from agent.skill_utils import parse_config_string_list
+        from utils import parse_config_string_list
 
         disabled_toolsets = parse_config_string_list(agent_cfg_local.get("disabled_toolsets")) or None
 
@@ -25770,13 +25764,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 f"   Or use 'son-of-anton gateway run --replace' to auto-replace.\n"
             )
             return False
-
-    # Sync bundled skills on gateway start (fast -- skips unchanged)
-    try:
-        from tools.skills_sync import sync_skills
-        sync_skills(quiet=True)
-    except Exception:
-        pass
 
     # Centralized logging — agent.log (INFO+), errors.log (WARNING+),
     # and gateway.log (INFO+, gateway-component records only).

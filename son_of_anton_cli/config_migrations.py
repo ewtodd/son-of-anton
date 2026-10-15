@@ -401,7 +401,7 @@ def _migrate_to_25(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_29(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 28 → 29: rename memory/skills write_mode → write_approval ──
+    # ── Version 28 → 29: rename memory.write_mode → write_approval ──
     # The tri-state write_mode (on|off|approve) was replaced by a clear boolean
     # write_approval (default false = gate off, writes flow freely; true =
     # require approval). Only an explicit "approve" carried gating intent, so
@@ -415,7 +415,7 @@ def _migrate_to_29(results: Dict[str, Any], quiet: bool) -> None:
 
     config = read_raw_config()
     touched = False
-    for subsystem in ("memory", "skills"):
+    for subsystem in ("memory",):
         sub = config.get(subsystem)
         if not isinstance(sub, dict) or "write_mode" not in sub:
             continue
@@ -437,7 +437,7 @@ def _migrate_to_31(results: Dict[str, Any], quiet: bool) -> None:
     # ── Version 30 → 31: switch verify_on_stop OFF (one-time) ──
     # verify_on_stop defaulted to the "auto" sentinel (surface-aware: on for
     # interactive coding surfaces). In practice the verification narrative was
-    # more noise than signal — it even fired on doc/markdown/skill edits with
+    # more noise than signal — it even fired on doc/markdown edits with
     # nothing to verify. The new default is OFF. This migration switches
     # existing installs off ONCE, but only when the user never expressed an
     # explicit preference: we rewrite the value only if it's missing or still

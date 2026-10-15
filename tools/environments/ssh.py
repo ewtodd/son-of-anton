@@ -167,7 +167,7 @@ class SSHEnvironment(BaseEnvironment):
     def _ensure_remote_dirs(self) -> None:
         """Create base ~/.son-of-anton directory tree on remote in one SSH call."""
         base = f"{self._remote_home}/.son-of-anton"
-        dirs = [base, f"{base}/skills", f"{base}/credentials", f"{base}/cache"]
+        dirs = [base, f"{base}/credentials", f"{base}/cache"]
         cmd = self._build_ssh_command()
         cmd.append(quoted_mkdir_command(dirs))
         subprocess.run(
@@ -351,7 +351,7 @@ class SSHEnvironment(BaseEnvironment):
     def _ssh_bulk_download(self, dest: Path) -> None:
         """Download remote .son-of-anton/ as a tar archive."""
         # Tar from / with the full path so archive entries preserve absolute
-        # paths (e.g. home/user/.son-of-anton/skills/f.py), matching _pushed_hashes keys.
+        # paths (e.g. home/user/.son-of-anton/cache/web/f.md), matching _pushed_hashes keys.
         rel_base = f"{self._remote_home}/.son-of-anton".lstrip("/")
         ssh_cmd = self._build_ssh_command()
         ssh_cmd.append(f"tar cf - -C / {shlex.quote(rel_base)}")

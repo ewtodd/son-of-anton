@@ -962,7 +962,7 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     Three detectors run in order:
 
     * cross-profile — writes that hit another profile's
-      ``skills/plugins/cron/memories`` directory.
+      ``plugins/cron/memories`` directory.
     * sandbox-mirror (#32049) — writes that hit the
       ``…/sandboxes/<backend>/<task>/home/.son-of-anton/…`` mirror created by a
       non-local terminal backend, where the host Son of Anton process never
@@ -992,7 +992,7 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
         # plus the write_denied list still apply.
         return None
 
-    # Resolve via the task's cwd so a relative ``skills/foo/SKILL.md``
+    # Resolve via the task's cwd so a relative ``memories/MEMORY.md``
     # in a session that cd'd into ``~/.son-of-anton/profiles/other/`` is
     # classified against the right base.
     try:
@@ -2076,7 +2076,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
     ``cross_profile`` opts out of the soft cross-Son of Anton-profile guard. The
     guard fires only on writes that land in another profile's
-    skills/plugins/cron/memories directory; everything else is unaffected.
+    plugins/cron/memories directory; everything else is unaffected.
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
     """
@@ -2168,7 +2168,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     """Patch a file using replace mode or V4A patch format.
 
     ``cross_profile`` opts out of the soft cross-Son of Anton-profile guard for
-    targets under another profile's skills/plugins/cron/memories
+    targets under another profile's plugins/cron/memories
     directory. Same shape as ``write_file``'s flag.
     """
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
@@ -2184,8 +2184,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         from tools.path_security import has_traversal_component
         def _reject_v4a_traversal(v4a_path: str) -> str | None:
             # V4A path headers come from patch CONTENT, not the explicit
-            # ``path=`` arg — so they're more attacker-influenceable (skill
-            # content, web extract, prompt injection). Reject ``..`` traversal
+            # ``path=`` arg — so they're more attacker-influenceable (web
+            # extract, prompt injection). Reject ``..`` traversal
             # in V4A headers: a legitimate multi-file patch from a single cwd
             # can always emit absolute paths or paths relative to the agent's
             # cwd without ``..``. The explicit ``path=`` arg is unchanged
@@ -2521,7 +2521,7 @@ WRITE_FILE_SCHEMA = {
             "content": {"type": "string", "description": "Complete content to write to the file"},
             "cross_profile": {
                 "type": "boolean",
-                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Son of Anton profile's skills/plugins/cron/memories — by default these writes are blocked with a warning because they affect a different profile than the one this session is running under.",
+                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Son of Anton profile's plugins/cron/memories — by default these writes are blocked with a warning because they affect a different profile than the one this session is running under.",
                 "default": False,
             },
         },
@@ -2572,7 +2572,7 @@ PATCH_SCHEMA = {
             },
             "cross_profile": {
                 "type": "boolean",
-                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Son of Anton profile's skills/plugins/cron/memories.",
+                "description": "Opt out of the cross-profile soft guard. Defaults to false. Set true ONLY after explicit user direction to edit another Son of Anton profile's plugins/cron/memories.",
                 "default": False,
             },
         },

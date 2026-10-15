@@ -1312,7 +1312,7 @@ def load_soul_md(
     knows its own home from its session_db path). Without it, resolution is
     ambient — which on a thread that lost the SON_OF_ANTON_HOME ContextVar falls
     back to the launch home and reads the wrong profile's SOUL.md (#50233,
-    same class as the skills-index leak fixed in #86313).
+    same class as the profile-prompt leak fixed in #86313).
     """
     try:
         from son_of_anton_cli.config import ensure_son_of_anton_home

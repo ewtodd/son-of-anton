@@ -23,7 +23,6 @@ def _stage(chat_key: str = "key-a", command: str = "rm -rf /tmp/x") -> dict:
             "description": "dangerous rm",
         },
         summary="dangerous rm",
-        origin="foreground",
         expires_at=time.time() + 300,
         chat_key=chat_key,
     )

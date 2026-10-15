@@ -1,6 +1,6 @@
 """Shared curses-based UI components for Son of Anton CLI.
 
-Used by `son-of-anton tools` and `son-of-anton skills` for interactive checklists.
+Used by `son-of-anton tools` for interactive checklists.
 Provides a curses multi-select with keyboard navigation, plus a
 text-based numbered fallback for terminals without curses support.
 """

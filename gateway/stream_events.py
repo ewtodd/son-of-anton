@@ -20,8 +20,7 @@ These are intentionally plain frozen dataclasses — no behavior, no platform
 knowledge, no I/O.  They are cheap to construct on the agent's worker thread and
 safe to hand across the thread/async boundary into the consumer queue.
 
-Design constraints (see son-of-anton-dev skill — message-flow + cache
-invariants):
+Design constraints (see AGENTS.md — message-flow + cache invariants):
   * Events describe *transport*, never *context*.  Nothing here is persisted to
     conversation history; what the gateway chooses to "eat" (e.g. tool chrome on
     a platform that can't render it) must never diverge from the bytes stored in

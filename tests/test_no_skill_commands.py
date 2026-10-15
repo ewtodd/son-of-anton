@@ -2,9 +2,11 @@
 
 An installed skill used to become ``/<skill-name>`` (and stacked
 ``/a /b ...`` invocations, bundles, ``/learn``): typing it expanded the turn
-into the skill's whole body. That surface is gone. A slash word that happens
-to name a skill on disk is now just an unknown command — nothing is injected
-into the conversation, and no command list offers it.
+into the skill's whole body. That surface is gone, and so is ``/skills``
+(hub search/install, staged skill-write review) with the code behind it. A
+slash word that happens to name a skill on disk is now just an unknown
+command — nothing is injected into the conversation, and no command list
+offers it.
 """
 
 from __future__ import annotations
@@ -63,18 +65,35 @@ def test_the_command_palette_never_offers_a_skill(cli) -> None:
     assert "/demo-skill" not in offered
 
 
-# Modules that only existed to invoke skills for the user.
+# Modules that only existed to invoke, install, sync, scan or manage skills.
 REMOVED_MODULES = (
     "agent.skill_commands",
     "agent.skill_bundles",
     "agent.skill_preprocessing",
     "agent.learn_prompt",
     "agent.prompt_cache_boundary",
+    "agent.skill_utils",
+    "tools.skills_tool",
+    "tools.skill_manager_tool",
+    "tools.skills_hub",
+    "tools.skills_sync",
+    "tools.skills_guard",
+    "tools.skills_ast_audit",
+    "tools.skillevaluator_scan",
+    "tools.skill_usage",
+    "tools.skill_ledger",
+    "tools.skill_linter",
+    "tools.skill_provenance",
+    "son_of_anton_cli.skills_hub",
+    "son_of_anton_cli.skills_config",
+    "son_of_anton_cli.subcommands.skills",
+    "son_of_anton_cli.callbacks",
+    "son_of_anton_cli.prompt_size",
 )
 
 
 @pytest.mark.parametrize("module", REMOVED_MODULES)
-def test_skill_invocation_modules_are_gone(module: str) -> None:
+def test_skill_modules_are_gone(module: str) -> None:
     import importlib
 
     try:
@@ -84,8 +103,10 @@ def test_skill_invocation_modules_are_gone(module: str) -> None:
     raise AssertionError(f"{module} is importable again")
 
 
-@pytest.mark.parametrize("name", ("bundles", "learn", "reload-skills", "reload_skills"))
-def test_no_command_invokes_or_rescans_skills(name: str) -> None:
+@pytest.mark.parametrize(
+    "name", ("bundles", "learn", "reload-skills", "reload_skills", "skills")
+)
+def test_no_command_invokes_rescans_or_manages_skills(name: str) -> None:
     from son_of_anton_cli.commands import resolve_command
 
     assert resolve_command(name) is None, f"/{name} is registered again"

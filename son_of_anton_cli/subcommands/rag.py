@@ -1,7 +1,7 @@
 """``son-of-anton rag`` subcommand parser (retrieval index management).
 
 The handler is injected so this module does not import ``main`` (cycle
-avoidance), matching the cron/skills pattern.
+avoidance), matching the cron pattern.
 """
 
 from __future__ import annotations

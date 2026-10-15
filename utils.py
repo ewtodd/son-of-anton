@@ -192,7 +192,7 @@ def atomic_write_text(
     the process crashes or is interrupted.  ``atomic_replace`` preserves
     symlinks and handles cross-device / busy-file fallbacks.
 
-    Used by the memory store, skill manager, and agent importer so that
+    Used by the memory store and agent importer so that
     every destructive file rewrite in the codebase shares one implementation.
 
     Args:
@@ -203,8 +203,8 @@ def atomic_write_text(
             this a root-run rewrite of a user-owned file flips its owner and
             tightens its mode.  The mode is applied to the temp fd *before*
             the replace, so the file never transits through 0600.  Off by
-            default: the historical callers (memory store, skill manager,
-            cron) own their 0600-is-fine files.
+            default: the historical callers (memory store, cron) own their
+            0600-is-fine files.
         create_mode: Permission bits to apply when the target does not yet
             exist (otherwise the new file keeps mkstemp's 0600).  Never
             applied to an existing file.
@@ -582,6 +582,34 @@ def load_toml_file(path: Union[str, Path]) -> Any:
         return None
     with path.open("r", encoding="utf-8") as handle:
         return fast_toml_load(handle)
+
+
+def parse_config_string_list(value: Any) -> list[str]:
+    """Normalize a config value that may hold a JSON-array string into a list.
+
+    ``son_of_anton config set`` and JSON-mode editor saves store lists as quoted
+    JSON strings (``'["a","b"]'`` or the Python-literal ``"['a']"``). Treating
+    such a string as a single name makes a curated disabled list silently
+    filter nothing (#86661); parsing it restores the intended list. A scalar
+    string still means one name (#13026).
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("["):
+            import ast
+
+            try:
+                parsed = ast.literal_eval(stripped)
+            except (ValueError, SyntaxError):
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        return [value]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [str(item) for item in value]
+    return []
 
 
 # ─── Environment Variable Helpers ─────────────────────────────────────────────

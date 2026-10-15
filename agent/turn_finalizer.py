@@ -5,8 +5,7 @@ decomposition campaign (``~/.son-of-anton/plans/god-file-decomposition.md``, Pha
 step 4 — the post-loop ``TurnFinalizer`` seam). ``run_conversation``'s tail
 (everything after the main tool-calling ``while`` loop) is lifted here verbatim:
 budget-exhaustion summary, trajectory save, session persist, turn diagnostics,
-response transforms, result-dict assembly, steer drain, and the memory/skill
-review trigger.
+response transforms, result-dict assembly, and steer drain.
 
 Behavior-neutral: the body is moved unchanged. All ``agent.*`` side effects fire
 exactly as before; only the post-loop *locals* are passed in as keyword args, and
@@ -272,7 +271,7 @@ def finalize_turn(
                 agent._db_flush_scan_prefix = None
 
         # The model has completed its request, so replace API-local
-        # voice/model/skill guidance with the clean user input before writing the
+        # voice/model guidance with the clean user input before writing the
         # final durable snapshot and returning the continuation history. Earlier
         # turn-start flushes use the DB-only override because their messages are
         # still needed for the API request; this finalizer runs after that request

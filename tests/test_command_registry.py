@@ -11,7 +11,7 @@ from son_of_anton_cli.commands import (
     resolve_command,
 )
 
-VALID_CATEGORIES = {"Session", "Configuration", "Tools & Skills", "Info", "Exit"}
+VALID_CATEGORIES = {"Session", "Configuration", "Tools", "Info", "Exit"}
 
 
 def test_registry_is_nonempty_and_typed() -> None:

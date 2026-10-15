@@ -676,10 +676,8 @@ declared by the NixOS or Home Manager module, `systemctl` runs the service, and
 that module's `settings` owns `config.toml`. `gateway` has two actions, `run`
 and `status`.
 <!---->
-(`skills install` is the one leftover: it still copies a skill into the
-skills directory, but nothing invokes skills any more, and it goes when the
-Skills Hub does. MCP servers are declared under `mcp_servers` in that same
-`settings`; nothing installs or adds one at runtime.)
+MCP servers are declared under `mcp_servers` in that same `settings`; nothing
+installs or adds one at runtime.
 <!---->
 ## Commands
 <!---->
@@ -733,8 +731,9 @@ CPython using the old `.pyc`, because invalidation is on mtime plus size. Clear
 <!---->
 Son of Anton is a hard fork of
 [Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
-v0.20.5 (upstream commit `fcbd1076a9`), stripped to an always-on daemon. The
-learning loop — skills, memory, session search, cron — is upstream's.
+v0.20.5 (upstream commit `fcbd1076a9`), stripped to an always-on daemon.
+Memory, session search and cron are upstream's; upstream's skills system was
+removed (2026-10-15).
 <!---->
 The Autophysicist mode began as a port of
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern)

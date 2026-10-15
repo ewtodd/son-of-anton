@@ -379,7 +379,7 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     else:
         disabled = ["cronjob", "messaging", "clarify"]
     agent_cfg = (cfg or {}).get("agent") or {}
-    from agent.skill_utils import parse_config_string_list
+    from utils import parse_config_string_list
 
     user_disabled = parse_config_string_list(agent_cfg.get("disabled_toolsets"))
     for name in user_disabled:
@@ -1435,7 +1435,7 @@ def _get_son_of_anton_home() -> Path:
     Cron is per-profile by design (#4707): the in-process ticker runs inside a
     profile-scoped gateway, so resolving the active SON_OF_ANTON_HOME at call time
     means a profile's jobs are stored AND executed under that profile's home
-    (its .env, config.toml, scripts, skills). Do not freeze this at import or
+    (its .env, config.toml, scripts). Do not freeze this at import or
     anchor it at the shared default root — either re-breaks profile isolation.
     """
     return _son_of_anton_home or get_son_of_anton_home()
@@ -4749,9 +4749,6 @@ def run_job(
     #     and SON_OF_ANTON_SESSION_CHAT_ID to populate watcher_platform / chat_id,
     #     which would route completion notifications to the origin chat
     #     instead of via SON_OF_ANTON_CRON_AUTO_DELIVER_* below.
-    #   - tools/skills_tool.py + agent/prompt_builder.py: per-platform
-    #     skill-disable lists and the system-prompt cache key both consume
-    #     SON_OF_ANTON_SESSION_PLATFORM.
     #   - tools/send_message_tool.py: mirror source labelling and the
     #     send_message gate read SON_OF_ANTON_SESSION_PLATFORM.
     # Cron output delivery itself reads job["origin"] directly via
@@ -5422,9 +5419,9 @@ def run_job(
                 )
 
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        # Preserve scheduler-scoped ContextVar state (for example skill-declared
-        # env passthrough registrations) when the cron run hops into the worker
-        # thread used for inactivity timeout monitoring.
+        # Preserve scheduler-scoped ContextVar state (for example the session
+        # vars set above) when the cron run hops into the worker thread used
+        # for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
         # Tag this fire and time the run_conversation call for the usage_audit.jsonl entry.
         _audit_fire_id = uuid.uuid4().hex

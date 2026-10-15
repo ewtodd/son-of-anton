@@ -1,19 +1,17 @@
 """File passthrough registry for remote terminal backends.
 
 Remote backends (e.g. SSH) create sandboxes with no host files.
-This module ensures that credential files, skill directories, and host-side
-cache directories (documents, images, audio, screenshots) are mounted or
-synced into those sandboxes so the agent can access them.
+This module ensures that credential files and host-side cache directories
+(documents, images, audio, screenshots) are mounted or synced into those
+sandboxes so the agent can access them.
 
-**Credentials and skills** — session-scoped registry fed by skill declarations
-(``required_credential_files``) and user config (``terminal.credential_files``).
+**Credentials** — user config (``terminal.credential_files``).
 
 **Cache directories** — gateway-cached uploads, browser screenshots, TTS
 audio, and processed images.  Mounted read-only so the remote terminal can
 reference files the host side created (e.g. ``unzip`` an uploaded archive).
 
-Remote backends call :func:`get_credential_file_mounts`,
-:func:`get_skills_directory_mount` / :func:`iter_skills_files`, and
+Remote backends call :func:`get_credential_file_mounts` and
 :func:`get_cache_directory_mounts` / :func:`iter_cache_files` at sandbox
 creation time and before each command (for resync).
 """
@@ -23,32 +21,11 @@ from __future__ import annotations
 import logging
 import os
 import posixpath
-from contextvars import ContextVar
 from pathlib import Path
 from typing import Dict, List, Optional
 from son_of_anton_cli.config import cfg_get
 
-try:  # pragma: no cover - exercised via the fail-closed test below
-    from agent.file_safety import get_read_block_error
-except ImportError:  # noqa: F401 - sentinel consumed in register_credential_file
-    get_read_block_error = None  # type: ignore[assignment]
-
 logger = logging.getLogger(__name__)
-
-# Session-scoped list of credential files to mount.
-# Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.
-_registered_files_var: ContextVar[Dict[str, str]] = ContextVar("_registered_files")
-
-
-def _get_registered() -> Dict[str, str]:
-    """Get or create the registered credential files dict for the current context/session."""
-    try:
-        return _registered_files_var.get()
-    except LookupError:
-        val: Dict[str, str] = {}
-        _registered_files_var.set(val)
-        return val
-
 
 # Cache for config-based file list (loaded once per process).
 _config_files: List[Dict[str, str]] | None = None
@@ -57,120 +34,6 @@ _config_files: List[Dict[str, str]] | None = None
 def _resolve_son_of_anton_home() -> Path:
     from son_of_anton_constants import get_son_of_anton_home
     return get_son_of_anton_home()
-
-
-def register_credential_file(
-    relative_path: str,
-    container_base: str = "/root/.son-of-anton",
-) -> bool:
-    """Register a credential file for mounting into remote sandboxes.
-
-    *relative_path* is relative to ``SON_OF_ANTON_HOME`` (e.g. ``google_token.json``).
-    Returns True if the file exists on the host and was registered.
-
-    Security: rejects absolute paths and path traversal sequences (``..``).
-    The resolved host path must remain inside SON_OF_ANTON_HOME so that a malicious
-    skill cannot declare ``required_credential_files: ['../../.ssh/id_rsa']``
-    and exfiltrate sensitive host files into a container sandbox.
-
-    Containment alone is not sufficient, because SON_OF_ANTON_HOME is exactly where
-    the MASTER credential stores live. A skill legitimately needs its own
-    service token (``google_token.json``); it never needs ``.env`` (every
-    provider key), ``auth.json`` (all provider tokens and OAuth grants),
-    ``mcp-tokens/`` or the Bitwarden plaintext cache. Those are refused via
-    the canonical read deny-list (``agent.file_safety.get_read_block_error``)
-    — the same guard that stops the agent reading them with ``read_file``, so
-    the mount surface cannot hand a skill what the read surface denies it.
-    """
-    son_of_anton_home = _resolve_son_of_anton_home()
-
-    # Reject absolute paths — they bypass the SON_OF_ANTON_HOME sandbox entirely.
-    if os.path.isabs(relative_path):
-        logger.warning(
-            "credential_files: rejected absolute path %r (must be relative to SON_OF_ANTON_HOME)",
-            relative_path,
-        )
-        return False
-
-    host_path = son_of_anton_home / relative_path
-
-    # Resolve symlinks and normalise ``..`` before the containment check so
-    # that traversal like ``../. ssh/id_rsa`` cannot escape SON_OF_ANTON_HOME.
-    from tools.path_security import validate_within_dir
-
-    containment_error = validate_within_dir(host_path, son_of_anton_home)
-    if containment_error:
-        logger.warning(
-            "credential_files: rejected path traversal %r (%s)",
-            relative_path,
-            containment_error,
-        )
-        return False
-
-    resolved = host_path.resolve()
-    if not resolved.is_file():
-        logger.debug("credential_files: skipping %s (not found)", resolved)
-        return False
-
-    # Master credential stores are never mountable, even though they sit
-    # inside SON_OF_ANTON_HOME and therefore pass the containment check above.
-    # Fails CLOSED: if the canonical guard can't be consulted we refuse the
-    # mount rather than risk bind-mounting auth.json into a sandbox. The
-    # import lives at module top (no circular-import concern — file_safety is
-    # stdlib-only); the sentinel + logger.exception keep guard failures
-    # debuggable instead of silently swallowed (#67665).
-    if get_read_block_error is None:
-        logger.error(
-            "credential_files: refusing %r — agent.file_safety could not be "
-            "imported, so the master-store deny-list cannot be consulted",
-            relative_path,
-        )
-        return False
-    try:
-        denied = get_read_block_error(str(resolved))
-    except Exception:
-        logger.exception(
-            "credential_files: refusing %r — read guard raised", relative_path
-        )
-        return False
-    if denied:
-        logger.warning(
-            "credential_files: refused %r — it is a credential store the agent "
-            "is denied from reading; a skill may mount its own service token, "
-            "not the master key files",
-            relative_path,
-        )
-        return False
-
-    container_path = f"{container_base.rstrip('/')}/{relative_path}"
-    _get_registered()[container_path] = str(resolved)
-    logger.debug("credential_files: registered %s -> %s", resolved, container_path)
-    return True
-
-
-def register_credential_files(
-    entries: list,
-    container_base: str = "/root/.son-of-anton",
-) -> List[str]:
-    """Register multiple credential files from skill frontmatter entries.
-
-    Each entry is either a string (relative path) or a dict with a ``path``
-    key.  Returns the list of relative paths that were NOT found on the host
-    (i.e. missing files).
-    """
-    missing = []
-    for entry in entries:
-        if isinstance(entry, str):
-            rel_path = entry.strip()
-        elif isinstance(entry, dict):
-            rel_path = (entry.get("path") or entry.get("name") or "").strip()
-        else:
-            continue
-        if not rel_path:
-            continue
-        if not register_credential_file(rel_path, container_base):
-            missing.append(rel_path)
-    return missing
 
 
 def _load_config_files() -> List[Dict[str, str]]:
@@ -221,18 +84,10 @@ def _load_config_files() -> List[Dict[str, str]]:
 def get_credential_file_mounts() -> List[Dict[str, str]]:
     """Return all credential files that should be mounted into remote sandboxes.
 
-    Each item has ``host_path`` and ``container_path`` keys.
-    Combines skill-registered files and user config.
+    Each item has ``host_path`` and ``container_path`` keys, from the user's
+    ``terminal.credential_files`` config.
     """
     mounts: Dict[str, str] = {}
-
-    # Skill-registered files
-    for container_path, host_path in _get_registered().items():
-        # Re-check existence (file may have been deleted since registration)
-        if Path(host_path).is_file():
-            mounts[container_path] = host_path
-
-    # Config-based files
     for entry in _load_config_files():
         cp = entry["container_path"]
         if cp not in mounts and Path(entry["host_path"]).is_file():
@@ -242,63 +97,6 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
         {"host_path": hp, "container_path": cp}
         for cp, hp in mounts.items()
     ]
-
-
-def iter_skills_files(
-    container_base: str = "/root/.son-of-anton",
-) -> List[Dict[str, str]]:
-    """Yield individual (host_path, container_path) entries for skills files.
-
-    Includes both the local skills dir and any external dirs configured via
-    skills.external_dirs.  Skips symlinks entirely.  Preferred for backends
-    that upload files individually rather than mounting a directory.
-    """
-    result: List[Dict[str, str]] = []
-
-    son_of_anton_home = _resolve_son_of_anton_home()
-    skills_dir = son_of_anton_home / "skills"
-    if skills_dir.is_dir():
-        container_root = f"{container_base.rstrip('/')}/skills"
-        for item in skills_dir.rglob("*"):
-            if item.is_symlink() or not item.is_file():
-                continue
-            rel = item.relative_to(skills_dir)
-            result.append({
-                "host_path": str(item),
-                "container_path": f"{container_root}/{rel}",
-            })
-
-    # Include external skill dirs
-    try:
-        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
-        for idx, ext_dir in enumerate(get_external_skills_dirs()):
-            if not ext_dir.is_dir():
-                continue
-            container_root = f"{container_base.rstrip('/')}/external_skills/{idx}"
-            for item in ext_dir.rglob("*"):
-                if item.is_symlink() or not item.is_file():
-                    continue
-                rel = item.relative_to(ext_dir)
-                result.append({
-                    "host_path": str(item),
-                    "container_path": f"{container_root}/{rel}",
-                })
-        for idx, proj_dir in enumerate(get_project_skills_dirs()):
-            if not proj_dir.is_dir():
-                continue
-            container_root = f"{container_base.rstrip('/')}/project_skills/{idx}"
-            for item in proj_dir.rglob("*"):
-                if item.is_symlink() or not item.is_file():
-                    continue
-                rel = item.relative_to(proj_dir)
-                result.append({
-                    "host_path": str(item),
-                    "container_path": f"{container_root}/{rel}",
-                })
-    except ImportError:
-        pass
-
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -463,10 +261,3 @@ def iter_cache_files(
                 "container_path": f"{container_root}/{rel}",
             })
     return result
-
-
-def clear_credential_files() -> None:
-    """Reset the skill-scoped registry (e.g. on session reset)."""
-    _get_registered().clear()
-
-

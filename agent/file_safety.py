@@ -242,11 +242,8 @@ _BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Son of Anton path.
 
-    Three categories are blocked:
+    Two categories are blocked:
 
-      * Internal Son of Anton cache files under ``SON_OF_ANTON_HOME/skills/.hub`` —
-        readable metadata that an attacker could use as a prompt-injection
-        carrier.
       * Credential / secret stores under SON_OF_ANTON_HOME and the global Son of Anton
         root: ``auth.json``, ``auth.lock``, ``.anthropic_oauth.json``,
         ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``,
@@ -299,22 +296,6 @@ def get_read_block_error(path: str) -> Optional[str]:
                 son_of_anton_dirs.append(real)
         except Exception:
             continue
-
-    # Skills .hub: prompt-injection carriers.
-    for hd in son_of_anton_dirs:
-        blocked_dirs = [
-            hd / "skills" / ".hub" / "index-cache",
-            hd / "skills" / ".hub",
-        ]
-        for blocked in blocked_dirs:
-            try:
-                resolved.relative_to(blocked)
-            except ValueError:
-                continue
-            return (
-                f"Access denied: {path} is an internal Son of Anton cache file "
-                "and cannot be read directly to prevent prompt injection."
-            )
 
     # Credential / secret stores. Exact-file matches under either
     # SON_OF_ANTON_HOME or <root>.
@@ -412,11 +393,10 @@ def raise_if_read_blocked(path: str) -> None:
 # Cross-profile write guard (#TBD)
 #
 # Son of Anton profiles are separate SON_OF_ANTON_HOME dirs under
-# ``<root>/profiles/<name>/``. Each profile has its own skills/, plugins/,
-# cron/, memories/. When an agent runs under one profile, writing into
-# ANOTHER profile's directories is almost always wrong — those skills /
-# plugins / cron jobs / memories affect a different session the user runs
-# from a different shell.
+# ``<root>/profiles/<name>/``. Each profile has its own plugins/, cron/,
+# memories/. When an agent runs under one profile, writing into ANOTHER
+# profile's directories is almost always wrong — those plugins / cron jobs /
+# memories affect a different session the user runs from a different shell.
 #
 # Soft guard, NOT a security boundary: the agent runs as the same OS user
 # and has unrestricted terminal access, so this returns a warning the model
@@ -425,15 +405,14 @@ def raise_if_read_blocked(path: str) -> None:
 # exists, and explicit user direction is required to cross it.
 #
 # Reference: May 2026 incident where a son-of-anton-security profile session
-# edited skills under both ``~/.son-of-anton/profiles/son-of-anton-security/skills/``
-# AND ``~/.son-of-anton/skills/`` (the default profile's skills) without realizing
-# the second path belonged to a different profile.
+# edited files under both its own profile and the default profile without
+# realizing the second path belonged to a different profile.
 # ---------------------------------------------------------------------------
 
 # Profile-scoped directories under SON_OF_ANTON_HOME / <root> / <root>/profiles/<X>/
 # that should be guarded. Adding a new area here extends the guard with no
 # other code change.
-PROFILE_SCOPED_AREAS = ("skills", "plugins", "cron", "memories")
+PROFILE_SCOPED_AREAS = ("plugins", "cron", "memories")
 
 
 def _resolve_active_profile_name() -> str:
@@ -463,7 +442,7 @@ def _resolve_active_profile_name() -> str:
 
 def classify_cross_profile_target(path: str) -> Optional[dict]:
     """Classify a write target as cross-profile if it lands in another
-    profile's scoped area (skills/plugins/cron/memories).
+    profile's scoped area (plugins/cron/memories).
 
     Returns ``None`` when the target is outside Son of Anton scope, or is inside
     the ACTIVE profile, or doesn't hit a profile-scoped area. Otherwise
@@ -471,7 +450,7 @@ def classify_cross_profile_target(path: str) -> Optional[dict]:
 
       * ``active_profile``: name of the profile the agent is running as
       * ``target_profile``: name of the profile the path belongs to
-      * ``area``: which scoped area (``"skills"``, ``"plugins"``, etc.)
+      * ``area``: which scoped area (``"plugins"``, ``"cron"``, etc.)
       * ``target_path``: the resolved path string
 
     The caller decides what to do with the result — surface a warning to

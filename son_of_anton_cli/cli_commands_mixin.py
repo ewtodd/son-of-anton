@@ -1139,27 +1139,6 @@ class CLICommandsMixin:
         print("  Available: list, add, edit, pause, resume, run, remove")
 
 
-    def _handle_skills_command(self, cmd: str):
-        """Handle /skills slash command — delegates to son_of_anton_cli.skills_hub."""
-        from cli import ChatConsole
-        # Intercept write-approval review subcommands first (pending/approve/
-        # reject/diff/mode); everything else goes to the skills hub.
-        parts = cmd.strip().split()
-        args = parts[1:] if len(parts) > 1 else []
-        if args and args[0].lower() in {"pending", "approve", "apply", "reject",
-                                        "deny", "drop", "diff", "approval", "mode"}:
-            from son_of_anton_cli.write_approval_commands import handle_pending_subcommand
-            from tools import write_approval as wa
-            out = handle_pending_subcommand(
-                wa.SKILLS, args,
-                set_mode_fn=lambda enabled: self._save_write_approval("skills", enabled),
-            )
-            if out is not None:
-                print(out)
-                return
-        from son_of_anton_cli.skills_hub import handle_skills_slash
-        handle_skills_slash(cmd, ChatConsole())
-
     def _handle_init_command(self, cmd: str):
         """Handle /init — generate or update AGENTS.md from a project scan.
 
@@ -1215,7 +1194,7 @@ class CLICommandsMixin:
         print(out)
 
     def _save_write_approval(self, subsystem: str, enabled: bool):
-        """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""
+        """Persist <subsystem>.write_approval to config (for /memory approval)."""
         from cli import save_config_value
         save_config_value(f"{subsystem}.write_approval", bool(enabled))
 
@@ -1226,7 +1205,7 @@ class CLICommandsMixin:
         When it completes, prints the result to the CLI without modifying
         the active session's conversation history.
         """
-        from cli import AIAgent, ChatConsole, _accent_hex, _cprint, _maybe_remap_for_light_mode, _render_final_assistant_content, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
+        from cli import AIAgent, ChatConsole, _accent_hex, _cprint, _maybe_remap_for_light_mode, _render_final_assistant_content, set_approval_callback, set_sudo_password_callback
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
             _cprint("  Usage: /background <prompt>")
@@ -1253,10 +1232,6 @@ class CLICommandsMixin:
         def run_background():
             set_sudo_password_callback(self._sudo_password_callback)
             set_approval_callback(self._approval_callback)
-            try:
-                set_secret_capture_callback(self._secret_capture_callback)
-            except Exception:
-                pass
             try:
                 bg_agent = AIAgent(
                     model=turn_route["model"],
@@ -1353,7 +1328,6 @@ class CLICommandsMixin:
                 try:
                     set_sudo_password_callback(None)
                     set_approval_callback(None)
-                    set_secret_capture_callback(None)
                 except Exception:
                     pass
                 self._background_tasks.pop(task_id, None)

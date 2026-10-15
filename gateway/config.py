@@ -1656,8 +1656,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 # explicit slack.enabled/platforms.slack.enabled false should.
                 slack_config.enabled = True
         # If a config block exists, respect its enabled flag (don't override
-        # explicit enabled: false). Token is still stored so skills that
-        # send Slack messages can use it without activating the gateway adapter.
+        # explicit enabled: false). Token is still stored so outbound Slack
+        # sends can use it without activating the gateway adapter.
         config.platforms[Platform.SLACK].token = slack_token
     slack_home = getenv("SLACK_HOME_CHANNEL")
     if slack_home:

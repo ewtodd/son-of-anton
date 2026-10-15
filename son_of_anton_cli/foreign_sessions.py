@@ -1132,7 +1132,7 @@ def run_sessions_import(args, db=None) -> Optional[str]:
     if getattr(args, "analyze", False):
         from son_of_anton_cli import session_analysis
 
-        print("  Analyzing the transcript for memories and skills ...")
+        print("  Analyzing the transcript for memories ...")
         status = session_analysis.run_session_analysis(
             session_id, source_label=label, db=db
         )

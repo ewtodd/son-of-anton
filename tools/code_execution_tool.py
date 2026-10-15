@@ -171,7 +171,7 @@ def _scrub_child_env(source_env, is_passthrough=None):
     """Produce the scrubbed child-process env for execute_code.
 
     Rules (order matters):
-      1. Passthrough vars (skill- or config-declared) pass through the active
+      1. Passthrough vars (config-declared) pass through the active
          profile secret scope; an absent scoped value is omitted and an
          unscoped multiplex read fails closed.
       2. Secret-substring names (KEY/TOKEN/DSN/WEBHOOK/etc.) are blocked.
@@ -230,7 +230,7 @@ def _scrub_child_env(source_env, is_passthrough=None):
             "execute_code: dropped %d non-allowlisted SON_OF_ANTON_* var(s) from the "
             "sandbox child env (%s). This is intentional hardening (#27303); if "
             "a sandbox script legitimately needs one, declare it via "
-            "env_passthrough in the skill/config so it passes by explicit opt-in.",
+            "terminal.env_passthrough in config.toml so it passes by explicit opt-in.",
             len(_dropped_son_of_anton),
             ", ".join(sorted(_dropped_son_of_anton)),
         )
@@ -1300,8 +1300,7 @@ def execute_code(
         # Build a minimal environment for the child. We intentionally exclude
         # API keys and tokens to prevent credential exfiltration from LLM-
         # generated scripts. The child accesses tools via RPC, not direct API.
-        # Exception: env vars declared by loaded skills (via env_passthrough
-        # registry) or explicitly allowed by the user in config.toml
+        # Exception: env vars explicitly allowed by the user in config.toml
         # (terminal.env_passthrough) are passed through.  See
         # ``_scrub_child_env`` for the rules.
         child_env = _scrub_child_env(os.environ)

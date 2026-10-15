@@ -30,7 +30,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       banner_title: "#FFD700"             # Panel title text color
       banner_accent: "#FFBF00"            # Section headers (Available Tools, etc.)
       banner_dim: "#B8860B"               # Dim/muted text (separators, labels)
-      banner_text: "#FFF8DC"              # Body text (tool names, skill names)
+      banner_text: "#FFF8DC"              # Body text (tool names)
       ui_accent: "#FFBF00"               # General UI accent
       ui_label: "#DAA520"                # UI labels (warm gold; teal clashed w/ default banner gold)
       ui_ok: "#4caf50"                   # Success indicators

@@ -9,10 +9,7 @@ with compaction thresholds — not exact tokenizer counts.
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-
-_SKILLS_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.DOTALL)
 
 _SUBAGENT_TOOL_NAMES = frozenset({"delegate_task"})
 
@@ -20,7 +17,6 @@ _CATEGORY_COLORS = {
     "system_prompt": "var(--context-usage-system)",
     "tool_definitions": "var(--context-usage-tools)",
     "rules": "var(--context-usage-rules)",
-    "skills": "var(--context-usage-skills)",
     "mcp": "var(--context-usage-mcp)",
     "subagent_definitions": "var(--context-usage-subagents)",
     "memory": "var(--context-usage-memory)",
@@ -99,13 +95,10 @@ def compute_session_context_breakdown(
     context = parts.get("context", "") or ""
     volatile = parts.get("volatile", "") or ""
 
-    skills_match = _SKILLS_BLOCK_RE.search(stable)
-    skills_index = skills_match.group(0) if skills_match else ""
-
     memory_block, user_block = _memory_blocks(agent)
     memory_text = "\n\n".join(part for part in (memory_block, user_block) if part).strip()
 
-    system_core = _strip_blocks(stable, skills_index)
+    system_core = stable.strip()
     system_tail = _strip_blocks(volatile, memory_block, user_block)
     system_prompt_text = "\n\n".join(part for part in (system_core, system_tail) if part).strip()
 
@@ -118,7 +111,6 @@ def compute_session_context_breakdown(
         ("system_prompt", "System prompt", _chars_to_tokens(system_prompt_text)),
         ("tool_definitions", "Tool definitions", _json_tokens(builtin_tools)),
         ("rules", "Rules", _chars_to_tokens(context)),
-        ("skills", "Skills", _chars_to_tokens(skills_index)),
         ("mcp", "MCP", _json_tokens(mcp_tools)),
         ("subagent_definitions", "Subagent definitions", _json_tokens(subagent_tools)),
         ("memory", "Memory", _chars_to_tokens(memory_text)),
@@ -166,7 +158,6 @@ _CATEGORY_GLYPHS = {
     "system_prompt": "■",
     "tool_definitions": "▣",
     "rules": "▩",
-    "skills": "▤",
     "mcp": "▥",
     "subagent_definitions": "▦",
     "memory": "▧",
@@ -187,35 +178,36 @@ def _bytes_to_tokens(size: Optional[int]) -> Optional[int]:
     return (int(size) + 3) // 4
 
 
-def compute_context_details(agent: Any) -> Dict[str, Any]:
-    """Expanded per-skill / per-toolset cost listing for ``/context all``.
+def _compute_toolsets_breakdown(tools: List[Any]) -> List[Dict[str, Any]]:
+    """Per-toolset schema-byte breakdown of the resolved tool list.
 
-    Reuses the ``son-of-anton prompt-size`` attribution mechanism (PR #66656):
-    per-skill index-line bytes parsed from the live ``<available_skills>``
-    block, and per-toolset schema bytes attributed via the tool registry's
-    canonical tool→toolset map. Byte figures are converted to the same
-    chars/4 token heuristic the categories above use.
+    Each tool is attributed to its single canonical toolset from the registry,
+    so the byte sums are fully attributable. Sorted largest-first by
+    ``json_bytes``, tie-broken by toolset name.
     """
-    from son_of_anton_cli.prompt_size import (
-        _compute_skills_breakdown,
-        _compute_toolsets_breakdown,
-    )
-    from agent.system_prompt import build_system_prompt_parts
+    from tools.registry import registry
 
-    parts = build_system_prompt_parts(agent)
-    stable = parts.get("stable", "") or ""
-    skills_match = _SKILLS_BLOCK_RE.search(stable)
-    skills_block = skills_match.group(0) if skills_match else ""
+    tool_to_toolset = registry.get_tool_to_toolset_map()
+    groups: Dict[str, Dict[str, Any]] = {}
+    for tool in tools:
+        toolset = tool_to_toolset.get(_tool_name(tool)) or "(unknown)"
+        group = groups.setdefault(
+            toolset, {"toolset": toolset, "tool_count": 0, "json_bytes": 0}
+        )
+        group["tool_count"] += 1
+        group["json_bytes"] += len(json.dumps(tool, ensure_ascii=False).encode("utf-8"))
+    out = list(groups.values())
+    out.sort(key=lambda g: (-g["json_bytes"], g["toolset"]))
+    return out
 
-    skills: List[Dict[str, Any]] = []
-    if skills_block:
-        for entry in _compute_skills_breakdown(skills_block):
-            skills.append({
-                "name": entry.get("name", ""),
-                "index_tokens": _bytes_to_tokens(entry.get("index_line_bytes")) or 0,
-                "skill_md_tokens": _bytes_to_tokens(entry.get("skill_md_bytes")),
-            })
 
+def compute_context_details(agent: Any) -> Dict[str, Any]:
+    """Expanded per-toolset cost listing for ``/context all``.
+
+    Per-toolset schema bytes attributed via the tool registry's canonical
+    tool→toolset map, converted to the same chars/4 token heuristic the
+    categories above use.
+    """
     toolsets: List[Dict[str, Any]] = []
     tools = list(getattr(agent, "tools", None) or [])
     if tools:
@@ -226,7 +218,7 @@ def compute_context_details(agent: Any) -> Dict[str, Any]:
                 "schema_tokens": _bytes_to_tokens(group.get("json_bytes")) or 0,
             })
 
-    return {"skills": skills, "toolsets": toolsets}
+    return {"toolsets": toolsets}
 
 
 def render_context_grid(payload: Dict[str, Any]) -> List[str]:
@@ -285,7 +277,7 @@ def render_context_category_lines(payload: Dict[str, Any]) -> List[str]:
 
 
 def render_context_details_lines(details: Dict[str, Any]) -> List[str]:
-    """Render the expanded ``/context all`` per-skill / per-toolset tables."""
+    """Render the expanded ``/context all`` per-toolset table."""
     lines: List[str] = []
 
     toolsets = details.get("toolsets") or []
@@ -297,25 +289,6 @@ def render_context_details_lines(details: Dict[str, Any]) -> List[str]:
                 f" {group['schema_tokens']:>8,} tokens"
             )
         remaining = len(toolsets) - _DETAILS_TABLE_LIMIT
-        if remaining > 0:
-            lines.append(f"  … and {remaining} more")
-
-    skills = details.get("skills") or []
-    if skills:
-        if lines:
-            lines.append("")
-        lines.append("Skills by cost (index = always-on; SKILL.md = cost when loaded)")
-        for entry in skills[:_DETAILS_TABLE_LIMIT]:
-            name = str(entry.get("name") or "")
-            if len(name) > 28:
-                name = name[:27] + "…"
-            md = entry.get("skill_md_tokens")
-            md_str = f"{md:>8,}" if md is not None else f"{'n/a':>8}"
-            lines.append(
-                f"  {name:<28} index {entry['index_tokens']:>6,}"
-                f"  SKILL.md {md_str} tokens"
-            )
-        remaining = len(skills) - _DETAILS_TABLE_LIMIT
         if remaining > 0:
             lines.append(f"  … and {remaining} more")
 
@@ -356,5 +329,5 @@ def render_context_breakdown_lines(
             lines.extend(detail_lines)
     else:
         lines.append("")
-        lines.append("Use /context all for per-skill and per-toolset costs.")
+        lines.append("Use /context all for per-toolset costs.")
     return lines

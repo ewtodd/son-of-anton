@@ -130,7 +130,7 @@
                   default = "/var/lib/son-of-anton-${name}/.son-of-anton";
                   defaultText = lib.literalExpression ''"/var/lib/son-of-anton-''${name}/.son-of-anton"'';
                   description = ''
-                    SON_OF_ANTON_HOME for this instance: config, skills,
+                    SON_OF_ANTON_HOME for this instance: config,
                     memory, sessions (state.db). Point it at a login account's
                     ~/.son-of-anton to share sessions with that account's CLI.
                   '';

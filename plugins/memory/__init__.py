@@ -31,7 +31,6 @@ Usage:
 
 from __future__ import annotations
 
-import importlib
 import importlib.machinery
 import importlib.metadata
 import importlib.util
@@ -48,7 +47,6 @@ logger = logging.getLogger(__name__)
 
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
 ENTRY_POINTS_GROUP = "son_of_anton_agent.memory_providers"
-_REGISTERED_MEMORY_PROVIDER_SKILLS: dict[str, Path] = {}
 
 # Synthetic parent package for user-installed providers, so they don't
 # collide with bundled providers in sys.modules.
@@ -271,7 +269,7 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
         # Quick availability check — try loading and calling is_available()
         available = True
         try:
-            provider = _load_provider_from_dir(child, register_skills=False)
+            provider = _load_provider_from_dir(child)
             if provider:
                 available = provider.is_available()
             else:
@@ -289,10 +287,7 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
         desc = ""
         available = True
         try:
-            provider = _load_provider_from_entry_point(
-                entry_point,
-                register_skills=False,
-            )
+            provider = _load_provider_from_entry_point(entry_point)
             if provider:
                 available = provider.is_available()
             else:
@@ -306,26 +301,15 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
     return results
 
 
-def load_memory_provider(
-    name: str,
-    *,
-    register_skills: Optional[bool] = None,
-) -> Optional["MemoryProvider"]:
+def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
     """Load and return a MemoryProvider instance by name.
 
     Checks bundled (``plugins/memory/<name>/``), user-installed
     (``$SON_OF_ANTON_HOME/plugins/<name>/``), and pip entry-point providers.
     Bundled providers take precedence on name collisions.
 
-    Skills register only when *name* is the configured active provider unless
-    ``register_skills`` is passed explicitly. This keeps status and setup
-    inspection of inactive providers free of registry side effects.
-
     Returns None if the provider is not found or fails to load.
     """
-    if register_skills is None:
-        register_skills = name == _get_active_memory_provider()
-
     provider_dir = find_provider_dir(name)
     entry_point = None if provider_dir else find_provider_entry_point(name)
     if not provider_dir and entry_point is None:
@@ -337,12 +321,9 @@ def load_memory_provider(
 
     try:
         provider = (
-            _load_provider_from_dir(provider_dir, register_skills=register_skills)
+            _load_provider_from_dir(provider_dir)
             if provider_dir
-            else _load_provider_from_entry_point(
-                entry_point,
-                register_skills=register_skills,
-            )
+            else _load_provider_from_entry_point(entry_point)
         )
         if provider:
             return provider
@@ -353,11 +334,7 @@ def load_memory_provider(
         return None
 
 
-def _load_provider_from_entry_point(
-    entry_point,
-    *,
-    register_skills: bool = True,
-) -> Optional["MemoryProvider"]:
+def _load_provider_from_entry_point(entry_point) -> Optional["MemoryProvider"]:
     """Import a provider entry point and extract the MemoryProvider instance."""
     from agent.memory_provider import MemoryProvider
 
@@ -373,7 +350,7 @@ def _load_provider_from_entry_point(
             pass
 
     if hasattr(loaded, "register"):
-        collector = _ProviderCollector(entry_point.name, register_skills=register_skills)
+        collector = _ProviderCollector(entry_point.name)
         loaded.register(collector)
         if collector.provider:
             return collector.provider
@@ -386,7 +363,7 @@ def _load_provider_from_entry_point(
         except TypeError:
             pass
 
-        collector = _ProviderCollector(entry_point.name, register_skills=register_skills)
+        collector = _ProviderCollector(entry_point.name)
         loaded(collector)
         return collector.provider
 
@@ -403,11 +380,7 @@ def _load_provider_from_entry_point(
     return None
 
 
-def _load_provider_from_dir(
-    provider_dir: Path,
-    *,
-    register_skills: bool = True,
-) -> Optional["MemoryProvider"]:
+def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
     """Import a provider module and extract the MemoryProvider instance.
 
     The module must have either:
@@ -496,7 +469,7 @@ def _load_provider_from_dir(
 
     # Try register(ctx) pattern first (how our plugins are written)
     if hasattr(mod, "register"):
-        collector = _ProviderCollector(name, register_skills=register_skills)
+        collector = _ProviderCollector(name)
         try:
             mod.register(collector)
         except Exception as e:
@@ -538,42 +511,13 @@ class _ProviderCollector:
     registration surface as any other plugin.
     """
 
-    def __init__(self, name: str, *, register_skills: bool = True):
+    def __init__(self, name: str):
         self.name = name
         self.provider = None
-        self._register_skills = register_skills
         self._context = None
 
     def register_memory_provider(self, provider):
         self.provider = provider
-
-    def register_skill(self, *args, **kwargs):
-        """Forward plugin-provided skills to the general plugin registry.
-
-        Handled explicitly rather than through ``__getattr__`` because skills
-        are tracked for pruning: switching the active provider has to retract
-        the skills the previous one registered, which needs the qualified name
-        and resolved path recorded here.
-
-        Gated on ``register_skills`` so merely *inspecting* an inactive
-        provider — ``son-of-anton memory status``, the setup picker — leaves no
-        registry side effects behind.
-        """
-        if not self._register_skills:
-            return
-        try:
-            manager_context = self._plugin_context()
-            manager_context.register_skill(*args, **kwargs)
-            skill_name = args[0] if args else kwargs.get("name")
-            qualified_name = f"{self.name}:{skill_name}"
-
-            from son_of_anton_cli.plugins import get_plugin_manager
-
-            registered_path = get_plugin_manager().find_plugin_skill(qualified_name)
-            if registered_path is not None:
-                _REGISTERED_MEMORY_PROVIDER_SKILLS[qualified_name] = registered_path
-        except Exception as exc:
-            logger.debug("Memory provider '%s' failed to register skill: %s", self.name, exc)
 
     def register_cli_command(self, *args, **kwargs):
         pass  # CLI registration happens via discover_plugin_cli_commands()
@@ -643,27 +587,6 @@ def _get_active_memory_provider() -> Optional[str]:
         return cfg_get(config, "memory", "provider") or None
     except Exception:
         return None
-
-
-def _prune_inactive_memory_provider_skills(
-    active_provider: Optional[str] = None,
-) -> None:
-    """Remove tracked skills that no longer belong to the active provider."""
-    if active_provider is None:
-        active_provider = _get_active_memory_provider()
-
-    from son_of_anton_cli.plugins import get_plugin_manager
-
-    manager = get_plugin_manager()
-    for qualified_name, registered_path in list(
-        _REGISTERED_MEMORY_PROVIDER_SKILLS.items()
-    ):
-        namespace, _, _ = qualified_name.partition(":")
-        if namespace == active_provider:
-            continue
-        if manager.find_plugin_skill(qualified_name) == registered_path:
-            manager.remove_plugin_skill(qualified_name)
-        _REGISTERED_MEMORY_PROVIDER_SKILLS.pop(qualified_name, None)
 
 
 def discover_plugin_cli_commands() -> List[dict]:

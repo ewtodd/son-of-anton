@@ -1,7 +1,7 @@
 """``son-of-anton nuke`` — delete ALL local state and start over.
 
 Removes the entire ``SON_OF_ANTON_HOME`` tree: sessions (``state.db`` +
-``sessions/``), logs, cron jobs, memory, skills, plugins, skins, config.toml
+``sessions/``), logs, cron jobs, memory, plugins, skins, config.toml
 and the ``.env`` secrets. There is no ``--yes``: the user must type a full
 confirmation sentence, so it cannot be triggered by a stray keystroke or a
 script.
@@ -52,7 +52,7 @@ def cmd_nuke(args: argparse.Namespace) -> int:
         return 0
     files, total = _measure(home)
     print("This deletes ALL local Son of Anton state:")
-    print("  sessions, logs, cron jobs, memory, skills, plugins, skins, config and secrets.")
+    print("  sessions, logs, cron jobs, memory, plugins, skins, config and secrets.")
     print(
         f"Target: {shown}  ({files} file{'s' if files != 1 else ''}, {_format_size(total)})"
     )
@@ -87,7 +87,7 @@ def build_nuke_parser(subparsers) -> None:
         help="Delete ALL local Son of Anton state (sessions, config, secrets, ...)",
         description=(
             "Delete the entire SON_OF_ANTON_HOME tree — sessions, logs, cron "
-            "jobs, memory, skills, plugins, skins, config.toml and .env. "
+            "jobs, memory, plugins, skins, config.toml and .env. "
             "Requires typing a full confirmation sentence; there is no --yes."
         ),
     )

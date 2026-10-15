@@ -1,9 +1,8 @@
 """Compatibility helpers for Agent Plugins v1 portable directory packages.
 
 This module validates the versioned portable format locally and translates its
-supported components into records consumed by Son of Anton' existing skill and MCP
-runtimes. It deliberately performs no schema fetching and imports no plugin
-Python code.
+supported components into records consumed by Son of Anton's MCP runtime. It
+deliberately performs no schema fetching and imports no plugin Python code.
 """
 
 from __future__ import annotations
@@ -14,8 +13,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Tuple
-
-from agent.skill_utils import toml_load
 
 
 PLUGIN_SCHEMA_V1 = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
@@ -39,7 +36,6 @@ _REMOTE_FIELDS = {"type", "url", "headers"}
 _PLUGIN_NAME_RE = re.compile(
     r"^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$"
 )
-_SKILL_NAME_RE = re.compile(r"^(?!.*--)[a-z0-9]+(?:-[a-z0-9]+)*$")
 _PLACEHOLDER_RE = re.compile(r"\$\{(PLUGIN_ROOT|PLUGIN_DATA)\}")
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
@@ -55,15 +51,6 @@ class AgentPluginDiagnostic:
 
 
 @dataclass(frozen=True)
-class AgentPluginSkill:
-    name: str
-    description: str
-    root: Path
-    skill_md: Path
-    frontmatter: Mapping[str, Any]
-
-
-@dataclass(frozen=True)
 class AgentPluginPackage:
     name: str
     version: str
@@ -71,7 +58,6 @@ class AgentPluginPackage:
     root: Path
     data_root: Path
     manifest: Mapping[str, Any]
-    skills: Tuple[AgentPluginSkill, ...]
     mcp_servers: Mapping[str, Dict[str, Any]]
     diagnostics: Tuple[AgentPluginDiagnostic, ...]
 
@@ -153,103 +139,6 @@ def _validate_manifest(root: Path) -> tuple[dict, list[AgentPluginDiagnostic]]:
             raise AgentPluginError("plugin.json extension namespace values must be objects")
 
     return manifest, diagnostics
-
-
-def _valid_skill_frontmatter(
-    frontmatter: Mapping[str, Any], directory_name: str
-) -> str | None:
-    name = frontmatter.get("name")
-    if (
-        not isinstance(name, str)
-        or name != directory_name
-        or not 1 <= len(name) <= 64
-        or _SKILL_NAME_RE.fullmatch(name) is None
-    ):
-        return "name must match the directory and satisfy Agent Skills constraints"
-    description = frontmatter.get("description")
-    if not isinstance(description, str) or not 1 <= len(description) <= 1024:
-        return "description must be a non-empty string of at most 1024 characters"
-    if "license" in frontmatter and not isinstance(frontmatter["license"], str):
-        return "license must be a string"
-    if "compatibility" in frontmatter:
-        compatibility = frontmatter["compatibility"]
-        if not isinstance(compatibility, str) or not 1 <= len(compatibility) <= 500:
-            return "compatibility must be a string of 1 to 500 characters"
-    if "metadata" in frontmatter:
-        metadata = frontmatter["metadata"]
-        if not isinstance(metadata, dict) or any(
-            not isinstance(key, str) or not isinstance(value, str)
-            for key, value in metadata.items()
-        ):
-            return "metadata must map string keys to string values"
-    if "allowed-tools" in frontmatter and not isinstance(
-        frontmatter["allowed-tools"], str
-    ):
-        return "allowed-tools must be a string"
-    return None
-
-
-def _discover_skills(
-    root: Path, diagnostics: list[AgentPluginDiagnostic]
-) -> tuple[AgentPluginSkill, ...]:
-    skills_root = root / "skills"
-    if not skills_root.exists() and not skills_root.is_symlink():
-        return ()
-    if not _inside(skills_root, root) or not skills_root.is_dir():
-        diagnostics.append(
-            AgentPluginDiagnostic("skills", "skills must be an in-root directory")
-        )
-        return ()
-
-    skills: list[AgentPluginSkill] = []
-    try:
-        children = sorted(skills_root.iterdir(), key=lambda path: path.name)
-    except OSError as exc:
-        diagnostics.append(AgentPluginDiagnostic("skills", f"cannot list skills: {exc}"))
-        return ()
-
-    for child in children:
-        skill_md = child / "SKILL.md"
-        if not child.is_dir() or not skill_md.exists():
-            continue
-        scope = f"skill:{child.name}"
-        if not _inside(skill_md, root) or not skill_md.is_file():
-            diagnostics.append(
-                AgentPluginDiagnostic(scope, "SKILL.md must be a regular in-root file")
-            )
-            continue
-        try:
-            content = skill_md.read_text(encoding="utf-8")
-            content = content.lstrip("\ufeff")
-            if not content.startswith("---"):
-                raise ValueError("missing TOML frontmatter")
-            end_match = re.search(r"\n---\s*\n", content[3:])
-            if end_match is None:
-                raise ValueError("unterminated TOML frontmatter")
-            try:
-                parsed = toml_load(content[3 : end_match.start() + 3])
-            except Exception as exc:
-                raise ValueError(f"invalid TOML frontmatter: {exc}") from exc
-            if not isinstance(parsed, dict):
-                raise ValueError("TOML frontmatter must be an object")
-            frontmatter = parsed
-        except (OSError, UnicodeError, ValueError) as exc:
-            diagnostics.append(AgentPluginDiagnostic(scope, f"invalid SKILL.md: {exc}"))
-            continue
-        error = _valid_skill_frontmatter(frontmatter, child.name)
-        if error:
-            diagnostics.append(AgentPluginDiagnostic(scope, error))
-            continue
-        skills.append(
-            AgentPluginSkill(
-                name=child.name,
-                description=frontmatter["description"],
-                root=child.resolve(strict=True),
-                skill_md=skill_md.resolve(strict=True),
-                frontmatter=dict(frontmatter),
-            )
-        )
-    return tuple(skills)
 
 
 def _expand(value: str, plugin_root: Path, data_root: Path) -> str:
@@ -533,7 +422,6 @@ def load_agent_plugin(plugin_root: Path, data_root: Path) -> AgentPluginPackage:
         raise AgentPluginError("plugin root must be a directory")
     manifest, diagnostics = _validate_manifest(root)
     resolved_data = Path(data_root).resolve(strict=False)
-    skills = _discover_skills(root, diagnostics)
     mcp_servers = _discover_mcp(root, resolved_data, diagnostics)
     return AgentPluginPackage(
         name=manifest["name"],
@@ -542,7 +430,6 @@ def load_agent_plugin(plugin_root: Path, data_root: Path) -> AgentPluginPackage:
         root=root,
         data_root=resolved_data,
         manifest=dict(manifest),
-        skills=skills,
         mcp_servers=mcp_servers,
         diagnostics=tuple(diagnostics),
     )

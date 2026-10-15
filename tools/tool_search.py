@@ -20,7 +20,7 @@ for the full rationale):
     - Tier 0 — no MCP/plugin tools: pure passthrough, everything eager.
     - Tier 1 — deferred tools whose catalog listing fits the listing budget
       (``min(threshold_pct`` of context — default 5% — ``, listing_max_tokens)``):
-      bridge + skills-style listing (name + short description per tool),
+      bridge + catalog listing (name + short description per tool),
       degrading to a names-only listing when the full form is over budget.
     - Tier 2 — per-tool listing over budget even names-only (e.g.
       Cloudflare's flat API surface, ~3,300 tools whose names alone are
@@ -90,11 +90,10 @@ class ToolSearchConfig:
     threshold_pct: float  # 0..100
     search_default_limit: int
     max_search_limit: int
-    # Catalog listing ("skills-style" progressive disclosure): when active,
-    # a grouped name + short-description manifest of every deferred tool is
-    # embedded in the tool_search bridge description, so capabilities stay
-    # DISCOVERABLE (like the skills listing in the system prompt) while full
-    # schemas stay deferred.  "auto" = include when it fits the listing
+    # Catalog listing (progressive disclosure): when active, a grouped
+    # name + short-description manifest of every deferred tool is embedded in
+    # the tool_search bridge description, so capabilities stay DISCOVERABLE
+    # while full schemas stay deferred.  "auto" = include when it fits the listing
     # budget (falls back to names-only, then to none = bare bridge);
     # "on" = same rendering, explicit intent; "off" = always bare bridge.
     listing: str = "auto"  # "auto" | "on" | "off"
@@ -514,7 +513,7 @@ _SENTENCE_END_RE = re.compile(r"[.!?\n]")
 def _short_desc(description: str, max_chars: int = 60) -> str:
     """First sentence of a tool description, clipped to ``max_chars``.
 
-    Mirrors the skills-listing convention: one terse line per capability.
+    One terse line per capability.
     Whitespace is collapsed; a hard clip never cuts mid-word unless the
     first word itself exceeds the budget.
     """
@@ -545,11 +544,10 @@ def build_catalog_listing(
     *,
     max_tokens: int = 4000,
 ) -> Optional[str]:
-    """Render a skills-style manifest of the deferred catalog.
+    """Render a manifest of the deferred catalog.
 
     One line per tool — ``name: short description`` — grouped under a
-    heading per source (MCP server / plugin toolset), exactly like the
-    bundled-skills listing in the system prompt:
+    heading per source (MCP server / plugin toolset):
 
         github tools: (44)
         - create_issue: Open a new issue in a GitHub repository.
@@ -669,7 +667,7 @@ def bridge_tool_schemas(
 
     When ``listing`` is provided (see :func:`build_catalog_listing`), it is
     embedded in the ``tool_search`` description so every deferred capability
-    stays *visible* by name — the skills-listing pattern — closing the
+    stays *visible* by name — closing the
     "model doesn't know what it doesn't know" gap while full parameter
     schemas remain deferred. ``listing_form`` selects the framing: per-tool
     forms ("full"/"names") tell the model it may skip the search when it

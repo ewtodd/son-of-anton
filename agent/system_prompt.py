@@ -283,7 +283,7 @@ def _agent_home(agent: Any) -> Optional[Path]:
        (``<home>/state.db``) — ground truth on threads that lost the
        ContextVar (ContextVars don't propagate into ``threading.Thread``),
        where the unbound build previously fell back to the launch home and
-       leaked the default profile's skills/identity into a bot prompt.
+       leaked the default profile's identity into a bot prompt.
 
     Returns None when neither resolves so callers fall back to ambient.
     """
@@ -603,8 +603,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             pass
 
     # Active-profile hint — names the Son of Anton profile the agent is running
-    # under so it doesn't conflate ~/.son-of-anton/skills/ (default profile) with
-    # ~/.son-of-anton/profiles/<active>/skills/ (this profile's). Deterministic
+    # under so it doesn't conflate ~/.son-of-anton/memories/ (default profile) with
+    # ~/.son-of-anton/profiles/<active>/memories/ (this profile's). Deterministic
     # for the lifetime of the agent — profile name doesn't change
     # mid-session, so this doesn't break the prompt cache.
     # See file_safety._resolve_active_profile_name + classify_cross_profile_target
@@ -613,7 +613,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Resolve from the agent's OWN home first (its session_db path), not the
     # ambient SON_OF_ANTON_HOME: on a build thread that lost the ContextVar this
     # line would otherwise print "default" for a bot profile — the same
-    # thread-fallback bug that leaked default's skills index.
+    # thread-fallback bug that leaked the default profile's prompt state.
     _agent_home_path = _agent_home(agent)
     active_profile = "default"
     try:
@@ -640,9 +640,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         post_workspace_parts.append(
             "Active Son of Anton profile: default. Other profiles (if any) live "
             "under " + _root_str + "/profiles/<name>/. Each profile has its own "
-            "skills/, plugins/, cron/, and memories/ that affect a different "
+            "plugins/, cron/, and memories/ that affect a different "
             "session than this one. Do not modify another profile's "
-            "skills/plugins/cron/memories unless the user explicitly directs "
+            "plugins/cron/memories unless the user explicitly directs "
             "you to."
         )
     else:
@@ -658,10 +658,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         post_workspace_parts.append(
             f"Active Son of Anton profile: {active_profile}. This session reads "
             f"and writes {profile_home}/. The default "
-            f"profile's data lives at {default_root}/skills/, {default_root}/plugins/, "
+            f"profile's data lives at {default_root}/plugins/, "
             f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
             f"different session run from a different shell. Do NOT modify "
-            f"another profile's skills/plugins/cron/memories unless the user "
+            f"another profile's plugins/cron/memories unless the user "
             f"explicitly directs you to. The cross-profile write guard will "
             f"refuse such writes by default; pass cross_profile=True only "
             f"after explicit direction."

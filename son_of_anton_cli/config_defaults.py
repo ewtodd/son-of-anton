@@ -115,7 +115,7 @@ DEFAULT_CONFIG = {
         # this in config.toml.
         "restart_after_turn_timeout": 1800,
         # Upper bound (seconds) a submitted prompt waits for the deferred
-        # agent build (MCP discovery, model metadata, skills scan) before
+        # agent build (MCP discovery, model metadata) before
         # failing with a visible error (#63078). The gateway's wait is
         # patient — the prompt is delivered the moment the build completes
         # and a progress notice is emitted past 30s — so this cap only fires
@@ -254,7 +254,7 @@ DEFAULT_CONFIG = {
         # nudges. Set true to force on everywhere, or "auto" for the legacy
         # surface-aware behavior (on for interactive coding surfaces — CLI,
         # TUI, desktop — and programmatic callers, off for conversational
-        # messaging surfaces). Doc/markdown/skill-only edits never fire it.
+        # messaging surfaces). Doc/markdown-only edits never fire it.
         "verify_on_stop": False,
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
@@ -565,8 +565,7 @@ DEFAULT_CONFIG = {
         # only — the historical behavior). Floored internally at 0.
         "daemon_term_grace_seconds": 2.0,
         # Environment variables to pass through to sandboxed execution
-        # (terminal and execute_code).  Skill-declared required_environment_variables
-        # are passed through automatically; this list is for non-skill use cases.
+        # (terminal and execute_code).
         "env_passthrough": [],
         # HOME handling for host tool subprocesses:
         #   auto    — host keeps the real OS-user HOME; containers use
@@ -1070,15 +1069,6 @@ DEFAULT_CONFIG = {
         # single-shape tool returns DB content directly). The old
         # ``auxiliary.session_search.*`` block was removed here. Existing
         # values in user config.toml files are harmless leftovers and ignored.
-        "skills_hub": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
         "approval": {
             "provider": "auto",
             "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
@@ -1589,78 +1579,6 @@ DEFAULT_CONFIG = {
         "self_paced_ceiling_seconds": 900,
     },
 
-    # Skills — external skill directories for sharing skills across tools/agents.
-    # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
-    # always goes to ~/.son-of-anton/skills/.
-    "skills": {
-        "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
-        # Project-local skill discovery: when a session starts inside a git
-        # checkout, ``<root>/.son-of-anton/skills/`` and ``<root>/.agents/skills/``
-        # are sourced as the highest-precedence skill tier — but ONLY when the
-        # project root is listed in trusted_project_dirs below. Trust a repo
-        # with ``son-of-anton skills trust`` (run from inside it). Set to false to
-        # disable discovery entirely (no scan, no untrusted-skills notice).
-        "project_discovery": True,
-        # Absolute paths of project roots whose repo-local skills may load.
-        # Managed by ``son-of-anton skills trust`` / ``son-of-anton skills untrust``.
-        "trusted_project_dirs": [],
-        # Substitute ${SON_OF_ANTON_SKILL_DIR} and ${SON_OF_ANTON_SESSION_ID} in SKILL.md
-        # content with the absolute skill directory and the active session id
-        # before the agent sees it.  Lets skill authors reference bundled
-        # scripts without the agent having to join paths.
-        "template_vars": True,
-        # Pre-execute inline shell one-liners written as !`cmd` in SKILL.md
-        # body.  Their stdout is inlined into the skill message before the
-        # agent reads it, so skills can inject dynamic context (dates, git
-        # state, detected tool versions, …).  Off by default because any
-        # content from the skill author runs on the host without approval;
-        # only enable for skill sources you trust.
-        "inline_shell": False,
-        # Timeout (seconds) for each !`cmd` one-liner when inline_shell is on.
-        "inline_shell_timeout": 10,
-        # Run the keyword/pattern security scanner on skills the agent
-        # writes via skill_manage (create/edit/patch).  Off by default
-        # because the agent can already execute the same code paths via
-        # terminal() with no gate, so the scan adds friction (blocks
-        # skills that mention risky keywords in prose) without meaningful
-        # security.  Turn on if you want the belt-and-suspenders — a
-        # dangerous verdict will then surface as a tool error to the
-        # agent, which can retry with the flagged content removed.
-        # External hub installs (trusted/community sources) are always
-        # scanned regardless of this setting.
-        "guard_agent_created": False,
-        # Advisory NVIDIA SkillEvaluator Tier 1 scan on hub installs
-        # (`son-of-anton skills install`). Runs ALONGSIDE the built-in skills
-        # guard (which stays the enforcement layer) and only when the
-        # optional `skillevaluator` binary is on PATH:
-        #   uv tool install --python 3.13 \
-        #     "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.1.0"
-        # Findings are informational — shown with file/line before the
-        # install confirmation, never blocking. Secrets-class findings
-        # (private keys, tokens, credentialed connection strings) are
-        # highlighted in red. On by default because it is a no-op
-        # without the binary installed.
-        "tier1_advisory": True,
-        # Approval gate for skill_manage (create/edit/patch/write_file/delete/
-        # remove_file), applied to BOTH foreground agent turns and the
-        # background self-improvement review fork.
-        #   false (default) — write freely; the gate is off (pre-gate behaviour)
-        #   true            — require approval: stage the write for review
-        #                     instead of committing (a SKILL.md is too large to
-        #                     review inline, so skills always stage rather than
-        #                     prompt). List with /skills pending, inspect with
-        #                     /skills diff <id> (full diff — CLI/file,
-        #                     never crammed into a chat bubble), apply with
-        #                     /skills approve <id> or drop with /skills reject <id>.
-        "write_approval": False,
-        # Per-mutation audit ledger (tracker #79686 P3). Every skill mutation
-        # appends one JSONL entry to ~/.son-of-anton/skills/.curator_ledger.jsonl
-        # with before/after file hashes; file contents are stored
-        # content-addressed (deduped) under ~/.son-of-anton/.curator_backups/blobs/.
-        # Telemetry, never a gate: ledger failures cannot block a mutation.
-        "ledger": True,
-    },
-
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
     # This section is only needed for son-of-anton-specific overrides; everything else
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
@@ -1857,7 +1775,6 @@ DEFAULT_CONFIG = {
     # Per-platform system-prompt hint overrides. Lets an admin append to or
     # replace Son of Anton' built-in platform hint for a single messaging platform
     # (Discord, Slack, Signal, ...) without affecting other platforms.
-    # Useful for enterprise/managed profiles that ship platform-aware skills.
     # Each key is a platform name; the value is either:
     #   { "append": "extra text" }   — keep the default hint, append text
     #   { "replace": "full text" }   — substitute the default hint entirely
@@ -1866,8 +1783,8 @@ DEFAULT_CONFIG = {
     #   platform_hints:
     #     slack:
     #       append: >
-    #         When tabular output would be useful, invoke the
-    #         table_formatting skill instead of emitting a Markdown table.
+    #         When tabular output would be useful, emit a fenced code block
+    #         instead of a Markdown table.
     "platform_hints": {},
 
     # Shell-script hooks — declarative bridge that invokes shell scripts
@@ -1953,8 +1870,7 @@ DEFAULT_CONFIG = {
         "allow_agent_scheduling": False,
         # Pre-dispatch configuration validation (T1-26): before constructing
         # any agent machinery for a job, verify the provider API key resolves
-        # (unless a fallback chain is configured), attached skills are ready
-        # (required env/commands present), and delivery platforms are
+        # (unless a fallback chain is configured) and delivery platforms are
         # configured. A failing job is recorded as last_status=blocked_config
         # with ONE alert (no re-alert every tick) and NO LLM call is made.
         # Set to false to restore the old behavior (fail during the run).
@@ -2064,7 +1980,7 @@ DEFAULT_CONFIG = {
             # Tiered disclosure: any deferrable (MCP/plugin) tool activates
             # the bridge; the listing then scales with catalog size.
             #   Tier 0 — no MCP/plugin tools: everything stays eager.
-            #   Tier 1 — catalog listing fits the budget: bridge + skills-style
+            #   Tier 1 — catalog listing fits the budget: bridge +
             #     name+description manifest (degrades to names-only).
             #   Tier 2 — per-tool listing over budget even names-only (e.g.
             #     Cloudflare's ~3,300-tool flat API surface): bare bridge +
@@ -2083,7 +1999,7 @@ DEFAULT_CONFIG = {
             "search_default_limit": 5,
             # Hard upper bound the model can request via ``limit``. Range 1..50.
             "max_search_limit": 20,
-            # Skills-style catalog listing embedded in the tool_search bridge
+            # Catalog listing embedded in the tool_search bridge
             # description: every deferred tool's name + first sentence of its
             # description (≤60 chars), grouped by MCP server / toolset. Keeps
             # capabilities discoverable while schemas stay deferred.
@@ -2215,7 +2131,7 @@ DEFAULT_CONFIG = {
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash
-        # commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this
+        # commands to sync (#19776: ~28-31s sync). Raise this
         # if your gateway hits "discord connect timed out" / "Timeout waiting
         # for connection to Discord" restart loops. ``0`` or negative disables
         # the timeout entirely (wait indefinitely). Bridged at startup to the
@@ -2786,7 +2702,7 @@ DEFAULT_CONFIG = {
 # Optional environment variables that enhance functionality
 # Optional environment variables that enhance functionality
 # (fork surface: deepseek/openai inference, web tools, memory providers,
-#  discord+slack messaging, skills hub, observability)
+#  discord+slack messaging, observability)
 OPTIONAL_ENV_VARS = {
     "DEEPSEEK_API_KEY": {
         "description": 'DeepSeek API key for direct DeepSeek access',
@@ -2866,7 +2782,7 @@ OPTIONAL_ENV_VARS = {
         "category": 'tool',
     },
     "GITHUB_TOKEN": {
-        "description": 'GitHub token for Skills Hub (higher API rate limits, skill publish)',
+        "description": 'GitHub token (authenticates GitHub release downloads; higher API rate limits)',
         "prompt": 'GitHub Token',
         "url": 'https://github.com/settings/tokens',
         "password": True,

@@ -14,14 +14,14 @@ scanners use it:
 - ``"all"``  — applied everywhere (classic prompt injection, exfiltration)
 - ``"context"`` — applied to context files + memory + tool results
   (promptware / C2 / behavioral hijack; broader detection)
-- ``"strict"`` — applied to memory writes + skill installs only
+- ``"strict"`` — applied to memory writes only
   (aggressive checks acceptable for user-curated content but too noisy
   for tool results)
 
 The split exists because tool results contain web pages, GitHub issues,
 and MCP responses — content the user did not author — and we want broad
 detection there, but blocking is reserved for paths where the user can
-intervene (memory writes, skill installs).
+intervene (memory writes).
 
 Pattern anchoring
 -----------------
@@ -36,8 +36,8 @@ Multi-word bypass
 Patterns use bounded ``(?:\\w+\\s+){0,8}`` filler between key tokens to prevent
 attackers from inserting a handful of words (e.g. "ignore all prior
 instructions" instead of "ignore all instructions") without allowing unbounded
-regex backtracking. This mirrors the fix applied to ``skills_guard.py`` in
-commit 4ea29978.
+regex backtracking (the same fix the install-time scanner got in commit
+4ea29978).
 """
 
 from __future__ import annotations
@@ -123,7 +123,7 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'(send|post|upload|transmit)\s+[^\n]{0,2048}\s+(to|at)\s+https?://', "send_to_url", "strict"),
     (rf'(include|output|print|share)\s+{_FILLER}(conversation|chat\s+history|previous\s+messages|full\s+context|entire\s+context)', "context_exfil", "strict"),
 
-    # ── Persistence / SSH backdoor (strict scope — memory + skills) ──
+    # ── Persistence / SSH backdoor (strict scope — memory writes) ──
     (r'authorized_keys', "ssh_backdoor", "strict"),
     (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access", "strict"),
     (r'\$HOME/\.son-of-anton/\.env|\~/\.son-of-anton/\.env', "son_of_anton_env", "strict"),
@@ -135,7 +135,7 @@ _PATTERNS: List[Tuple[str, str, str]] = [
 ]
 
 # Invisible / bidirectional unicode characters used in injection attacks.
-# Aligned with skills_guard.py INVISIBLE_CHARS — directional isolates
+# Aligned with tools/plugin_guard.py INVISIBLE_CHARS — directional isolates
 # (U+2066-U+2069) and invisible math operators (U+2062-U+2064) are real
 # attack tools.
 INVISIBLE_CHARS = frozenset({
@@ -214,8 +214,8 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     - ``"context"`` (default): adds promptware / C2 / role-play patterns —
       suitable for context files, memory entries, and tool results.
     - ``"strict"`` (broad): adds persistence / SSH backdoor / exfil-URL
-      patterns — appropriate for user-mediated writes (memory tool,
-      skills install) where false positives can be resolved interactively.
+      patterns — appropriate for user-mediated writes (memory tool) where
+      false positives can be resolved interactively.
 
     Also checks for invisible unicode characters (returned as
     ``"invisible_unicode_U+XXXX"`` so the caller can surface the offending
@@ -259,7 +259,7 @@ def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
     """Return a human-readable error string for the first threat found, or None.
 
     Convenience wrapper used by paths that block on the first hit
-    (memory tool writes, skills install) where the caller just needs a
+    (memory tool writes) where the caller just needs a
     yes/no + a message.
     """
     findings = scan_for_threats(content, scope=scope)

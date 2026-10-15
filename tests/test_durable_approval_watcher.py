@@ -57,7 +57,6 @@ def _stage(chat_key="chat-a", *, expires_at=None) -> dict:
             "description": "dangerous rm",
         },
         summary="dangerous rm",
-        origin="foreground",
         expires_at=expires_at,
         chat_key=chat_key,
     )

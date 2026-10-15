@@ -568,7 +568,6 @@ def build_turn_context(
     sanitize_surrogates,
     summarize_user_message_for_log,
     set_session_context,
-    set_current_write_origin,
     ra,
     moa_active: bool = False,
 ) -> TurnContext:
@@ -598,9 +597,6 @@ def build_turn_context(
 
     # Tag log records on this thread with the session ID for ``son-of-anton logs``.
     set_session_context(agent.session_id)
-
-    # Bind the skill write-origin ContextVar for this thread.
-    set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
 
     # Restore the primary runtime if the previous turn activated fallback.
     agent._restore_primary_runtime()

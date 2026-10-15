@@ -1,7 +1,6 @@
 """Community plugin index — fetch, cache, search, and name resolution.
 
-Mirrors the Skills Hub catalog pattern (``tools/skills_hub.py``): a static
-machine-readable JSON index hosted at a canonical URL, cached locally under
+A static machine-readable JSON index hosted at a canonical URL, cached locally under
 ``SON_OF_ANTON_HOME/cache/`` with a TTL, with a bundled seed file as the offline
 fallback and format reference.
 

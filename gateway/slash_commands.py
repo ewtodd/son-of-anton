@@ -222,18 +222,6 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
-        try:
-            from tools.env_passthrough import clear_env_passthrough
-            clear_env_passthrough()
-        except Exception:
-            pass
-
-        try:
-            from tools.credential_files import clear_credential_files
-            clear_credential_files()
-        except Exception:
-            pass
-
         # Reset the session
         new_entry = await self.async_session_store.reset_session(session_key)
 
@@ -520,8 +508,8 @@ class GatewaySlashCommandsMixin:
         even when no agent is resident. Falls back to a transcript estimate only
         as a last resort.
 
-        ``/context all`` appends the expanded per-skill / per-toolset cost
-        listings (requires a resident agent).
+        ``/context all`` appends the expanded per-toolset cost listing
+        (requires a resident agent).
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
 
@@ -3101,68 +3089,6 @@ class GatewaySlashCommandsMixin:
                    "reject <id>, approval <on|off>.")
         return out
 
-    async def _handle_skills_command(self, event: MessageEvent) -> str:
-        """Handle /skills on the gateway — pending skill-write review only.
-
-        The full skills hub (search/browse/install) stays CLI-only; this
-        handler covers the write-approval review surface (pending / approve /
-        reject / diff / approval) so a skill staged from a gateway session can
-        be reviewed from that same session. Gated by ``skills.write_approval``
-        via the CommandDef's ``gateway_config_gate``; also answers when staged
-        writes still exist after the gate was turned off (so they are never
-        stranded).
-
-        ``diff`` output is truncated for chat bubbles — the full diff lives in
-        the pending JSON file under ``~/.son-of-anton/pending/skills/``. (Note this is
-        the write-approval ``diff <id>``; the CLI also has an unrelated
-        ``son-of-anton skills diff <name>`` that diffs a bundled skill vs stock.)
-        """
-        from gateway.run import _son_of_anton_home
-        from son_of_anton_cli.write_approval_commands import handle_pending_subcommand
-        from tools import write_approval as wa
-
-        raw_args = event.get_command_args().strip()
-        args = raw_args.split() if raw_args else []
-        session_key = self._session_key_for_source(event.source)
-        config_path = _son_of_anton_home / "config.toml"
-
-        gate_on = wa.write_approval_enabled(wa.SKILLS)
-        wants_toggle = bool(args) and args[0].lower() in {"approval", "mode"}
-        if not gate_on and not wants_toggle and wa.pending_count(wa.SKILLS) == 0:
-            return ("Skill write approval is off (skills.write_approval). "
-                    "Enable it with /skills approval on, then review staged "
-                    "writes here with /skills pending.")
-
-        def _set_approval(enabled: bool):
-            # Write-back round-trip: raw read is correct (merged defaults must
-            # not be persisted back to the user's file).
-            from son_of_anton_cli.config import read_user_config_raw
-            user_config = read_user_config_raw(config_path)
-            user_config.setdefault("skills", {})["write_approval"] = bool(enabled)
-            atomic_config_write(config_path, user_config)
-            # New setting must take effect next message → drop cached agent.
-            self._evict_cached_agent(session_key)
-
-        out = handle_pending_subcommand(
-            wa.SKILLS, args, set_mode_fn=_set_approval,
-        )
-        if out is None:
-            return ("Unknown /skills subcommand on this platform. Use: pending, "
-                    "approve <id>, reject <id>, diff <id>, approval <on|off>. "
-                    "(Search/install are CLI-only.)")
-
-        # Chat bubbles can't hold a full skill diff — truncate and point at
-        # the real review surface. (Note: `son-of-anton skills diff <name>` is a
-        # *different* command — it diffs a bundled skill against its stock
-        # version — so we point at the pending JSON file, not that command.)
-        if args and args[0].lower() == "diff" and len(out) > 3000:
-            pending_id = args[1] if len(args) > 1 else "<id>"
-            out = (out[:3000]
-                   + "\n… (truncated — full diff in "
-                     f"~/.son-of-anton/pending/skills/{pending_id}.json)")
-        return out
-
-
     async def _handle_approvals_command(self, event: MessageEvent) -> str:
         """Show or persist the profile-wide dangerous-command approval mode."""
         from gateway.slash_access import policy_for_source
@@ -3982,8 +3908,7 @@ class GatewaySlashCommandsMixin:
         """Render the /context per-category block (plain text, no grid).
 
         Estimated (chars/4) — same engine as the desktop popover and /usage.
-        ``expanded`` appends the per-skill / per-toolset listings from the
-        prompt-size attribution mechanism. Runs in a thread (sync store reads);
+        ``expanded`` appends the per-toolset listing. Runs in a thread (sync store reads);
         returns [] and never raises so /context stays robust.
         """
         try:
@@ -4009,7 +3934,7 @@ class GatewaySlashCommandsMixin:
                 try:
                     details = compute_context_details(agent)
                 except Exception:
-                    details = {"skills": [], "toolsets": []}
+                    details = {"toolsets": []}
 
             return render_context_breakdown_lines(payload, details=details, grid=False)
         except Exception:
@@ -4135,7 +4060,7 @@ class GatewaySlashCommandsMixin:
 
             # Per-category context breakdown (estimated — chars/4 heuristic).
             # Same engine the desktop popover uses (PR #54907). The system
-            # prompt / tools / skills / memory slices read off the live agent;
+            # prompt / tools / memory slices read off the live agent;
             # the conversation slice is estimated from the session transcript.
             breakdown_lines = await asyncio.to_thread(
                 self._context_breakdown_lines, agent, source

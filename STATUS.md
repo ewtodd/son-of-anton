@@ -77,8 +77,8 @@ All of the following is merged to `main` and deployed on e-desktop:
   turn.
 - **TOML-only, and the physics package renamed.** Every user-authored format is
   TOML: `config.toml`, `cli-config.toml`, managed config, `skins/*.toml`,
-  `problems/*/problem.toml`, `plugin.toml` manifests, SKILL.md frontmatter
-  (still `---` fenced, TOML body), `locales/*.toml`, and status phrases.
+  `problems/*/problem.toml`, `plugin.toml` manifests, `locales/*.toml`, and
+  status phrases.
   Reading is stdlib `tomllib`; writing goes through the serializer in
   `utils.py` (no comment preservation — a TOML edit rewrites the document).
   The physics mode lives in `autophysicist/` (was `physics_intern/`), with the

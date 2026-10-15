@@ -473,12 +473,6 @@ if TYPE_CHECKING:
     from agent.display import ToolPreview
 
 
-GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
-    "Secure secret entry is not supported over messaging. "
-    "Load this skill in the local CLI to be prompted, or add the key to ~/.son-of-anton/.env manually."
-)
-
-
 def safe_url_for_log(url: str, max_len: int = 80) -> str:
     """Return a URL string safe for logs (no query/fragment/userinfo)."""
     if max_len <= 0:
@@ -1140,7 +1134,7 @@ def _media_delivery_denied_paths() -> List[Path]:
     # delivery (read/exfil) side can't trail the write side: a credential the
     # agent is forbidden to write or read must also never be auto-attached to a
     # chat reply. Enumerated explicitly per-file rather than denying the whole
-    # tree, so skills/, logs/, and ad-hoc agent-written files under ~/.son-of-anton
+    # tree, so logs/ and ad-hoc agent-written files under ~/.son-of-anton
     # stay deliverable (see #32090, #34425).
     _ROOT_CREDENTIAL_FILES = (
         ".env",
@@ -1150,7 +1144,7 @@ def _media_delivery_denied_paths() -> List[Path]:
         "config.toml",
         # Anthropic PKCE / OAuth refresh credential store.
         ".anthropic_oauth.json",
-        # Google Workspace skill: auto-refreshing OAuth token (mtime bumps
+        # Google Workspace: auto-refreshing OAuth token (mtime bumps
         # every turn, which defeated the strict-mode recency window) plus the
         # pending-exchange session/verifier file.
         "google_token.json",
@@ -4262,7 +4256,7 @@ class BasePlatformAdapter(ABC):
             [[audio_as_voice]]
             MEDIA:/path/to/audio.ogg
 
-        Skills that produce large/lossless images (e.g. info-graph, where a
+        Turns that produce large/lossless images (e.g. an info-graph, where a
         rendered JPG is 1-2 MB but the photo path recompresses to
         ~200 KB at 1280px) can use ``[[as_document]]`` to request unmodified
         delivery via sendDocument instead of sendPhoto/sendMediaGroup. The
@@ -5671,7 +5665,7 @@ class BasePlatformAdapter(ABC):
                 # Capture [[as_document]] before extract_media strips it, so the
                 # dispatch partition below can route image-extension files
                 # through send_document instead of send_multiple_images. Used
-                # by skills that produce large/lossless images (e.g. info-graph)
+                # by turns that produce large/lossless images (e.g. info-graphs)
                 # where the photo path's recompression destroys legibility.
                 force_document_attachments = "[[as_document]]" in response
 

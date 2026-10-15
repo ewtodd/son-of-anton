@@ -53,7 +53,7 @@ GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_pa
 def iter_sync_files(container_base: str = "/root/.son-of-anton") -> list[tuple[str, str]]:
     """Enumerate all files that should be synced to a remote environment.
 
-    Combines credentials, skills, and cache into a single flat list of
+    Combines credentials and cache into a single flat list of
     (host_path, remote_path) pairs.  Credential paths are remapped from
     the hardcoded /root/.son-of-anton to *container_base* because the remote
     user's home may differ (e.g. /home/daytona, /home/user).
@@ -63,7 +63,6 @@ def iter_sync_files(container_base: str = "/root/.son-of-anton") -> list[tuple[s
     from tools.credential_files import (
         get_credential_file_mounts,
         iter_cache_files,
-        iter_skills_files,
     )
 
     files: list[tuple[str, str]] = []
@@ -72,8 +71,6 @@ def iter_sync_files(container_base: str = "/root/.son-of-anton") -> list[tuple[s
             "/root/.son-of-anton", container_base, 1
         )
         files.append((entry["host_path"], remote))
-    for entry in iter_skills_files(container_base=container_base):
-        files.append((entry["host_path"], entry["container_path"]))
     for entry in iter_cache_files(container_base=container_base):
         files.append((entry["host_path"], entry["container_path"]))
     return files
@@ -459,9 +456,9 @@ class FileSyncManager:
 
         Uses the existing file mapping to find a remote->host directory
         pair, then applies the same prefix substitution to the new file.
-        For example, if the mapping has ``/root/.son-of-anton/skills/a.md`` →
-        ``~/.son-of-anton/skills/a.md``, a new remote file at
-        ``/root/.son-of-anton/skills/b.md`` maps to ``~/.son-of-anton/skills/b.md``.
+        For example, if the mapping has ``/root/.son-of-anton/cache/web/a.md`` →
+        ``~/.son-of-anton/cache/web/a.md``, a new remote file at
+        ``/root/.son-of-anton/cache/web/b.md`` maps to ``~/.son-of-anton/cache/web/b.md``.
         """
         mapping = file_mapping if file_mapping is not None else []
         upload_only_host_paths = upload_only_host_paths or set()

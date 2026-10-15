@@ -273,22 +273,6 @@ def get_default_son_of_anton_root() -> Path:
     return result
 
 
-def get_bundled_skills_dir(default: Path | None = None) -> Path:
-    """Return the bundled skills directory for source and packaged installs.
-
-    Resolution order:
-        1. ``SON_OF_ANTON_BUNDLED_SKILLS`` env var (Nix wrapper / explicit override)
-        2. Caller-supplied ``default`` (typically the source-checkout path)
-        3. ``<SON_OF_ANTON_HOME>/skills`` last-resort
-    """
-    override = os.getenv("SON_OF_ANTON_BUNDLED_SKILLS", "").strip()
-    if override:
-        return Path(override)
-    if default is not None:
-        return default
-    return get_son_of_anton_home() / "skills"
-
-
 def get_son_of_anton_dir(
     new_subpath: str,
     old_name: str,
@@ -920,14 +904,9 @@ def get_config_path() -> Path:
     """Return the path to ``config.toml`` under SON_OF_ANTON_HOME.
 
     Replaces the ``get_son_of_anton_home() / "config.toml"`` pattern repeated
-    in 7+ files (skill_utils.py, son_of_anton_logging.py, son_of_anton_time.py, etc.).
+    in 7+ files (son_of_anton_logging.py, son_of_anton_time.py, etc.).
     """
     return get_son_of_anton_home() / "config.toml"
-
-
-def get_skills_dir() -> Path:
-    """Return the path to the skills directory under SON_OF_ANTON_HOME."""
-    return get_son_of_anton_home() / "skills"
 
 
 def get_env_path() -> Path:

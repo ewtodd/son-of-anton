@@ -1,10 +1,10 @@
 """
 Shared platform registry for Son of Anton Agent.
 
-Single source of truth for platform metadata consumed by both
-skills_config (label display) and tools_config (default toolset
-resolution).  Import ``PLATFORMS`` from here instead of maintaining
-duplicate dicts in each module.
+Single source of truth for platform metadata consumed by tools_config
+(default toolset resolution) and the other platform menus.  Import
+``PLATFORMS`` from here instead of maintaining duplicate dicts in each
+module.
 """
 
 from collections import OrderedDict
@@ -51,7 +51,7 @@ def get_all_platforms() -> "OrderedDict[str, PlatformInfo]":
     """Return PLATFORMS merged with any plugin-registered platforms.
 
     Plugin platforms are appended after builtins.  This is the function
-    that tools_config and skills_config should use for platform menus.
+    that tools_config should use for platform menus.
     """
     merged = OrderedDict(PLATFORMS)
     try:

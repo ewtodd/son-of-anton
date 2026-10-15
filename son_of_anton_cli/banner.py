@@ -958,7 +958,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     tools = tools or []
 
     # Single centred column. The old two-column grid existed to park the
-    # per-category tool/skill listings beside the model info; with those gone
+    # per-category tool listings beside the model info; with those gone
     # a second column just pushes the counts away from what they describe.
     layout_table = Table.grid(padding=(0, 2))
     layout_table.add_column("body", justify="center")
@@ -1001,7 +1001,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         left_lines.append(f"[dim {session_color}]Session: {session_id}")
     left_content = "\n".join(left_lines)
 
-    # The per-category tool and skill listings used to live here. They were
+    # The per-category tool listings used to live here. They were
     # already truncated ("+N more", "and N more toolsets...") at any normal
     # terminal width, so they told the user less than the counts below while
     # filling most of the screen on every launch. /tools and /toolsets show

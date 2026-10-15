@@ -296,7 +296,7 @@ def _is_son_of_anton_internal_secret(key: str) -> bool:
     ``_sanitize_subprocess_env`` filters, the Docker passthrough filter, and the
     non-terminal :func:`son_of_anton_subprocess_env` helper all call it, so the
     dynamic patterns are stripped **unconditionally** regardless of
-    ``env_passthrough`` skill registration or ``inherit_credentials``. Nothing
+    ``env_passthrough`` or ``inherit_credentials``. Nothing
     a model-driving CLI legitimately needs matches these patterns.
     """
     upper = key.upper()
@@ -480,9 +480,9 @@ def son_of_anton_subprocess_env(*, inherit_credentials: bool = False) -> dict[st
     detached gateway).  Use this instead of copying ``os.environ`` directly
     so strip-by-default is the uniform policy across every spawn site, with a
     single source of truth (``_SON_OF_ANTON_PROVIDER_ENV_BLOCKLIST``).  The terminal
-    / execute_code path keeps using :func:`_sanitize_subprocess_env`, which is
-    skill-aware (``env_passthrough``); this helper is for spawns that have no
-    skill-passthrough concept.
+    / execute_code path keeps using :func:`_sanitize_subprocess_env`, which
+    honors ``env_passthrough``; this helper is for spawns that have no
+    passthrough concept.
 
     Two-tier stripping:
 

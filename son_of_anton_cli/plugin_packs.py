@@ -21,7 +21,6 @@ Format (canonical)::
     config:                                # optional plugins.entries seeds
       son-of-anton-media-studio:
         default_model: flux-3
-    skills: []                             # declared seam — NOT auto-installed
 
 Supply-chain posture:
 
@@ -33,9 +32,6 @@ Supply-chain posture:
 * Capability consent is NEVER bulk-granted: after each plugin installs,
   its declared capabilities ride the exact same per-plugin consent flow
   as a normal ``son-of-anton plugins install`` (#64228).
-
-``skills:`` is parsed and displayed but not installed — wiring skill-hub
-ids into the skills installer is a documented follow-up seam.
 """
 
 from __future__ import annotations

@@ -65,11 +65,11 @@ def _ensure_croniter() -> bool:
 # store under its own SON_OF_ANTON_HOME, and a profile-scoped gateway runs that
 # profile's jobs under that same SON_OF_ANTON_HOME — so a job authored in profile
 # `coder` lives in `~/.son-of-anton/profiles/coder/cron/jobs.json` and executes with
-# `coder`'s `.env`, `config.toml`, and skills. We deliberately anchor on
+# `coder`'s `.env` and `config.toml`. We deliberately anchor on
 # `get_son_of_anton_home()` (the active profile home), NOT `get_default_son_of_anton_root()`
 # (the shared root). Anchoring at the root would funnel every profile's jobs
 # into one shared `jobs.json` and run them under whatever SON_OF_ANTON_HOME the
-# ticker process happens to have — leaking config/credentials/skills across
+# ticker process happens to have — leaking config/credentials across
 # profiles (the security boundary #4707 was filed for). Do NOT change this to
 # the default root: that re-breaks per-profile isolation. See also the dynamic
 # `_get_son_of_anton_home()` / `_get_lock_paths()` resolution in cron/scheduler.py.

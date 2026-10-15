@@ -61,14 +61,14 @@ def tool_progress_hint_cli() -> str:
 def openclaw_residue_hint_cli() -> str:
     """Banner shown the first time Son of Anton starts and finds ``~/.openclaw/``.
 
-    Points users at ``son-of-anton claw migrate`` (non-destructive port of config,
-    memory, and skills) first. ``son-of-anton claw cleanup`` is mentioned as the
+    Points users at ``son-of-anton claw migrate`` (non-destructive port of config
+    and memory) first. ``son-of-anton claw cleanup`` is mentioned as the
     follow-up step for users who have already migrated and want to archive
     the old directory — with a warning that archiving breaks OpenClaw.
     """
     return (
         "A legacy OpenClaw directory was detected at ~/.openclaw/.\n"
-        "To port your config, memory, and skills over to Son of Anton, run "
+        "To port your config and memory over to Son of Anton, run "
         "`son-of-anton claw migrate`.\n"
         "If you've already migrated and want to archive the old directory, "
         "run `son-of-anton claw cleanup` (renames it to ~/.openclaw.pre-migration — "

@@ -18,7 +18,6 @@ from .shared_metrics_contract import (
     client_active_counter,
     client_resource,
     model_call_dimensions,
-    skill_counter,
     task_counter,
     tool_approval_counter,
     tool_call_dimensions,
@@ -73,11 +72,7 @@ class SharedMetricsSubscriber:
             dimensions = tool_call_dimensions(event)
             metric_name = TOOL_CALL_METRIC
         if dimensions is None:
-            metric = (
-                task_counter(event)
-                or tool_approval_counter(event)
-                or skill_counter(event)
-            )
+            metric = task_counter(event) or tool_approval_counter(event)
             if metric is None:
                 return
             metric_name, dimensions = metric

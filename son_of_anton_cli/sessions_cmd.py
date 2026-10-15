@@ -345,7 +345,7 @@ def cmd_sessions(args, sessions_parser=None):
         if not session_id:
             print(f"Session '{args.session_id}' not found.")
             return 1
-        print(f"Analyzing {session_id} for memories and skills ...")
+        print(f"Analyzing {session_id} for memories ...")
         status = session_analysis.run_session_analysis(session_id, db=db)
         if status == 0:
             print("Analysis complete.")

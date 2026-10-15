@@ -1254,7 +1254,7 @@ def init_agent(
     agent._end_session_on_close = True
     # When True, this agent NEVER persists to the canonical session store
     # (state.db) or the JSON snapshot, regardless of session_id. Set on the
-    # background skill/memory review fork so its harness turn can't leak into
+    # background helper forks so their harness turn can't leak into
     # the user's real session and hijack the next live turn. Default False.
     agent._persist_disabled = False
     agent._session_init_model_config = {
@@ -1278,7 +1278,7 @@ def init_agent(
     from tools.todo_tool import TodoStore
     agent._todo_store = TodoStore()
     
-    # Load config once for memory, skills, and compaction sections
+    # Load config once for memory and compaction sections
     try:
         from son_of_anton_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
@@ -1549,7 +1549,7 @@ def init_agent(
     # affecting other platforms. Shape:
     #   platform_hints:
     #     whatsapp:
-    #       append: "When tabular output would help, invoke the ... skill."
+    #       append: "When tabular output would help, use a fenced code block."
     #     slack:
     #       replace: "Custom Slack hint that fully replaces the default."
     # Stored verbatim; resolution happens in agent/system_prompt.py against

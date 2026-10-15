@@ -519,7 +519,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 -- Partial index for the Insights assistant tool-call scan
--- (agent/insights.py _get_tool_usage / _get_skill_usage): those queries filter
+-- (agent/insights.py _get_tool_usage): that query filters
 -- messages by role='assistant' AND tool_calls IS NOT NULL, a small fraction of
 -- rows on a large state.db. role and tool_calls are base columns, so this can
 -- live in SCHEMA_SQL rather than DEFERRED_INDEX_SQL.

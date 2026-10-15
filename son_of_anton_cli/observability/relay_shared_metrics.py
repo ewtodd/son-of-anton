@@ -21,15 +21,11 @@ from .shared_metrics_contract import (
     MODEL_CALL_SCOPE,
     SCHEMA_KEY,
     SCHEMA_VERSION,
-    SKILL_LIFECYCLE_MARK,
-    SKILL_LOAD_MARK,
     SUBSCRIBER_NAME,
     TASK_SCOPE,
     TOOL_APPROVAL_MARK,
     TOOL_CALL_SCOPE,
     model_call_fields,
-    skill_lifecycle_fields,
-    skill_load_fields,
     task_start_fields,
     task_terminal_fields,
     task_terminal_state,
@@ -53,7 +49,6 @@ HANDLED_HOOKS = frozenset({
     "post_approval_response",
     "post_api_request",
     "api_request_error",
-    "on_skill_lifecycle",
     "subagent_stop",
 })
 
@@ -502,55 +497,6 @@ class _Runtime:
             if tool_call is None:
                 tool_call = self._open_tool_call(task, event)
             self._finish_tool_call(task, tool_call, event)
-
-    def record_skill_lifecycle(self, event: dict[str, Any]) -> None:
-        """Emit one allowlisted skill fact without its local identity."""
-        action = str(event.get("action") or "").strip().lower()
-        if action == "loaded":
-            mark = SKILL_LOAD_MARK
-            fields = skill_load_fields(event)
-        else:
-            mark = SKILL_LIFECYCLE_MARK
-            fields = skill_lifecycle_fields(event)
-        if fields is None:
-            return
-
-        session_id = str(event.get("session_id") or "")
-        task_id = str(event.get("task_id") or "")
-        session = self._task_session(
-            event,
-            allow_task_id_fallback=not session_id,
-        )
-        task = session.tasks.get(task_id) if session is not None else None
-        if session is not None:
-            if task is None:
-                return
-            with session.lock:
-                if session.closing:
-                    return
-                if (
-                    session.tasks.get(task.task_id) is not task
-                    or not self._event_matches_task_turn(task, event)
-                ):
-                    return
-                self._run_in_task(
-                    task,
-                    self.relay.scope.event,
-                    mark,
-                    handle=task.handle,
-                    data=fields,
-                    metadata=self._event_metadata(),
-                )
-            return
-        if session_id and task_id:
-            return
-
-        self.relay.get_scope_stack()
-        self.relay.scope.event(
-            mark,
-            data=fields,
-            metadata=self._event_metadata(),
-        )
 
     def end_model_call(self, event: dict[str, Any]) -> None:
         session = self._task_session(event, allow_task_id_fallback=True)
@@ -1113,8 +1059,6 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
             runtime.record_tool_call(_with_runtime_toolset(kwargs))
         elif hook_name == "post_approval_response":
             runtime.record_approval(kwargs)
-        elif hook_name == "on_skill_lifecycle":
-            runtime.record_skill_lifecycle(kwargs)
         elif hook_name == "post_api_request":
             runtime.end_model_call(kwargs)
         elif hook_name == "api_request_error":

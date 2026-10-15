@@ -20,8 +20,6 @@ TASK_SCOPE = "son-of-anton.task_run"
 TOOL_CALL_SCOPE = "son-of-anton.tool_call"
 CLIENT_ACTIVE_MARK = "son-of-anton.client.active"
 TOOL_APPROVAL_MARK = "son-of-anton.tool_approval"
-SKILL_LIFECYCLE_MARK = "son-of-anton.skill.lifecycle"
-SKILL_LOAD_MARK = "son-of-anton.skill.load"
 SUBSCRIBER_NAME = "son-of-anton.nemo_relay.shared_metrics"
 CLIENT_ACTIVE_METRIC = "son-of-anton.client.active"
 LEGACY_MODEL_CALL_METRIC = "son-of-anton.model_call.count"
@@ -30,8 +28,6 @@ TASK_STARTED_METRIC = "son-of-anton.task_run.started"
 TASK_FINISHED_METRIC = "son-of-anton.task_run.finished"
 TOOL_CALL_METRIC = "son-of-anton.tool_call.count"
 TOOL_APPROVAL_METRIC = "son-of-anton.tool_approval.count"
-SKILL_LIFECYCLE_METRIC = "son-of-anton.skill.lifecycle.count"
-SKILL_LOAD_METRIC = "son-of-anton.skill.load.count"
 MODEL_IDENTIFIER_MAX_LENGTH = 256
 PROVIDER_IDENTIFIER_MAX_LENGTH = 64
 _METRIC_IDENTIFIER_CHARACTERS = frozenset(
@@ -121,7 +117,6 @@ TOOL_CATEGORIES: frozenset[str] = frozenset({
     "planning",
     "project",
     "scheduler",
-    "skill",
     "terminal",
     "unknown",
     "web",
@@ -158,28 +153,6 @@ TOOL_LATENCY_BUCKETS: frozenset[str] = frozenset({
     "unknown",
 })
 TOOL_RETRY_BUCKETS: frozenset[str] = COUNT_BUCKETS | frozenset({"unknown"})
-SKILL_LIFECYCLE_ACTIONS: frozenset[str] = frozenset({
-    "archived",
-    "created",
-    "edited",
-    "installed",
-    "patched",
-    "restored",
-    "stale",
-})
-SKILL_PROVENANCES: frozenset[str] = frozenset({
-    "agent_created",
-    "external",
-    "installed",
-    "local",
-    "unknown",
-})
-SKILL_REUSE_STATES: frozenset[str] = frozenset({"first_use", "reused"})
-SKILL_POST_PATCH_STATES: frozenset[str] = frozenset({
-    "no_new_patch",
-    "not_applicable",
-    "reused_after_patch",
-})
 CLIENT_OS_FAMILIES: frozenset[str] = frozenset({
     "linux",
     "macos",
@@ -345,22 +318,10 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "attribution": TOOL_APPROVAL_ATTRIBUTIONS,
         "outcome": TOOL_APPROVAL_OUTCOMES - {"not_required"},
     },
-    SKILL_LIFECYCLE_METRIC: {
-        "action": SKILL_LIFECYCLE_ACTIONS,
-        "provenance": SKILL_PROVENANCES,
-    },
-    SKILL_LOAD_METRIC: {
-        "post_patch_state": SKILL_POST_PATCH_STATES,
-        "provenance": SKILL_PROVENANCES,
-        "reuse_state": SKILL_REUSE_STATES,
-        "use_count_bucket": COUNT_BUCKETS,
-    },
 }
 COUNTER_METRICS: frozenset[str] = frozenset({
     CLIENT_ACTIVE_METRIC,
     MODEL_ROUTE_METRIC,
-    SKILL_LIFECYCLE_METRIC,
-    SKILL_LOAD_METRIC,
     TASK_FINISHED_METRIC,
     TASK_STARTED_METRIC,
     TOOL_APPROVAL_METRIC,
@@ -600,86 +561,6 @@ def tool_approval_counter(event: Any) -> tuple[str, dict[str, str]] | None:
     return TOOL_APPROVAL_METRIC, dimensions
 
 
-def skill_counter(event: Any) -> tuple[str, dict[str, str]] | None:
-    """Return one validated skill lifecycle or load counter from a safe mark."""
-    if not _event_metadata_is_valid(event):
-        return None
-    if (
-        str(getattr(event, "kind", "") or "") != "mark"
-        or getattr(event, "category", None) is not None
-        or getattr(event, "scope_category", None) is not None
-        or getattr(event, "category_profile", None) is not None
-    ):
-        return None
-
-    name = str(getattr(event, "name", "") or "")
-    data = getattr(event, "data", None)
-    if name == SKILL_LIFECYCLE_MARK:
-        metric_name = SKILL_LIFECYCLE_METRIC
-        expected_fields = {"action", "provenance"}
-    elif name == SKILL_LOAD_MARK:
-        metric_name = SKILL_LOAD_METRIC
-        expected_fields = {
-            "post_patch_state",
-            "provenance",
-            "reuse_state",
-            "use_count_bucket",
-        }
-    else:
-        return None
-    if not isinstance(data, dict) or set(data) != expected_fields:
-        return None
-    dimensions = {field: data.get(field) for field in sorted(expected_fields)}
-    if not counter_dimensions_are_valid(metric_name, dimensions):
-        return None
-    return metric_name, dimensions
-
-
-def skill_lifecycle_fields(kwargs: dict[str, Any]) -> dict[str, str] | None:
-    """Build bounded fields for one successful non-load skill transition."""
-    action = str(kwargs.get("action") or "").strip().lower()
-    if action not in SKILL_LIFECYCLE_ACTIONS:
-        return None
-    return {
-        "action": action,
-        "provenance": skill_provenance(kwargs.get("provenance")),
-    }
-
-
-def skill_load_fields(kwargs: dict[str, Any]) -> dict[str, str] | None:
-    """Build bounded skill-use fields without exporting local skill identity."""
-    use_count = kwargs.get("use_count")
-    reused = kwargs.get("reused")
-    reuse_after_patch = kwargs.get("reuse_after_patch")
-    if (
-        isinstance(use_count, bool)
-        or not isinstance(use_count, int)
-        or use_count < 1
-        or not isinstance(reused, bool)
-        or not isinstance(reuse_after_patch, bool)
-        or (reuse_after_patch and not reused)
-    ):
-        return None
-    return {
-        "post_patch_state": (
-            "not_applicable"
-            if not reused
-            else "reused_after_patch"
-            if reuse_after_patch
-            else "no_new_patch"
-        ),
-        "provenance": skill_provenance(kwargs.get("provenance")),
-        "reuse_state": "reused" if reused else "first_use",
-        "use_count_bucket": count_bucket(use_count),
-    }
-
-
-def skill_provenance(value: Any) -> str:
-    """Normalize producer provenance to the closed shared-metrics taxonomy."""
-    normalized = str(value or "").strip().lower()
-    return normalized if normalized in SKILL_PROVENANCES else "unknown"
-
-
 def execution_surface(kwargs: dict[str, Any]) -> str:
     """Normalize the safe session surface carried by the parent Relay scope."""
     value = (
@@ -825,8 +706,6 @@ def tool_category(kwargs: dict[str, Any]) -> str:
         return "memory"
     if toolset == "cronjob":
         return "scheduler"
-    if toolset == "skills":
-        return "skill"
     if toolset == "x_search":
         return "web"
     if toolset.startswith(("discord", "slack", "signal")):

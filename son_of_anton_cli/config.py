@@ -662,7 +662,7 @@ def ensure_son_of_anton_home():
         _secure_dir(home)
         for subdir in (
             "cron", "sessions", "logs", "memories",
-            "pairing", "hooks", "image_cache", "audio_cache", "skills",
+            "pairing", "hooks", "image_cache", "audio_cache",
         ):
             d = home / subdir
             d.mkdir(parents=True, exist_ok=True)
@@ -961,53 +961,6 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
                 _check(default_value, current[key], full_key)
 
     _check(DEFAULT_CONFIG, config)
-    return missing
-
-
-def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
-    """Return skill-declared config vars that are missing or empty in config.toml.
-
-    Scans all enabled skills for ``metadata.son-of-anton.config`` entries, then checks
-    which ones are absent or empty under ``skills.config.<key>`` in the user's
-    config.toml.  Returns a list of dicts suitable for prompting.
-    """
-    try:
-        from agent.skill_utils import discover_all_skill_config_vars, SKILL_CONFIG_PREFIX
-    except Exception:
-        return []
-
-    try:
-        all_vars = discover_all_skill_config_vars()
-    except Exception as e:
-        # A malformed SKILL.md, unreadable external skill dir, or similar
-        # should never break `son-of-anton update`.  Skill-config prompting is a
-        # post-migration nicety, not a blocker.
-        import logging
-        logging.getLogger(__name__).debug(
-            "discover_all_skill_config_vars failed: %s", e
-        )
-        return []
-    if not all_vars:
-        return []
-
-    config = load_config()
-    missing: List[Dict[str, Any]] = []
-    for var in all_vars:
-        # Skill config is stored under skills.config.<logical_key>
-        storage_key = f"{SKILL_CONFIG_PREFIX}.{var['key']}"
-        parts = storage_key.split(".")
-        current = config
-        value = None
-        for part in parts:
-            if isinstance(current, dict) and part in current:
-                current = current[part]
-                value = current
-            else:
-                value = None
-                break
-        # Missing = key doesn't exist or is empty string
-        if value is None or (isinstance(value, str) and not value.strip()):
-            missing.append(var)
     return missing
 
 
@@ -1823,7 +1776,7 @@ def check_config_version() -> Tuple[int, int]:
 
 # Fields that are valid at root level of config.toml.
 # DEFAULT_CONFIG is the single source of truth for documented roots; keep this
-# set derived so new defaults (skills, security, browser, …) are accepted
+# set derived so new defaults (security, browser, …) are accepted
 # automatically. A few optional/legacy roots are valid on disk but intentionally
 # absent from DEFAULT_CONFIG (omitted when unused / alternate schema forms).
 _EXTRA_KNOWN_ROOT_KEYS = {
@@ -1985,7 +1938,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     # Only provider-like fields (base_url, api_key, …) are flagged. Arbitrary
     # unknown top-level keys are deliberately NOT warned about: top-level
     # scalars are bridged into os.environ (gateway/run.py, son-of-anton send) so
-    # users can feed skills and external apps env-style keys from config.toml
+    # users can feed external apps env-style keys from config.toml
     # — a closed-world allowlist can never enumerate those.
     for key in config:
         if key.startswith("_"):
@@ -2309,49 +2262,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         config = read_raw_config()
         config["_config_version"] = latest_ver
         _persist_migration(config)
-
-    # ── Skill-declared config vars ──────────────────────────────────────
-    # Skills can declare config.toml settings they need via
-    # metadata.son-of-anton.config in their SKILL.md frontmatter.
-    # Prompt for any that are missing/empty.
-    missing_skill_config = get_missing_skill_config_vars()
-    if missing_skill_config and interactive and not quiet:
-        print(f"\n  {len(missing_skill_config)} skill setting(s) not configured:")
-        for var in missing_skill_config:
-            skill_name = var.get("skill", "unknown")
-            print(f"    • {var['key']} — {var['description']} (from skill: {skill_name})")
-        print()
-        try:
-            answer = input("  Configure skill settings? [y/N]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            answer = "n"
-
-        if answer in {"y", "yes"}:
-            print()
-            config = read_raw_config()
-            try:
-                from agent.skill_utils import SKILL_CONFIG_PREFIX
-            except Exception:
-                SKILL_CONFIG_PREFIX = "skills.config"
-            for var in missing_skill_config:
-                default = var.get("default", "")
-                default_hint = f" (default: {default})" if default else ""
-                value = line_input(f"  {var['prompt']}{default_hint}: ").strip()
-                if not value and default:
-                    value = str(default)
-                if value:
-                    storage_key = f"{SKILL_CONFIG_PREFIX}.{var['key']}"
-                    _set_nested(config, storage_key, value)
-                    results["config_added"].append(var["key"])
-                    print(f"  ✓ Saved {var['key']} = {value}")
-                else:
-                    results["warnings"].append(
-                        f"Skipped {var['key']} — skill '{var.get('skill', '?')}' may ask for it later"
-                    )
-                print()
-            _persist_migration(config)
-        else:
-            print("  Set later with: son-of-anton config set <key> <value>")
 
     return results
 
@@ -4101,20 +4011,6 @@ def remove_env_value(key: str) -> bool:
     return found
 
 
-def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
-    # Route through the unified credential lifecycle so a rotation via the
-    # secret-capture path also refreshes any config.toml mirror of the old
-    # value and lifts a prior env-source suppression (#62269 fix family).
-    from son_of_anton_cli.credential_lifecycle import save_provider_env_credential
-
-    save_provider_env_credential(key, value)
-    return {
-        "success": True,
-        "stored_as": key,
-        "validated": False,
-    }
-
-
 def reload_env() -> int:
     """Re-read ~/.son-of-anton/.env into os.environ. Returns count of vars updated.
 
@@ -4436,23 +4332,6 @@ def show_config():
     discord_token = get_env_value('DISCORD_BOT_TOKEN')
     
     print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
-    
-    # Skill config
-    try:
-        from agent.skill_utils import discover_all_skill_config_vars, resolve_skill_config_values
-        skill_vars = discover_all_skill_config_vars()
-        if skill_vars:
-            resolved = resolve_skill_config_values(skill_vars)
-            print()
-            print(color("◆ Skill Settings", Colors.CYAN, Colors.BOLD))
-            for var in skill_vars:
-                key = var["key"]
-                value = resolved.get(key, "")
-                skill_name = var.get("skill", "")
-                display_val = str(value) if value else color("(not set)", Colors.DIM)
-                print(f"  {key:<20s} {display_val}  {color(f'[{skill_name}]', Colors.DIM)}")
-    except Exception:
-        pass
 
     print()
     print(color("─" * 60, Colors.DIM))
@@ -5083,7 +4962,7 @@ def set_config_value(key: str, value: str, force: bool = False):
 
     # Unknown-key notice (#34067): the key is still written (arbitrary keys
     # are supported — top-level scalars are bridged into os.environ for
-    # skills and external apps), but a plausible-but-wrong dotted path like
+    # external apps), but a plausible-but-wrong dotted path like
     # ``gateway.discord.gateway_restart_notification`` previously reported
     # bare success and left the user debugging behavior that never changed.
     # Warn after the write so the user gets immediate feedback plus a
@@ -5303,7 +5182,7 @@ def set_config_value(key: str, value: str, force: bool = False):
             print(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
         print(color(
             "  (Custom top-level keys are supported and bridged to the "
-            "environment for skills/external tools. Use --force to skip "
+            "environment for external tools. Use --force to skip "
             "this notice.)",
             Colors.DIM,
         ))
@@ -5411,7 +5290,7 @@ def config_command(args):
             print("Examples:")
             print("  son-of-anton config get model")
             print("  son-of-anton config get terminal.backend")
-            print("  son-of-anton config get skills.config --json")
+            print("  son-of-anton config get memory --json")
             sys.exit(1)
         get_config_value(key, as_json=getattr(args, 'json', False))
 

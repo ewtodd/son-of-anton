@@ -887,14 +887,14 @@ def redact_sensitive_text(
     # request targets) is intentionally OFF. Many legitimate workflows pass
     # opaque tokens through query strings — magic-link checkouts, OAuth
     # callbacks the agent is meant to follow, pre-signed share URLs — and
-    # blanket-redacting param values by name breaks those skills mid-flow.
+    # blanket-redacting param values by name breaks those workflows mid-flow.
     # Known credential shapes (sk-, ghp_, JWTs, etc.) inside URLs are still
     # caught by _PREFIX_RE and _JWT_RE above. DB connection-string passwords
     # are still caught by _DB_CONNSTR_RE. The ONE userinfo case still redacted
     # is the colon-less bare-token form ``scheme://TOKEN@host`` (#6396, handled
     # by _URL_BARE_TOKEN_RE in the ``://`` block above): a bare credential in
     # userinfo is never a round-trip workflow token (those live in the query
-    # string), so masking it can't break a skill. The ``user:pass@`` form is
+    # string), so masking it can't break a workflow. The ``user:pass@`` form is
     # left to pass through per #34029.
 
     if redact_url_credentials:

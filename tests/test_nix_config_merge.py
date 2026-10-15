@@ -96,12 +96,12 @@ def test_removing_the_last_child_removes_the_empty_parent(
 
 
 def test_runtime_written_keys_are_never_touched(merge_module, tmp_path) -> None:
-    write_config(tmp_path, {"skills": {"autoload": True}})
+    write_config(tmp_path, {"memory": {"write_approval": True}})
     result = run_merge(merge_module, tmp_path, {"model": {"default": "qwen"}})
-    assert result["skills"] == {"autoload": True}
+    assert result["memory"] == {"write_approval": True}
     # ...and still there after a second activation that knows the state file.
     result = run_merge(merge_module, tmp_path, {"model": {"default": "qwen"}})
-    assert result["skills"] == {"autoload": True}
+    assert result["memory"] == {"write_approval": True}
 
 
 def test_a_value_edited_after_nix_wrote_it_survives_retirement(

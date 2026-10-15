@@ -22,23 +22,6 @@ logger = logging.getLogger(__name__)
 # Exclusion rules
 # ---------------------------------------------------------------------------
 
-# Directory names to skip entirely (matched against each path component)
-# ``son-of-anton`` is special-cased to root level only in ``_should_exclude``
-# so that skill directories like ``skills/autonomous-ai-agents/son-of-anton/``
-# are not accidentally excluded.
-#
-# The dependency/cache entries below matter for more than tidiness: without
-# them a single plugin venv, MCP-server install, or pip/uv cache living under
-# SON_OF_ANTON_HOME gets walked file-by-file, ballooning a backup to hundreds of
-# thousands of entries that crawl for hours — the exact "backup stuck for
-# days / 426543 files" symptom users hit. The dependency/test-env names mostly
-# mirror ``agent.skill_utils.EXCLUDED_SKILL_DIRS`` (the project's canonical
-# "regeneratable dir" set); ``.cache`` is an additional backup-only entry, as
-# it names a broad regeneratable cache convention (pip/uv/etc.) that the skill
-# scanner doesn't need to prune but a backup walk does. We deliberately do NOT
-# exclude ``.archive`` here because the curator's ``skills/.archive/`` holds
-# restorable user skills that must survive a backup.
-
 # File-name suffixes to skip
 
 # File names to skip (runtime state that's meaningless on another machine)
@@ -139,7 +122,7 @@ def is_zeroed_sqlite_file(
 
 # Critical state files to include in quick snapshots (relative to SON_OF_ANTON_HOME).
 # Everything else is either regeneratable (logs, cache) or managed separately
-# (skills, repo, sessions/).
+# (repo, sessions/).
 #
 # Entries may be individual files OR directories.  Directories are captured
 # recursively; missing entries are silently skipped.  Pairing data lives in

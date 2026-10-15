@@ -52,7 +52,6 @@ Examples:
     son-of-anton sessions list          List past sessions
     son-of-anton sessions browse        Interactive session picker
     son-of-anton cron list              List scheduled jobs
-    son-of-anton skills                 Manage skills
     son-of-anton mcp                    Manage MCP servers
     son-of-anton gateway                Run the messaging gateway in the foreground
     son-of-anton status                 Show component status

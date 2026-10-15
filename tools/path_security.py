@@ -1,8 +1,8 @@
 """Shared path validation helpers for tool implementations.
 
 Extracts the ``resolve() + relative_to()`` and ``..`` traversal check
-patterns previously duplicated across skill_manager_tool, skills_tool,
-skills_hub, cronjob_tools, and credential_files.
+patterns previously duplicated across tool implementations (cronjob_tools,
+credential_files, ...).
 """
 
 import logging

@@ -1,43 +1,29 @@
 #!/usr/bin/env python3
-"""Write-approval gate + pending store for memory and skill writes.
+"""Write-approval gate + pending store for memory writes and durable exec approvals.
 
-Background
-----------
-The agent writes to two persistent stores that survive across sessions:
-
-  * **memory** — MEMORY.md / USER.md, small (~200 char) declarative entries
-  * **skills** — SKILL.md + supporting files, potentially huge (10-100 KB)
-
-Both stores are written from two origins:
-
-  * **foreground** — a normal agent turn (user is present / chatting)
-  * **background_review** — the self-improvement review fork that runs after a
-    turn and autonomously decides what to save (the source of the
-    "wrong assumptions" users complained about)
-
-This module lets the user gate those writes per-subsystem with a boolean
-``write_approval``:
+Memory gate
+-----------
+The agent writes MEMORY.md / USER.md, small (~200 char) declarative entries
+that survive across sessions. ``memory.write_approval`` gates those writes:
 
   * ``false`` (default) — write freely (the pre-gate behaviour)
   * ``true``            — require approval: do not commit the write; either
-    prompt inline (memory, interactive CLI only) or **stage** it to a pending
-    store and surface it for the user to approve or reject out-of-band
+    prompt inline (interactive CLI only) or **stage** it to a pending store
+    and surface it for the user to approve or reject out-of-band
+    (``/memory pending|approve|reject``)
 
-The size asymmetry between memory and skills is real and unavoidable: a memory
-entry can be reviewed inline in a chat bubble; a 100 KB SKILL.md cannot. So
-the gate stages BOTH to disk, but review affordances differ by subsystem
-(see ``son_of_anton_cli`` slash handlers): memory shows full content, skills show
-metadata + a one-line gist + a ``diff`` escape hatch (CLI/dashboard/file).
+Staging is used whenever there is no inline prompt channel — gateway
+sessions, scripts, cron. Interactive CLI writes prompt inline via the
+dangerous-command approval callback.
 
-Staging is mandatory for background-origin writes (a daemon thread cannot
-block on an interactive prompt) and for gateway sessions (no inline prompt
-channel — review happens via ``/memory pending``). Foreground CLI memory
-writes prompt inline via the dangerous-command approval callback; skill
-writes always stage (too big to eyeball mid-loop).
+Durable exec approvals
+----------------------
+The same pending store carries dangerous-command approval requests for a
+headless process (``exec``): the blocked process writes the request, a chat
+relays the decision with :func:`decide_pending`, and the process polls.
 
-Pending records live under ``<SON_OF_ANTON_HOME>/pending/{memory,skills}/<id>.json``
-so they survive process restarts and can be reviewed from CLI, gateway, or the
-web dashboard.
+Pending records live under ``<SON_OF_ANTON_HOME>/pending/{memory,exec}/<id>.json``
+so they survive process restarts and can be reviewed from CLI or gateway.
 """
 
 from __future__ import annotations
@@ -62,12 +48,11 @@ logger = logging.getLogger(__name__)
 
 # Subsystem identifiers
 MEMORY = "memory"
-SKILLS = "skills"
 # Dangerous-command approvals for a headless process: the pending record is
 # the request (written by the blocked process), decide_pending is the answer
 # (written by whatever chat is relaying it), and the blocked process polls.
 EXEC = "exec"
-_SUBSYSTEMS = (MEMORY, SKILLS, EXEC)
+_SUBSYSTEMS = (MEMORY, EXEC)
 
 # Config key (per subsystem). A single boolean: the approval gate is OFF by
 # default (writes flow freely, the pre-gate behaviour), and ON means stage /
@@ -122,22 +107,19 @@ def _pending_dir(subsystem: str) -> Path:
 
 
 def stage_write(subsystem: str, payload: Dict[str, Any],
-                *, summary: str, origin: str,
+                *, summary: str,
                 expires_at: Optional[float] = None,
                 chat_key: str = "") -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
 
     Args:
-        subsystem: ``memory``, ``skills``, or ``exec``.
+        subsystem: ``memory`` or ``exec``.
         payload: the exact kwargs needed to replay the write when approved
             (e.g. ``{"action": "add", "target": "user", "content": "..."}``
-            for memory, or the full ``skill_manage`` kwargs for skills).
-            For ``exec`` it carries the command/pattern data the approver
-            needs; the blocked process applies the allowance itself.
-        summary: a one-line human-readable description shown in pending lists.
-            For skills this is the LLM/heuristic gist; for memory it can be the
-            entry text itself.
-        origin: ``foreground`` or ``background_review`` — recorded for audit.
+            for memory). For ``exec`` it carries the command/pattern data the
+            approver needs; the blocked process applies the allowance itself.
+        summary: a one-line human-readable description shown in pending lists
+            (for memory it can be the entry text itself).
         expires_at: optional epoch deadline. Past it the request is dead and
             the blocked process fails closed.
         chat_key: optional session/chat key that asked for the request, so a
@@ -153,7 +135,6 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         "subsystem": subsystem,
         "action": payload.get("action", ""),
         "summary": (summary or "").strip(),
-        "origin": origin or "foreground",
         "created_at": time.time(),
         "payload": payload,
     }
@@ -314,34 +295,11 @@ def prune_expired_pending(subsystem: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Write origin
-# ---------------------------------------------------------------------------
-
-def current_origin() -> str:
-    """Return the active write origin: ``foreground`` or ``background_review``.
-
-    Reuses the skill-provenance ContextVar, which the background review fork
-    already sets (see ``agent.background_review`` /
-    ``AIAgent._spawn_background_review``). Foreground agent turns leave it at
-    the default ``foreground``.
-    """
-    try:
-        from tools.skill_provenance import get_current_write_origin
-        return get_current_write_origin()
-    except Exception:
-        return "foreground"
-
-
-def is_background() -> bool:
-    return current_origin() == "background_review"
-
-
-# ---------------------------------------------------------------------------
 # Gate decision
 # ---------------------------------------------------------------------------
 
 class GateDecision:
-    """Result of evaluating the write gate for a single write attempt.
+    """Result of evaluating the write gate for a single memory write.
 
     Exactly one of the boolean flags is True:
       * ``allow``  — proceed with the real write (gate off, or an inline
@@ -350,8 +308,8 @@ class GateDecision:
         prompt). ``message`` explains why; surface it to the agent.
       * ``stage``  — do not write; the caller should stage the payload via
         ``stage_write`` (gate on, and no inline prompt is available — gateway,
-        background review, script, or any skill write). ``message`` is the
-        user-facing "staged for approval" note.
+        script, cron). ``message`` is the user-facing "staged for approval"
+        note.
     """
 
     __slots__ = ("allow", "blocked", "stage", "message")
@@ -365,20 +323,19 @@ class GateDecision:
 
 def evaluate_gate(subsystem: str, *, inline_summary: str = "",
                   inline_detail: str = "") -> GateDecision:
-    """Decide what to do with a pending write for ``subsystem``.
+    """Decide what to do with a pending write for ``subsystem`` (``memory``).
 
     Args:
-        subsystem: ``memory`` or ``skills``.
+        subsystem: ``memory``.
         inline_summary: short description used as the inline approval prompt
-            header (memory foreground path only).
+            header.
         inline_detail: full content shown in the inline prompt (memory entries
-            are small; skills never take the inline path).
+            are small enough to show in full).
 
     Decision matrix:
-        gate off (default)                    → allow (writes flow freely)
-        gate on, memory + interactive CLI     → inline approve/deny prompt
-        gate on, memory + gateway/script/bg   → stage
-        gate on, skills (any origin)          → stage (too big to review inline)
+        gate off (default)              → allow (writes flow freely)
+        gate on + interactive CLI       → inline approve/deny prompt
+        gate on + gateway/script/cron   → stage
 
     Note: there is no config-driven "blocked" outcome — the gate only ever
     delays a write for approval, never silently refuses it. ``blocked`` is
@@ -387,24 +344,10 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     if not write_approval_enabled(subsystem):
         return GateDecision(allow=True)
 
-    background = is_background()
-
-    # Skills always stage — a SKILL.md is too large to review inline, and a
-    # background skill write happens in a daemon thread with no user present.
-    if subsystem == SKILLS or background:
-        where = "/skills pending" if subsystem == SKILLS else "/memory pending"
-        return GateDecision(
-            stage=True,
-            message=(
-                f"Staged for approval ({subsystem}.write_approval is on). "
-                f"Not yet saved — review with {where}."
-            ),
-        )
-
-    # Memory + foreground: if an interactive approval channel exists (a CLI
-    # approval callback registered on this thread), prompt inline — entries
-    # are small enough to show in full. Otherwise (gateway, script, batch,
-    # no listener) stage instead of forcing a blind deny.
+    # If an interactive approval channel exists (a CLI approval callback
+    # registered on this thread), prompt inline — entries are small enough to
+    # show in full. Otherwise (gateway, script, batch, no listener) stage
+    # instead of forcing a blind deny.
     if _interactive_approval_available():
         granted = _prompt_inline_memory_approval(inline_summary, inline_detail)
         if granted is True:
@@ -419,8 +362,8 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     return GateDecision(
         stage=True,
         message=(
-            "Staged for approval (memory.write_approval is on). "
-            "Not yet saved — review with /memory pending."
+            f"Staged for approval ({subsystem}.write_approval is on). "
+            f"Not yet saved — review with /{subsystem} pending."
         ),
     )
 
@@ -492,115 +435,3 @@ def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
     # Any other outcome (e.g. timeout that returns "deny" already handled) →
     # treat unknown as no-decision so we stage rather than silently drop.
     return None
-
-
-# ---------------------------------------------------------------------------
-# Skill-specific helpers (gist + diff for the review affordances)
-# ---------------------------------------------------------------------------
-
-def skill_gist(action: str, name: str, *, content: str = "",
-               file_path: str = "", old_string: str = "",
-               new_string: str = "") -> str:
-    """Build a one-line human gist for a pending skill write.
-
-    Heuristic, no model call — the gist surfaces enough to decide approve/reject
-    in a chat bubble, while the full diff stays behind /skills diff (CLI/
-    dashboard/file). For create/edit it pulls the frontmatter ``description:``;
-    for patch/write_file it describes the size of the change.
-    """
-    if action in {"create", "edit"} and content:
-        desc = _frontmatter_description(content)
-        size = f"{len(content) // 1024 + 1} KB" if len(content) >= 1024 else f"{len(content)} chars"
-        verb = "create" if action == "create" else "rewrite"
-        if desc:
-            return f"{verb} '{name}' — {desc} ({size})"
-        return f"{verb} '{name}' ({size})"
-    if action == "patch":
-        target = file_path or "SKILL.md"
-        removed = old_string.count("\n") + 1 if old_string else 0
-        added = new_string.count("\n") + 1 if new_string else 0
-        return f"patch '{name}' {target} (+{added}/-{removed} lines)"
-    if action == "write_file":
-        return f"write {file_path} in '{name}'"
-    if action == "remove_file":
-        return f"remove {file_path} from '{name}'"
-    if action == "delete":
-        return f"delete skill '{name}'"
-    return f"{action} '{name}'"
-
-
-def _frontmatter_description(content: str) -> str:
-    """Extract the ``description:`` value from SKILL.md TOML frontmatter."""
-    import re
-    m = re.search(r"^description:\s*(.+)$", content, re.MULTILINE)
-    if not m:
-        return ""
-    desc = m.group(1).strip().strip("'\"")
-    return desc[:140]
-
-
-def skill_pending_diff(record: Dict[str, Any]) -> str:
-    """Build a full unified diff (or full content) for a staged skill write.
-
-    Used by /skills diff <id> on a surface that can render it (CLI pager, web
-    dashboard, or by opening the pending JSON file). For create this is the new
-    file content; for edit/patch it is a unified diff against the current
-    on-disk skill.
-    """
-    import difflib
-    payload = record.get("payload", {})
-    action = payload.get("action", "")
-    name = payload.get("name", "")
-
-    if action == "create":
-        return (payload.get("content") or "")
-
-    # Resolve current on-disk content for diffable actions.
-    try:
-        from tools.skill_manager_tool import _find_skill
-    except Exception:
-        _find_skill = None  # type: ignore
-
-    current = ""
-    target_label = "SKILL.md"
-    if _find_skill is not None:
-        found = _find_skill(name)
-        if found:
-            base = found["path"]
-            if action == "edit":
-                p = base / "SKILL.md"
-            elif action in {"patch", "write_file"}:
-                rel = payload.get("file_path") or "SKILL.md"
-                p = base / rel
-                target_label = rel
-            else:
-                p = base / "SKILL.md"
-            try:
-                if p.exists():
-                    current = p.read_text(encoding="utf-8")
-            except Exception:
-                current = ""
-
-    if action == "edit":
-        new = payload.get("content") or ""
-    elif action == "patch":
-        old_s = payload.get("old_string") or ""
-        new_s = payload.get("new_string") or ""
-        new = current.replace(old_s, new_s) if current else f"(patch {old_s!r} → {new_s!r})"
-    elif action == "write_file":
-        new = payload.get("file_content") or ""
-    elif action == "remove_file":
-        return f"remove file: {payload.get('file_path')} from skill '{name}'"
-    elif action == "delete":
-        return f"delete skill '{name}'"
-    else:
-        return f"({action} on '{name}')"
-
-    diff = difflib.unified_diff(
-        current.splitlines(keepends=True),
-        new.splitlines(keepends=True),
-        fromfile=f"a/{target_label}",
-        tofile=f"b/{target_label}",
-    )
-    text = "".join(diff)
-    return text or "(no textual change)"

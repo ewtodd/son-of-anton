@@ -98,13 +98,6 @@ cron:
   allow_agent_scheduling: false   # true lets the agent schedule its own jobs
 
 # =============================================================================
-# Skills (bundled skills load by default; install more with
-# `son-of-anton skills install <name>`)
-# =============================================================================
-skills:
-  project_discovery: true
-
-# =============================================================================
 # Security / Permissions
 # =============================================================================
 security:

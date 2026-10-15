@@ -1,6 +1,6 @@
 """/plan: a planning turn handed to the agent, from the terminal or a chat.
 
-Like /commit it is a prompt, not a tool or a skill. The gateway case drives a
+Like /commit it is a prompt, not a tool. The gateway case drives a
 real GatewayRunner._handle_message; only authorization and the final agent
 run are stubbed, so command resolution and the rewrite are the real ones.
 """

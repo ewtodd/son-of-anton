@@ -32,7 +32,7 @@ from utils import env_var_enabled, is_truthy_value
 logger = logging.getLogger(__name__)
 
 # Freeze YOLO mode at module import time. Reading os.environ on every call
-# would allow any skill running inside the process to set this variable and
+# would allow any code running inside the process to set this variable and
 # instantly bypass all approval checks — a prompt-injection escalation path.
 _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("SON_OF_ANTON_YOLO_MODE", ""))
 
@@ -3177,7 +3177,7 @@ def is_approval_bypass_active_for_session(session_key: str) -> bool:
     Collapses the canonical three-source bypass check used across the codebase
     into one place:
       - process-scoped ``--yolo`` / ``SON_OF_ANTON_YOLO_MODE`` (frozen at import time
-        so a mid-process skill can't flip it — a prompt-injection escalation
+        so mid-process code can't flip it — a prompt-injection escalation
         path; see ``_YOLO_MODE_FROZEN`` above),
       - the session-scoped gateway ``/yolo`` toggle,
       - ``approvals.mode: off`` in config.
@@ -3499,7 +3499,6 @@ def _await_durable_decision(session_key: str, approval_data: dict) -> dict:
             "allow_permanent": bool(approval_data.get("allow_permanent", True)),
         },
         summary=summary,
-        origin=wa.current_origin(),
         expires_at=(time.time() + float(timeout)) if float(timeout) > 0 else None,
         chat_key=chat_key,
     )

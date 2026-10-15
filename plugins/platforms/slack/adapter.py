@@ -1988,7 +1988,7 @@ class SlackAdapter(BasePlatformAdapter):
                 pass
 
             # Forward reaction_added events through the normal message
-            # pipeline (see _handle_slack_reaction). Skills that present
+            # pipeline (see _handle_slack_reaction). Agent turns that present
             # confirmation-style proposals ("react 👍 to proceed") then work
             # end-to-end. Registered explicitly so high-traffic channels do
             # not fill gateway.error.log with Slack Bolt "Unhandled request"
@@ -5199,7 +5199,7 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
     # Common reaction names → unicode emoji. Used by ``_handle_slack_reaction``
-    # so skills that match on ``text`` see the same character whether the user
+    # so an agent matching on ``text`` sees the same character whether the user
     # typed it or reacted with it.
     _REACTION_EMOJI_MAP: ClassVar[Dict[str, str]] = {
         "thumbsup": "👍",
@@ -5226,14 +5226,14 @@ class SlackAdapter(BasePlatformAdapter):
         downstream auth gate (``_is_user_authorized``) applies as it does for
         any other message. The reacted-to message's ``thread_ts`` becomes
         the synthesized message's ``thread_ts`` so the reaction lands in the
-        same thread as a regular reply would, letting skills that present
+        same thread as a regular reply would, letting a turn that presents
         confirmation-style proposals (``react 👍 to proceed``) treat
         reactions as real responses.
 
         The synthesized text follows the cross-platform convention already
         used by some other adapters — ``reaction:added:<emoji>`` /
         ``reaction:removed:<emoji>`` — with common Slack reaction names
-        translated to unicode emoji (👍, 👎, ✅, …) so agents and skills see
+        translated to unicode emoji (👍, 👎, ✅, …) so the agent sees
         the same shape on every platform. Because the synthesized event is
         threaded under the reacted-to message, the existing reply-context
         plumbing injects the target message's text as ``reply_to_text`` and

@@ -1,8 +1,8 @@
 """Thread-scoped stdout/stderr silencing for background worker threads.
 
 ``contextlib.redirect_stdout``/``redirect_stderr`` reassign the *process-global*
-``sys.stdout``/``sys.stderr``.  When a daemon worker thread (e.g. the background
-memory/skill review) wraps its whole body in those context managers, every other
+``sys.stdout``/``sys.stderr``.  When a daemon worker thread (e.g. a background
+helper fork) wraps its whole body in those context managers, every other
 thread in the process — including a gateway's asyncio event-loop thread driving a
 Telegram long-poll — sees ``sys.stdout``/``sys.stderr`` pointing at ``devnull``
 for the full duration.  Any bare ``print`` / ``sys.stderr.write`` from those other

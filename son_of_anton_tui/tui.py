@@ -15,9 +15,9 @@ The agent is the unchanged ``cli.SonOfAntonCLI`` loop, wrapped by
 ``son_of_anton_tui.backend.TextualBackend``: it runs ``chat()`` and slash
 commands on worker threads and emits typed events (assistant tokens,
 reasoning, tool lifecycle, ANSI lines, refresh) that this app renders.  Modal
-prompts (approval, clarify, sudo, secret, destructive-command confirm, model
-picker) are the backend's own ``_*_state`` dicts, watched here and answered
-through their ``response_queue`` — the same contract prompt_toolkit used.
+prompts (approval, clarify, sudo, destructive-command confirm, model picker)
+are the backend's own ``_*_state`` dicts, watched here and answered through
+their ``response_queue`` — the same contract prompt_toolkit used.
 
 Chrome is terminal-native: Textual's ``ansi-dark`` / ``ansi-light`` theme is
 picked from the detected terminal polarity so backgrounds, foregrounds and
@@ -1554,7 +1554,6 @@ if _TEXTUAL_AVAILABLE:
             for attr, opener in (
                 ("_approval_state", self._open_approval),
                 ("_sudo_state", self._open_sudo),
-                ("_secret_state", self._open_secret),
                 ("_clarify_state", self._open_clarify),
                 ("_slash_confirm_state", self._open_slash_confirm),
                 ("_tui_text_prompt_state", self._open_text_prompt),
@@ -1612,20 +1611,6 @@ if _TEXTUAL_AVAILABLE:
 
             def _answer(result: Any) -> None:
                 if self.backend._sudo_state is state:
-                    state["response_queue"].put(result or "")
-
-            self._push(screen, _answer)
-
-        def _open_secret(self, state: dict) -> None:
-            screen = TextModal(
-                f"Secret: {state.get('var_name', '')}",
-                str(state.get("prompt", "")) or "value (Enter to skip)",
-                password=True,
-                detail="Stored in ~/.son-of-anton/.env — never exposed to the model.",
-            )
-
-            def _answer(result: Any) -> None:
-                if self.backend._secret_state is state:
                     state["response_queue"].put(result or "")
 
             self._push(screen, _answer)

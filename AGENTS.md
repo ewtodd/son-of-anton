@@ -36,14 +36,15 @@ Two properties shape almost every design decision and are the lens for reviewing
   We do not do it (the one exception is context compaction).
 - **The core is a narrow waist; capability lives at the edges.** Every model tool we add
   is sent on every API call, so the bar for a new *core* tool is high. Most new capability
-  should arrive as a CLI command + skill, a plugin, or an MCP server — not as core surface.
+  should arrive as a built-in slash command, a CLI command, a plugin, or an MCP server — not
+  as core surface.
 
 ## Contribution Rubric — What We Want / What We Don't
 
 - **Fix real bugs, well.** A good fix reproduces the symptom on current `main`, points to
   the exact line where it manifests, and fixes the whole bug class — sibling call paths
   included — not just the one site the reporter hit.
-- **Keep the core narrow.** Prefer, in order: extend existing code → CLI command + skill →
+- **Keep the core narrow.** Prefer, in order: extend existing code → CLI command →
   service-gated tool → plugin → MCP server in the catalog → new core tool (last resort).
   See "The Footprint Ladder" below.
 - **Extend, don't duplicate.** Before adding a module/manager/hook, check whether existing
@@ -81,7 +82,7 @@ Each rung adds more permanent surface than the one above. Choose the highest
 
 1. **Extend existing code** — the capability is a variation of something that already
    exists. Zero new surface.
-2. **CLI command + skill** — manages config/state/infra expressible as shell commands.
+2. **CLI command** — manages config/state/infra expressible as shell commands.
    Zero model-tool footprint. Default choice for subscriptions, scheduled tasks, service
    setup. Examples: `son-of-anton cron`, `son-of-anton tools`.
 3. **Service-gated tool (`check_fn`)** — needs structured params/returns AND only appears
@@ -99,8 +100,8 @@ Each rung adds more permanent surface than the one above. Choose the highest
 ## Development Environment
 
 This fork is Nix-first. Python dependencies are sealed in a uv2nix venv; the `son-of-anton`
-wrapper exposes the bundled skills and plugins via `SON_OF_ANTON_BUNDLED_SKILLS` /
-`SON_OF_ANTON_BUNDLED_PLUGINS`.
+wrapper exposes the bundled plugins via `SON_OF_ANTON_BUNDLED_PLUGINS`. (It still sets
+`SON_OF_ANTON_BUNDLED_SKILLS` too; nothing reads it, and it goes with the `skills/` tree.)
 
 ```bash
 nix build                # sealed uv2nix venv + wrapper in result/bin/
@@ -172,7 +173,7 @@ son-of-anton/
 │   └── verification/     # Experimental verification (RESULTS.txt, formal eval)
 ├── problems/             # Toy physics problems (cobalt_calibration, bromine_halflife, ...)
 ├── cron/                 # Scheduler — jobs.py, scheduler.py
-├── skills/               # Bundled skills (skills/<category>/<skill>/SKILL.md)
+├── skills/               # Inert leftover SKILL.md tree, nothing loads it; being deleted
 ├── scripts/              # run_tests.sh, release.py, auxiliary scripts
 └── tests/                # Pytest suite (small, focused set — see "Testing")
 ```
@@ -297,8 +298,8 @@ subclasses `SonOfAntonCLI`), so every CLI option applies to it unchanged.
 - `process_command()` dispatches on the canonical command name resolved via
   `resolve_command()` from the central registry (`son_of_anton_cli/commands.py`).
 - There are no skill slash commands. An unrecognized `/word` is never looked up as a
-  skill; `/<skill>`, stacked skills, bundles, `/bundles`, `/reload-skills`, `/learn`, and
-  the `--skills`/`-s` preload were removed (2026-10-15).
+  skill; `/<skill>`, stacked skills, bundles, `/bundles`, `/reload-skills`, `/learn`,
+  `/skills`, and the `--skills`/`-s` preload were removed (2026-10-15).
 
 ### Slash Command Registry (`son_of_anton_cli/commands.py`)
 
@@ -307,7 +308,7 @@ objects. Every downstream consumer derives from it automatically: CLI dispatch, 
 dispatch (`GATEWAY_KNOWN_COMMANDS`), `/help` output, autocomplete, Telegram-style menus.
 
 **CommandDef fields:** `name` (canonical, no slash), `description`, `category`
-(`Session` | `Configuration` | `Tools & Skills` | `Info` | `Exit`), `aliases` (tuple),
+(`Session` | `Configuration` | `Tools` | `Info` | `Exit`), `aliases` (tuple),
 `args_hint`, `cli_only`, `gateway_only`, `gateway_config_gate` (config dotpath that makes
 a `cli_only` command available in the gateway when truthy).
 
@@ -562,35 +563,12 @@ configured as `custom_providers` in config.toml — not as registry entries.
 
 ## Skills
 
-Two parallel surfaces:
-
-- **`skills/`** — bundled skills (19 across 4 categories, laid out
-  `skills/<category>/<skill>/SKILL.md`). Nothing invokes them any more: the model has no
-  skill tool, and the user-facing ways in (`/<skill>`, bundles, `/learn`, `--skills`,
-  Discord `/skill`, per-channel skills, cron-attached skills) were removed 2026-10-15.
-- **`optional-skills/`** — no longer shipped in the tree. Niche/official-but-inactive
-  skills come from the Skills Hub's `OptionalSkillSource` (fetched from the
-  `ewtodd/son-of-anton` repo) and are installed explicitly via
-  `son-of-anton skills install official/<category>/<skill>`; the adapter lives in
-  `tools/skills_hub.py`.
-
-SKILL.md frontmatter: `name`, `description`, `version`, `author`, `license`, `platforms`,
-and `metadata.son-of-anton.*` (tags, category, related_skills, config).
-
-Skill authoring standards:
-1. `description` ≤ 60 characters, one sentence, ends with a period. No marketing words.
-2. Tools referenced in prose must be native Son of Anton tools or MCP servers the skill
-   explicitly expects, named in backticks. Don't name shell utilities the agent already
-   has wrapped (`grep` → `search_files`, `cat`/`head`/`tail` → `read_file`, `sed`/`awk` →
-   `patch`, `find`/`ls` → `search_files target='files'`).
-3. `platforms:` gating audited against actual script imports; default to cross-platform.
-4. `author` credits the human contributor first.
-5. Modern section order: `# <Skill> Skill` title, intro, `## When to Use`, `## Prerequisites`,
-   `## How to Run`, `## Quick Reference`, `## Procedure`, `## Pitfalls`, `## Verification`.
-6. Scripts in `scripts/`, references in `references/`, templates in `templates/`.
-7. Tests for a bundled skill go under `tests/` (e.g. `tests/test_<skill>_skill.py`) —
-   stdlib + pytest + `unittest.mock` only.
-8. `.env.example` additions isolated to a clearly delimited block.
+Removed (2026-10-15). There is no skill loader, tool, index, hub, sync, slash command or
+`son-of-anton skills` subcommand, and no `skills` config section. New capability arrives as
+a built-in slash command (see `/plan`), a CLI command, a plugin, or an MCP server. What
+remains on purpose: `son_of_anton_state_common.describe_skill_invocation` and
+`son-of-anton sessions retitle-skills` read `/skill` turns stored before the removal, and
+cron and the gateway warn about legacy `skills` fields in old job records and config.
 
 ## Toolsets
 
@@ -598,8 +576,7 @@ All toolsets are defined in `toolsets.py` as a single `TOOLSETS` dict. Each plat
 adapter picks a base toolset; `_SON_OF_ANTON_CORE_TOOLS` is the default bundle most
 platforms inherit from: web_search/web_extract, terminal/process, file ops (read_file,
 write_file, patch, search_files), vision_analyze, todo, memory, session_search, clarify,
-execute_code, delegate_task, cronjob. The model is never offered a skill tool: there is no
-skill listing, loading, or writing tool, and no skills index in the system prompt.
+execute_code, delegate_task, cronjob.
 
 Enable/disable per platform via `son-of-anton tools` (the curses UI) or the
 `tools.<platform>.enabled` / `tools.<platform>.disabled` lists in `config.toml`.
@@ -618,11 +595,10 @@ process-local. For work that must survive process restart, use `cronjob` or
 
 ## Self-improvement
 
-There is no memory/skill review fork. The one that ran after every few turns was removed
-(2026-10-15): 84 of the 86 skill writes over five weeks were its own, and three in four of
-them failed. Its manual trigger, `/refine`, went with it, and so did the skill curator (the
-weekly pass that archived and consolidated agent-made skills). The agent saves memory itself,
-with the `memory` tool, when something is worth keeping.
+There is no background review fork. The one that ran after every few turns was removed
+(2026-10-15) with `/refine` and the skill curator. The agent saves memory itself, with the
+`memory` tool, when something is worth keeping; `memory.write_approval` makes those writes
+wait for `/memory approve` (inline prompt in the interactive CLI).
 
 ## Cron (scheduled jobs)
 

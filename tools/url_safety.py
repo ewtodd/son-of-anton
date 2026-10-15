@@ -1,7 +1,7 @@
 """URL safety checks — blocks requests to private/internal network addresses.
 
-Prevents SSRF (Server-Side Request Forgery) where a malicious prompt or
-skill could trick the agent into fetching internal resources like cloud
+Prevents SSRF (Server-Side Request Forgery) where a malicious prompt
+could trick the agent into fetching internal resources like cloud
 metadata endpoints (169.254.169.254), localhost services, or private
 network hosts.
 

@@ -28,8 +28,8 @@ In ``auto`` mode:
   - Otherwise (non-vision model, no explicit override), we fall back to
     text via the default vision_analyze flow.
 
-This keeps ``vision_analyze`` surfaced as a tool in every session — skills
-and agent flows that chain it (browser screenshots, deeper inspection of
+This keeps ``vision_analyze`` surfaced as a tool in every session — agent
+flows that chain it (browser screenshots, deeper inspection of
 URL-referenced images, style-gating loops) keep working. The routing only
 affects *how user-attached images on the current turn* are presented to the
 main model.
@@ -747,7 +747,7 @@ def build_native_content_parts(
       * local path → ``[Image attached at: <path>]``
       * URL        → ``[Image attached: <url>]``
 
-    The hint gives the model a string handle so MCP/skill tools that take
+    The hint gives the model a string handle so MCP/plugin tools that take
     an image path or URL argument can be invoked on the same image without
     an extra round-trip. This parallels the text-mode hint produced by
     ``Runner._enrich_message_with_vision`` (``vision_analyze using image_url:

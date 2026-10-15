@@ -1,7 +1,7 @@
 """``/plan`` — write an implementation plan to a file instead of doing the work.
 
 Like ``/commit``, this is a prompt handed to the agent as an ordinary user
-turn, not a tool or a skill: the agent inspects the project with the tools it
+turn, not a tool: the agent inspects the project with the tools it
 already has and writes the plan file itself. The terminal queues the prompt as
 the next turn; the gateway rewrites the incoming message to it.
 """

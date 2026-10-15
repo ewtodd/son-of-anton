@@ -3137,7 +3137,7 @@ def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
     ``MINIMUM_CONTEXT_LENGTH`` (64K) floor that
     ``check_compaction_model_feasibility`` already enforces at startup).
     Other tasks (``vision``, ``title_generation``, ``web_extract``,
-    ``skills_hub``, ``mcp``, ``session_search``) return ``None`` — they
+    ``mcp``, ``session_search``) return ``None`` — they
     have no per-task context floor and the runtime chain must remain
     permissive for them.
 
@@ -6293,7 +6293,7 @@ def _call_llm_impl(
 
     Args:
         task: Auxiliary task name ("compaction", "vision", "web_extract",
-              "session_search", "skills_hub", "mcp", "title_generation").
+              "session_search", "mcp", "title_generation").
               Reads provider:model from config/env. Ignored if provider is set.
         provider: Explicit provider override.
         model: Explicit model override.

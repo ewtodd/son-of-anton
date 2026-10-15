@@ -873,9 +873,6 @@ def get_job(*args, **kwargs):
     return _get_job(*args, **kwargs)
 
 # Resource cleanup imports for safe shutdown (terminal VMs)
-from son_of_anton_cli.callbacks import prompt_for_secret
-
-
 def _cleanup_all_terminals(*args, **kwargs):
     from tools.terminal_tool import cleanup_all_environments
 
@@ -892,12 +889,6 @@ def set_approval_callback(*args, **kwargs):
     from tools.terminal_tool import set_approval_callback as _set_approval_callback
 
     return _set_approval_callback(*args, **kwargs)
-
-
-def set_secret_capture_callback(*args, **kwargs):
-    from tools.skills_tool import set_secret_capture_callback as _set_secret_capture_callback
-
-    return _set_secret_capture_callback(*args, **kwargs)
 
 
 # Guard to prevent cleanup from running multiple times on exit
@@ -4199,7 +4190,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
-        from agent.skill_utils import parse_config_string_list
+        from utils import parse_config_string_list
 
         self.disabled_toolsets = parse_config_string_list(CLI_CONFIG["agent"].get("disabled_toolsets"))
 
@@ -4426,8 +4417,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # that wants its output run as the next agent turn. Consumed and cleared
         # by the interactive loop immediately after process_command() returns.
         self._pending_agent_seed = None
-        self._secret_state = None
-        self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
         self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
@@ -5797,16 +5786,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
         cmd_lower = command.lower().strip()
-        if cmd_lower.startswith("/skills search"):
-            return "Searching skills..."
-        if cmd_lower.startswith("/skills browse"):
-            return "Loading skills..."
-        if cmd_lower.startswith("/skills inspect"):
-            return "Inspecting skill..."
-        if cmd_lower.startswith("/skills install"):
-            return "Installing skill..."
-        if cmd_lower.startswith("/skills"):
-            return "Processing skills command..."
         if cmd_lower == "/reload-mcp":
             return "Reloading MCP servers..."
         return "Processing command..."
@@ -5842,7 +5821,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
-        set_secret_capture_callback(self._secret_capture_callback)
         self._tool_callbacks_installed = True
 
     def _ensure_tirith_security(self) -> None:
@@ -7904,7 +7882,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return
         # Don't stack over other modals.
         if (self._model_picker_state or self._clarify_state or self._approval_state
-                or self._slash_confirm_state or self._sudo_state or self._secret_state):
+                or self._slash_confirm_state or self._sudo_state):
             return
         self._capture_modal_input_snapshot()
         self._command_palette_state = {
@@ -9071,9 +9049,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.save_conversation(cmd_original)
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
-        elif canonical == "skills":
-            with self._busy_command(self._slow_command_status(cmd_original)):
-                self._handle_skills_command(cmd_original)
         elif canonical == "init":
             self._handle_init_command(cmd_original)
         elif canonical == "memory":
@@ -9890,7 +9865,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         ``tui_gateway/server.py`` key=="yolo"). We deliberately do NOT mutate
         ``SON_OF_ANTON_YOLO_MODE`` here — that env var is read once at module import
         time into ``tools.approval._YOLO_MODE_FROZEN`` to keep prompt-injected
-        skills from flipping the bypass mid-session, so setting it after CLI
+        code from flipping the bypass mid-session, so setting it after CLI
         startup is a silent no-op. Routing through ``enable_session_yolo`` /
         ``disable_session_yolo`` gives the same auditable, per-session bypass
         the other surfaces have. ``run_conversation`` binds
@@ -10156,7 +10131,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # Type-pinned check (is True / str): the flag's only real
                 # values are None/True/holder-string, and a bare getattr
                 # truthiness test is fooled by MagicMock auto-attributes on
-                # test-double agents (skill pitfall: MagicMock vs hasattr).
+                # test-double agents (MagicMock vs hasattr pitfall).
                 _lock_skip_signal = getattr(
                     self.agent, "_compaction_skipped_due_to_lock", None
                 )
@@ -10250,9 +10225,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         Renders a 5×20 glyph block grid (each cell ≈ 1% of the model context
         window) plus an estimated per-category table: system prompt, tool
-        definitions, rules, skills index, MCP, subagents, memory, and the
-        conversation itself — versus free space. `/context all` appends the
-        expanded per-skill and per-toolset cost listings.
+        definitions, rules, MCP, subagents, memory, and the conversation
+        itself — versus free space. `/context all` appends the expanded
+        per-toolset cost listing.
 
         Read-only: same chars/4 estimation engine as the desktop context
         popover (agent.context_breakdown) — no provider calls, no prompt-cache
@@ -10284,7 +10259,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 details = compute_context_details(self.agent)
             except Exception:
-                details = {"skills": [], "toolsets": []}
+                details = {"toolsets": []}
 
         model = payload.get("model") or self.model
         print()
@@ -11409,9 +11384,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return choices
 
 
-    def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
-        return prompt_for_secret(self, var_name, prompt, metadata)
-
     def _capture_modal_input_snapshot(self) -> None:
         """Temporarily clear the input buffer and save the user's in-progress draft."""
         if self._modal_input_snapshot is not None or not getattr(self, "_app", None):
@@ -11442,7 +11414,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _clear_active_overlays_for_interrupt(self) -> None:
         """Drain and clear every input-blocking overlay left by an interrupted agent.
 
-        approval/clarify/sudo/secret prompts each block a worker thread on a
+        approval/clarify/sudo prompts each block a worker thread on a
         ``response_queue.get()``.  When the agent is interrupted the worker
         thread is torn down, but the overlay's state dict stays set — leaving
         the CLI input gated (``read_only`` condition + keypress filter) with no
@@ -11451,7 +11423,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         any still-blocked thread unblocks cleanly, then nil the state out and
         restore the user's pre-modal draft (#14026).
 
-        Safe default per prompt: approval -> "deny", clarify/sudo/secret ->
+        Safe default per prompt: approval -> "deny", clarify/sudo ->
         cancel (None / empty).  Each step is wrapped so a dead queue can't
         prevent clearing the others.
         """
@@ -11479,24 +11451,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._sudo_state = None
             self._sudo_deadline = 0
             self._restore_modal_input_snapshot()
-        if self._secret_state:
-            try:
-                self._cancel_secret_capture()
-            except Exception:
-                self._secret_state = None
-
-    def _submit_secret_response(self, value: str) -> None:
-        if not self._secret_state:
-            return
-        self._secret_state["response_queue"].put(value)
-        self._secret_state = None
-        self._secret_deadline = 0
-        # Modal teardown — paint directly so the secret panel clears at once and
-        # isn't held by the _invalidate throttle/resize guard (#41098).
-        self._paint_now()
-
-    def _cancel_secret_capture(self) -> None:
-        self._submit_secret_response("")
 
 
     def chat(self, message, images: list = None) -> Optional[str]:
@@ -11518,10 +11472,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         Returns:
             The agent's response, or None on error
         """
-        # Single-query and direct chat callers do not go through run(), so
-        # register secure secret capture here as well.
-        set_secret_capture_callback(self._secret_capture_callback)
-
         # Reset the per-turn interrupt flag. Any subsequent path that
         # discovers an interrupt (below, after run_conversation) will flip
         # this to True. Early returns (credential refresh failure, etc.)
@@ -11699,10 +11649,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # _callback_tls is threading.local().
                 set_sudo_password_callback(self._sudo_password_callback)
                 set_approval_callback(self._approval_callback)
-                try:
-                    set_secret_capture_callback(self._secret_capture_callback)
-                except Exception:
-                    pass
                 # Bind this turn's approval session key into the contextvar so
                 # ``tools.approval.is_current_session_yolo_enabled()`` resolves
                 # against the same key that ``/yolo`` toggles under (see
@@ -11773,7 +11719,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     try:
                         set_sudo_password_callback(None)
                         set_approval_callback(None)
-                        set_secret_capture_callback(None)
                     except Exception:
                         pass
                     # Release the per-turn approval session key. ``_session_yolo``
@@ -12780,7 +12725,7 @@ def main(
                 # Single-query mode (`son-of-anton chat -q "…"`): skip the welcome
                 # banner. Building the banner takes ~420 ms on cold start —
                 # ~200 ms of that is the version-update check, the rest is
-                # toolset / skill enumeration and Rich panel rendering. None
+                # toolset enumeration and Rich panel rendering. None
                 # of that is useful for a one-shot query: the user already
                 # picked the prompt, doesn't need a toolset reference, and
                 # gets the session ID + resume hint from

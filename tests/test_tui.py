@@ -758,16 +758,14 @@ def test_backend_reroutes_every_output_funnel(backend) -> None:
     cli.ChatConsole().print("[bold]markup[/bold]")
     cli.ChatConsole().print("[yellow]" + "─" * 40)  # the classic turn rule is dropped
     b.console.print("[red]console[/red]")
-    from son_of_anton_cli import banner, callbacks
+    from son_of_anton_cli import banner
 
     banner.cprint("via banner")
-    callbacks.cprint("via callbacks")
 
     ansi = [p["text"] for k, p in rec.events if k == "ansi"]
     assert any("via cprint" in t for t in ansi)
     assert any("console" in t for t in ansi)
     assert any("via banner" in t for t in ansi)
-    assert any("via callbacks" in t for t in ansi)
     rich = [p["renderable"] for k, p in rec.events if k == "rich"]
     assert len(rich) == 1 and rich[0].plain == "markup"
 
@@ -787,15 +785,12 @@ def test_backend_prompts_block_until_answered_from_another_thread(backend) -> No
         wait_for("_slash_confirm_state")["response_queue"].put("always")
         wait_for("_tui_text_prompt_state")["response_queue"].put("typed")
         wait_for("_tui_picker_state")["response_queue"].put(2)
-        wait_for("_secret_state")["response_queue"].put("")
 
     threading.Thread(target=answer, daemon=True).start()
     assert b._prompt_text_input_modal(title="t", detail="d", choices=[("once", "Once", ""), ("always", "Always", "")]) == "always"
     assert b._slash_confirm_state is None
     assert b._prompt_text_input("name? ") == "typed"
     assert b._run_curses_picker("pick", ["a", "b", "c"]) == 2
-    result = b._secret_capture_callback("MY_KEY", "paste the key")
-    assert result["skipped"] is True and result["reason"] == "cancelled"
     assert "refresh" in rec.kinds()
 
 

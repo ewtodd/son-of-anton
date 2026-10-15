@@ -212,9 +212,6 @@ VALID_HOOKS: Set[str] = {
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
-    # Successful skill lifecycle facts. The local skill name is available to
-    # plugins, while built-in shared metrics emit only bounded classifications.
-    "on_skill_lifecycle",
     "subagent_start",
     "subagent_stop",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
@@ -618,7 +615,7 @@ def _get_enabled_plugins() -> Optional[set]:
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 
 
-def _portable_skill_namespace(key: str) -> str:
+def _portable_namespace(key: str) -> str:
     """Return a readable, collision-resistant namespace for a portable plugin."""
 
     slug = "".join(
@@ -1061,7 +1058,7 @@ class PluginManifest:
     # ``image_gen/openai``. When empty, falls back to ``name``.
     key: str = ""
     portable: bool = False
-    skill_namespace: str = ""
+    namespace: str = ""
     # Declared capability ids from the manifest ``capabilities:`` list
     # (#64228). Normalized to KNOWN ids only — see
     # ``son_of_anton_cli.plugin_capabilities.CAPABILITY_REGISTRY``. Declaration is
@@ -1253,11 +1250,11 @@ def _nested_plugin_mapping(segments: tuple[str, ...], value: Any) -> dict[str, A
     return nested
 
 
-def _plugin_data_namespace(plugin_id: str, skill_namespace: str) -> str:
+def _plugin_data_namespace(plugin_id: str, namespace: str) -> str:
     """Return one portable, filesystem-safe directory component for plugin data."""
-    candidate = skill_namespace or plugin_id
+    candidate = namespace or plugin_id
     if (
-        skill_namespace
+        namespace
         and candidate.startswith("agent-plugin-")
         and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,191}", candidate)
     ):
@@ -1266,7 +1263,7 @@ def _plugin_data_namespace(plugin_id: str, skill_namespace: str) -> str:
     # Reuse the portable namespace algorithm for native/nested ids too. Its
     # fixed prefix avoids reserved device names and other unsafe components,
     # while the digest prevents collisions after unsafe characters are folded.
-    return _portable_skill_namespace(candidate)
+    return _portable_namespace(candidate)
 
 
 def _state_thread_lock(path: Path) -> threading.RLock:
@@ -1299,8 +1296,8 @@ def _locked_plugin_state(path: Path):
 class PluginState:
     """Atomic, quota-bounded JSON key/value state owned by one plugin."""
 
-    def __init__(self, plugin_id: str, skill_namespace: str = "") -> None:
-        self._data_namespace = _plugin_data_namespace(plugin_id, skill_namespace)
+    def __init__(self, plugin_id: str, namespace: str = "") -> None:
+        self._data_namespace = _plugin_data_namespace(plugin_id, namespace)
 
     @property
     def data_dir(self) -> Path:
@@ -1491,7 +1488,7 @@ class PluginContext:
     def state(self) -> PluginState:
         """Return this plugin's profile-scoped durable JSON state facade."""
         if self._state is None:
-            self._state = PluginState(self.plugin_id, self.manifest.skill_namespace)
+            self._state = PluginState(self.plugin_id, self.manifest.namespace)
         return self._state
 
     @property
@@ -2929,7 +2926,7 @@ class PluginContext:
             key: stable task key (snake_case). Used in config ``auxiliary.<key>``
                 and env vars ``AUXILIARY_<KEY_UPPER>_*``. Must not shadow a
                 built-in task key (vision, compaction, web_extract, approval,
-                mcp, title_generation, skills_hub).
+                mcp, title_generation).
             display_name: human-readable name shown in the picker.
             description: short one-line description shown next to the name.
             defaults: optional dict of default routing fields. Recognized keys:
@@ -3282,73 +3279,6 @@ class PluginContext:
         logger.debug("Plugin %s registered middleware: %s", self.manifest.name, kind)
         return handle
 
-    # -- skill registration -------------------------------------------------
-
-    @_serialized_replacement
-    def register_skill(
-        self,
-        name: str,
-        path: Path,
-        description: str = "",
-        frontmatter: Optional[Mapping[str, Any]] = None,
-    ) -> PluginRegistration:
-        """Register a read-only skill provided by this plugin.
-
-        The skill becomes resolvable as ``'<plugin_name>:<name>'`` via
-        ``skill_view()``.  It does **not** enter the flat
-        ``~/.son-of-anton/skills/`` tree and is **not** listed in the system
-        prompt's ``<available_skills>`` index — plugin skills are
-        opt-in explicit loads only.
-
-        Raises:
-            ValueError: if *name* contains ``':'`` or invalid characters.
-            FileNotFoundError: if *path* does not exist.
-        """
-        from agent.skill_utils import _NAMESPACE_RE
-
-        if ":" in name:
-            raise ValueError(
-                f"Skill name '{name}' must not contain ':' "
-                f"(the namespace is derived from the plugin name "
-                f"'{self.manifest.name}' automatically)."
-            )
-        if not name or not _NAMESPACE_RE.match(name):
-            raise ValueError(
-                f"Invalid skill name '{name}'. Must match [a-zA-Z0-9_-]+."
-            )
-        if not path.exists():
-            raise FileNotFoundError(f"SKILL.md not found at {path}")
-
-        namespace = self.manifest.skill_namespace or self.manifest.name
-        qualified = f"{namespace}:{name}"
-        if self.manifest.portable and qualified in self._manager._plugin_skills:
-            raise ValueError(f"Plugin skill '{qualified}' is already registered")
-        previous = self._manager._plugin_skills.get(qualified)
-        entry = {
-            "path": path,
-            "plugin": namespace,
-            "plugin_key": self.manifest.key or self.manifest.name,
-            "bare_name": name,
-            "description": description,
-            "frontmatter": dict(frontmatter or {}),
-        }
-        self._manager._plugin_skills[qualified] = entry
-        handle = self._track_replacement(
-            "skill",
-            qualified,
-            slot=("manager_mapping", id(self._manager._plugin_skills), qualified),
-            current=entry,
-            previous=previous,
-            restore=lambda replacement: self._manager._restore_mapping(
-                self._manager._plugin_skills, qualified, entry, replacement
-            ),
-        )
-        logger.debug(
-            "Plugin %s registered skill: %s",
-            self.manifest.name, qualified,
-        )
-        return handle
-
 
 # ---------------------------------------------------------------------------
 # PluginManager
@@ -3376,8 +3306,6 @@ class PluginManager:
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         self._gateway_message_injector: tuple[object, Callable] | None = None
-        # Plugin skill registry: qualified name → metadata dict.
-        self._plugin_skills: Dict[str, Dict[str, Any]] = {}
         self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
@@ -3688,7 +3616,6 @@ class PluginManager:
             self._plugin_platform_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
-            self._plugin_skills.clear()
             self._portable_mcp_servers.clear()
             self._aux_tasks.clear()
             self._system_prompt_sections.clear()
@@ -4138,7 +4065,7 @@ class PluginManager:
                     Path(manifest.path),
                     get_son_of_anton_home()
                     / "plugin-data"
-                    / (manifest.skill_namespace or lookup_key),
+                    / (manifest.namespace or lookup_key),
                     [],
                     create_data=False,
                 ):
@@ -4242,7 +4169,7 @@ class PluginManager:
                             path=str(child),
                             key=key,
                             portable=True,
-                            skill_namespace=_portable_skill_namespace(key),
+                            namespace=_portable_namespace(key),
                         )
                     )
                 except Exception as exc:
@@ -4885,9 +4812,8 @@ class PluginManager:
 
             package = load_agent_plugin(
                 Path(manifest.path),
-                get_son_of_anton_home() / "plugin-data" / manifest.skill_namespace,
+                get_son_of_anton_home() / "plugin-data" / manifest.namespace,
             )
-            ctx = PluginContext(manifest, self)
             for diagnostic in package.diagnostics:
                 logger.warning(
                     "Agent Plugin '%s' [%s]: %s",
@@ -4895,23 +4821,8 @@ class PluginManager:
                     diagnostic.scope,
                     diagnostic.message,
                 )
-            for skill in package.skills:
-                try:
-                    ctx.register_skill(
-                        skill.name,
-                        skill.skill_md,
-                        skill.description,
-                        skill.frontmatter,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Agent Plugin '%s' skill '%s' skipped: %s",
-                        lookup_key,
-                        skill.name,
-                        exc,
-                    )
             for server_name, config in package.mcp_servers.items():
-                internal_name = f"{manifest.skill_namespace}__{server_name}"
+                internal_name = f"{manifest.namespace}__{server_name}"
                 if internal_name in self._portable_mcp_servers:
                     logger.warning(
                         "Agent Plugin '%s' MCP server collision: %s",
@@ -5475,24 +5386,6 @@ class PluginManager:
             )
         return result
 
-    # -----------------------------------------------------------------------
-    # Plugin skill lookups
-    # -----------------------------------------------------------------------
-
-    def find_plugin_skill(self, qualified_name: str) -> Optional[Path]:
-        """Return the ``Path`` to a plugin skill's SKILL.md, or ``None``."""
-        entry = self._plugin_skills.get(qualified_name)
-        return entry["path"] if entry else None
-
-    def list_plugin_skills(self, plugin_name: str) -> List[str]:
-        """Return sorted bare names of all skills registered by *plugin_name*."""
-        prefix = f"{plugin_name}:"
-        return sorted(
-            e["bare_name"]
-            for qn, e in self._plugin_skills.items()
-            if qn.startswith(prefix)
-        )
-
     def get_portable_mcp_servers(self) -> Dict[str, Dict[str, Any]]:
         """Return a defensive copy of enabled portable MCP server configs."""
 
@@ -5503,10 +5396,6 @@ class PluginManager:
 
     def has_portable_mcp_servers(self) -> bool:
         return bool(self._portable_mcp_servers)
-
-    def remove_plugin_skill(self, qualified_name: str) -> None:
-        """Remove a stale registry entry (silently ignores missing keys)."""
-        self._plugin_skills.pop(qualified_name, None)
 
 
 # ---------------------------------------------------------------------------
