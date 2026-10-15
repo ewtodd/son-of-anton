@@ -80,7 +80,6 @@ def finalize_turn(
     turn_id,
     user_message,
     original_user_message,
-    _should_review_memory,
     _turn_exit_reason,
     _pending_verification_response=None,
     _pending_verification_response_previewed=False,
@@ -654,14 +653,6 @@ def finalize_turn(
     # Clear stream callback so it doesn't leak into future calls
     agent._stream_callback = None
 
-    # Check skill trigger NOW — based on how many tool iterations THIS turn used.
-    _should_review_skills = False
-    if (agent._skill_nudge_interval > 0
-            and agent._iters_since_skill >= agent._skill_nudge_interval
-            and "skill_manage" in agent.valid_tool_names):
-        _should_review_skills = True
-        agent._iters_since_skill = 0
-
     # External memory provider: sync the completed turn + queue next prefetch.
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message,
@@ -669,44 +660,6 @@ def finalize_turn(
         interrupted=interrupted,
         messages=messages,
     )
-
-    # Background memory/skill review — runs AFTER the response is delivered
-    # so it never competes with the user's task for model attention.
-    # Suppressed when skip_background_review=True (e.g. cron) — review forks
-    # spawn another AIAgent (~30K tokens / event) and cron sessions have no
-    # human-in-the-loop benefit from the review.
-    #
-    # The nudge counters (_should_review_memory / _should_review_skills) gate
-    # the legacy turn/iteration cadence. When
-    # ``auxiliary.background_review.schedule: daily`` is set, the once-daily
-    # overnight review is due independently of those counters, so it is OR'd
-    # in here; _spawn_background_review then re-resolves the final flags.
-    _daily_review_due = False
-    if (
-        final_response
-        and not interrupted
-        and not getattr(agent, "skip_background_review", False)
-    ):
-        try:
-            from agent.background_review import automatic_review_due
-            _daily_review_due = automatic_review_due()
-        except Exception:
-            _daily_review_due = False
-
-    if (
-        final_response
-        and not interrupted
-        and not getattr(agent, "skip_background_review", False)
-        and (_should_review_memory or _should_review_skills or _daily_review_due)
-    ):
-        try:
-            agent._spawn_background_review(
-                messages_snapshot=list(messages),
-                review_memory=_should_review_memory,
-                review_skills=_should_review_skills,
-            )
-        except Exception:
-            pass  # Background review is best-effort
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in

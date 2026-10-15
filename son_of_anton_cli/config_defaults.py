@@ -1194,8 +1194,8 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
-        # Background review — the post-turn self-improvement fork that decides
-        # whether to save a memory / patch a skill. "auto" (default) = run on
+        # Background review — the fork /refine starts to decide whether to
+        # save a memory / patch a skill. "auto" (default) = run on
         # the main chat model, replaying the full conversation, which is already
         # warm in the prompt cache (cheap cache reads) — unchanged, optimal.
         # Set provider/model to a cheaper model (e.g. deepseek, or a
@@ -1206,21 +1206,6 @@ DEFAULT_CONFIG = {
         # replay; different model = digest. Quality holds (memory capture
         # identical, skill near-identical in benchmarks).
         "background_review": {
-            # Master switch for automatic post-turn memory/skill review forks.
-            # false = skip automatic spawns (manual /refine still works).
-            "enabled": True,
-            # Automatic-review cadence:
-            #   "nudge" — trigger on the turn/iteration counters
-            #             (memory.nudge_interval / skills.creation_nudge_interval),
-            #             the legacy behavior.
-            #   "daily" — ignore the counters; run at most ONE combined
-            #             memory+skills review per day, on the first turn that
-            #             lands inside ``daily_window`` (local time).
-            "schedule": "nudge",
-            # [start_hour, end_hour) local-time window used when
-            # schedule: "daily". Default midnight–06:00 ("overnight").
-            # May wrap midnight, e.g. [22, 6].
-            "daily_window": [0, 6],
             "provider": "auto",
             "model": "",
             "base_url": "",
@@ -1499,10 +1484,6 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
-        # Periodic built-in memory review. External providers with automatic
-        # turn/session extraction can set this to 0 and keep the small local
-        # store reserved for explicit high-frequency operational facts.
-        "nudge_interval": 10,
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".

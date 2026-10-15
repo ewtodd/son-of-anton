@@ -3,7 +3,7 @@
 This is the biggest single chunk pulled out of ``run_agent.py``: the
 roughly 3,900-line :func:`run_conversation` body that drives one user
 turn through the agent (model call, tool dispatch, retries, fallbacks,
-compaction, post-turn hooks, background memory/skill review nudges).
+compaction, post-turn hooks).
 
 The function takes the parent ``AIAgent`` instance as its first
 argument (``agent``) and accesses its state via attribute lookup.
@@ -1749,7 +1749,6 @@ def run_conversation(
     effective_task_id = _ctx.effective_task_id
     turn_id = _ctx.turn_id
     current_turn_user_idx = _ctx.current_turn_user_idx
-    _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
@@ -1873,12 +1872,6 @@ def run_conversation(
             except Exception as _step_err:
                 logger.debug("step_callback error (iteration %s): %s", api_call_count, _step_err)
 
-        # Track tool-calling iterations for skill nudge.
-        # Counter resets whenever skill_manage is actually used.
-        if (agent._skill_nudge_interval > 0
-                and "skill_manage" in agent.valid_tool_names):
-            agent._iters_since_skill += 1
-        
         # ── Pre-API-call /steer drain ──────────────────────────────────
         # If a /steer arrived during the previous API call (while the model
         # was thinking), drain it now — before we build api_messages — so
@@ -7408,7 +7401,6 @@ def run_conversation(
         turn_id=turn_id,
         user_message=user_message,
         original_user_message=original_user_message,
-        _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,

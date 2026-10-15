@@ -412,7 +412,6 @@ class AIAgent:
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
-        skip_background_review: bool = False,
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
@@ -496,7 +495,6 @@ class AIAgent:
             skip_context_files=skip_context_files,
             load_soul_identity=load_soul_identity,
             skip_memory=skip_memory,
-            skip_background_review=skip_background_review,
             session_db=session_db,
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
@@ -1589,7 +1587,7 @@ class AIAgent:
         review_skills: bool = False,
         focus: Optional[str] = None,
     ) -> None:
-        """Spawn the background memory/skill review thread.
+        """Spawn the ``/refine`` memory/skill review thread.
 
         Thin wrapper — the heavy lifting lives in
         ``agent.background_review.spawn_background_review_thread`` which
@@ -1597,43 +1595,10 @@ class AIAgent:
         here so existing tests that patch ``run_agent.threading.Thread``
         keep working.
 
-        ``focus`` is optional user-supplied steering (from ``/refine``)
-        appended to the review prompt — e.g. "save the deploy workflow as a
-        skill". The automatic post-turn triggers never set it.
+        ``focus`` is optional user-supplied steering appended to the review
+        prompt — e.g. "save the deploy workflow as a skill". There is no
+        automatic post-turn review: ``/refine`` is the only caller.
         """
-        # A delegation subagent (``_delegate_depth > 0``) must not run the
-        # automatic post-turn review. Subagents are ephemeral workers already
-        # barred from writing shared MEMORY.md (``DELEGATE_BLOCKED_TOOLS``) and
-        # are spawned with ``skip_memory=True``, so a review here has little to
-        # persist — yet it inherits the subagent's (often premium) delegation
-        # model and replays the whole conversation at premium rates, silently
-        # inflating token cost (#85859). An explicit ``/refine`` (``focus`` set)
-        # is a deliberate user request and still runs.
-        if focus is None and getattr(self, "_delegate_depth", 0) > 0:
-            return
-        # Explicit off-switch for automatic post-turn forks
-        # (``auxiliary.background_review.enabled: false``). Manual ``/refine``
-        # still works — same contract as zeroing the nudge intervals (#87250).
-        # Load the task block once here and pass it into the spawn path so
-        # aux routing does not re-read config.
-        task_cfg = None
-        if focus is None:
-            from agent.background_review import load_background_review_settings
-            enabled, task_cfg = load_background_review_settings()
-            if not enabled:
-                return
-            # Apply the automatic-review schedule. "nudge" (default) passes
-            # the counter-based triggers through unchanged; "daily" ignores
-            # the counters and admits at most one combined review per day,
-            # inside the overnight window (see agent.background_review).
-            from agent.background_review import apply_automatic_review_schedule
-            review_memory, review_skills = apply_automatic_review_schedule(
-                review_memory,
-                review_skills,
-                task_cfg=task_cfg,
-            )
-            if not (review_memory or review_skills):
-                return
         from agent.background_review import (
             finish_background_review_run,
             prepare_background_review_run,
@@ -1651,7 +1616,6 @@ class AIAgent:
                 review_memory=review_memory,
                 review_skills=review_skills,
                 focus=focus,
-                task_cfg=task_cfg,
                 review_run=review_run,
             )
             # Carry the active profile into the review thread so MEMORY.md /

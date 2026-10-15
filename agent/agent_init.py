@@ -425,7 +425,6 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
-    skip_background_review: bool = False,
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
@@ -514,13 +513,6 @@ def init_agent(
     agent.memory_notifications = "on"  # Memory update notifications: "off", "on", "verbose"
     agent.skip_context_files = skip_context_files
     agent.load_soul_identity = load_soul_identity
-    # Background review (memory/skill) opt-out switch. When True, skips the
-    # _spawn_background_review fork at end-of-turn -- avoids ~30K tokens /
-    # event of extra LLM cost on cron-style sessions where review forks
-    # provide no value (no human in the loop, no skill-creation pressure).
-    # skip_memory=True already disables the memory-review trigger; this
-    # flag is the explicit single-switch off for both review paths.
-    agent.skip_background_review = bool(skip_background_review)
     agent.pass_session_id = pass_session_id
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
@@ -1356,9 +1348,6 @@ def init_agent(
     agent._memory_scope = "shared"
     agent._memory_enabled = False
     agent._user_profile_enabled = False
-    agent._memory_nudge_interval = 10
-    agent._turns_since_memory = 0
-    agent._iters_since_skill = 0
     # skip_memory=True skips the external memory *provider*. Flush/background
     # agents can still pass enabled_toolsets=["memory"] so the built-in file
     # store exists and the memory tool does not fail with store=None (#65429).
@@ -1382,7 +1371,6 @@ def init_agent(
             agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(
                 _agent_cfg
             )
-            agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import ScopedMemoryStore, resolve_memory_scope
 
@@ -1482,14 +1470,6 @@ def init_agent(
 
     from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
     _inject_memory_provider_tools(agent)
-
-    # Skills config: nudge interval for skill creation reminders
-    agent._skill_nudge_interval = 10
-    try:
-        skills_config = _agent_cfg.get("skills", {})
-        agent._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
-    except Exception:
-        pass
 
     # Tool-use enforcement config: "auto" (default — matches hardcoded
     # model list), true (always), false (never), or list of substrings.

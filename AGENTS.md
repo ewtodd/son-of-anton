@@ -589,6 +589,10 @@ deletes. Only touches skills with `created_by: "agent"` provenance; pinned skill
 exempt from every auto-transition. Config section `curator:`; CLI `son-of-anton curator
 <verb>`.
 
+There is no automatic post-turn memory/skill review. The fork that ran after every few
+turns was removed (2026-10-15): 84 of its 86 skill writes over five weeks were its own, and
+three in four of them failed. `/refine [focus]` runs the same review once, on request.
+
 ## Cron (scheduled jobs)
 
 `cron/jobs.py` (job store) + `cron/scheduler.py` (tick loop). Agents schedule via the
@@ -598,7 +602,7 @@ duration (`"30m"`), every-phrase (`"every 2h"`), 5-field cron, ISO timestamp (on
 Hardening invariants: 3-minute hard interrupt on cron sessions; catchup window half the
 period clamped to 120s–2h; 120s grace for one-shot jobs; file lock at
 `~/.son-of-anton/cron/.tick.lock`; cron agents load and may update persistent memory like any other agent
-(`skip_memory=False`), but skip the background skill/memory review fork.
+(`skip_memory=False`).
 
 ## Important Policies
 

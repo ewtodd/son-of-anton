@@ -1,7 +1,7 @@
-"""Background memory/skill review — fork the agent to evaluate the turn.
+"""``/refine`` memory/skill review — fork the agent to evaluate the session.
 
-After every turn, ``AIAgent.run_conversation`` may call
-:func:`spawn_background_review` to fire off a daemon thread that replays
+``/refine`` calls ``AIAgent._spawn_background_review``, which uses
+:func:`spawn_background_review_thread` to fire off a daemon thread that replays
 the conversation snapshot in a forked :class:`AIAgent` and asks itself
 "should any skill/memory be saved or updated?".  Writes go straight to
 the memory + skill stores.  Main conversation and prompt cache are never
@@ -22,15 +22,10 @@ import copy
 import json
 import logging
 import os
-from datetime import datetime
-from pathlib import Path
 import threading
 from typing import Any, Dict, List, Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
-from son_of_anton_constants import get_son_of_anton_home
-from agent.hour_window import hour_in_window, parse_hour_window
-from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -224,165 +219,6 @@ def _background_review_task_config(
     aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
     task = aux.get("background_review", {})
     return task if isinstance(task, dict) else {}
-
-
-def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
-    """Single config read for the automatic-review gate + task block.
-
-    Returns ``(enabled, task_cfg)``. Fail-open on config errors (``enabled=True``)
-    so a broken config file does not silently disable reviews — but log at
-    WARNING so the cost-incurring path is visible.
-    """
-    try:
-        from son_of_anton_cli.config import load_config_readonly
-        from utils import is_truthy_value
-
-        cfg = load_config_readonly()
-        aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
-        task = aux.get("background_review", {})
-        task = task if isinstance(task, dict) else {}
-        return is_truthy_value(task.get("enabled"), default=True), task
-    except Exception:
-        logger.warning(
-            "Failed to read background_review.enabled; leaving automatic "
-            "review enabled (fail-open)",
-            exc_info=True,
-        )
-        return True, {}
-
-
-def is_background_review_enabled(
-    task_cfg: Optional[Dict[str, Any]] = None,
-) -> bool:
-    """Return whether automatic post-turn background review may spawn.
-
-    Controlled by ``auxiliary.background_review.enabled`` (default ``true``).
-    Explicit ``/refine`` (``focus`` set) bypasses this gate — same contract as
-    zeroing the nudge intervals, which stops automatic forks but leaves manual
-    refine working (issue #87250).
-
-    Prefer :func:`load_background_review_settings` at the spawn call site so
-    the task block is not re-read on the same turn.
-    """
-    if task_cfg is not None:
-        try:
-            from utils import is_truthy_value
-
-            return is_truthy_value(task_cfg.get("enabled"), default=True)
-        except Exception:
-            logger.warning(
-                "Failed to interpret background_review.enabled; leaving "
-                "automatic review enabled (fail-open)",
-                exc_info=True,
-            )
-            return True
-    enabled, _ = load_background_review_settings()
-    return enabled
-
-
-# ---------------------------------------------------------------------------
-# Automatic-review scheduling — "nudge" vs "daily".
-#
-# The automatic post-turn review fork is normally triggered by turn/iteration
-# counters (``memory.nudge_interval`` / ``skills.creation_nudge_interval``).
-# ``auxiliary.background_review.schedule: daily`` swaps that for a wall-clock
-# cadence: at most ONE combined memory+skills review per day, and only while
-# the local time falls inside the nightly ``daily_window``. This is the
-# "self-improvement once a day, overnight" mode — counters are ignored, and
-# the first turn that lands in the window each day carries the day's review.
-# Manual ``/refine`` (``focus`` set) never passes through this gate.
-# ---------------------------------------------------------------------------
-
-DEFAULT_DAILY_WINDOW: tuple[int, int] = (0, 6)  # [start_hour, end_hour) local
-
-
-def _background_review_state_file() -> Path:
-    return get_son_of_anton_home() / ".background_review_state"
-
-
-def _read_daily_state() -> Dict[str, Any]:
-    path = _background_review_state_file()
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _write_daily_state(data: Dict[str, Any]) -> None:
-    try:
-        atomic_json_write(_background_review_state_file(), data)
-    except Exception:
-        logger.debug("Failed to write background-review daily state", exc_info=True)
-
-
-def _review_schedule(task_cfg: Optional[Dict[str, Any]] = None) -> str:
-    cfg = task_cfg if isinstance(task_cfg, dict) else {}
-    mode = str(cfg.get("schedule", "nudge")).strip().lower()
-    return mode if mode in ("nudge", "daily") else "nudge"
-
-
-def _parse_daily_window(task_cfg: Optional[Dict[str, Any]] = None) -> tuple[int, int]:
-    cfg = task_cfg if isinstance(task_cfg, dict) else {}
-    return parse_hour_window(cfg.get("daily_window"), DEFAULT_DAILY_WINDOW)
-
-
-# Kept as a module-local alias: the wrapping-window predicate is now shared
-# with the gateway's active_hours gate (agent/hour_window.py) so the two
-# cannot drift.
-_hour_in_window = hour_in_window
-
-
-def automatic_review_due(
-    task_cfg: Optional[Dict[str, Any]] = None,
-    now: Optional[datetime] = None,
-) -> bool:
-    """Pure predicate: is the once-daily automatic review due right now?
-
-    Only meaningful when ``auxiliary.background_review.schedule`` is
-    ``"daily"``. True when the current local hour is inside the configured
-    ``daily_window`` and no automatic review has been recorded for today.
-    """
-    if _review_schedule(task_cfg) != "daily":
-        return False
-    now = now or datetime.now()
-    if not _hour_in_window(now.hour, _parse_daily_window(task_cfg)):
-        return False
-    today = now.strftime("%Y-%m-%d")
-    return _read_daily_state().get("last_auto_review_date") != today
-
-
-def apply_automatic_review_schedule(
-    review_memory: bool,
-    review_skills: bool,
-    task_cfg: Optional[Dict[str, Any]] = None,
-    now: Optional[datetime] = None,
-) -> tuple[bool, bool]:
-    """Resolve what the automatic post-turn review should actually review.
-
-    ``"nudge"`` (default) passes the counter-based triggers through unchanged
-    (legacy behavior). ``"daily"`` ignores the counters and instead returns
-    ``(True, True)`` — a single combined review — on the first turn that
-    lands inside the nightly window each day, recording the day so it does
-    not fire again. Returns ``(False, False)`` whenever nothing should run.
-    """
-    if _review_schedule(task_cfg) != "daily":
-        return (bool(review_memory), bool(review_skills))
-
-    now = now or datetime.now()
-    if not _hour_in_window(now.hour, _parse_daily_window(task_cfg)):
-        return (False, False)
-
-    today = now.strftime("%Y-%m-%d")
-    state = _read_daily_state()
-    if state.get("last_auto_review_date") == today:
-        return (False, False)
-
-    state["last_auto_review_date"] = today
-    _write_daily_state(state)
-    return (True, True)
 
 
 def _resolve_review_runtime(
@@ -1301,8 +1137,6 @@ def _run_review_in_thread(
             review_agent._memory_store = agent._memory_store
             review_agent._memory_enabled = agent._memory_enabled
             review_agent._user_profile_enabled = agent._user_profile_enabled
-            review_agent._memory_nudge_interval = 0
-            review_agent._skill_nudge_interval = 0
             # PERSISTENCE ISOLATION (the curator-takeover root cause): the fork
             # shares the parent's session_id (set below, for prompt-cache
             # warmth), so without this it would write its harness turn ("Review
@@ -1578,16 +1412,13 @@ def spawn_background_review_thread(
     owns the actual ``threading.Thread`` construction so test-level patches
     of ``run_agent.threading.Thread`` keep working.
 
-    ``focus`` is optional user steering (the ``/refine [instructions]``
-    path): appended to the chosen review prompt so the fork prioritizes what
-    the user asked for while keeping the same guardrails. Automatic
-    post-turn reviews pass ``None`` — their prompts are byte-identical to
-    before this parameter existed.
+    ``focus`` is optional user steering (``/refine [instructions]``):
+    appended to the chosen review prompt so the fork prioritizes what the
+    user asked for while keeping the same guardrails.
 
-    ``task_cfg`` is the already-loaded ``auxiliary.background_review`` block
-    from :func:`load_background_review_settings`. When omitted, config is
-    read once here and shared with the worker (aux routing) so a single
-    turn does not re-parse the config file.
+    ``task_cfg`` is the ``auxiliary.background_review`` routing block. When
+    omitted, config is read once here and shared with the worker (aux
+    routing) so a single review does not re-parse the config file.
     """
     if task_cfg is None:
         task_cfg = _background_review_task_config()
@@ -1626,11 +1457,7 @@ __all__ = [
     "_MEMORY_REVIEW_PROMPT",
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",
-    "is_background_review_enabled",
-    "load_background_review_settings",
     "spawn_background_review_thread",
     "summarize_background_review_actions",
     "build_memory_write_metadata",
-    "automatic_review_due",
-    "apply_automatic_review_schedule",
 ]

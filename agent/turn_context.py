@@ -178,8 +178,7 @@ def append_notes_to_multimodal_content(content: Any, notes: str) -> bool:
 # - cron  — the scheduler names its own session after the job in its `finally`
 #   block, and the opener is the cron delivery hint, not a user's request.
 #   Titling it writes that scaffolding as the visible name for the whole run and
-#   bills a side-LLM call per fire, against the same job that sets
-#   `skip_memory` / `skip_background_review` to avoid exactly that.
+#   bills a side-LLM call per fire.
 # - subagent — a delegated child's session is hidden from every picker, so its
 #   title is never read. A batch at `max_concurrent_children` would pay N title
 #   calls for N names nobody sees.
@@ -549,8 +548,6 @@ class TurnContext:
     turn_id: str
     # Index of the current user turn within ``messages``.
     current_turn_user_idx: int
-    # Whether the post-turn memory review should fire.
-    should_review_memory: bool = False
     # Context contributed by ``pre_llm_call`` plugins (appended to user message).
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
@@ -715,7 +712,6 @@ def build_turn_context(
         agent._replay_compaction_warning()
         agent._compaction_warning = None  # send once
 
-    # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
     agent.iteration_budget = IterationBudget(agent.max_iterations)
 
     # Wall-clock run budget: per-run_conversation clock. Only stamped when a
@@ -774,15 +770,13 @@ def build_turn_context(
     if conversation_history and not agent._todo_store.has_items():
         agent._hydrate_todo_store(conversation_history)
 
-    # Hydrate per-session nudge counters from persisted history (issue #22357).
+    # Hydrate the session's user-turn count from persisted history (issue #22357).
     if conversation_history and agent._user_turn_count == 0:
         prior_user_turns = sum(
             1 for m in conversation_history if m.get("role") == "user"
         )
         if prior_user_turns > 0:
             agent._user_turn_count = prior_user_turns
-            if agent._memory_nudge_interval > 0 and agent._turns_since_memory == 0:
-                agent._turns_since_memory = prior_user_turns % agent._memory_nudge_interval
 
     # Add the current user message after the prompt/session setup has made
     # close persistence safe. The handoff above preserves any marker already
@@ -804,7 +798,7 @@ def build_turn_context(
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
 
-    # Track user turns for memory flush and periodic nudge logic.
+    # Track user turns for the memory provider's turn hooks.
     agent._user_turn_count += 1
     # Copilot x-initiator: the first API call of this user turn is
     # user-initiated; tool-loop follow-ups revert to "agent" (#3040).
@@ -821,16 +815,6 @@ def build_turn_context(
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
-
-    # Track memory nudge trigger (turn-based, checked here).
-    should_review_memory = False
-    if (agent._memory_nudge_interval > 0
-            and "memory" in agent.valid_tool_names
-            and agent._memory_store):
-        agent._turns_since_memory += 1
-        if agent._turns_since_memory >= agent._memory_nudge_interval:
-            should_review_memory = True
-            agent._turns_since_memory = 0
 
     # Cosmetic side-signal: detect an affection "reaction" (ily / <3 / good bot)
     # and notify the host so it can play hearts. Token-free, never touches the
@@ -1454,7 +1438,6 @@ def build_turn_context(
         effective_task_id=effective_task_id,
         turn_id=turn_id,
         current_turn_user_idx=current_turn_user_idx,
-        should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
     )

@@ -1516,9 +1516,8 @@ class CLICommandsMixin:
     def _handle_refine_command(self, cmd: str) -> None:
         """Dispatch /refine — run the memory/skill review fork on demand.
 
-        Same machinery as the automatic post-turn self-improvement loop
-        (``AIAgent._spawn_background_review``), but user-triggered and with
-        optional focus instructions. Writes go to the memory + skill stores
+        Spawns ``AIAgent._spawn_background_review`` with optional focus
+        instructions; there is no automatic review. Writes go to the memory + skill stores
         in a background fork; the live conversation and prompt cache are
         never touched.
         """

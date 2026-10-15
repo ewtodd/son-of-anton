@@ -5479,7 +5479,6 @@ def run_job(
             # tool follows normal toolset resolution, so jobs benefit from
             # (and can update) the user's persistent memory.
             skip_memory=False,
-            skip_background_review=True,  # Cron has no human-in-the-loop need for skill/memory review forks (~30K tok/event)
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
