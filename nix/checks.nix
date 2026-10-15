@@ -257,15 +257,13 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         # ── Bundled assets + venv smoke ──────────────────────────────────
         bundled-assets = pkgs.runCommand "son-of-anton-bundled-assets" { } ''
           set -euo pipefail
-          test -d ${son-of-anton}/share/son-of-anton/skills \
-            || (echo "FAIL: bundled skills missing"; exit 1)
           test -d ${son-of-anton}/share/son-of-anton/plugins \
             || (echo "FAIL: bundled plugins missing"; exit 1)
           test -d ${son-of-anton}/share/son-of-anton/locales \
             || (echo "FAIL: bundled locales missing"; exit 1)
           ${son-of-anton}/bin/son-of-anton --help 2>&1 | grep -q "gateway" \
             || (echo "FAIL: gateway subcommand missing"; exit 1)
-          echo "PASS: bundled skills + plugins + locales present, binary works"
+          echo "PASS: bundled plugins + locales present, binary works"
           mkdir -p $out
         '';
 
@@ -276,7 +274,6 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           # the wrapped binary's runtime resolution.
           export PYTHONPATH="${son-of-anton}/share/son-of-anton"
           export SON_OF_ANTON_BUNDLED_PLUGINS="${son-of-anton}/share/son-of-anton/plugins"
-          export SON_OF_ANTON_BUNDLED_SKILLS="${son-of-anton}/share/son-of-anton/skills"
           ${sonOfAntonVenv}/bin/python3 -c "
 import cli
 import run_agent

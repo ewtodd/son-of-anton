@@ -29,9 +29,6 @@ def _first_party_files() -> list[Path]:
         rel = p.relative_to(ROOT)
         if any(part in SKIP_DIRS for part in rel.parts):
             continue
-        # Skill scripts run as standalone subprocesses against their own deps.
-        if rel.parts and rel.parts[0] in {"skills", "optional-skills"}:
-            continue
         out.append(p)
     return sorted(out)
 

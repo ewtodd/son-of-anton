@@ -75,8 +75,6 @@ EXEMPT_MARKER = "noqa: subprocess-stdin"
 SKIP_DIRS = {
     "tests/",
     "scripts/",
-    "skills/",
-    "optional-skills/",
     "son_of_anton_cli/",
     "gateway/",
     "cron/",

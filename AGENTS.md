@@ -100,8 +100,7 @@ Each rung adds more permanent surface than the one above. Choose the highest
 ## Development Environment
 
 This fork is Nix-first. Python dependencies are sealed in a uv2nix venv; the `son-of-anton`
-wrapper exposes the bundled plugins via `SON_OF_ANTON_BUNDLED_PLUGINS`. (It still sets
-`SON_OF_ANTON_BUNDLED_SKILLS` too; nothing reads it, and it goes with the `skills/` tree.)
+wrapper exposes the bundled plugins via `SON_OF_ANTON_BUNDLED_PLUGINS`.
 
 ```bash
 nix build                # sealed uv2nix venv + wrapper in result/bin/
@@ -173,7 +172,6 @@ son-of-anton/
 │   └── verification/     # Experimental verification (RESULTS.txt, formal eval)
 ├── problems/             # Toy physics problems (cobalt_calibration, bromine_halflife, ...)
 ├── cron/                 # Scheduler — jobs.py, scheduler.py
-├── skills/               # Inert leftover SKILL.md tree, nothing loads it; being deleted
 ├── scripts/              # run_tests.sh, release.py, auxiliary scripts
 └── tests/                # Pytest suite (small, focused set — see "Testing")
 ```

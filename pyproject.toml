@@ -81,8 +81,6 @@ dependencies = [
   # (~108KB, no compiled extensions, no platform constraints), so unlike the
   # matrix extra's `mautrix`/`python-olm` it's safe to ship everywhere.
   "Markdown==3.10.2",
-  # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]==2.13.0",  # PYSEC-2026-175/177/178/179
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
   "urllib3>=2.7.0,<3",
@@ -124,14 +122,6 @@ dependencies = [
   # libs required for the codecs we use, so it's safe to ship in the base
   # install rather than gating it behind an extra.
   "Pillow==12.3.0",
-  # The bundled document skills (pdf, docx, xlsx) run on these. They ship in
-  # the build like every other dependency: nothing is pip-installed at runtime.
-  "pypdf==6.19.0",
-  "pypdfium2==5.13.0",
-  "pdfplumber==0.11.10",
-  "reportlab==5.0.1",
-  "python-docx==1.2.0",
-  "openpyxl==3.1.5",
   # First-party lifecycle and shared-metrics runtime. Relay 0.6 is the minimum
   # lossless provider-codec contract. Managed calls pass request/response data
   # through this native module in-process; shared metrics installs no network
@@ -234,7 +224,7 @@ otlp = ["opentelemetry-sdk==1.39.1", "opentelemetry-exporter-otlp-proto-http==1.
 all = [
   # The fork keeps this group for the Nix package: it is the set of extras
   # the sealed venv ships. Messaging (Discord + Slack), memory providers,
-  # MCP, the Textual TUI, and skill dependencies.
+  # MCP, and the Textual TUI.
   "son-of-anton[messaging]",
   "son-of-anton[cron]",
   "son-of-anton[pty]",
@@ -368,7 +358,5 @@ select = ["PLW1514"]
 [tool.ruff.lint.per-file-ignores]
 # Tests can intentionally exercise locale-encoding edge cases.
 "tests/**" = ["PLW1514"]
-# Skills and plugins are partially user-authored — their own conventions.
-"skills/**" = ["PLW1514"]
-"optional-skills/**" = ["PLW1514"]
+# Plugins are partially user-authored — their own conventions.
 "plugins/**" = ["PLW1514"]

@@ -1,7 +1,7 @@
 # nix/son-of-anton.nix — Son of Anton Agent package (Python only)
 #
 # The fork ships no JS surfaces, so this is a single sealed uv2nix venv plus
-# a wrapper that exposes the bundled skills and plugins.
+# a wrapper that exposes the bundled plugins and locales.
 #
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
 # Users override via:
@@ -42,7 +42,7 @@
   extraPackages ? [ ],
 }:
 let
-  # Filtered Python source — keeps skills/plugins/nix/JS edits from
+  # Filtered Python source — keeps plugins/nix/JS edits from
   # invalidating the venv derivation. README.md and LICENSE must stay:
   # pyproject.toml references them (readme / license-files).
   pythonSrc = lib.cleanSourceWith {
@@ -60,7 +60,6 @@ let
           "tests"
           "tests-js"
           "nix"
-          "skills"
           "plugins"
           ".github"
         ];
@@ -87,14 +86,9 @@ let
 
   sonOfAntonVenv = (mkSonOfAntonVenv extraDependencyGroups).venv;
 
-  # Import bundled skills and plugins. Keeping them out of the Python
-  # site-packages keeps import semantics identical to a dev checkout — the
-  # loader reads them from SON_OF_ANTON_BUNDLED_SKILLS / _PLUGINS.
-  bundledSkills = lib.cleanSourceWith {
-    src = ../skills;
-    filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
-  };
-
+  # Import bundled plugins. Keeping them out of the Python site-packages
+  # keeps import semantics identical to a dev checkout — the loader reads
+  # them from SON_OF_ANTON_BUNDLED_PLUGINS.
   bundledPlugins = lib.cleanSourceWith {
     src = ../plugins;
     filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
@@ -150,7 +144,6 @@ stdenv.mkDerivation (finalAttrs: {
     # Symlinks, not copies: these are all store paths already, and the
     # wrapper env vars just hold paths.
     mkdir -p $out/share/son-of-anton $out/bin
-    ln -s ${bundledSkills} $out/share/son-of-anton/skills
     ln -s ${bundledPlugins} $out/share/son-of-anton/plugins
     ln -s ${bundledLocales} $out/share/son-of-anton/locales
 
@@ -182,7 +175,6 @@ stdenv.mkDerivation (finalAttrs: {
     makeWrapper ${sonOfAntonVenv}/bin/son-of-anton $out/bin/son-of-anton \
       --suffix PATH : "${runtimePath}" \
       --prefix PYTHONPATH : "$out/share/son-of-anton" \
-      --set SON_OF_ANTON_BUNDLED_SKILLS $out/share/son-of-anton/skills \
       --set SON_OF_ANTON_BUNDLED_PLUGINS $out/share/son-of-anton/plugins \
       --set SON_OF_ANTON_BUNDLED_LOCALES $out/share/son-of-anton/locales \
       --set-default SON_OF_ANTON_BIN $out/bin/son-of-anton \

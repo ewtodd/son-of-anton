@@ -3,7 +3,7 @@ setup.py — wheel/sdist build guard.
 
 pip/PyPI and Homebrew are no longer supported distribution methods for
 Son of Anton Agent (see website/docs/getting-started/platform-support.md). The
-wheel would ship without bundled assets (locales, skills,
+wheel would ship without bundled assets (locales,
 web_dist, tui_dist, plugin manifests) since those are resolved at runtime
 via env-var overrides set by the nix wrapper or the source-checkout layout.
 
