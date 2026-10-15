@@ -366,6 +366,32 @@ def _fetch_picker_live_models(
     return generic_models if generic_models else None
 
 
+def _drop_unavailable(
+    models: list[str] | None,
+    api_key: str,
+    api_url: str,
+    headers: dict[str, str] | None = None,
+    timeout: float = 5.0,
+    api_mode: str | None = None,
+) -> list[str] | None:
+    """What the picker lists of a live catalog: its models minus those the
+    endpoint marks unavailable right now.
+
+    maitred lists every model it fronts, loaded or not; the picker shows only
+    what is being served. The catalog itself (cached, or saved into config)
+    keeps every model, and naming an unlisted one still works. An endpoint
+    that reports no statuses is left as it is.
+    """
+    if not models or isinstance(models, _NativePickerModelList):
+        return models
+    from son_of_anton_cli.models import unavailable_models
+
+    gone = unavailable_models(
+        api_key, api_url, timeout=timeout, api_mode=api_mode, headers=headers
+    )
+    return [m for m in models if m not in gone] if gone else models
+
+
 # ---------------------------------------------------------------------------
 
 # Opaque internal model-ID display
@@ -2852,7 +2878,14 @@ def list_authenticated_providers(
                         or not has_explicit_models
                         or isinstance(live_models, _NativePickerModelList)
                     ):
-                        models_list = live_models
+                        models_list = _drop_unavailable(
+                            live_models,
+                            api_key,
+                            api_url,
+                            headers=_extra_headers_from_config(ep_cfg) or None,
+                            timeout=(1.5 if for_picker else 5.0),
+                            api_mode=ep_cfg.get("api_mode"),
+                        )
                 except Exception:
                     pass
             elif _discovery_allowed and not _catalog_pinned:
@@ -2936,11 +2969,16 @@ def list_authenticated_providers(
         _probe_live = bool(refresh or probe_current_custom_provider)
         try:
             if _probe_live:
-                _live_models = _fetch_picker_live_models(
+                _live_models = _drop_unavailable(
+                    _fetch_picker_live_models(
+                        "",
+                        str(current_base_url).strip().rstrip("/"),
+                        "custom",
+                        False,
+                        timeout=(1.5 if for_picker else 5.0),
+                    ),
                     "",
                     str(current_base_url).strip().rstrip("/"),
-                    "custom",
-                    False,
                     timeout=(1.5 if for_picker else 5.0),
                 )
             else:
@@ -3251,14 +3289,22 @@ def list_authenticated_providers(
                     ):
                         if isinstance(live_models, _NativePickerModelList):
                             native_catalog_empty = not live_models
-                        grp["models"] = live_models
-                        grp["total_models"] = len(live_models)
+                        # The whole catalog is saved; the picker shows what is served.
                         _save_discovered_models_to_config(
                             api_url,
                             live_models,
                             api_mode=grp.get("api_mode"),
                             headers=grp.get("extra_headers") or None,
                         )
+                        grp["models"] = _drop_unavailable(
+                            live_models,
+                            api_key,
+                            api_url,
+                            headers=grp.get("extra_headers") or None,
+                            timeout=(1.5 if for_picker else 5.0),
+                            api_mode=grp.get("api_mode"),
+                        )
+                        grp["total_models"] = len(grp["models"])
                 except Exception:
                     pass
             elif _discovery_allowed and not _catalog_pinned:

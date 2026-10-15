@@ -3244,8 +3244,16 @@ def probe_api_models(
         try:
             with _urlopen_model_catalog_request(req, **_open_kwargs) as resp:
                 data = json.loads(resp.read().decode())
+                entries = data.get("data", [])
                 return {
-                    "models": [m.get("id", "") for m in data.get("data", [])],
+                    "models": [m.get("id", "") for m in entries],
+                    # A gateway in front of servers that come and go (maitred) lists
+                    # every model it fronts with a live ``status``; a plain server
+                    # lists only what it serves, with none.
+                    "reports_status": any("status" in m for m in entries),
+                    "unavailable": [
+                        m.get("id", "") for m in entries if m.get("status") == "unavailable"
+                    ],
                     "probed_url": url,
                     "resolved_base_url": candidate_base.rstrip("/"),
                     "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,
@@ -3585,22 +3593,19 @@ def cached_fetch_api_models(
             # (#72762's stall class, which a plain TTL would reintroduce an
             # hour into the session); refresh off-thread for the next open.
             def _refresh_custom():
-                live = fetch_api_models(
+                return _probe_custom_catalog(
                     api_key, base_url,
-                    timeout=timeout, api_mode=api_mode, headers=headers,
-                )
-                if not live:
-                    return None
-                return {"fp": fp, "at": time.time(), "models": list(live)}
+                    timeout=timeout, api_mode=api_mode, headers=headers, fp=fp,
+                )[1]
 
             _spawn_swr_refresh(cache_key, _refresh_custom)
             return list(entry["models"])
 
-    live = fetch_api_models(
-        api_key, base_url, timeout=timeout, api_mode=api_mode, headers=headers
+    live, row = _probe_custom_catalog(
+        api_key, base_url, timeout=timeout, api_mode=api_mode, headers=headers, fp=fp
     )
-    if live:
-        cache[cache_key] = {"fp": fp, "at": now, "models": list(live)}
+    if row:
+        cache[cache_key] = row
         _save_provider_models_cache(cache)
         return list(live)
 
@@ -3609,6 +3614,83 @@ def cached_fetch_api_models(
     if _cache_entry_valid(entry, fp):
         return list(entry["models"])
     return live
+
+
+def _probe_custom_catalog(
+    api_key: Optional[str],
+    base_url: Optional[str],
+    *,
+    timeout: float,
+    api_mode: Optional[str],
+    headers: Optional[dict[str, str]],
+    fp: str,
+) -> tuple[Optional[list[str]], Optional[dict[str, Any]]]:
+    """Probe a custom endpoint's catalog: what :func:`fetch_api_models` returns,
+    and the cache row for it (``None`` when it listed nothing).
+
+    A catalog that reports live statuses keeps the ids it marks unavailable in
+    the row, under ``unavailable``; its ``models`` stay complete, since naming a
+    model that is not being served is still valid (the gateway answers why).
+    """
+    probe = probe_api_models(
+        api_key, base_url, timeout=timeout, api_mode=api_mode, request_headers=headers
+    )
+    live = probe.get("models")
+    if not live:
+        return live, None
+    row: dict[str, Any] = {"fp": fp, "at": time.time(), "models": list(live)}
+    if probe.get("reports_status"):
+        row["unavailable"] = list(probe.get("unavailable") or [])
+    return live, row
+
+
+# A catalog that reports which models are being served describes this moment,
+# not the hour the catalog cache trusts: the picker asks it again once its
+# statuses are older than this.
+_LIVE_STATUS_TTL = 10
+
+
+def unavailable_models(
+    api_key: Optional[str],
+    base_url: Optional[str],
+    *,
+    timeout: float = 5.0,
+    api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
+) -> frozenset[str]:
+    """The models a custom endpoint marks ``status: "unavailable"`` right now.
+
+    maitred lists every model it fronts, loaded or not, each with a live
+    ``status``. Only an endpoint whose cached catalog carried statuses is asked
+    again (one request bounded by ``timeout``, skipped while its statuses are
+    seconds old), so a picker open costs an ordinary endpoint no round-trip
+    (#72762). Any failure marks nothing.
+    """
+    normalized_url = str(base_url or "").strip().rstrip("/").lower()
+    if not normalized_url:
+        return frozenset()
+    cache_key = f"custom:{normalized_url}"
+    cache = _load_provider_models_cache()
+    entry = cache.get(cache_key)
+    if not isinstance(entry, dict) or not isinstance(entry.get("unavailable"), list):
+        return frozenset()
+    at = entry.get("at")
+    if (
+        isinstance(at, (int, float))
+        and not isinstance(at, bool)
+        and time.time() - at < _LIVE_STATUS_TTL
+    ):
+        return frozenset(entry["unavailable"])
+    fp = _custom_endpoint_fingerprint(api_key, api_mode, headers)
+    _, row = _probe_custom_catalog(
+        api_key, base_url, timeout=timeout, api_mode=api_mode, headers=headers, fp=fp
+    )
+    if not row:
+        return frozenset()
+    if entry.get("fp") == fp:
+        cache[cache_key] = row
+        _save_provider_models_cache(cache)
+    return frozenset(row.get("unavailable") or ())
 
 
 # ---------------------------------------------------------------------------
