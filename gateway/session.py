@@ -764,8 +764,8 @@ class SessionEntry:
     prev_session_id: Optional[str] = None
 
     # Set by reset_session() when the user explicitly sends /new or /reset.
-    # Consumed once by _handle_message_with_agent to trigger topic/channel
-    # skill re-injection on the first message of the new session.  We can't
+    # Consumed once by _handle_message_with_agent so the first message of the
+    # new session counts as a new session (session:start hook).  We can't
     # reuse was_auto_reset for this because that flag fires the "session
     # expired due to inactivity" user-facing notice and a misleading
     # context-note prepend — both wrong for an explicit manual reset.

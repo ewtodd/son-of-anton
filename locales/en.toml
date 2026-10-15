@@ -78,8 +78,6 @@ branched_many = "Branched to **{title}** ({count} messages copied)\nOriginal: `{
 
 [gateway.commands]
 usage = "Usage: `/commands [page]`"
-skill_header = "**Skill Commands**:"
-default_desc = "Skill command"
 none = "No commands available."
 header = "**Commands** ({total} total, page {page}/{total_pages})"
 nav_prev = "`/commands {page}` ← prev"
@@ -145,8 +143,6 @@ set = "Goal set ({budget}-turn budget): {goal}\nI'll keep working until the goal
 
 [gateway.help]
 header = "**Son of Anton Commands**\n"
-skill_header = "\n**Skill Commands** ({count} active):"
-more_use_commands = "\n... and {count} more. Use `/commands` for the full paginated list."
 more_commands = "\n... and {count} more commands. Use `/commands` for the full paginated list."
 
 [gateway.insights]
@@ -215,16 +211,6 @@ removed = "Removed: {names}"
 none_connected = "No MCP servers connected."
 tools_available = "\n{tools} tool(s) available from {servers} server(s)"
 failed = "MCP reload failed: {error}"
-
-[gateway.reload_skills]
-header = "**Skills Reloaded**\n"
-no_new = "No new skills detected."
-total = "\n{count} skill(s) available"
-added_header = "**Added Skills:**"
-removed_header = "**Removed Skills:**"
-item_with_desc = "    - {name}: {desc}"
-item_no_desc = "    - {name}"
-failed = "Skills reload failed: {error}"
 
 [gateway.reset]
 header_default = "Session reset! Starting fresh."

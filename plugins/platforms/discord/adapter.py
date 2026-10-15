@@ -100,12 +100,6 @@ _DISCORD_IMAGE_MAX_REDIRECTS = 10
 # metadata flag, not rely on a regex here.
 _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
     re.compile(r"^\s*💾\s*Self-improvement review:\s+\S[\s\S]*$", re.IGNORECASE),
-    # Legacy/background-review test doubles used this shorter form before the
-    # self-improvement prefix became the stable emitter contract.
-    re.compile(
-        r"^\s*💾\s+Skill\s+['\"].+?['\"]\s+(?:created|updated|improved|patched)\.?\s*$",
-        re.IGNORECASE,
-    ),
     re.compile(r"^\s*⏳\s+Working\s+—\s+\d+\s+min(?:\s|$)", re.IGNORECASE),
     re.compile(
         r"^\s*\[Background process\s+\S+\s+"
@@ -4706,9 +4700,9 @@ class DiscordAdapter(BasePlatformAdapter):
         Returns ``(allowed, reason)``. ``reason`` is populated only when
         ``allowed`` is False. This is the shared core used by both the
         responding wrapper (``_check_slash_authorization``) and side-effect-
-        free callers like the ``/skill`` autocomplete callback, which must
-        return an empty list for unauthorized users instead of leaking an
-        ephemeral rejection per-keystroke.
+        free callers like autocomplete callbacks, which must return an empty
+        list for unauthorized users instead of leaking an ephemeral rejection
+        per-keystroke.
 
         Fail-closed semantics for malformed payloads: when an allowlist is
         configured but the interaction is missing the data needed to
@@ -5480,10 +5474,6 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_reload_mcp(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reload-mcp")
 
-        @tree.command(name="reload-skills", description="Re-scan ~/.son-of-anton/skills/ for new or removed skills")
-        async def slash_reload_skills(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/reload-skills")
-
         @tree.command(name="voice", description="Toggle voice reply mode")
         @discord.app_commands.describe(mode="Voice mode: join, channel, leave, on, tts, off, or status")
         @discord.app_commands.choices(mode=[
@@ -5579,9 +5569,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
         already_registered: set[str] = set()
         # Native commands above are registered first and are the highest
-        # priority, so they always survive the 100-command cap. Reserve one
-        # slot for the consolidated ``/skill`` group registered further below.
-        slot_cap = _DISCORD_MAX_APP_COMMANDS - 1
+        # priority, so they always survive the 100-command cap.
+        slot_cap = _DISCORD_MAX_APP_COMMANDS
         dropped_over_cap = 0
         try:
             from son_of_anton_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
@@ -5655,11 +5644,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 "Discord auto-register from plugin commands failed: %s", e
             )
 
-        # Register skills under a single /skill command group with category
-        # subcommand groups.  This uses 1 top-level slot instead of N,
-        # supporting up to 25 categories × 25 skills = 625 skills.
-        self._register_skill_group(tree)
-
         if dropped_over_cap:
             # Staying under the cap keeps the whole sync succeeding; without
             # this guard a single over-limit command makes Discord reject the
@@ -5721,201 +5705,6 @@ class DiscordAdapter(BasePlatformAdapter):
             "(opt-in defense in depth via DISCORD_HIDE_SLASH_COMMANDS).",
             applied,
         )
-
-    def _register_skill_group(self, tree) -> None:
-        """Register a single ``/skill`` command with autocomplete on the name.
-
-        Discord enforces an ~8000-byte per-command payload limit. The older
-        nested layout (``/skill <category> <name>``) registered one giant
-        command whose serialized payload grew linearly with the skill
-        catalog — with the default ~75 skills the payload was ~14 KB and
-        ``tree.sync()`` rejected the entire slash-command batch (issues
-        #11321, #10259, #11385, #10261, #10214).
-
-        Autocomplete options are fetched dynamically by Discord when the
-        user types — they do NOT count against the per-command registration
-        budget. So we register ONE flat ``/skill`` command with
-        ``name: str`` (autocompleted) and ``args: str = ""``. This scales
-        to thousands of skills with no size math, no splitting, and no
-        hidden skills. The slash picker also becomes more discoverable —
-        Discord live-filters by the user's typed prefix against both the
-        skill name and its description.
-
-        The entries list and lookup dict are stored on ``self`` rather
-        than captured in closure variables so :meth:`refresh_skill_group`
-        can repopulate them when the user runs ``/reload-skills`` without
-        needing to touch the Discord slash-command tree or trigger a
-        ``tree.sync()`` call.
-        """
-        try:
-            existing_names = set()
-            try:
-                existing_names = {cmd.name for cmd in tree.get_commands()}
-            except Exception:
-                pass
-
-            # Populate the instance-level entries/lookup so the
-            # autocomplete + handler callbacks below always read the
-            # freshest state. refresh_skill_group() re-runs the same
-            # collector and mutates these two attributes in place.
-            self._skill_entries: list[tuple[str, str, str]] = []
-            self._skill_lookup: dict[str, tuple[str, str]] = {}
-            self._skill_group_reserved_names: set[str] = set(existing_names)
-            self._refresh_skill_catalog_state()
-
-            if not self._skill_entries:
-                return
-
-            async def _autocomplete_name(
-                interaction: "discord.Interaction", current: str,
-            ) -> list:
-                """Filter skills by the user's typed prefix.
-
-                Matches both the skill name and its description so
-                "/skill pdf" surfaces skills whose description mentions
-                PDFs even if the name doesn't. Discord caps this list at
-                25 entries per query.
-
-                Authorization: a quiet pre-check evaluates the slash
-                allowlists and returns ``[]`` for unauthorized users so
-                the installed skill catalog is not leaked to anyone who
-                can see the command in the picker. Returning a generic
-                empty list here is intentional — sending a per-keystroke
-                ephemeral rejection would produce a barrage of error
-                popups during typing.
-
-                Reads ``self._skill_entries`` so a ``/reload-skills`` run
-                since process start shows up on the very next keystroke.
-                """
-                try:
-                    allowed, _reason = self._evaluate_slash_authorization(interaction)
-                except Exception:
-                    # Defensive: never raise from autocomplete. Fail
-                    # closed by returning an empty suggestion list.
-                    return []
-                if not allowed:
-                    return []
-                q = (current or "").strip().lower()
-                choices: list = []
-                for name, desc, _key in self._skill_entries:
-                    if not q or q in name.lower() or (desc and q in desc.lower()):
-                        if desc:
-                            label = f"{name} — {desc}"
-                        else:
-                            label = name
-                        # Discord's Choice.name is capped at 100 chars.
-                        if len(label) > 100:
-                            label = label[:97] + "..."
-                        choices.append(
-                            discord.app_commands.Choice(name=label, value=name)
-                        )
-                        if len(choices) >= 25:
-                            break
-                return choices
-
-            @discord.app_commands.describe(
-                name="Which skill to run",
-                args="Optional arguments for the skill",
-            )
-            @discord.app_commands.autocomplete(name=_autocomplete_name)
-            async def _skill_handler(
-                interaction: "discord.Interaction", name: str, args: str = "",
-            ):
-                # Authorize BEFORE any skill lookup so that known and
-                # unknown skill names produce identical rejections for
-                # unauthorized users (no probing the installed catalog
-                # via "Unknown skill: <name>" responses).
-                if not await self._check_slash_authorization(interaction, "/skill"):
-                    return
-                entry = self._skill_lookup.get(name)
-                if not entry:
-                    await interaction.response.send_message(
-                        f"Unknown skill: `{name}`. Start typing for "
-                        f"autocomplete suggestions.",
-                        ephemeral=True,
-                    )
-                    return
-                _desc, cmd_key = entry
-                await self._run_simple_slash(
-                    interaction, f"{cmd_key} {args}".strip()
-                )
-
-            cmd = discord.app_commands.Command(
-                name="skill",
-                description="Run a Son of Anton skill",
-                callback=_skill_handler,
-            )
-            tree.add_command(cmd)
-
-            logger.info(
-                "[%s] Registered /skill command with %d skill(s) via autocomplete",
-                self.name, len(self._skill_entries),
-            )
-            if self._skill_group_hidden_count:
-                logger.info(
-                    "[%s] %d skill(s) filtered out of /skill (name clamp / reserved)",
-                    self.name, self._skill_group_hidden_count,
-                )
-        except Exception as exc:
-            logger.warning("[%s] Failed to register /skill command: %s", self.name, exc)
-
-    def _refresh_skill_catalog_state(self) -> None:
-        """Re-scan disk for skills and repopulate ``self._skill_entries``.
-
-        Called once from :meth:`_register_skill_group` at startup and
-        again from :meth:`refresh_skill_group` whenever the user runs
-        ``/reload-skills``. No Discord API calls are made — autocomplete
-        and the handler both read from these instance attributes
-        directly, so an in-place mutation is sufficient.
-        """
-        from son_of_anton_cli.commands import discord_skill_commands_by_category
-
-        reserved = getattr(self, "_skill_group_reserved_names", set())
-        categories, uncategorized, hidden = discord_skill_commands_by_category(
-            reserved_names=set(reserved),
-        )
-        entries: list[tuple[str, str, str]] = list(uncategorized)
-        for cat_skills in categories.values():
-            entries.extend(cat_skills)
-        # Stable alphabetical order so the autocomplete suggestion
-        # list is predictable across restarts.
-        entries.sort(key=lambda t: t[0])
-
-        self._skill_entries = entries
-        self._skill_lookup = {n: (d, k) for n, d, k in entries}
-        self._skill_group_hidden_count = hidden
-
-    def refresh_skill_group(self) -> tuple[int, int]:
-        """Rescan skills and update the live ``/skill`` autocomplete state.
-
-        Invoked by :meth:`gateway.run.GatewayOrchestrator._handle_reload_skills_command`
-        after :func:`agent.skill_commands.reload_skills` has refreshed
-        the in-process skill-command registry. Without this call, the
-        ``/skill`` autocomplete dropdown keeps showing the list captured
-        at process start — new skills stay invisible and deleted skills
-        return an "Unknown skill" error when clicked.
-
-        Because autocomplete options are fetched dynamically by Discord,
-        we only need to mutate the entries/lookup attributes read by the
-        callbacks — no ``tree.sync()`` is required.
-
-        Returns ``(new_count, hidden_count)``.
-        """
-        try:
-            self._refresh_skill_catalog_state()
-        except Exception as exc:
-            logger.warning(
-                "[%s] Failed to refresh /skill autocomplete after reload: %s",
-                self.name, exc,
-            )
-            return (len(getattr(self, "_skill_entries", [])), 0)
-        logger.info(
-            "[%s] Refreshed /skill autocomplete: %d skill(s) available (%d filtered)",
-            self.name,
-            len(self._skill_entries),
-            self._skill_group_hidden_count,
-        )
-        return (len(self._skill_entries), self._skill_group_hidden_count)
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
@@ -6047,29 +5836,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
         _parent_channel = self._thread_parent_channel(getattr(interaction, "channel", None))
         _parent_id = str(getattr(_parent_channel, "id", "") or "")
-        _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
         event = MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
             source=source,
             raw_message=interaction,
-            auto_skill=_skills,
             channel_prompt=_channel_prompt,
         )
         await self.handle_message(event)
-
-    def _resolve_channel_skills(self, channel_id: str, parent_id: str | None = None) -> list[str] | None:
-        """Look up auto-skill bindings for a Discord channel/forum thread.
-
-        Config format (in platform extra):
-            channel_skill_bindings:
-              - id: "123456"
-                skills: ["skill-a", "skill-b"]
-        Also checks parent_id so forum threads inherit the forum's bindings.
-        """
-        from gateway.platforms.base import resolve_channel_skills
-        return resolve_channel_skills(self.config.extra, channel_id, parent_id)
 
     def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
         """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
@@ -8026,7 +7801,6 @@ class DiscordAdapter(BasePlatformAdapter):
         _chan = message.channel
         _parent_id = str(getattr(_chan, "parent_id", "") or "")
         _chan_id = str(getattr(_chan, "id", ""))
-        _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
 
         reply_to_id = None
@@ -8047,7 +7821,6 @@ class DiscordAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
             timestamp=message.created_at,
-            auto_skill=_skills,
             channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )

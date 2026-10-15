@@ -16,7 +16,6 @@ import sqlite3
 import time
 from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
-from agent.skill_commands import describe_skill_invocation
 from son_of_anton_state_common import (
     FTS_CJK_STALE_KEY,
     FTS_SQL,
@@ -26,6 +25,7 @@ from son_of_anton_state_common import (
     MAX_FTS5_QUERY_CHARS,
     SCHEMA_VERSION,
     _FTS_CJK_TRIGGERS,
+    describe_skill_invocation,
     escape_like as _escape_like,
 )
 

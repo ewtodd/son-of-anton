@@ -293,18 +293,18 @@ def strip_control_wrappers(text: str) -> str:
 def _summarize_user_message(user_message: str) -> str:
     """Reduce a user turn to the text worth titling.
 
-    A ``/skill`` invocation expands into a message that embeds the whole skill
-    body, so feeding it to the titler verbatim titles the session after the
-    *skill's* prose — "Kick off a task in a fresh isolated git worktree" — not
-    after the user's request. Reuse the canonical scaffolding parser so the
-    model sees ``/work — fix the title leak`` instead, then strip any control
-    wrappers left around it.
+    A ``/skill`` invocation recorded before skill commands were removed
+    embeds the whole skill body, so feeding it to the titler verbatim titles
+    the session after the *skill's* prose — "Kick off a task in a fresh
+    isolated git worktree" — not after the user's request. Reuse the canonical
+    scaffolding parser so the model sees ``/work — fix the title leak``
+    instead, then strip any control wrappers left around it.
     """
     if not user_message:
         return ""
     described = None
     try:
-        from agent.skill_commands import describe_skill_invocation
+        from son_of_anton_state_common import describe_skill_invocation
 
         described = describe_skill_invocation(user_message)
     except Exception:

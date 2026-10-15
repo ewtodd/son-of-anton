@@ -23,7 +23,6 @@ import uuid
 from datetime import datetime
 
 from rich import box as rich_box
-from rich.markup import escape as _escape
 from rich.panel import Panel
 
 from son_of_anton_constants import display_son_of_anton_home
@@ -958,23 +957,11 @@ class CLICommandsMixin:
         def _cron_api(**kwargs):
             return json.loads(cronjob_tool(**kwargs))
 
-        def _normalize_skills(values):
-            normalized = []
-            for value in values:
-                text = str(value or "").strip()
-                if text and text not in normalized:
-                    normalized.append(text)
-            return normalized
-
         def _parse_flags(tokens):
             opts = {
                 "name": None,
                 "deliver": None,
                 "repeat": None,
-                "skills": [],
-                "add_skills": [],
-                "remove_skills": [],
-                "clear_skills": False,
                 "all": False,
                 "prompt": None,
                 "schedule": None,
@@ -996,18 +983,6 @@ class CLICommandsMixin:
                         print("(._.) --repeat must be an integer")
                         return None
                     i += 2
-                elif token == "--skill" and i + 1 < len(tokens):
-                    opts["skills"].append(tokens[i + 1])
-                    i += 2
-                elif token == "--add-skill" and i + 1 < len(tokens):
-                    opts["add_skills"].append(tokens[i + 1])
-                    i += 2
-                elif token == "--remove-skill" and i + 1 < len(tokens):
-                    opts["remove_skills"].append(tokens[i + 1])
-                    i += 2
-                elif token == "--clear-skills":
-                    opts["clear_skills"] = True
-                    i += 1
                 elif token == "--all":
                     opts["all"] = True
                     i += 1
@@ -1032,11 +1007,8 @@ class CLICommandsMixin:
             print()
             print("  Commands:")
             print("    /cron list")
-            print('    /cron add "every 2h" "Check server status" [--skill blogwatcher]')
+            print('    /cron add "every 2h" "Check server status"')
             print('    /cron edit <job_id> --schedule "every 4h" --prompt "New task"')
-            print("    /cron edit <job_id> --skill blogwatcher --skill maps")
-            print("    /cron edit <job_id> --remove-skill blogwatcher")
-            print("    /cron edit <job_id> --clear-skills")
             print("    /cron pause <job_id>")
             print("    /cron resume <job_id>")
             print("    /cron run <job_id>")
@@ -1050,8 +1022,6 @@ class CLICommandsMixin:
                 for job in jobs:
                     repeat_str = job.get("repeat", "?")
                     print(f"    {job['job_id'][:12]:<12} | {job['schedule']:<15} | {repeat_str:<8}")
-                    if job.get("skills"):
-                        print(f"      Skills: {', '.join(job['skills'])}")
                     print(f"      {job.get('prompt_preview', '')}")
                     if job.get("next_run_at"):
                         print(f"      Next: {job['next_run_at']}")
@@ -1082,8 +1052,6 @@ class CLICommandsMixin:
                 print(f"  State: {job.get('state', '?')}")
                 print(f"  Schedule: {job['schedule']} ({job.get('repeat', '?')})")
                 print(f"  Next run: {job.get('next_run_at', 'N/A')}")
-                if job.get("skills"):
-                    print(f"  Skills: {', '.join(job['skills'])}")
                 print(f"  Prompt: {job.get('prompt_preview', '')}")
                 if job.get("last_run_at"):
                     print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
@@ -1097,24 +1065,20 @@ class CLICommandsMixin:
                 return
             schedule = opts["schedule"] or positionals[0]
             prompt = opts["prompt"] or " ".join(positionals[1:])
-            skills = _normalize_skills(opts["skills"])
-            if not prompt and not skills:
-                print("(._.) Please provide a prompt or at least one skill")
+            if not prompt:
+                print("(._.) Please provide a prompt")
                 return
             result = _cron_api(
                 action="create",
                 schedule=schedule,
-                prompt=prompt or None,
+                prompt=prompt,
                 name=opts["name"],
                 deliver=opts["deliver"],
                 repeat=opts["repeat"],
-                skills=skills or None,
             )
             if result.get("success"):
                 print(f"(^_^)b Created job: {result['job_id']}")
                 print(f"  Schedule: {result['schedule']}")
-                if result.get("skills"):
-                    print(f"  Skills: {', '.join(result['skills'])}")
                 print(f"  Next run: {result['next_run_at']}")
             else:
                 print(f"(x_x) Failed to create job: {result.get('error')}")
@@ -1123,28 +1087,12 @@ class CLICommandsMixin:
         if subcommand == "edit":
             positionals = opts["positionals"]
             if not positionals:
-                print("(._.) Usage: /cron edit <job_id> [--schedule ...] [--prompt ...] [--skill ...]")
+                print("(._.) Usage: /cron edit <job_id> [--schedule ...] [--prompt ...]")
                 return
             job_id = positionals[0]
-            existing = get_job(job_id)
-            if not existing:
+            if not get_job(job_id):
                 print(f"(._.) Job not found: {job_id}")
                 return
-
-            final_skills = None
-            replacement_skills = _normalize_skills(opts["skills"])
-            add_skills = _normalize_skills(opts["add_skills"])
-            remove_skills = set(_normalize_skills(opts["remove_skills"]))
-            existing_skills = list(existing.get("skills") or ([] if not existing.get("skill") else [existing.get("skill")]))
-            if opts["clear_skills"]:
-                final_skills = []
-            elif replacement_skills:
-                final_skills = replacement_skills
-            elif add_skills or remove_skills:
-                final_skills = [skill for skill in existing_skills if skill not in remove_skills]
-                for skill in add_skills:
-                    if skill not in final_skills:
-                        final_skills.append(skill)
 
             result = _cron_api(
                 action="update",
@@ -1154,16 +1102,11 @@ class CLICommandsMixin:
                 name=opts["name"],
                 deliver=opts["deliver"],
                 repeat=opts["repeat"],
-                skills=final_skills,
             )
             if result.get("success"):
                 job = result["job"]
                 print(f"(^_^)b Updated job: {job['job_id']}")
                 print(f"  Schedule: {job['schedule']}")
-                if job.get("skills"):
-                    print(f"  Skills: {', '.join(job['skills'])}")
-                else:
-                    print("  Skills: none")
             else:
                 print(f"(x_x) Failed to update job: {result.get('error')}")
             return
@@ -1217,36 +1160,10 @@ class CLICommandsMixin:
         from son_of_anton_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
 
-    def _handle_learn_command(self, cmd: str):
-        """Handle /learn — distill a reusable skill from anything the user describes.
-
-        Open-ended: the argument is free text describing the source(s) — a
-        directory, a URL, "what we just did", pasted notes. We build a
-        standards-guided prompt and inject it onto the agent's input queue; the
-        live agent gathers the material with the tools it already has and
-        authors the skill via ``skill_manage``. No engine, no model-tool
-        footprint, works on any terminal backend.
-        """
-        from agent.learn_prompt import build_learn_prompt
-
-        # Everything after the command word is the open-ended request.
-        parts = cmd.strip().split(None, 1)
-        user_request = parts[1].strip() if len(parts) > 1 else ""
-
-        msg = build_learn_prompt(user_request)
-        if user_request:
-            print("\n⚡ Learning a skill from what you described...")
-        else:
-            print("\n⚡ Learning a skill from this conversation...")
-        if hasattr(self, "_pending_input"):
-            self._pending_input.put(msg)
-        else:  # pragma: no cover - defensive (no live input loop)
-            print("  /learn needs an active chat session to run.")
-
     def _handle_init_command(self, cmd: str):
         """Handle /init — generate or update AGENTS.md from a project scan.
 
-        Mirrors /learn: build a guidance-laden prompt and inject it onto the
+        Build a guidance-laden prompt and inject it onto the
         agent's input queue as a normal user turn. The live agent scans the
         project with its own read-only tools and writes/updates AGENTS.md via
         ``write_file``. No engine, no model-tool footprint, works on any
@@ -1449,47 +1366,6 @@ class CLICommandsMixin:
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
         thread.start()
-
-    def _handle_bundles_command(self, cmd: str) -> None:
-        """In-session ``/bundles`` — show installed skill bundles.
-
-        Mirrors ``son-of-anton bundles list`` but renders inside the running
-        CLI so users can discover what's available without dropping out
-        of their session. Bundles are loaded via ``/<bundle-name>``.
-        """
-        from cli import ChatConsole, _BOLD, _DIM, _RST, _accent_hex, _cprint
-        from son_of_anton_cli.slash_exec import CommandContext, execute_command
-
-        reply = execute_command("bundles", CommandContext(surface="cli"))
-        if "error" in reply.data:
-            _cprint(f"\033[1;31mBundle subsystem unavailable: {reply.data['error']}{_RST}")
-            return
-
-        bundles = reply.data["bundles"]
-        if not bundles:
-            _cprint("  No skill bundles installed.")
-            _cprint(
-                f"  {_DIM}Create one with: son-of-anton bundles create "
-                f"<name> --skill <s1> --skill <s2>{_RST}"
-            )
-            _cprint(f"  {_DIM}Directory: {reply.data['dir']}{_RST}")
-            return
-
-        _cprint(f"\n  ▣ {_BOLD}Skill Bundles{_RST} ({len(bundles)} installed):")
-        for info in bundles:
-            skill_count = len(info.get("skills", []))
-            desc = info.get("description") or f"Load {skill_count} skills"
-            ChatConsole().print(
-                f"    [bold {_accent_hex()}]/{info['slug']:<20}[/] "
-                f"[dim]-[/] {_escape(desc)} [dim]({skill_count} skills)[/]"
-            )
-            for s in info.get("skills", []):
-                ChatConsole().print(f"        [dim]· {_escape(s)}[/]")
-        _cprint(
-            f"\n  {_DIM}Invoke a bundle with /<slug>. "
-            f"Manage with `son-of-anton bundles`.{_RST}"
-        )
-
 
     def _handle_goal_command(self, cmd: str) -> None:
         """Dispatch /goal subcommands: set / draft / show / gate / status / pause / resume / clear."""

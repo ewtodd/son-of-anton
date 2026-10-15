@@ -8,7 +8,6 @@ Features ASCII art branding, interactive REPL, toolset selection, and rich forma
 Usage:
     python cli.py                          # Start interactive mode with all tools
     python cli.py --toolsets web,terminal  # Start with specific toolsets
-    python cli.py --skills son-of-anton-dev,github-auth
     python cli.py --list-tools             # List available tools and exit
 """
 
@@ -3840,54 +3839,6 @@ def _looks_like_slash_command(text: str) -> bool:
     return "/" not in first_word[1:]
 
 
-# ============================================================================
-# Skill Slash Commands — dynamic commands generated from installed skills
-# ============================================================================
-
-_skill_commands = None
-_skill_bundles = None
-
-
-def _ensure_skill_commands() -> dict:
-    global _skill_commands
-    if _skill_commands is None:
-        from agent.skill_commands import scan_skill_commands
-
-        _skill_commands = scan_skill_commands()
-    return _skill_commands
-
-
-def get_skill_commands() -> dict:
-    return _ensure_skill_commands()
-
-
-def build_skill_invocation_message(*args, **kwargs):
-    from agent.skill_commands import build_skill_invocation_message as _impl
-
-    return _impl(*args, **kwargs)
-
-
-def build_preloaded_skills_prompt(*args, **kwargs):
-    from agent.skill_commands import build_preloaded_skills_prompt as _impl
-
-    return _impl(*args, **kwargs)
-
-
-def get_skill_bundles() -> dict:
-    global _skill_bundles
-    if _skill_bundles is None:
-        from agent.skill_bundles import get_skill_bundles as _impl
-
-        _skill_bundles = _impl()
-    return _skill_bundles
-
-
-def build_bundle_invocation_message(*args, **kwargs):
-    from agent.skill_bundles import build_bundle_invocation_message as _impl
-
-    return _impl(*args, **kwargs)
-
-
 def _get_plugin_cmd_handler_names() -> set:
     """Return plugin command names (without slash prefix) for dispatch matching."""
     try:
@@ -3895,30 +3846,6 @@ def _get_plugin_cmd_handler_names() -> set:
         return set(get_plugin_commands().keys())
     except Exception:
         return set()
-
-
-def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> list[str]:
-    """Normalize a CLI skills flag into a deduplicated list of skill identifiers."""
-    if not skills:
-        return []
-
-    if isinstance(skills, str):
-        raw_values = [skills]
-    elif isinstance(skills, (list, tuple)):
-        raw_values = [str(item) for item in skills if item is not None]
-    else:
-        raw_values = [str(skills)]
-
-    parsed: list[str] = []
-    seen: set[str] = set()
-    for raw in raw_values:
-        for part in raw.split(","):
-            normalized = part.strip()
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            parsed.append(normalized)
-    return parsed
 
 
 def save_config_value(key_path: str, value: any) -> bool:
@@ -4515,15 +4442,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # drafts routinely contain secrets, so nothing is written to disk.
         from son_of_anton_cli.prompt_stash import PromptStash as _PromptStash
         self._prompt_stash = _PromptStash()
-        self.preloaded_skills: list[str] = []
-        self._startup_skills_line_shown = False
-        # Background --skills preload (started by cmd_chat; joined by
-        # finalize_preloaded_skills before any agent is built).
-        self._preload_skills_thread: Optional[threading.Thread] = None
-        self._preload_skills_result: Optional[tuple] = None
-        self._preload_skills_error: Optional[BaseException] = None
-        self._preload_skills_requested: list = []
-        self._preload_skills_finalized = False
         self._active_session_lease = None
 
         # Status bar visibility (toggled via /statusbar)
@@ -5891,8 +5809,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return "Processing skills command..."
         if cmd_lower == "/reload-mcp":
             return "Reloading MCP servers..."
-        if cmd_lower == "/reload-skills" or cmd_lower == "/reload_skills":
-            return "Reloading skills..."
         return "Processing command..."
 
 
@@ -5975,53 +5891,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # logged at DEBUG by the advisory module.
             pass
 
-    def finalize_preloaded_skills(self) -> None:
-        """Join the background --skills preload and fold it into the prompt.
-
-        Idempotent; no-op when no preload was requested. Called from
-        ``_init_agent`` (before the agent snapshots ``self.system_prompt``)
-        and safe to call from any other consumer of the system prompt.
-        Raises ``ValueError`` when EVERY requested skill was unknown —
-        the same contract the old synchronous path enforced in cmd_chat.
-        """
-        if getattr(self, "_preload_skills_finalized", False):
-            return
-        thread = getattr(self, "_preload_skills_thread", None)
-        if thread is None:
-            self._preload_skills_finalized = True
-            return
-        thread.join(timeout=120)
-        self._preload_skills_finalized = True
-        err = getattr(self, "_preload_skills_error", None)
-        if err is not None:
-            raise err
-        result = getattr(self, "_preload_skills_result", None)
-        if not result:
-            return
-        skills_prompt, loaded_skills, missing_skills = result
-        if missing_skills:
-            missing_display = ", ".join(missing_skills)
-            # If at least one skill loaded, degrade gracefully: skip the
-            # unknown ones and continue. A typo'd skill name should not crash
-            # the worker (which auto-blocks the Kanban task after retries).
-            # Only when EVERY requested skill is missing do we hard-fail, so a
-            # fully-misconfigured worker fails loudly instead of running blind.
-            if loaded_skills:
-                logger.warning(
-                    "Unknown skill(s) requested, skipping: %s. "
-                    "Continuing with: %s. "
-                    "List available skills with `son-of-anton skills list`.",
-                    missing_display,
-                    ", ".join(loaded_skills),
-                )
-            else:
-                raise ValueError(f"Unknown skill(s): {missing_display}")
-        if skills_prompt:
-            self.system_prompt = "\n\n".join(
-                part for part in (self.system_prompt, skills_prompt) if part
-            ).strip()
-            self.preloaded_skills = loaded_skills
-
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
@@ -6073,7 +5942,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     context_length=ctx_len,
                     provider=self.provider,
                     availability=snapshot["availability"],
-                    skills_by_category=snapshot.get("skills_by_category"),
                     deferred_print=_cprint,
                 )
 
@@ -6182,35 +6050,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._console_print(
                     "[dim]   Fix: Set model.context_length in config.toml, or increase your server's context setting"
                 )
-
-        # Project-local skills: one-line status. Trusted → show count;
-        # untrusted-with-skills → point at `son-of-anton skills trust`. Never raises.
-        try:
-            from agent.skill_utils import (
-                get_project_skills_dirs,
-                get_untrusted_project_skills_root,
-                iter_skill_index_files,
-            )
-            _proj_dirs = get_project_skills_dirs()
-            if _proj_dirs:
-                _n = sum(
-                    sum(1 for _ in iter_skill_index_files(d, "SKILL.md"))
-                    for d in _proj_dirs
-                )
-                if _n:
-                    self._console_print(
-                        f"[dim]◆ {_n} project skill(s) loaded from this repo"
-                    )
-            else:
-                _untrusted = get_untrusted_project_skills_root()
-                if _untrusted is not None:
-                    _root, _n = _untrusted
-                    self._console_print(
-                        f"[yellow]◆ {_n} project skill(s) found in {_root} but not "
-                        f"loaded — run `son-of-anton skills trust` to enable them."
-                    )
-        except Exception:
-            logger.debug("project skills banner notice failed", exc_info=True)
 
         self._console_print()
 
@@ -6808,29 +6647,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return True
 
     def show_help(self, arg: str = ""):
-        """Display help. Bare /help shows categorized core commands with the
-        skill list collapsed to one line; /help skills lists all skill
-        commands; /help <query> filters commands by substring.
+        """Display help. Bare /help shows categorized core commands;
+        /help <query> filters commands by substring.
         """
         from son_of_anton_cli.commands import COMMANDS_BY_CATEGORY, COMMAND_REGISTRY, HELP_SESSION_SUBGROUPS
 
         arg = (arg or "").strip()
-        skill_commands = _ensure_skill_commands()
-
-        # /help skills — the full skill-command list (kept out of the default
-        # view so core commands don't scroll off screen).
-        if arg.lower() in ("skills", "skill"):
-            if not skill_commands:
-                _cprint("\n  No skill commands installed.\n")
-                return
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
-            for cmd, info in sorted(skill_commands.items()):
-                ChatConsole().print(
-                    f"    [bold {_accent_hex()}]{cmd:<22} [dim]- {_escape(info['description'])}"
-                )
-            _cprint("")
-            return
-
         query = arg.lower() if arg else ""
 
         try:
@@ -6910,37 +6732,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     printed_header = True
                 _emit(cmd, desc)
 
-        # Skill commands: collapsed to a one-line pointer by default so the
-        # 60+ skill entries don't bury the core command reference (C-04).
-        if query:
-            # In filter mode, DO include matching skill commands inline.
-            matched_skills = [
-                (cmd, info) for cmd, info in sorted(skill_commands.items())
-                if query in cmd.lower() or query in (info.get("description", "").lower())
-            ]
-            if matched_skills:
-                _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} (matching '{arg}'):")
-                for cmd, info in matched_skills:
-                    ChatConsole().print(
-                        f"    [bold {_accent_hex()}]{cmd:<22} [dim]- {_escape(info['description'])}"
-                    )
-        elif skill_commands:
-            _cprint(
-                f"\n  ⚡ {_BOLD}Skill Commands{_RST}: {len(skill_commands)} installed "
-                f"— {_DIM}/help skills{_RST} to list them"
-            )
-
-        _bundles_now = get_skill_bundles()
-        if _bundles_now and not query:
-            _cprint(f"\n  ▣ {_BOLD}Skill Bundles{_RST} ({len(_bundles_now)} installed):")
-            for cmd, info in sorted(_bundles_now.items()):
-                skill_count = len(info.get("skills", []))
-                desc = info.get("description") or f"Load {skill_count} skills"
-                ChatConsole().print(
-                    f"    [bold {_accent_hex()}]{cmd:<22} [dim]- "
-                    f"{_escape(desc)} [dim]({skill_count} skills)"
-                )
-
         quick_commands = self.config.get("quick_commands", {})
         if quick_commands and not query:
             _cprint(f"\n  ⚡ {_BOLD}Quick Commands{_RST} ({len(quick_commands)} configured):")
@@ -6954,7 +6745,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"\n  {_DIM}Filtered by '{arg}' — run /help for the full list.{_RST}\n")
             return
 
-        _cprint(f"\n  {_DIM}Tip: /help skills lists skill commands · /help <text> filters · Ctrl+P opens the command palette{_RST}")
+        _cprint(f"\n  {_DIM}Tip: /help <text> filters · Ctrl+P opens the command palette{_RST}")
         _cprint(f"  {_DIM}Multi-line: Ctrl+J, Alt+Enter, or \\\\+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
         _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
@@ -8094,8 +7885,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Flat list of (command, description) for the Ctrl+P palette.
 
         Sourced from the same COMMAND_REGISTRY that backs /help, filtered to
-        commands available on this surface, plus installed skill commands.
-        Selecting an entry inserts the exact command string — never a fuzzy
+        commands available on this surface. Selecting an entry inserts the exact command string — never a fuzzy
         resolution.
         """
         from son_of_anton_cli.commands import COMMANDS_BY_CATEGORY
@@ -8106,11 +7896,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if not self._command_available(cmd):
                     continue
                 entries.append((cmd, category, desc))
-        try:
-            for cmd, info in sorted(_ensure_skill_commands().items()):
-                entries.append((cmd, "Skill", info.get("description", "")))
-        except Exception:
-            pass
         return entries
 
     def _open_command_palette(self) -> None:
@@ -9289,8 +9074,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
-        elif canonical == "learn":
-            self._handle_learn_command(cmd_original)
         elif canonical == "init":
             self._handle_init_command(cmd_original)
         elif canonical == "memory":
@@ -9344,11 +9127,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # The auto-reload path (file watcher) calls _reload_mcp directly
             # without this confirmation.
             self._confirm_and_reload_mcp(cmd_original)
-        elif canonical == "reload-skills":
-            with self._busy_command(self._slow_command_status(cmd_original)):
-                self._reload_skills()
-        elif canonical == "bundles":
-            self._handle_bundles_command(cmd_original)
         elif canonical == "plugins":
             try:
                 # Discover from disk (bundled + user), matching `son-of-anton plugins
@@ -9447,8 +9225,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
-            skill_commands = _ensure_skill_commands()
-            skill_bundles = get_skill_bundles()
             quick_commands = self.config.get("quick_commands", {})
             if base_cmd.lstrip("/") in quick_commands:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
@@ -9509,82 +9285,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             _cprint(str(result))
                     except Exception as e:
                         _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
-            # Skill bundles take precedence over individual skills — /<bundle>
-            # loads multiple skills at once. Rescans cheaply when files change.
-            elif base_cmd in skill_bundles:
-                user_instruction = cmd_original[len(base_cmd):].strip()
-                bundle_result = build_bundle_invocation_message(
-                    base_cmd, user_instruction, task_id=self.session_id
-                )
-                if bundle_result:
-                    msg, loaded_names, missing = bundle_result
-                    bundle_info = skill_bundles[base_cmd]
-                    print(
-                        f"\n⚡ Loading bundle: {bundle_info['name']} "
-                        f"({len(loaded_names)} skills)"
-                    )
-                    if missing:
-                        ChatConsole().print(
-                            f"[yellow]Skipped missing skills: {', '.join(missing)}"
-                        )
-                    if hasattr(self, '_pending_input'):
-                        self._pending_input.put(msg)
-                else:
-                    ChatConsole().print(
-                        f"[bold red]Failed to load bundle for {base_cmd}"
-                    )
-            # Check for skill slash commands (/gif-search, /axolotl, etc.)
-            elif base_cmd in skill_commands:
-                rest = cmd_original[len(base_cmd):].strip()
-                # Stacked slash-skill invocations: `/skill-a /skill-b do XYZ`
-                # loads every leading skill (up to 5), not just the first.
-                # Inspired by Claude Code v2.1.199.
-                from agent.skill_commands import (
-                    build_stacked_skill_invocation_message,
-                    split_stacked_skill_commands,
-                )
-                extra_keys, user_instruction = split_stacked_skill_commands(rest)
-                if extra_keys:
-                    stacked_result = build_stacked_skill_invocation_message(
-                        [base_cmd, *extra_keys],
-                        user_instruction,
-                        task_id=self.session_id,
-                    )
-                    if stacked_result:
-                        msg, loaded_names, missing = stacked_result
-                        print(
-                            f"\n⚡ Loading {len(loaded_names)} stacked skills: "
-                            f"{', '.join(loaded_names)}"
-                        )
-                        if missing:
-                            ChatConsole().print(
-                                f"[yellow]Skipped missing skills: {', '.join(missing)}"
-                            )
-                        if hasattr(self, '_pending_input'):
-                            self._pending_input.put(msg)
-                    else:
-                        ChatConsole().print(
-                            f"[bold red]Failed to load stacked skills for {base_cmd}"
-                        )
-                    return True
-                user_instruction = rest
-                msg = build_skill_invocation_message(
-                    base_cmd, user_instruction, task_id=self.session_id
-                )
-                if msg:
-                    skill_name = skill_commands[base_cmd]["name"]
-                    print(f"\nLoading skill: {skill_name}")
-                    if hasattr(self, '_pending_input'):
-                        self._pending_input.put(msg)
-                else:
-                    ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}")
             else:
                 # Prefix matching: if input uniquely identifies one command, execute it.
-                # Matches against both built-in COMMANDS and installed skill commands so
-                # that execution-time resolution agrees with tab-completion.
+                # Matches against the built-in COMMANDS so that execution-time
+                # resolution agrees with tab-completion.
                 from son_of_anton_cli.commands import COMMANDS
                 typed_base = cmd_lower.split()[0]
-                all_known = set(COMMANDS) | set(skill_commands) | set(skill_bundles)
+                all_known = set(COMMANDS)
                 matches = [c for c in all_known if c.startswith(typed_base)]
                 if len(matches) > 1:
                     # Prefer an exact match (typed the full command name)
@@ -11118,78 +10825,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception as e:
             print(f"  MCP reload failed: {e}")
 
-    def _reload_skills(self) -> None:
-        """Reload skills: rescan ~/.son-of-anton/skills/ and queue a note for the
-        next user turn.
-
-        Skills are not in the system prompt (they're invoked via
-        ``/skill-name`` at runtime), so this does NOT clear the prompt cache.
-        It rescans the slash-command map, prints the diff for the user, and
-        — if any skills were added or removed — queues a one-shot note that
-        gets prepended to the next user message. This preserves message
-        alternation (no phantom user turn injected out of band) and keeps
-        prompt caching intact.
-        """
-        try:
-            from agent.skill_commands import reload_skills, get_skill_commands
-
-            if not self._command_running:
-                print("Reloading skills...")
-
-            result = reload_skills()
-
-            # Sync cli.py's module-level _skill_commands so all consumers
-            # (help display, command dispatch, Tab-completion lambda) see the
-            # updated dict without needing to restart the session.
-            global _skill_commands
-            _skill_commands = get_skill_commands()
-            added = result.get("added", [])      # [{"name", "description"}, ...]
-            removed = result.get("removed", [])  # [{"name", "description"}, ...]
-            total = result.get("total", 0)
-
-            if not added and not removed:
-                print("  No new skills detected.")
-                print(f"  {total} skill(s) available")
-                return
-
-            def _fmt_line(item: dict) -> str:
-                nm = item.get("name", "")
-                desc = item.get("description", "")
-                return f"    - {nm}: {desc}" if desc else f"    - {nm}"
-
-            if added:
-                print("  Added Skills:")
-                for item in added:
-                    print(f"  {_fmt_line(item)}")
-            if removed:
-                print("  Removed Skills:")
-                for item in removed:
-                    print(f"  {_fmt_line(item)}")
-            print(f"  {total} skill(s) available")
-
-            # Queue a one-shot note for the NEXT user turn. The CLI's agent
-            # loop prepends ``_pending_skills_reload_note`` (if set) to the
-            # API-call-local message at ~L8770, then clears it — same
-            # pattern as ``_pending_model_switch_note``. Nothing is written
-            # to conversation_history here, so message alternation stays
-            # intact and no out-of-band user turn is persisted.
-            sections = ["[USER INITIATED SKILLS RELOAD:"]
-            if added:
-                sections.append("")
-                sections.append("Added Skills:")
-                for item in added:
-                    sections.append(_fmt_line(item))
-            if removed:
-                sections.append("")
-                sections.append("Removed Skills:")
-                for item in removed:
-                    sections.append(_fmt_line(item))
-            sections[-1] += "]"
-            self._pending_skills_reload_note = "\n".join(sections)
-
-        except Exception as e:
-            print(f"  Skills reload failed: {e}")
-
     # ====================================================================
     # Tool-call generation indicator (shown during streaming)
     # ====================================================================
@@ -12090,19 +11725,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # handles both plain-string and multimodal content-parts list
                 # messages. Naive ``note + "\n\n" + agent_message`` crashed with
                 # TypeError when an image was attached (agent_message is a list)
-                # and a /model or /reload-skills note was queued for the turn.
+                # and a /model note was queued for the turn.
                 _msn = getattr(self, '_pending_model_switch_note', None)
                 if _msn:
                     agent_message = _prepend_note_to_message(agent_message, _msn)
                     self._pending_model_switch_note = None
-                # Prepend pending /reload-skills note so the model sees which
-                # skills were added/removed before handling this turn. Same
-                # one-shot queue pattern as the model-switch note above.
-                _srn = getattr(self, '_pending_skills_reload_note', None)
-                if _srn:
-                    agent_message = _prepend_note_to_message(agent_message, _srn)
-                    self._pending_skills_reload_note = None
-                # Model/skill notes are API-local. Keep
+                # Model notes are API-local. Keep
                 # the original staged input as the durable transcript value so a
                 # close-path marker follows the same dict into turn setup rather
                 # than producing a second noted user row (#63766).
@@ -12718,7 +12346,6 @@ def main(
     q: str = None,
     image: str = None,
     toolsets: str = None,
-    skills: str | list[str] | tuple[str, ...] = None,
     model: str = None,
     provider: str = None,
     reasoning: str = None,
@@ -12748,7 +12375,6 @@ def main(
         q: Shorthand for --query
         image: Optional local image path to attach to a single query
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
-        skills: Comma-separated or repeated list of skills to preload for the session
         model: Model to use (default: anthropic/claude-opus-4-20250514)
         provider: Inference provider ("auto" by default; e.g. "openai",
                   "custom", or a provider from config.toml)
@@ -12767,7 +12393,6 @@ def main(
     Examples:
         python cli.py                            # Start interactive mode
         python cli.py --toolsets web,terminal    # Use specific toolsets
-        python cli.py --skills son-of-anton-dev,github-auth
         python cli.py -q "What is Python?"       # Single query mode
         python cli.py -q "Describe this" --image ~/storage/shared/Pictures/cat.png
         python cli.py --list-tools               # List tools and exit
@@ -12909,8 +12534,6 @@ def main(
             from son_of_anton_cli.tools_config import _get_platform_tools
             toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
-    parsed_skills = _parse_skills_argument(skills)
-
     # Create CLI instance. Textual is the one interactive front-end
     # (son_of_anton_tui.backend.TextualBackend subclasses SonOfAntonCLI), so
     # every option below applies to it unchanged.
@@ -12932,29 +12555,6 @@ def main(
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
     )
-
-    if parsed_skills:
-        # Load the skill payloads in the background: skill_view walks the
-        # full skills tree per skill (~0.5s for a large library) and the
-        # result is only consumed at agent init (first message / first
-        # agent-touching command), not by the banner. cmd_chat joins the
-        # thread via cli.finalize_preloaded_skills() before any consumer
-        # reads cli.system_prompt — SonOfAntonCLI._create_agent calls it too,
-        # so no agent can be built with the skills missing.
-        def _load_preloaded_skills() -> None:
-            try:
-                cli._preload_skills_result = build_preloaded_skills_prompt(
-                    parsed_skills,
-                    task_id=cli.session_id,
-                )
-            except Exception as exc:  # surfaced by finalize below
-                cli._preload_skills_error = exc
-
-        cli._preload_skills_requested = parsed_skills
-        cli._preload_skills_thread = threading.Thread(
-            target=_load_preloaded_skills, name="skills-preload", daemon=True
-        )
-        cli._preload_skills_thread.start()
 
     # Join the background worktree creation (started above) before anything
     # consumes TERMINAL_CWD / wt_info — the SonOfAntonCLI construction it

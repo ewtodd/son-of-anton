@@ -2,9 +2,10 @@
 
 The model is never offered a skill tool, never sees a skills index in its
 system prompt, and no model-facing text (prompt, tool result, compaction
-summary) tells it to call a skill tool it does not have. Skills that remain
-are reached only by the user (``/skill-name``, cron jobs that already carry
-them). These tests fail if any of that comes back.
+summary) tells it to call a skill tool it does not have. Nor can the user
+invoke a skill any more: there are no ``/skill-name`` commands, and cron
+jobs never load the skills an older job record may still carry. These tests
+fail if the model-facing half of that comes back.
 """
 
 from __future__ import annotations

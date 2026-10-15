@@ -6677,10 +6677,7 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         # Per-channel ephemeral prompt
-        from gateway.platforms.base import (
-            resolve_channel_prompt,
-            resolve_channel_skills,
-        )
+        from gateway.platforms.base import resolve_channel_prompt
 
         _channel_prompt = resolve_channel_prompt(
             self.config.extra,
@@ -6698,12 +6695,6 @@ class SlackAdapter(BasePlatformAdapter):
                 if _channel_prompt
                 else _identity_prompt
             )
-        _auto_skill = resolve_channel_skills(
-            self.config.extra,
-            channel_id,
-            None,
-        )
-
         # Extract reply context if this message is a thread reply.
         # Mirrors the Discord implementation so that gateway.run
         # can inject a `[Replying to: "..."]` prefix when the parent is not
@@ -6750,7 +6741,6 @@ class SlackAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
             channel_context=channel_context,
             reply_to_text=reply_to_text,
-            auto_skill=_auto_skill,
             metadata={
                 "slack_team_id": team_id,
                 "slack_channel_id": channel_id,

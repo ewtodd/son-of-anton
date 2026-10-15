@@ -48,10 +48,11 @@ All of the following is merged to `main` and deployed on e-desktop:
   the reasoning and tool detail the transcript clips. Never read back
   directly (RAG embeds it); deleted when the user deletes its session, kept
   through retention auto-prune and other automatic cleanup.
-- **Relay coding.** The `relay-coding` skill has a chat agent list sessions,
-  ask continue-or-new, and run a headless CLI coder in the background with
-  `SON_OF_ANTON_DURABLE_APPROVALS=1`. Dangerous commands stage a durable
-  approval; a gateway watcher messages the originating chat, and
+- **Relay coding.** Removed, pending a code-based replacement. It was the
+  `relay-coding` skill, reachable only as `/relay-coding`, and went with skill
+  slash commands (2026-10-15). The plumbing it drove stays: a headless CLI
+  coder run with `SON_OF_ANTON_DURABLE_APPROVALS=1` stages dangerous commands
+  as durable approvals, a gateway watcher messages the originating chat, and
   `/approve <id>` / `/deny <id>` unblocks the coder. Timeouts fail closed.
 - **RAG (optional).** `memory.rag` embeds journals and
   `notes/<scope>/**/*.md` through an OpenAI-compatible `/v1/embeddings`
@@ -128,14 +129,16 @@ Ordered by importance. Each item is independently scoped.
      previous turn can still abort the next turn's lease wait (results now
      survive it). Tests in `tests/test_delegation_outcomes.py` and
      `tests/test_delegation_delivery.py`.
-2. **Live-validate the relay round trip.** The code is complete and
+2. **Live-validate the relay round trip.** Blocked on the code-based
+   replacement for the removed `relay-coding` skill. The approval plumbing is
    unit-tested, but no real Signal coding request has gone through the whole
-   path: skill → background coder → dangerous command → watcher prompt in the
-   chat → `/approve` → coder resumes → completion summary. Do this before
+   path: request → background coder → dangerous command → watcher prompt in
+   the chat → `/approve` → coder resumes → completion summary. Do this before
    building anything on top of the relay.
-3. **One coder per workspace is not enforced.** Only the `relay-coding`
-   skill's instruction prevents two concurrent coders in the same directory.
-   If that becomes a real failure mode, add a workspace-keyed lease.
+3. **One coder per workspace is not enforced.** The removed `relay-coding`
+   skill's instruction was the only thing that kept two concurrent coders out
+   of the same directory; the replacement should enforce it in code (a
+   workspace-keyed lease).
 4. **`session_search` is not scope-filtered.** _Resolved._ The tool gained a
    `sources` filter (comma-separated, e.g. `sources="cli"`) threaded through
    the browse, discovery, and title-match paths into

@@ -3241,120 +3241,6 @@ def _strip_response_attachments_for_direct_send(response: str, adapter) -> str:
     return cleaned.strip()
 
 
-def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None]:
-    """Derive the /command slug and declared frontmatter name from a SKILL.md.
-
-    Matches the exact normalization used by
-    :func:`agent.skill_commands.scan_skill_commands` so the slug here is the
-    same string a user types after the leading ``/`` (e.g. a skill with
-    frontmatter ``name: Stable Diffusion Image Generation`` resolves to
-    ``stable-diffusion-image-generation`` — NOT the parent directory name,
-    which is commonly shorter/different, e.g. ``stable-diffusion``).
-
-    Using the directory name silently broke :func:`_check_unavailable_skill`
-    for every skill whose directory name drifted from its frontmatter name
-    (19 such skills on a standard install as of 2026-05), causing a generic
-    "unknown command" response where a "disabled — enable with …" or
-    "not installed — install with …" hint was expected.
-
-    Returns ``(slug, declared_name)`` or ``(None, None)`` when the file
-    can't be read or lacks a ``name:`` in its frontmatter.
-    """
-    try:
-        content = skill_md.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return None, None
-    content = content.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
-    if not content.startswith("---"):
-        return None, None
-    end = content.find("\n---", 3)
-    if end < 0:
-        return None, None
-    declared_name: str | None = None
-    for line in content[3:end].splitlines():
-        line = line.strip()
-        if line.startswith("name:"):
-            raw = line.split(":", 1)[1].strip()
-            # Strip TOML quote wrappers if present
-            if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {'"', "'"}:
-                raw = raw[1:-1]
-            declared_name = raw.strip()
-            break
-    if not declared_name:
-        return None, None
-    slug = declared_name.lower().replace(" ", "-").replace("_", "-")
-    # Mirror _SKILL_INVALID_CHARS and _SKILL_MULTI_HYPHEN from skill_commands
-    import re as _re
-    slug = _re.sub(r"[^a-z0-9-]", "", slug)
-    slug = _re.sub(r"-{2,}", "-", slug).strip("-")
-    if not slug:
-        return None, declared_name
-    return slug, declared_name
-
-
-def _check_unavailable_skill(command_name: str) -> str | None:
-    """Check if a command matches a known-but-inactive skill.
-
-    Returns a helpful message if the skill exists but is disabled or only
-    available as an optional install. Returns None if no match found.
-
-    The slug for each on-disk skill is derived from its frontmatter ``name:``
-    (via :func:`_skill_slug_from_frontmatter`), NOT from its containing
-    directory name — because the two can differ (e.g. directory
-    ``stable-diffusion`` + frontmatter ``Stable Diffusion Image Generation``
-    yields slug ``stable-diffusion-image-generation``). Matching on
-    directory name would miss that slug entirely and fall through to the
-    generic "unknown command" path.
-    """
-    # Normalize: command uses hyphens, skill names may use hyphens or underscores
-    normalized = command_name.lower().replace("_", "-")
-    try:
-        from tools.skills_tool import _get_disabled_skill_names
-        from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
-        disabled = _get_disabled_skill_names()
-
-        # Check disabled skills across all dirs (local + external)
-        for skills_dir in get_all_skills_dirs():
-            if not skills_dir.exists():
-                continue
-            for skill_md in skills_dir.rglob("SKILL.md"):
-                if is_excluded_skill_path(skill_md):
-                    continue
-                slug, declared_name = _skill_slug_from_frontmatter(skill_md)
-                if not slug or not declared_name:
-                    continue
-                # disabled is keyed by the declared frontmatter name (what
-                # skills.disabled / skills.platform_disabled store).
-                if slug == normalized and declared_name in disabled:
-                    return (
-                        f"The **{command_name}** skill is installed but disabled.\n"
-                        f"Enable it with: `son-of-anton skills config`"
-                    )
-
-        # Check optional skills (shipped with repo but not installed)
-        repo_root = Path(__file__).resolve().parent.parent
-        optional_dir = repo_root / "optional-skills"
-        if optional_dir.exists():
-            for skill_md in optional_dir.rglob("SKILL.md"):
-                if is_excluded_skill_path(skill_md):
-                    continue
-                slug, _declared = _skill_slug_from_frontmatter(skill_md)
-                if not slug:
-                    continue
-                if slug == normalized:
-                    # Build install path: official/<category>/<name>
-                    rel = skill_md.parent.relative_to(optional_dir)
-                    parts = list(rel.parts)
-                    install_path = f"official/{'/'.join(parts)}"
-                    return (
-                        f"The **{command_name}** skill is available but not installed.\n"
-                        f"Install it with: `son-of-anton skills install {install_path}`"
-                    )
-    except Exception:
-        pass
-    return None
-
-
 def _platform_config_key(platform: "Platform") -> str:
     """Map a Platform enum to its config.toml key (LOCAL→"cli", rest→enum value)."""
     return "cli" if platform == Platform.LOCAL else platform.value
@@ -5956,17 +5842,6 @@ class TurnRunner:
                 "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
                 + ctx.message
             )
-
-        # Consume one-shot /reload-skills note (if the user ran
-        # /reload-skills since their last turn in this session). Same
-        # queue pattern as CLI: prepend to the NEXT user message, then
-        # clear. Nothing was written to the transcript out-of-band, so
-        # message alternation stays intact.
-        _pending_notes = getattr(self._runner, "_pending_skills_reload_notes", None)
-        if _pending_notes and ctx.session_key and ctx.session_key in _pending_notes:
-            _srn = _pending_notes.pop(ctx.session_key, None)
-            if _srn:
-                ctx.message = _srn + "\n\n" + ctx.message
 
         # Safety net: a startup auto-resume event carries empty
         # text and relies on the resume_pending branch above to supply the
@@ -14103,8 +13978,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         Attachments, synthetic goal continuations, internal plugin events and
         commands cannot ride a redirect: they stay in the queue for their own
-        turn. A command (a skill's, say) that rode one would reach the model
-        as its literal text instead of running.
+        turn. A command that rode one would reach the model as its literal
+        text instead of running.
         """
         if getattr(event, "internal", False):
             return None
@@ -15101,38 +14976,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if canonical == "skills":
             return await self._handle_skills_command(event)
 
-        if canonical == "learn":
-            # Open-ended: rewrite the turn to a standards-guided prompt and fall
-            # through to normal agent processing. The live agent gathers the
-            # sources the user described (dirs via read_file, URLs via
-            # web_extract, this conversation, pasted text) and authors the skill
-            # via skill_manage. Mirrors the /blueprint fall-through so role
-            # alternation is preserved. No engine, works on any backend.
-            from agent.learn_prompt import build_learn_prompt
-
-            _learn_req = event.get_command_args().strip()
-            _ack = (
-                "Learning a skill from what you described…"
-                if _learn_req
-                else "Learning a skill from this conversation…"
-            )
-            try:
-                adapter = self._adapter_for_source(source)
-                if adapter:
-                    _ack_meta = self._thread_metadata_for_source(source)
-                    await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
-            except Exception:
-                logger.debug("learn ack send failed", exc_info=True)
-            try:
-                event.text = build_learn_prompt(_learn_req)
-                # fall through to agent processing
-            except Exception:
-                return "Could not start /learn — please try again."
-
         if canonical == "init":
             # /init: rewrite the turn to a guidance-laden prompt and fall
-            # through to normal agent processing (same fall-through as /learn
-            # so role alternation is preserved). The live agent scans the
+            # through to normal agent processing so role alternation is
+            # preserved. The live agent scans the
             # project with its own read-only tools and writes/updates
             # AGENTS.md via write_file. No engine, works on any backend.
             from son_of_anton_cli.init_command import build_init_prompt_for_cwd
@@ -15225,12 +15072,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         if canonical == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
-
-        if canonical == "reload-skills":
-            return await self._handle_reload_skills_command(event)
-
-        if canonical == "bundles":
-            return await self._handle_bundles_command(event)
 
         if canonical == "approve":
             return await self._handle_approve_command(event)
@@ -15367,153 +15208,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
 
-        # Skill slash commands: /skill-name loads the skill and sends to agent.
-        # resolve_skill_command_key() handles the underscore/hyphen
-        # round-trip so /claude_code still resolves
-        # to the claude-code skill.
-        if command:
-            # Skill bundles take precedence over individual skill commands —
-            # /<bundle> loads multiple skills at once. Mirrors CLI dispatch.
-            _bundle_handled = False
-            try:
-                from agent.skill_bundles import (
-                    build_bundle_invocation_message,
-                    resolve_bundle_command_key,
-                )
-                bundle_key = resolve_bundle_command_key(command)
-                if bundle_key is not None:
-                    user_instruction = event.get_command_args().strip()
-                    # Pass the platform explicitly: bundle skill loading
-                    # bypasses get_skill_commands()' scan-time disabled
-                    # filter, and the gateway serves multiple platforms in
-                    # one process, so env-var platform resolution can't be
-                    # trusted here. Mirrors the stacked-skill gate (#58888).
-                    _bundle_plat = source.platform.value if source.platform else None
-                    bundle_result = build_bundle_invocation_message(
-                        bundle_key, user_instruction, task_id=_quick_key,
-                        platform=_bundle_plat,
-                    )
-                    if bundle_result:
-                        msg, _loaded, missing = bundle_result
-                        event.text = msg
-                        _bundle_handled = True
-                        if missing:
-                            logger.info(
-                                "Bundle %s skipped missing skills: %s",
-                                bundle_key, ", ".join(missing),
-                            )
-                        # Fall through to normal message processing with bundle content
-            except Exception as exc:
-                logger.warning("Bundle dispatch failed: %s", exc)
+        # Genuinely unrecognized /command: not a built-in, not a quick command,
+        # not a plugin's. Warn the user instead of silently forwarding it to
+        # the LLM as free text (which leads to silent-failure behavior like the
+        # model inventing a delegate_task call). Normalize to hyphenated form
+        # before checking known built-ins (command may be an alias target set
+        # by the quick-command block above, so _cmd_def can be stale).
+        if command and command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
+            logger.warning(
+                "Unrecognized slash command /%s from %s — "
+                "replying with unknown-command notice",
+                command,
+                source.platform.value if source.platform else "?",
+            )
+            return (
+                f"Unknown command `/{command}`. "
+                f"Type /commands to see what's available, "
+                f"or resend without the leading slash to send "
+                f"as a regular message."
+            )
 
-        if command and not locals().get("_bundle_handled", False):
-            try:
-                from agent.skill_commands import (
-                    get_skill_commands,
-                    build_skill_invocation_message,
-                    resolve_skill_command_key,
-                )
-                skill_cmds = get_skill_commands()
-                cmd_key = resolve_skill_command_key(command)
-                if cmd_key is not None:
-                    # Check per-platform disabled status before executing.
-                    # get_skill_commands() only applies the *global* disabled
-                    # list at scan time; per-platform overrides need checking
-                    # here because the cache is process-global across platforms.
-                    _skill_name = skill_cmds[cmd_key].get("name", "")
-                    _plat = source.platform.value if source.platform else None
-                    if _plat and _skill_name:
-                        from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
-                        if _skill_name in _get_plat_disabled(platform=_plat):
-                            return (
-                                f"The **{_skill_name}** skill is disabled for {_plat}.\n"
-                                f"Enable it with: `son-of-anton skills config`"
-                            )
-                    user_instruction = event.get_command_args().strip()
-                    # Stacked slash-skill invocations: `/skill-a /skill-b do
-                    # XYZ` loads every leading skill (up to 5), not just the
-                    # first. Inspired by Claude Code v2.1.199. Mirrors CLI.
-                    try:
-                        from agent.skill_commands import (
-                            build_stacked_skill_invocation_message as _build_stacked,
-                            split_stacked_skill_commands,
-                        )
-                        extra_keys, stacked_instruction = (
-                            split_stacked_skill_commands(user_instruction)
-                        )
-                    except Exception:
-                        _build_stacked = None
-                        extra_keys, stacked_instruction = [], user_instruction
-                    if extra_keys and _plat:
-                        # split_stacked_skill_commands() only resolves that
-                        # each extra token is a KNOWN skill command — like
-                        # get_skill_commands() itself, it has no per-platform
-                        # view. Re-check every stacked skill (not just the
-                        # leading one above) against the same disabled list,
-                        # or a skill an operator disabled for this platform
-                        # still gets its full content loaded via the stack.
-                        from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
-                        _plat_disabled = _get_plat_disabled(platform=_plat)
-                        _disabled_extra = [
-                            skill_cmds.get(k, {}).get("name", "")
-                            for k in extra_keys
-                            if skill_cmds.get(k, {}).get("name", "") in _plat_disabled
-                        ]
-                        if _disabled_extra:
-                            return (
-                                f"The **{', '.join(_disabled_extra)}** skill(s) in this "
-                                f"stacked invocation are disabled for {_plat}.\n"
-                                f"Enable them with: `son-of-anton skills config`"
-                            )
-                    if extra_keys and _build_stacked is not None:
-                        stacked_result = _build_stacked(
-                            [cmd_key, *extra_keys],
-                            stacked_instruction,
-                            task_id=_quick_key,
-                        )
-                        if stacked_result:
-                            msg, _loaded, _missing = stacked_result
-                            event.text = msg
-                            # Fall through to normal message processing
-                        else:
-                            return f"Failed to load stacked skills for /{command}."
-                    else:
-                        msg = build_skill_invocation_message(
-                            cmd_key, user_instruction, task_id=_quick_key
-                        )
-                        if msg:
-                            event.text = msg
-                            # Fall through to normal message processing with skill content
-                else:
-                    # Not an active skill — check if it's a known-but-disabled or
-                    # uninstalled skill and give actionable guidance.
-                    _unavail_msg = _check_unavailable_skill(command)
-                    if _unavail_msg:
-                        return _unavail_msg
-                    # Genuinely unrecognized /command: not a built-in, not a
-                    # plugin, not a skill, not a known-inactive skill. Warn
-                    # the user instead of silently forwarding it to the LLM
-                    # as free text (which leads to silent-failure behavior
-                    # like the model inventing a delegate_task call).
-                    # Normalize to hyphenated form before checking known
-                    # built-ins (command may be an alias target set by the
-                    # quick-command block above, so _cmd_def can be stale).
-                    if command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
-                        logger.warning(
-                            "Unrecognized slash command /%s from %s — "
-                            "replying with unknown-command notice",
-                            command,
-                            source.platform.value if source.platform else "?",
-                        )
-                        return (
-                            f"Unknown command `/{command}`. "
-                            f"Type /commands to see what's available, "
-                            f"or resend without the leading slash to send "
-                            f"as a regular message."
-                        )
-            except Exception as e:
-                logger.debug("Skill command check failed (non-fatal): %s", e)
-        
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
@@ -16553,42 +16267,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # was_auto_reset is already consumed in the cleanup block above
             # (single source of truth); only the reset reason needs clearing here.
             session_entry.auto_reset_reason = None
-
-        # Auto-load skill(s) for topic/channel bindings
-        # (Discord channel_skill_bindings).  Supports a single name or ordered list.
-        # Only inject on NEW sessions — ongoing conversations already have the
-        # skill content in their conversation history from the first message.
-        _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
-            _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
-            try:
-                from agent.skill_commands import _load_skill_payload, _build_skill_message
-                _combined_parts: list[str] = []
-                _loaded_names: list[str] = []
-                for _sname in _skill_names:
-                    _loaded = _load_skill_payload(_sname, task_id=_quick_key)
-                    if _loaded:
-                        _loaded_skill, _skill_dir, _display_name = _loaded
-                        _note = (
-                            f'[IMPORTANT: The "{_display_name}" skill is auto-loaded. '
-                            f"Follow its instructions for this session.]"
-                        )
-                        _part = _build_skill_message(_loaded_skill, _skill_dir, _note)
-                        if _part:
-                            _combined_parts.append(_part)
-                            _loaded_names.append(_sname)
-                    else:
-                        logger.warning("[Gateway] Auto-skill '%s' not found", _sname)
-                if _combined_parts:
-                    # Append the user's original text after all skill payloads
-                    _combined_parts.append(event.text)
-                    event.text = "\n\n".join(_combined_parts)
-                    logger.info(
-                        "[Gateway] Auto-loaded skill(s) %s for session %s",
-                        _loaded_names, session_key,
-                    )
-            except Exception as e:
-                logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
         # ── Turn lease (#64934) ────────────────────────────────────────
         # Session resolution is FINAL here (get_or_create → async-delegation
@@ -22914,12 +22592,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """Clear per-session control state that must not survive a boundary switch."""
         if not session_key:
             return
-
-        pending_skills_reload_notes = getattr(
-            self, "_pending_skills_reload_notes", None
-        )
-        if isinstance(pending_skills_reload_notes, dict):
-            pending_skills_reload_notes.pop(session_key, None)
 
         _sec_state = self._peek_session_state(session_key)
         if _sec_state is not None:

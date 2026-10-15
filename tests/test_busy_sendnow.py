@@ -181,19 +181,20 @@ def test_sendall_with_only_media_reports_nothing_to_steer() -> None:
 
 
 def test_queued_commands_never_ride_a_steer() -> None:
-    # A command the busy guard did not recognize (a skill's, say) queues for
-    # its own turn; steered, it would reach the model as literal text.
+    # A command the busy guard did not recognize queues for its own turn,
+    # where the dispatcher can answer it; steered, it would reach the model as
+    # literal text.
     agent = _FakeAgent()
     gw, state, adapter = _runner(
-        agent, slot=_text_event("/some-skill go"), overflow=[_text_event("real message")]
+        agent, slot=_text_event("/not-a-command go"), overflow=[_text_event("real message")]
     )
     reply = _sendnow(gw)
     assert agent.redirects == ["real message"]
     assert "other queued item" in reply
-    assert _queue(state, adapter) == ["/some-skill go"]
+    assert _queue(state, adapter) == ["/not-a-command go"]
     assert "commands" in _sendall(gw)
     assert agent.redirects == ["real message"]
-    assert _queue(state, adapter) == ["/some-skill go"]
+    assert _queue(state, adapter) == ["/not-a-command go"]
 
 
 def test_sendnow_with_a_command_neither_steers_nor_runs_it() -> None:

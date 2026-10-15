@@ -8,7 +8,7 @@ pause/resume/run/remove, status, and tick.
 import json
 import sys
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Optional
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -24,22 +24,6 @@ from son_of_anton_cli.colors import Colors, color
 from cron.lifecycle_guard import (  # noqa: F401  (re-exported for terminal_tool)
     contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command,
 )
-
-
-def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[List[str]]:
-    if skills is None:
-        if single_skill is None:
-            return None
-        raw_items = [single_skill]
-    else:
-        raw_items = list(skills)
-
-    normalized: List[str] = []
-    for item in raw_items:
-        text = str(item or "").strip()
-        if text and text not in normalized:
-            normalized.append(text)
-    return normalized
 
 
 def _cron_api(**kwargs):
@@ -141,7 +125,6 @@ def cron_list(show_all: bool = False):
             deliver = [deliver]
         deliver_str = ", ".join(deliver)
 
-        skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
         if state == "paused":
             status = color("[paused]", Colors.YELLOW)
         elif state == "completed":
@@ -157,8 +140,6 @@ def cron_list(show_all: bool = False):
         print(f"    Repeat:    {repeat_str}")
         print(f"    Next run:  {next_run}")
         print(f"    Deliver:   {deliver_str}")
-        if skills:
-            print(f"    Skills:    {', '.join(skills)}")
         script = job.get("script")
         if script:
             print(f"    Script:    {script}")
@@ -386,8 +367,6 @@ def cron_create(args):
         name=getattr(args, "name", None),
         deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),
-        skill=getattr(args, "skill", None),
-        skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         model=getattr(args, "model", None),
@@ -404,8 +383,6 @@ def cron_create(args):
     print(color(f"Created job: {result['job_id']}", Colors.GREEN))
     print(f"  Name: {result['name']}")
     print(f"  Schedule: {result['schedule']}")
-    if result.get("skills"):
-        print(f"  Skills: {', '.join(result['skills'])}")
     job_data = result.get("job", {})
     if job_data.get("script"):
         print(f"  Script: {job_data['script']}")
@@ -438,22 +415,6 @@ def cron_edit(args):
         print(color(f"Job not found: {args.job_id}", Colors.RED))
         return 1
 
-    existing_skills = list(job.get("skills") or ([] if not job.get("skill") else [job.get("skill")]))
-    replacement_skills = _normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None))
-    add_skills = _normalize_skills(None, getattr(args, "add_skills", None)) or []
-    remove_skills = set(_normalize_skills(None, getattr(args, "remove_skills", None)) or [])
-
-    final_skills = None
-    if getattr(args, "clear_skills", False):
-        final_skills = []
-    elif replacement_skills is not None:
-        final_skills = replacement_skills
-    elif add_skills or remove_skills:
-        final_skills = [skill for skill in existing_skills if skill not in remove_skills]
-        for skill in add_skills:
-            if skill not in final_skills:
-                final_skills.append(skill)
-
     result = _cron_api(
         action="update",
         job_id=args.job_id,
@@ -462,7 +423,6 @@ def cron_edit(args):
         name=getattr(args, "name", None),
         deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),
-        skills=final_skills,
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         model=getattr(args, "model", None),
@@ -481,10 +441,6 @@ def cron_edit(args):
     print(color(f"Updated job: {updated['job_id']}", Colors.GREEN))
     print(f"  Name: {updated['name']}")
     print(f"  Schedule: {updated['schedule']}")
-    if updated.get("skills"):
-        print(f"  Skills: {', '.join(updated['skills'])}")
-    else:
-        print("  Skills: none")
     if updated.get("script"):
         print(f"  Script: {updated['script']}")
     if updated.get("monitor_script"):

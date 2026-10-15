@@ -6,10 +6,10 @@ Skills are organized as directories containing a SKILL.md file (the main instruc
 and optional supporting files like references, templates, and examples.
 
 This module is no longer a model tool: the agent is never offered a
-skill-listing or skill-loading tool. ``skill_view()`` remains as a plain
-Python loader for the user-invoked surfaces that still read skills
-(``/<skill>`` slash commands, cron jobs with attached skills), and
-``_find_all_skills()`` backs the user-facing skill listings.
+skill-listing or skill-loading tool, and the user can no longer invoke a
+skill (``/<skill>`` slash commands and cron-attached skills are gone).
+``_find_all_skills()`` still backs the Skills Hub's listings; the rest of
+this module goes when the hub does.
 
 Directory Structure:
     skills/
@@ -790,9 +790,6 @@ def _serve_plugin_skill(
     namespace: str,
     bare: str,
     file_path: str | None = None,
-    *,
-    preprocess: bool = True,
-    session_id: str | None = None,
 ) -> str:
     """Read a plugin-provided skill, apply guards, return JSON."""
     from son_of_anton_cli.plugins import _get_disabled_plugins, get_plugin_manager
@@ -930,26 +927,11 @@ def _serve_plugin_skill(
     except Exception:
         banner = ""
 
-    rendered_content = content
-    if preprocess:
-        try:
-            from agent.skill_preprocessing import preprocess_skill_content
-
-            rendered_content = preprocess_skill_content(
-                content,
-                skill_md.parent,
-                session_id=session_id,
-            )
-        except Exception:
-            logger.debug(
-                "Could not preprocess plugin skill %s:%s", namespace, bare, exc_info=True
-            )
-
     return json.dumps(
         {
             "success": True,
             "name": f"{namespace}:{bare}",
-            "content": f"{banner}{rendered_content}" if banner else rendered_content,
+            "content": f"{banner}{content}" if banner else content,
             "description": description,
             "linked_files": _plugin_skill_linked_files(skill_md.parent),
             "readiness_status": SkillReadinessStatus.AVAILABLE.value,
@@ -981,7 +963,6 @@ def skill_view(
     name: str,
     file_path: str = None,
     task_id: str = None,
-    preprocess: bool = True,
 ) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
@@ -991,9 +972,6 @@ def skill_view(
             Qualified names like "plugin:skill" resolve to plugin-provided skills.
         file_path: Optional path to a specific file within the skill (e.g., "references/api.md")
         task_id: Optional task identifier used to probe the active backend
-        preprocess: Apply configured SKILL.md template and inline shell rendering
-            to main skill content. Internal slash/preload callers disable this
-            because they render the skill message themselves.
 
     Returns:
         JSON string with skill content or error message
@@ -1094,8 +1072,6 @@ def skill_view(
                     namespace,
                     bare,
                     file_path=file_path,
-                    preprocess=preprocess,
-                    session_id=task_id,
                 )
 
             # Plugin exists but this specific skill is missing?
@@ -1668,28 +1644,13 @@ def skill_view(
                     exc_info=True,
                 )
 
-        rendered_content = content
-        if preprocess:
-            try:
-                from agent.skill_preprocessing import preprocess_skill_content
-
-                rendered_content = preprocess_skill_content(
-                    content,
-                    skill_dir,
-                    session_id=task_id,
-                )
-            except Exception:
-                logger.debug(
-                    "Could not preprocess skill content for %s", skill_name, exc_info=True
-                )
-
         result = {
             "success": True,
             "name": skill_name,
             "description": frontmatter.get("description", ""),
             "tags": tags,
             "related_skills": related_skills,
-            "content": rendered_content,
+            "content": content,
             "path": rel_path,
             "skill_dir": str(skill_dir) if skill_dir else None,
             "linked_files": linked_files if linked_files else None,

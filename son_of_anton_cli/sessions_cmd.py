@@ -1260,7 +1260,7 @@ def cmd_sessions(args, sessions_parser=None):
             )
 
     elif action == "retitle-skills":
-        from agent.skill_commands import describe_skill_invocation
+        from son_of_anton_state_common import describe_skill_invocation
         from agent.title_generator import generate_title
 
         limit = max(1, int(getattr(args, "limit", 200) or 200))

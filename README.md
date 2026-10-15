@@ -676,8 +676,9 @@ declared by the NixOS or Home Manager module, `systemctl` runs the service, and
 that module's `settings` owns `config.toml`. `gateway` has two actions, `run`
 and `status`.
 <!---->
-(`skills install` stays — it adds skills you invoke as `/<name>`, not the
-install itself. MCP servers are declared under `mcp_servers` in that same
+(`skills install` is the one leftover: it still copies a skill into the
+skills directory, but nothing invokes skills any more, and it goes when the
+Skills Hub does. MCP servers are declared under `mcp_servers` in that same
 `settings`; nothing installs or adds one at runtime.)
 <!---->
 ## Commands

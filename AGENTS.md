@@ -296,8 +296,9 @@ subclasses `SonOfAntonCLI`), so every CLI option applies to it unchanged.
   `/skin <name>` switches live.
 - `process_command()` dispatches on the canonical command name resolved via
   `resolve_command()` from the central registry (`son_of_anton_cli/commands.py`).
-- Skill slash commands: `agent/skill_commands.py` scans `~/.son-of-anton/skills/` and
-  injects as a **user message** (not system prompt) to preserve prompt caching.
+- There are no skill slash commands. An unrecognized `/word` is never looked up as a
+  skill; `/<skill>`, stacked skills, bundles, `/bundles`, `/reload-skills`, `/learn`, and
+  the `--skills`/`-s` preload were removed (2026-10-15).
 
 ### Slash Command Registry (`son_of_anton_cli/commands.py`)
 
@@ -563,8 +564,10 @@ configured as `custom_providers` in config.toml — not as registry entries.
 
 Two parallel surfaces:
 
-- **`skills/`** — bundled skills, loadable by default (19 across 4 categories, laid out
-  `skills/<category>/<skill>/SKILL.md`).
+- **`skills/`** — bundled skills (19 across 4 categories, laid out
+  `skills/<category>/<skill>/SKILL.md`). Nothing invokes them any more: the model has no
+  skill tool, and the user-facing ways in (`/<skill>`, bundles, `/learn`, `--skills`,
+  Discord `/skill`, per-channel skills, cron-attached skills) were removed 2026-10-15.
 - **`optional-skills/`** — no longer shipped in the tree. Niche/official-but-inactive
   skills come from the Skills Hub's `OptionalSkillSource` (fetched from the
   `ewtodd/son-of-anton` repo) and are installed explicitly via
@@ -626,6 +629,9 @@ with the `memory` tool, when something is worth keeping.
 `cron/jobs.py` (job store) + `cron/scheduler.py` (tick loop). Agents schedule via the
 `cronjob` tool; users via `son-of-anton cron <verb>` or `/cron`. Schedule formats:
 duration (`"30m"`), every-phrase (`"every 2h"`), 5-field cron, ISO timestamp (one-shot).
+Jobs carry a prompt, not skills. A record that still lists `skill`/`skills` from before
+2026-10-15 runs its prompt alone and logs a warning each run that the skills were ignored;
+one with skills and no prompt fails with an error in its run output.
 
 Hardening invariants: 3-minute hard interrupt on cron sessions; catchup window half the
 period clamped to 120s–2h; 120s grace for one-shot jobs; file lock at

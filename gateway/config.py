@@ -1418,8 +1418,14 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
                 if "group_user_allowed_commands" in platform_cfg:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
-                if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
-                    bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
+                if plat in {Platform.DISCORD, Platform.SLACK} and platform_cfg.get("channel_skill_bindings"):
+                    # Skills are no longer loaded into chats; say so rather
+                    # than drop an operator's binding without a trace.
+                    logger.warning(
+                        "%s.channel_skill_bindings is no longer supported and is "
+                        "ignored; move the instructions into channel_prompts.",
+                        plat.value,
+                    )
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
                     if isinstance(channel_prompts, dict):

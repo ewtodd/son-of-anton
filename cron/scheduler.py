@@ -338,11 +338,20 @@ class CronPromptInjectionBlocked(Exception):
     injection scanner. Caught in run_job so the operator sees a clean
     "job blocked" delivery instead of the scheduler crashing.
 
-    Assembled-prompt scanning (including loaded skill content) plugs the
-    gap from #3968: create-time scanning only covers the user-supplied
-    prompt field; skill content loaded at runtime was never scanned, so a
-    malicious skill could carry an injection payload that reached the
-    non-interactive (auto-approve) cron agent.
+    Assembled-prompt scanning plugs the gap from #3968: create-time scanning
+    only covers the user-supplied prompt field, while content injected at
+    runtime (script stdout, upstream job output) was never scanned before it
+    reached the non-interactive (auto-approve) cron agent.
+    """
+
+
+class CronJobHasNoPrompt(Exception):
+    """Raised by _build_job_prompt for a job record that carries attached
+    skills but no prompt.
+
+    Cron jobs no longer load skills. A job created before that with skills
+    and no prompt has nothing left to run, so run_job reports it as a failed
+    run with this message instead of waking an agent on an empty prompt.
     """
 
 
@@ -3688,7 +3697,7 @@ def _build_job_prompt(
     prerun_script: Optional[tuple] = None,
     extra_prompt: Optional[str] = None,
 ) -> str:
-    """Build the effective prompt for a cron job, optionally loading one or more skills first.
+    """Build the effective prompt for a cron job.
 
     Args:
         job: The cron job dict.
@@ -3701,12 +3710,17 @@ def _build_job_prompt(
             #57331 — salvaged from #57342 by @liuhao1024). Appended to the
             stored prompt under a ``## Run Context`` header for this single
             fire only — never persisted to the job definition.
+
+    A job record written before cron skills were removed may still carry
+    ``skill``/``skills``. They are never loaded: with a prompt, the prompt
+    runs alone and the run logs one warning naming the ignored skills;
+    without one, :class:`CronJobHasNoPrompt` is raised.
     """
     user_prompt = str(job.get("prompt") or "")
+    _check_legacy_skills(job, user_prompt)
     if extra_prompt:
         user_prompt = f"{user_prompt}\n\n## Run Context\n{extra_prompt}"
     prompt = user_prompt
-    skills = job.get("skills")
     # True when runtime-collected DATA (script stdout, upstream-job output)
     # has been injected into the prompt. Data content legitimately quotes
     # command-shape strings (a triage feed ingesting a bug report that
@@ -3837,119 +3851,43 @@ def _build_job_prompt(
         "findings normally, or say [SILENT] and nothing more.]\n\n"
     )
     prompt = cron_hint + prompt
-    if skills is None:
-        legacy = job.get("skill")
-        skills = [legacy] if legacy else []
-    elif isinstance(skills, str):
-        skills = [skills]
+    return _scan_assembled_cron_prompt(
+        prompt,
+        job,
+        has_injected_data=has_injected_data,
+        user_prompt=user_prompt,
+    )
 
-    skill_names = [str(name).strip() for name in skills if str(name).strip()]
-    if not skill_names:
-        return _scan_assembled_cron_prompt(
-            prompt,
-            job,
-            has_skills=False,
-            has_injected_data=has_injected_data,
-            user_prompt=user_prompt,
+
+def _check_legacy_skills(job: dict, stored_prompt: str) -> None:
+    """Warn about (or refuse) skills a pre-removal job record still carries."""
+    from cron.jobs import legacy_job_skills
+
+    skills = legacy_job_skills(job)
+    if not skills:
+        return
+    job_id = job.get("id") or "?"
+    label = job.get("name") or job_id
+    if not stored_prompt.strip():
+        raise CronJobHasNoPrompt(
+            f"Cron job '{label}' has no prompt. It was created with attached "
+            f"skills ({', '.join(skills)}), and cron jobs no longer load "
+            "skills, so there is nothing to run. Give it a prompt with "
+            f"`son-of-anton cron edit {job_id} --prompt \"...\"` or remove it "
+            f"with `son-of-anton cron remove {job_id}`."
         )
-
-    from tools.skills_tool import skill_view
-    from tools.skill_usage import bump_use
-    from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
-    from agent.skill_utils import normalize_skill_lookup_name
-
-    parts = []
-    skipped: list[str] = []
-    for skill_name in skill_names:
-        # Cron jobs historically accepted only skill names here, but the CLI/gateway
-        # slash-command path lets bundles shadow skills with the same slug. Mirror
-        # that behavior so `skills: ["my-bundle"]` expands bundle members instead
-        # of being treated as a missing skill.
-        bundle_key = resolve_bundle_command_key(skill_name.lstrip("/"))
-        if bundle_key:
-            bundle_payload = build_bundle_invocation_message(
-                bundle_key,
-                user_instruction="",
-                task_id=str(job.get("id") or "") or None,
-            )
-            if bundle_payload:
-                bundle_message, _loaded_bundle_skills, _missing_bundle_skills = bundle_payload
-                if parts:
-                    parts.append("")
-                parts.append(bundle_message)
-                continue
-            logger.warning(
-                "Cron job '%s': bundle '%s' could not load any skills, skipping",
-                job.get("name", job.get("id")),
-                skill_name,
-            )
-            skipped.append(skill_name)
-            continue
-
-        try:
-            loaded = json.loads(skill_view(normalize_skill_lookup_name(skill_name)))
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("Cron job '%s': skill '%s' returned invalid JSON, skipping", job.get("name", job.get("id")), skill_name)
-            skipped.append(skill_name)
-            continue
-        if not loaded.get("success"):
-            error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
-            logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
-            skipped.append(skill_name)
-            continue
-
-        # Bump usage so the curator sees this skill as actively used.
-        try:
-            bump_use(skill_name, task_id=str(job.get("id") or "") or None)
-        except Exception:
-            logger.debug("Cron job: failed to bump skill usage for '%s'", skill_name, exc_info=True)
-
-        content = str(loaded.get("content") or "").strip()
-        if parts:
-            parts.append("")
-        parts.extend(
-            [
-                f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
-                "",
-                content,
-            ]
-        )
-
-    if skipped:
-        notice = (
-            f"[IMPORTANT: The following skill(s) were listed for this job but could not be found "
-            f"and were skipped: {', '.join(skipped)}. "
-            f"Start your response with a brief notice so the user is aware, e.g.: "
-            f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
-        )
-        parts.insert(0, notice)
-
-    stable_prefix = None
-    if prompt:
-        from agent.skill_commands import append_user_instruction
-
-        parts.append("")
-        # The skill blocks (and any skipped-skill notice) above are stable per
-        # job config; the appended instruction carries the volatile per-run
-        # data (cron hint + prompt + script output + run context). Declare
-        # that boundary for the Anthropic cache planner (#81867).
-        stable_prefix = append_user_instruction(parts, prompt)
-    assembled = _scan_assembled_cron_prompt("\n".join(parts), job, has_skills=True)
-    if stable_prefix and len(assembled) > len(stable_prefix) and assembled.startswith(stable_prefix):
-        # Guarded because the injection scanner may sanitize (mutate) the
-        # assembled bytes; a mismatch simply falls back to whole-message
-        # caching.
-        from agent.prompt_cache_boundary import register_stable_prefix
-
-        register_stable_prefix(stable_prefix)
-    return assembled
+    logger.warning(
+        "Cron job '%s' (ID: %s): ignoring attached skills (%s) — cron jobs no "
+        "longer load skills, so its prompt runs alone. Editing the prompt "
+        "(`son-of-anton cron edit %s --prompt ...`) drops them.",
+        label, job_id, ", ".join(skills), job_id,
+    )
 
 
 def _scan_assembled_cron_prompt(
     assembled: str,
     job: dict,
     *,
-    has_skills: bool = False,
     has_injected_data: bool = False,
     user_prompt: Optional[str] = None,
 ) -> str:
@@ -3958,49 +3896,42 @@ def _scan_assembled_cron_prompt(
     surface a clear refusal to the operator.
 
     Plugs the #3968 gap: ``_scan_cron_prompt`` runs on the user-supplied
-    prompt at create/update, but skill content is loaded from disk at
-    runtime and was never scanned. Since cron runs non-interactively
-    (auto-approves tool calls), a malicious skill carrying an injection
-    payload bypassed every gate.
+    prompt at create/update, but content assembled at runtime was never
+    scanned. Since cron runs non-interactively (auto-approves tool calls),
+    an injection payload there bypassed every gate.
 
-    Two pattern tiers, selected by what the assembled prompt CONTAINS,
-    not just whether skills are attached:
+    Two pattern tiers, selected by what the assembled prompt CONTAINS:
 
     - When the assembled prompt is essentially the user prompt + the cron
-      hint (no skills, no injected data), the STRICT ``_scan_cron_prompt``
-      patterns apply: a bare ``rm -rf /`` in a small directive prompt is a
-      smoking gun, not prose.
-    - When the assembled prompt includes runtime-loaded content — skill
-      markdown (``has_skills=True``) or DATA injected from a job script's
-      stdout / an upstream job's output (``has_injected_data=True``) — the
-      LOOSER ``_scan_cron_skill_assembled`` pattern set is used: only
+      hint (no injected data), the STRICT ``_scan_cron_prompt`` patterns
+      apply: a bare ``rm -rf /`` in a small directive prompt is a smoking
+      gun, not prose.
+    - When the assembled prompt includes DATA injected at runtime from a
+      job script's stdout / an upstream job's output / the job notepad
+      (``has_injected_data=True``), the LOOSER
+      ``_scan_cron_assembled_with_data`` pattern set is used: only
       unambiguous prompt-injection directives block; command-shape
       patterns are dropped and invisible unicode is sanitized (stripped +
       logged) rather than blocked, to avoid false-positives that
-      permanently kill a job. Skill bodies are vetted at install time by
-      ``skills_guard.py``; script output is produced by operator-authored
-      code, the same trust class — and data feeds (e.g. a triage bot
-      ingesting bug reports) legitimately quote dangerous commands.
-
-    When the looser tier is selected because of injected data only,
-    ``user_prompt`` (the raw, pre-assembly prompt) is additionally scanned
-    with the STRICT set so the user-authored surface keeps the full
-    create/update-time guarantee at runtime (defense-in-depth for legacy
-    jobs that predate the create-time scanner).
+      permanently kill a job. Script output is produced by
+      operator-authored code, and data feeds (e.g. a triage bot ingesting
+      bug reports) legitimately quote dangerous commands. ``user_prompt``
+      (the raw, pre-assembly prompt) is additionally scanned with the
+      STRICT set so the user-authored surface keeps the full
+      create/update-time guarantee at runtime (defense-in-depth for legacy
+      jobs that predate the create-time scanner).
     """
-    from tools.cronjob_tools import _scan_cron_prompt, _scan_cron_skill_assembled
+    from tools.cronjob_tools import _scan_cron_assembled_with_data, _scan_cron_prompt
 
-    if has_skills or has_injected_data:
-        # Runtime-loaded content (vetted skill markdown and/or data from
-        # operator-authored scripts) legitimately contains command-shape
-        # strings. Invisible unicode is sanitized (not blocked) so a stray
-        # zero-width space can't permanently kill the job; the cleaned
-        # prompt is what actually runs.
-        cleaned, scan_error = _scan_cron_skill_assembled(assembled)
+    if has_injected_data:
+        # Data from operator-authored scripts / upstream jobs legitimately
+        # contains command-shape strings. Invisible unicode is sanitized (not
+        # blocked) so a stray zero-width space can't permanently kill the
+        # job; the cleaned prompt is what actually runs.
+        cleaned, scan_error = _scan_cron_assembled_with_data(assembled)
         assembled = cleaned
-        if not scan_error and not has_skills and user_prompt:
-            # Data-injection path: keep the strict guarantee on the
-            # user-authored prompt itself.
+        if not scan_error and user_prompt:
+            # Keep the strict guarantee on the user-authored prompt itself.
             scan_error = _scan_cron_prompt(user_prompt)
     else:
         scan_error = _scan_cron_prompt(assembled)
@@ -4286,69 +4217,12 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     return None
 
 
-def _preflight_check_skills(job: dict) -> Optional[str]:
-    """Check attached skills report ready (no missing required env/commands).
-
-    Consults the same ``readiness_status`` payload ``skill_view`` computes
-    for interactive use. Skills that fail to load at all are left to the
-    existing skipped-skill handling in ``_build_job_prompt`` (fail-open):
-    this check only blocks on an affirmative "setup needed" verdict, i.e.
-    the skill exists but its required environment is missing — a run that
-    is guaranteed to misfire.
-    """
-    skills = job.get("skills")
-    if skills is None:
-        legacy = job.get("skill")
-        skills = [legacy] if legacy else []
-    elif isinstance(skills, str):
-        skills = [skills]
-    skill_names = [str(name).strip() for name in skills if str(name).strip()]
-    if not skill_names:
-        return None
-
-    from tools.skills_tool import skill_view
-
-    for skill_name in skill_names:
-        try:
-            payload = json.loads(skill_view(skill_name))
-        except Exception:
-            continue  # unreadable/missing skill → existing skip handling
-        if not isinstance(payload, dict) or not payload.get("success"):
-            continue
-        if (
-            payload.get("setup_needed")
-            or payload.get("readiness_status") == "setup_needed"
-        ):
-            missing = [
-                f"env ${name}"
-                for name in payload.get(
-                    "missing_required_environment_variables"
-                ) or []
-            ]
-            missing += [
-                f"command '{name}'"
-                for name in payload.get("missing_required_commands") or []
-            ]
-            missing += [
-                f"credential file {name}"
-                for name in payload.get("missing_credential_files") or []
-            ]
-            detail = ", ".join(missing) or "required setup incomplete"
-            return (
-                f"attached skill '{skill_name}' is not ready: missing "
-                f"{detail}. Provide the missing prerequisites or detach the "
-                "skill from this job."
-            )
-    return None
-
-
 def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
     """Pre-dispatch configuration validation (T1-26).
 
     Returns a human-readable reason when the job's configuration cannot
-    produce a successful run — missing provider API key, unconfigured
-    delivery platform, or an attached skill with missing required env —
-    so the caller can refuse the run BEFORE any agent machinery is
+    produce a successful run — missing provider API key or unconfigured
+    delivery platform — so the caller can refuse the run BEFORE any agent machinery is
     constructed and no LLM call is burned. Returns ``None`` when the
     configuration validates (or when a check cannot be evaluated: every
     check fails open, so preflight can only ever block on an affirmative
@@ -4360,7 +4234,6 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
     """
     for name, check in (
         ("provider_key", lambda: _preflight_check_provider_key(job, cfg)),
-        ("skills", lambda: _preflight_check_skills(job)),
         ("delivery", lambda: _preflight_check_delivery(job)),
     ):
         try:
@@ -4816,11 +4689,22 @@ def run_job(
         prompt = _build_job_prompt(
             job, prerun_script=prerun_script, extra_prompt=extra_prompt
         )
+    except CronJobHasNoPrompt as no_prompt_exc:
+        logger.warning("Job '%s' (ID: %s): %s", job_name, job_id, no_prompt_exc)
+        failed_doc = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {_son_of_anton_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"**Status:** FAILED (no prompt)\n\n"
+            "The agent was NOT run (no tokens spent).\n\n"
+            f"{no_prompt_exc}\n"
+        )
+        return False, failed_doc, "", str(no_prompt_exc)
     except CronPromptInjectionBlocked as block_exc:
-        # Assembled prompt (user prompt + loaded skill content) tripped the
+        # Assembled prompt (user prompt + injected runtime data) tripped the
         # injection scanner. Refuse to run the agent this tick and surface
         # a clear failure to the operator so they see WHY the scheduled job
-        # didn't run and can audit the offending skill.
+        # didn't run.
         logger.warning(
             "Job '%s' (ID: %s): blocked by prompt-injection scanner — %s",
             job_name, job_id, block_exc,
@@ -4830,13 +4714,14 @@ def run_job(
             f"**Job ID:** {job_id}\n"
             f"**Run Time:** {_son_of_anton_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"**Status:** BLOCKED\n\n"
-            "The assembled prompt (user prompt + loaded skill content) tripped "
-            "the cron injection scanner and the agent was NOT run.\n\n"
+            "The assembled prompt (user prompt + injected script/job output) "
+            "tripped the cron injection scanner and the agent was NOT run.\n\n"
             f"**Scanner result:** {block_exc}\n\n"
-            "Audit the skill(s) attached to this job for prompt-injection "
-            "payloads or invisible-unicode markers. If the skill is legitimate "
-            "and the match is a false positive, rephrase the content to avoid "
-            "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
+            "Audit this job's prompt and the data its script or upstream jobs "
+            "feed it for prompt-injection payloads or invisible-unicode "
+            "markers. If the match is a false positive, rephrase the content "
+            "to avoid the threat pattern "
+            "(`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
         )
         return False, blocked_doc, "", str(block_exc)
     if prompt is None:
@@ -5146,8 +5031,8 @@ def run_job(
         # Pre-dispatch configuration validation (T1-26).
         #
         # A job whose configuration cannot possibly produce a successful
-        # run — missing provider API key (no fallback chain), unready
-        # attached skill, unconfigured delivery platform — is refused HERE,
+        # run — missing provider API key (no fallback chain), unconfigured
+        # delivery platform — is refused HERE,
         # before AIAgent is constructed and before the resolution below can
         # feed a doomed runtime into it, so a misconfigured job never burns
         # an LLM call. run_one_job keys off the BLOCKED_CONFIG_MARKER in

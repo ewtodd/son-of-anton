@@ -6,21 +6,116 @@ reference them without importing son_of_anton_state (which would be a cycle).
 son_of_anton_state re-imports every name here for backward compatibility.
 """
 
-from typing import Any
+import re
+from typing import Any, Optional
 
-from agent.skill_commands import (
-    SKILL_EXCERPT_JOINT,
-    SKILL_SCAFFOLD_SQL_LIKE,
-    describe_skill_invocation,
+
+# ---------------------------------------------------------------------------
+# Historical /skill scaffolding.
+#
+# Skill slash commands (``/work fix it``, stacked ``/a /b ...``, bundles) and
+# cron jobs with attached skills used to expand a user turn into a message
+# that embedded each skill's whole body. Nothing produces that shape any more,
+# but sessions recorded before the removal still hold it, so every surface that
+# summarizes a stored user turn (session previews, titles, search hits,
+# ``son-of-anton sessions retitle-skills``) still needs to show what the user
+# typed rather than the skill's own prose. The markers below are the literal
+# scaffolding those old builders emitted and must never change: they parse
+# rows already on disk.
+# ---------------------------------------------------------------------------
+_SKILL_INVOCATION_PREFIX = "[IMPORTANT: The user has invoked the "
+_SINGLE_SKILL_MARKER = "The full skill content is loaded below.]"
+_SINGLE_SKILL_INSTRUCTION = (
+    "The user has provided the following instruction alongside the skill invocation: "
 )
+_RUNTIME_NOTE = "\n\n[Runtime note:"
+_BUNDLE_MARKER = " skill bundle,"
+_BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
+_BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
+
+# The skill name sits in the first quoted span of the activation note, for both
+# the single-skill and the bundle header ("work" / "/clean /work").
+_SKILL_NAME_RE = re.compile(re.escape(_SKILL_INVOCATION_PREFIX) + r'"([^"]*)"')
+
+# SQL LIKE pattern matching a skill-expanded turn, for listing queries that
+# have to recognize scaffolding before the row reaches Python. The prefix
+# contains no LIKE wildcards (`%`, `_`), so it needs no ESCAPE clause.
+SKILL_SCAFFOLD_SQL_LIKE = _SKILL_INVOCATION_PREFIX + "%"
+
+# Marks where a preview query joined the head and tail of a long scaffolded
+# message. ``describe_skill_invocation`` may hand back a span that runs across
+# the joint (a bundle instruction cut off by the head window); callers cut the
+# description there rather than show the skill body on the far side.
+SKILL_EXCERPT_JOINT = "\x1e"
+
+
+def _skill_turn_instruction(content: str) -> Optional[str]:
+    """The instruction the user typed alongside a recorded skill invocation.
+
+    ``None`` for a bare invocation (no instruction) or an unrecognized shape.
+    """
+    if _BUNDLE_MARKER in content:
+        # Bundle / stacked format puts the instruction before the loaded
+        # skills, so the first occurrence is the user-provided one.
+        idx = content.find(_BUNDLE_USER_INSTRUCTION)
+        if idx < 0:
+            return None
+        instruction = content[idx + len(_BUNDLE_USER_INSTRUCTION):]
+        end = instruction.find(_BUNDLE_FIRST_SKILL_BLOCK)
+    elif _SINGLE_SKILL_MARKER in content:
+        # Single-skill format appends the instruction after the skill body, so
+        # the last occurrence is the user-provided one; the body may quote it.
+        idx = content.rfind(_SINGLE_SKILL_INSTRUCTION)
+        if idx < 0:
+            return None
+        instruction = content[idx + len(_SINGLE_SKILL_INSTRUCTION):]
+        end = instruction.find(_RUNTIME_NOTE)
+    else:
+        return None
+    if end >= 0:
+        instruction = instruction[:end]
+    return instruction.strip() or None
+
+
+def describe_skill_invocation(content: Any, separator: str = " — ") -> Optional[str]:
+    """Render a recorded slash-skill turn the way the user typed it.
+
+    The expanded message embeds the whole skill body, so any surface that
+    summarizes a user turn from its raw content — session titles, sidebar
+    previews, search hits — otherwise shows the skill's own prose as if the
+    user had written it.
+
+    Returns ``"/work — fix the title leak"``, or ``"/work"`` for a bare
+    invocation, or ``None`` when *content* is not skill scaffolding (the
+    caller should then summarize it as an ordinary message).
+    """
+    if not isinstance(content, str) or not content.startswith(_SKILL_INVOCATION_PREFIX):
+        return None
+
+    match = _SKILL_NAME_RE.match(content)
+    name = (match.group(1) if match else "").strip()
+    # Bundle headers already carry their typed "/a /b" keys; a single skill is
+    # a bare name.
+    label = name if name.startswith("/") else f"/{name}"
+
+    instruction = _skill_turn_instruction(content)
+    if instruction:
+        # An excerpted message (head + tail, joined by SKILL_EXCERPT_JOINT) can
+        # put the joint inside the matched span — keep only the side the
+        # instruction marker was found on.
+        instruction = " ".join(instruction.split(SKILL_EXCERPT_JOINT)[0].split())
+        if instruction:
+            return f"{label}{separator}{instruction}" if name else instruction
+
+    return label if name else None
 
 
 # Session preview = the head of the first user message, shown wherever a
 # session has no title (sidebar rows, pickers, exports, the desktop's
 # `sessionTitle` fallback).
 #
-# A /skill invocation expands into a message that embeds the whole skill body,
-# so the plain head of it previews the SKILL's opening prose as if the user had
+# A recorded /skill invocation (see above) embeds the whole skill body, so the
+# plain head of it previews the SKILL's opening prose as if the user had
 # written it. Scaffolded rows therefore carry a wider excerpt so
 # ``_shape_preview`` can hand it to ``describe_skill_invocation`` and recover
 # ``/work — fix the title leak``: the whole message while it stays under the

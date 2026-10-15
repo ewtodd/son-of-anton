@@ -109,10 +109,6 @@ def build_relay_command_manifest() -> List[Dict[str, Any]]:
         {"name": "help", "description": "Show available commands"},
         {"name": "insights", "description": "Show usage insights and analytics"},
         {"name": "reload-mcp", "description": "Reload MCP servers from config"},
-        {
-            "name": "reload-skills",
-            "description": "Re-scan skills for new or removed entries",
-        },
         {"name": "voice", "description": "Toggle voice reply mode"},
         {"name": "update", "description": "Update Son of Anton Agent to the latest version"},
         {"name": "restart", "description": "Gracefully restart the Son of Anton gateway"},

@@ -201,10 +201,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills",
                args_hint="[pending|approve|reject|approval] [id|on|off]",
                subcommands=("pending", "approve", "reject", "approval")),
-    CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
-               "Tools & Skills", execute="bundles"),
-    CommandDef("learn", "Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)",
-               "Tools & Skills", args_hint="<what to learn from>"),
     CommandDef("init", "Generate or update AGENTS.md project instructions from a repo scan",
                "Tools & Skills", args_hint="[notes]"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
@@ -214,17 +210,15 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
-    CommandDef("reload-skills", "Re-scan ~/.son-of-anton/skills/ for newly installed or removed skills",
-               "Tools & Skills", aliases=("reload_skills",)),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
 
     # Info
-    CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
+    CommandDef("commands", "Browse all commands (paginated)", "Info",
                gateway_only=True, args_hint="[page]", busy_policy="dispatch",
                execute="gateway_commands"),
-    CommandDef("help", "Show available commands (/help skills lists skill commands, /help <text> filters)", "Info", busy_policy="dispatch",
-               execute="gateway_help", args_hint="[skills|<filter>]"),
+    CommandDef("help", "Show available commands (/help <text> filters)", "Info", busy_policy="dispatch",
+               execute="gateway_help", args_hint="[<filter>]"),
     CommandDef("palette", "Open the fuzzy command palette (also Ctrl+P)", "Info",
                cli_only=True, busy_policy="dispatch"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
@@ -546,194 +540,6 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
         args_hint = str(meta.get("args_hint") or "").strip()
         entries.append((name, description, args_hint))
     return entries
-
-
-# Platform slash-command name cap (Discord/Slack/Telegram all cap at 32 chars).
-
-
-# Backward-compat alias.
-
-
-# ---------------------------------------------------------------------------
-# Shared skill/plugin collection for gateway platforms
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Platform-specific wrappers
-# ---------------------------------------------------------------------------
-
-
-def discord_skill_commands_by_category(
-    reserved_names: set[str],
-) -> tuple[dict[str, list[tuple[str, str, str]]], list[tuple[str, str, str]], int]:
-    """Return skill entries organized by category for Discord ``/skill`` autocomplete.
-
-    Skills whose directory is nested at least 2 levels under a scan root
-    (e.g. ``creative/ascii-art/SKILL.md``) are grouped by their top-level
-    category.  Root-level skills (e.g. ``some-skill/SKILL.md`` directly under a
-    scan root) are returned as
-    *uncategorized*.
-
-    Scan roots include the local ``SKILLS_DIR`` **and** any configured
-    ``skills.external_dirs`` — matching the widened filter applied to the
-    flat ``discord_skill_commands()`` collector in #18741. Without this
-    parity, external-dir skills are visible via ``son-of-anton skills list`` and
-    the agent's ``/skill-name`` dispatch but silently absent from Discord's
-    ``/skill`` autocomplete.
-
-    Filtering mirrors :func:`discord_skill_commands`: hub skills excluded,
-    per-platform disabled excluded, names clamped to 32 chars, descriptions
-    clamped to 100 chars.
-
-    The legacy 25-group × 25-subcommand caps (from the old nested
-    ``/skill <cat> <name>`` layout) are **not** applied — the live caller
-    (``_register_skill_group`` in ``gateway/platforms/discord.py``, refactored
-    in PR #11580) flattens these results and feeds them into a single
-    autocomplete callback, which scales to thousands of entries without any
-    per-command payload concerns. ``hidden_count`` is retained in the return
-    tuple for backward compatibility and still reports skills dropped for
-    other reasons (32-char clamp collision vs a reserved name).
-
-    Returns:
-        ``(categories, uncategorized, hidden_count)``
-
-        - *categories*: ``{category_name: [(name, description, cmd_key), ...]}``
-        - *uncategorized*: ``[(name, description, cmd_key), ...]``
-        - *hidden_count*: skills dropped due to name clamp collisions
-          against already-registered command names.
-    """
-    from pathlib import Path as _P
-
-    _platform_disabled: set[str] = set()
-    try:
-        from agent.skill_utils import get_disabled_skill_names
-        _platform_disabled = get_disabled_skill_names(platform="discord")
-    except Exception:
-        pass
-
-    # Collect raw skill data --------------------------------------------------
-    categories: dict[str, list[tuple[str, str, str]]] = {}
-    uncategorized: list[tuple[str, str, str]] = []
-    # Map clamped-32-char-name → what it came from, so we can emit an
-    # actionable warning on collision. Reserved (gateway-builtin) command
-    # names are marked with a sentinel so the warning distinguishes
-    # "skill collided with a reserved command" from "two skills collided
-    # on the 32-char clamp" — the latter is the rename-worthy case.
-    _names_used: dict[str, str] = dict.fromkeys(reserved_names, "<reserved>")
-    hidden = 0
-
-    try:
-        from agent.skill_commands import get_skill_commands
-        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
-        from tools.skills_tool import SKILLS_DIR
-
-        _skills_dir = SKILLS_DIR.resolve()
-        _hub_dir = (SKILLS_DIR / ".hub").resolve()
-        # Build list of (resolved_root, is_local) tuples. Each external dir
-        # becomes its own scan root for category derivation — a skill at
-        # ``<external>/mlops/foo/SKILL.md`` is still categorized as "mlops".
-        _scan_roots: list[_P] = [_skills_dir]
-        try:
-            for ext in get_external_skills_dirs():
-                try:
-                    _scan_roots.append(_P(ext).resolve())
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        try:
-            for proj in get_project_skills_dirs():
-                try:
-                    _scan_roots.append(_P(proj).resolve())
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        skill_cmds = get_skill_commands()
-
-        for cmd_key in sorted(skill_cmds):
-            info = skill_cmds[cmd_key]
-            skill_path = info.get("skill_md_path", "")
-            if not skill_path:
-                continue
-            sp = _P(skill_path).resolve()
-            # Hub skills are loaded via the skill hub, not surfaced as
-            # slash commands.
-            if str(sp).startswith(str(_hub_dir)):
-                continue
-            # Accept skill if it lives under any scan root; record the
-            # matching root so we can derive the category correctly.
-            matched_root: _P | None = None
-            for root in _scan_roots:
-                try:
-                    sp.relative_to(root)
-                except ValueError:
-                    continue
-                matched_root = root
-                break
-            if matched_root is None:
-                continue
-
-            skill_name = info.get("name", "")
-            if skill_name in _platform_disabled:
-                continue
-
-            raw_name = cmd_key.lstrip("/")
-            # Clamp to 32 chars (Discord per-command name limit)
-            discord_name = raw_name[:32]
-            if discord_name in _names_used:
-                # Two skills whose first 32 chars are identical. One wins
-                # (the first one seen, which is alphabetical because the
-                # caller iterates ``sorted(skill_cmds)``); the other is
-                # dropped from Discord's /skill autocomplete.
-                #
-                # Silently counting this as ``hidden`` (the old behavior)
-                # meant skill authors had no way to discover the drop —
-                # their skill just didn't appear in the picker. Emit a
-                # WARNING naming both sides so the author can rename the
-                # losing skill's frontmatter name to something with a
-                # distinct 32-char prefix.
-                prior = _names_used[discord_name]
-                if prior == "<reserved>":
-                    logger.warning(
-                        "Discord /skill: %r (from %r) collides on its 32-char "
-                        "clamp with a reserved gateway command name %r — the "
-                        "skill will not appear in the /skill autocomplete. "
-                        "Rename the skill's frontmatter ``name:`` to differ "
-                        "in its first 32 chars.",
-                        discord_name, cmd_key, discord_name,
-                    )
-                else:
-                    logger.warning(
-                        "Discord /skill: %r and %r both clamp to %r on "
-                        "Discord's 32-char command-name limit — only %r "
-                        "will appear in the /skill autocomplete. Rename "
-                        "one skill's frontmatter ``name:`` to differ in "
-                        "its first 32 chars.",
-                        prior, cmd_key, discord_name, prior,
-                    )
-                hidden += 1
-                continue
-            _names_used[discord_name] = cmd_key
-
-            desc = info.get("description", "")
-            if len(desc) > 100:
-                desc = desc[:97] + "..."
-
-            # Determine category from the relative path within the matched
-            # scan root. e.g. creative/ascii-art/SKILL.md → ("creative", ...)
-            rel = sp.parent.relative_to(matched_root)
-            parts = rel.parts
-            if len(parts) >= 2:
-                cat = parts[0]
-                categories.setdefault(cat, []).append((discord_name, desc, cmd_key))
-            else:
-                uncategorized.append((discord_name, desc, cmd_key))
-    except Exception:
-        pass
-
-    return categories, uncategorized, hidden
 
 
 # ---------------------------------------------------------------------------

@@ -75,21 +75,20 @@ def _notify_provider_jobs_changed_safe() -> None:
 #      saying "cat ~/.son-of-anton/.env" or "rm -rf /". `_scan_cron_prompt()` runs
 #      against this at create/update time and as a runtime defense-in-depth.
 #
-#   2. Assembled prompt that includes loaded skill content (large markdown
-#      bodies, often security docs, postmortems, runbooks discussing attack
-#      patterns in PROSE). Reusing the strict patterns here false-positives
-#      every time a skill *describes* a command — see #3968 follow-up: the
-#      `son-of-anton-dev` skill contains a security postmortem mentioning
-#      `cat ~/.son-of-anton/.env`, which tripped `read_secrets` and silently
-#      killed all PR-scout jobs.
+#   2. Assembled prompt that includes data injected at runtime (a job
+#      script's stdout, an upstream job's output, the job notepad). Data
+#      feeds legitimately quote command-shape strings in PROSE — a triage
+#      bot ingesting a bug report that pastes `rm -rf /`, a digest of a
+#      security postmortem mentioning `cat ~/.son-of-anton/.env` — so
+#      reusing the strict patterns would false-positive and silently kill
+#      the job (#3968 follow-up).
 #
-#      Skill bodies are user-curated and scanned at install time by
-#      `skills_guard.py`. The runtime cron scan only needs to catch the
-#      patterns whose phrasing does NOT survive normal English prose:
-#      classic prompt-injection directives ("ignore previous instructions",
-#      "disregard your rules"), deception directives, and invisible
-#      unicode. `_scan_cron_skill_assembled()` runs against the assembled
-#      prompt with this tighter pattern set.
+#      The data comes from operator-authored scripts and jobs. The runtime
+#      cron scan only needs to catch the patterns whose phrasing does NOT
+#      survive normal English prose: classic prompt-injection directives
+#      ("ignore previous instructions", "disregard your rules"), deception
+#      directives, and invisible unicode. `_scan_cron_assembled_with_data()`
+#      runs against the assembled prompt with this tighter pattern set.
 #
 # Both scanners share the invisible-unicode check and the GitHub Authorization
 # header exemption.
@@ -106,14 +105,12 @@ _CRON_THREAT_PATTERNS = [
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
 ]
 
-# Looser pattern set — applied to the assembled prompt when skills are
-# attached. Only patterns whose phrasing is unambiguous in any context;
-# command-shape patterns are dropped because they false-positive on prose
-# in security docs / postmortems. Skill bodies are scanned at install time
-# by `skills_guard.py`, so the runtime cron scan is purely a tripwire for
-# obvious injection directives surviving a malicious skill that slipped
-# through install.
-_CRON_SKILL_ASSEMBLED_PATTERNS = [
+# Looser pattern set — applied to the assembled prompt when runtime data was
+# injected. Only patterns whose phrasing is unambiguous in any context;
+# command-shape patterns are dropped because they false-positive on quoted
+# prose. The runtime cron scan here is purely a tripwire for obvious
+# injection directives.
+_CRON_DATA_ASSEMBLED_PATTERNS = [
     (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
@@ -125,7 +122,7 @@ _CRON_EXFIL_COMMAND_PATTERNS = [
     # Tighten exfil detection to obvious leak paths: embedding a secret
     # directly in the destination URL, sending it in POST/FORM payloads,
     # or shipping it via Authorization headers to arbitrary hosts. The
-    # only intended allowlist exception today is the bundled GitHub skill
+    # only intended allowlist exception today is the GitHub token-auth
     # pattern that talks to api.github.com.
     (rf'curl\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_curl_url"),
     (rf'wget\s+[^\n]*https?://[^\s"\'`]*{_CRON_SECRET_VAR_RE}', "exfil_wget_url"),
@@ -191,13 +188,12 @@ def _strip_cron_safe_constructs(prompt: str) -> str:
     """Strip the GitHub `Authorization: token $GITHUB_TOKEN` auth-header
     pattern so it doesn't trip the broader curl-auth-header exfil rule.
 
-    Allows the bundled GitHub skill fallback without opening a blanket
-    exemption for arbitrary Authorization-header exfiltration.
+    Allows GitHub API calls authenticated with ``$GITHUB_TOKEN`` without
+    opening a blanket exemption for arbitrary Authorization-header
+    exfiltration.
 
     Uses ``re.sub`` so EVERY occurrence is scrubbed, not just the first — a
-    cron job that loads 2+ GitHub skills (e.g. github-issues +
-    github-pr-workflow + github-code-review) contains several such blocks,
-    and the old ``re.search`` + single ``str.replace`` left the rest to trip
+    prompt with several such calls would otherwise leave the rest to trip
     the exfil_curl_auth_header detector on every run. The trailing
     ``[^\\s;&|$`]*`` consumes only the URL path — never whitespace, command
     separators, or subshell openers — so a payload smuggled onto the same
@@ -234,10 +230,9 @@ def _strip_invisible_unicode(prompt: str) -> tuple[str, list[str]]:
 
     Returns ``(cleaned_prompt, removed_codepoints)`` where ``removed_codepoints``
     is the sorted list of ``U+XXXX`` labels that were stripped (empty when the
-    prompt was already clean). Used by the skills-attached cron path, where the
-    skill body is already vetted at install time by ``skills_guard.py`` — a
-    stray zero-width space in a code example should be sanitized, not turned
-    into a hard block that permanently kills the job.
+    prompt was already clean). Used on the injected-data cron path, where a
+    stray zero-width space in operator-produced data should be sanitized, not
+    turned into a hard block that permanently kills the job.
     """
     if not prompt:
         return prompt, []
@@ -279,22 +274,21 @@ def _scan_cron_prompt(prompt: str) -> str:
     return ""
 
 
-def _scan_cron_skill_assembled(assembled: str) -> tuple[str, str]:
-    """Scan an ASSEMBLED cron prompt that includes loaded skill content.
+def _scan_cron_assembled_with_data(assembled: str) -> tuple[str, str]:
+    """Scan an ASSEMBLED cron prompt that includes data injected at runtime.
 
     Looser pattern set — only catches unambiguous prompt-injection
     directives. Drops command-shape patterns (cat .env, rm -rf /,
     authorized_keys, /etc/sudoers) because they false-positive on
-    legitimate skill markdown that *describes* attack commands in
-    security postmortems and runbooks.
+    legitimate data that *quotes* attack commands (bug reports,
+    postmortems, runbooks).
 
-    Invisible unicode is SANITIZED, not blocked. Skill bodies are
-    user-curated and already scanned at install time by
-    ``skills_guard.py``; a stray zero-width space in a code example
-    (common in copy-pasted unicode docs) should not permanently kill the
-    job. The offending codepoints are stripped and logged, the cleaned
-    prompt is returned. The hard block remains for raw user prompts via
-    ``_scan_cron_prompt`` — that path is the actual injection surface.
+    Invisible unicode is SANITIZED, not blocked: a stray zero-width space
+    in operator-produced data (common in copy-pasted unicode text) should
+    not permanently kill the job. The offending codepoints are stripped
+    and logged, the cleaned prompt is returned. The hard block remains for
+    raw user prompts via ``_scan_cron_prompt`` — that path is the actual
+    injection surface.
 
     Returns ``(cleaned_prompt, error)``; ``error`` is empty when the
     prompt passed (after sanitization).
@@ -302,12 +296,12 @@ def _scan_cron_skill_assembled(assembled: str) -> tuple[str, str]:
     cleaned, removed = _strip_invisible_unicode(assembled)
     if removed:
         logger.warning(
-            "Cron skill-assembled prompt: stripped %d invisible-unicode "
-            "char(s) (%s) from vetted skill content",
+            "Cron assembled prompt: stripped %d invisible-unicode "
+            "char(s) (%s) from injected runtime data",
             len(removed), ", ".join(removed),
         )
     prompt_to_scan = _strip_cron_safe_constructs(cleaned)
-    for pattern, pid in _CRON_SKILL_ASSEMBLED_PATTERNS:
+    for pattern, pid in _CRON_DATA_ASSEMBLED_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
             return cleaned, f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
     return cleaned, ""
@@ -411,22 +405,6 @@ def _repeat_display(job: Dict[str, Any]) -> str:
     if times == 1:
         return "once" if completed == 0 else "1/1"
     return f"{completed}/{times}" if completed else f"{times} times"
-
-
-def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
-    if skills is None:
-        raw_items = [skill] if skill else []
-    elif isinstance(skills, str):
-        raw_items = [skills]
-    else:
-        raw_items = list(skills)
-
-    normalized: List[str] = []
-    for item in raw_items:
-        text = str(item or "").strip()
-        if text and text not in normalized:
-            normalized.append(text)
-    return normalized
 
 
 
@@ -629,14 +607,11 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     prompt = str(job.get("prompt") or "")
-    skills = _canonical_skills(job.get("skill"), job.get("skills"))
     job_id = str(job.get("id") or "unknown")
-    name = str(job.get("name") or prompt[:50] or (skills[0] if skills else "") or job_id or "cron job")
+    name = str(job.get("name") or prompt[:50] or job_id or "cron job")
     result = {
         "job_id": job_id,
         "name": name,
-        "skill": skills[0] if skills else None,
-        "skills": skills,
         "prompt_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
         "model": job.get("model"),
         "provider": job.get("provider"),
@@ -1192,8 +1167,6 @@ def cronjob(
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
     include_disabled: bool = False,
-    skill: Optional[str] = None,
-    skills: Optional[List[str]] = None,
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
@@ -1220,13 +1193,11 @@ def cronjob(
         if normalized == "create":
             if not schedule:
                 return tool_error("schedule is required for create", success=False)
-            canonical_skills = _canonical_skills(skill, skills)
             _no_agent = bool(no_agent)
             # Job-shape validation differs by mode:
-            #   - no_agent=True → script is the job; prompt/skills are optional
+            #   - no_agent=True → script is the job; prompt is optional
             #     (and irrelevant to execution).
-            #   - no_agent=False (default) → at least one of prompt/skills must
-            #     be set, same as before.
+            #   - no_agent=False (default) → a prompt is required.
             if _no_agent:
                 if not script:
                     return tool_error(
@@ -1234,8 +1205,8 @@ def cronjob(
                         "the script is the job.",
                         success=False,
                     )
-            elif not prompt and not canonical_skills:
-                return tool_error("create requires either prompt or at least one skill", success=False)
+            elif not prompt:
+                return tool_error("create requires a prompt", success=False)
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
@@ -1296,7 +1267,6 @@ def cronjob(
                         _normalize_deliver_param(deliver)
                     ),
                     origin=_origin_from_env(),
-                    skills=canonical_skills,
                     model=_normalize_optional_job_value(model),
                     provider=_normalize_optional_job_value(provider),
                     base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
@@ -1327,8 +1297,6 @@ def cronjob(
                     "success": True,
                     "job_id": job["id"],
                     "name": job["name"],
-                    "skill": job.get("skill"),
-                    "skills": job.get("skills", []),
                     "schedule": job["schedule_display"],
                     "repeat": _repeat_display(job),
                     "deliver": job.get("deliver", "local"),
@@ -1486,10 +1454,6 @@ def cronjob(
                 updates["deliver"] = _resolve_cron_context_deliver(
                     _normalize_deliver_param(deliver)
                 )
-            if skills is not None or skill is not None:
-                canonical_skills = _canonical_skills(skill, skills)
-                updates["skills"] = canonical_skills
-                updates["skill"] = canonical_skills[0] if canonical_skills else None
             if model is not None:
                 updates["model"] = _normalize_optional_job_value(model)
             if provider is not None:
@@ -1782,13 +1746,11 @@ from tools.registry import registry, tool_error
 def _cronjob_tool_handler(args, **kw):
     """Model-facing entry point for the ``cronjob`` tool.
 
-    The model no longer attaches skills to cron jobs: the schema has no
-    ``skills`` parameter, and a non-empty ``skills``/``skill`` argument (a
-    model replaying an older call shape) is refused rather than silently
-    dropped, so the job is never created without the instructions the model
-    meant to attach. An empty value is a no-op and is ignored. Skills already
-    attached to an existing job are left alone; ``son-of-anton cron`` still
-    manages them.
+    Cron jobs no longer carry skills: the schema has no ``skills``
+    parameter, and a non-empty ``skills``/``skill`` argument (a model
+    replaying an older call shape) is refused rather than silently dropped,
+    so the job is never created without the instructions the model meant to
+    attach. An empty value is a no-op and is ignored.
     """
     if args.get("skills") or args.get("skill"):
         return tool_error(

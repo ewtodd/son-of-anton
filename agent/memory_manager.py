@@ -34,7 +34,6 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
-from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -504,37 +503,18 @@ class MemoryManager:
 
     # -- Prefetch / recall ---------------------------------------------------
 
-    @staticmethod
-    def _strip_skill_scaffolding(text: str) -> Optional[str]:
-        """Return memory-worthy user text, or None to skip the turn.
-
-        When a user invokes a /skill or /bundle, Son of Anton expands the turn into
-        a model-facing message that embeds the entire skill body. Feeding that
-        verbatim to memory providers pollutes their stores/embeddings with
-        prompt scaffolding instead of what the user actually asked. We recover
-        just the user's instruction here, once, for every provider — so this
-        is fixed for the whole provider fan-out, not per backend.
-
-        - Non-skill messages pass through unchanged.
-        - Skill turns with a user instruction return that instruction.
-        - Bare skill invocations (no instruction) return None → callers skip
-          the turn, since there is no user content worth remembering.
-        """
-        return extract_user_instruction_from_skill_message(text)
-
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
         """Collect prefetch context from all providers.
 
         Returns merged context text labeled by provider. Empty providers
         are skipped. Failures in one provider don't block others.
         """
-        clean_query = self._strip_skill_scaffolding(query)
-        if not clean_query:
+        if not isinstance(query, str) or not query:
             return ""
         parts = []
         for provider in self._providers:
             try:
-                result = self._prefetch_provider(provider, clean_query, session_id=session_id)
+                result = self._prefetch_provider(provider, query, session_id=session_id)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:
@@ -642,14 +622,13 @@ class MemoryManager:
         if not providers:
             return
 
-        clean_query = self._strip_skill_scaffolding(query)
-        if not clean_query:
+        if not isinstance(query, str) or not query:
             return
 
         def _run() -> None:
             for provider in providers:
                 try:
-                    provider.queue_prefetch(clean_query, session_id=session_id)
+                    provider.queue_prefetch(query, session_id=session_id)
                 except Exception as e:
                     logger.debug(
                         "Memory provider '%s' queue_prefetch failed (non-fatal): %s",
@@ -701,10 +680,8 @@ class MemoryManager:
         if not providers:
             return
 
-        clean_user_content = self._strip_skill_scaffolding(user_content)
-        if not clean_user_content:
+        if not isinstance(user_content, str) or not user_content:
             return
-        user_content = clean_user_content
 
         def _run() -> None:
             for provider in providers:

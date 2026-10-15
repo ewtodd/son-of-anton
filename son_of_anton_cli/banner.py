@@ -1,4 +1,4 @@
-"""Welcome banner, ASCII art, skills summary, and update check for the CLI.
+"""Welcome banner, ASCII art, and update check for the CLI.
 
 Pure display functions with no SonOfAntonCLI state dependency.
 """
@@ -110,41 +110,6 @@ def pick_banner_logo(term_width: int, skin_logo: str = "") -> str:
     if term_width >= LOGO_STACKED_MIN_COLUMNS:
         return SON_OF_ANTON_AGENT_LOGO_STACKED
     return ""
-
-
-# =========================================================================
-# Skills scanning
-# =========================================================================
-
-_available_skills_cache: Optional[tuple] = None  # (result,) once computed
-
-
-def get_available_skills() -> Dict[str, List[str]]:
-    """Return skills grouped by category, filtered by platform and disabled state.
-
-    Delegates to ``_find_all_skills()`` from ``tools/skills_tool`` which already
-    handles platform gating (``platforms:`` frontmatter) and respects the
-    user's ``skills.disabled`` config list.
-
-    Cached per-process: this feeds only the startup banner, whose snapshot
-    is taken once anyway, and the underlying skills-tree walk costs ~100ms.
-    ``prefetch_banner_data()`` uses the cache to pay that walk off-thread.
-    """
-    global _available_skills_cache
-    if _available_skills_cache is not None:
-        return _available_skills_cache[0]
-    try:
-        from tools.skills_tool import _find_all_skills
-        all_skills = _find_all_skills()  # already filtered
-    except Exception:
-        return {}
-
-    skills_by_category: Dict[str, List[str]] = {}
-    for skill in all_skills:
-        category = skill.get("category") or "general"
-        skills_by_category.setdefault(category, []).append(skill["name"])
-    _available_skills_cache = (skills_by_category,)
-    return skills_by_category
 
 
 # =========================================================================
@@ -676,11 +641,10 @@ def prefetch_banner_data():
     """Warm the banner's subprocess/I/O-heavy inputs in a daemon thread.
 
     ``build_welcome_banner`` needs git state (2-4 ``git rev-parse``/
-    ``describe`` subprocesses, ~130ms) and the skills index (a skills-tree
-    rglob, ~110ms). Both are cached per-process by their own modules, so
-    warming them here while the main thread pays the CPU-bound ``cli`` /
-    prompt_toolkit imports overlaps subprocess waits and file I/O (which
-    release the GIL) with import work. Idempotent; failures are irrelevant
+    ``describe`` subprocesses, ~130ms), cached per-process by its own
+    module, so warming it here while the main thread pays the CPU-bound
+    ``cli`` / prompt_toolkit imports overlaps subprocess waits and file I/O
+    (which release the GIL) with import work. Idempotent; failures are irrelevant
     because the banner recomputes anything missing.
     """
     global _banner_data_prefetch_started
@@ -695,10 +659,6 @@ def prefetch_banner_data():
             pass
         try:
             get_latest_release_tag()
-        except Exception:
-            pass
-        try:
-            get_available_skills()
         except Exception:
             pass
 
@@ -876,8 +836,6 @@ def load_banner_snapshot(enabled_toolsets: List[str] = None) -> Optional[Dict[st
     if not isinstance(tools, list) or not isinstance(toolset_map, dict) \
             or not isinstance(availability, dict):
         return None
-    if not isinstance(blob.get("skills_by_category"), dict):
-        return None
     return blob
 
 
@@ -905,7 +863,6 @@ def save_banner_snapshot(
             "lazy_tools": list(availability.get("lazy_tools", [])),
             "disabled_tools": list(availability.get("disabled_tools", [])),
         },
-        "skills_by_category": get_available_skills(),
     }
     path = _banner_snapshot_path()
     try:
@@ -973,7 +930,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                          context_length: int = None,
                          provider: str = None,
                          availability: Dict[str, Any] = None,
-                         skills_by_category: Dict[str, List[str]] = None,
                          deferred_print=None):
     """Build and print a welcome banner with caduceus on left and info on right.
 
@@ -1048,8 +1004,8 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     # The per-category tool and skill listings used to live here. They were
     # already truncated ("+N more", "and N more toolsets...") at any normal
     # terminal width, so they told the user less than the counts below while
-    # filling most of the screen on every launch. /tools, /toolsets and
-    # /skills show the real lists on demand.
+    # filling most of the screen on every launch. /tools and /toolsets show
+    # the real lists on demand.
     right_lines: list[str] = []
 
     # MCP server count for the summary line. Probe cheaply first: the full
@@ -1075,15 +1031,9 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         except Exception:
             mcp_status = []
 
-    # Skills are user-invoked (/skill-name), not a toolset, so the count does
-    # not depend on the enabled toolsets.
-    if skills_by_category is None:
-        skills_by_category = get_available_skills()
-    total_skills = sum(len(s) for s in skills_by_category.values())
-
     right_lines.append("")
     mcp_connected = sum(1 for s in mcp_status if s["connected"]) if mcp_status else 0
-    summary_parts = [f"{len(tools)} tools", f"{total_skills} skills"]
+    summary_parts = [f"{len(tools)} tools"]
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")

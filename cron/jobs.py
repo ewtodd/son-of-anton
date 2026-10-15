@@ -457,30 +457,26 @@ def _job_output_dir(job_id: str) -> Path:
     return _current_cron_store().output_dir / text
 
 
-def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
-    """Normalize legacy/single-skill and multi-skill inputs into a unique ordered list."""
+def legacy_job_skills(job: Dict[str, Any]) -> List[str]:
+    """Skill names a job record still carries from before cron skills were removed.
+
+    New jobs never get a ``skill``/``skills`` field. Records written earlier
+    keep theirs on disk untouched — the scheduler reads them only to warn that
+    they are ignored, or to refuse a job that had nothing but skills to run.
+    """
+    skills = job.get("skills")
     if skills is None:
-        raw_items = [skill] if skill else []
+        skills = [job.get("skill")]
     elif isinstance(skills, str):
-        raw_items = [skills]
-    else:
-        raw_items = list(skills)
-
-    normalized: List[str] = []
-    for item in raw_items:
+        skills = [skills]
+    elif not isinstance(skills, (list, tuple)):
+        return []
+    names: List[str] = []
+    for item in skills:
         text = str(item or "").strip()
-        if text and text not in normalized:
-            normalized.append(text)
-    return normalized
-
-
-def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a job dict with canonical `skills` and legacy `skill` fields aligned."""
-    normalized = dict(job)
-    skills = _normalize_skill_list(normalized.get("skill"), normalized.get("skills"))
-    normalized["skills"] = skills
-    normalized["skill"] = skills[0] if skills else None
-    return normalized
+        if text and text not in names:
+            names.append(text)
+    return names
 
 
 def _coerce_job_text(value: Any, fallback: str = "") -> str:
@@ -514,7 +510,7 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     ``name``, or ``schedule_display``.  Keep storage untouched on read, but
     ensure consumers never crash while formatting or running those records.
     """
-    normalized = _apply_skill_fields(job)
+    normalized = dict(job)
     job_id = _coerce_job_text(normalized.get("id"), "unknown")
     prompt = _coerce_job_text(normalized.get("prompt"))
     normalized["id"] = job_id
@@ -523,13 +519,7 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     name = _coerce_job_text(normalized.get("name")).strip()
     if not name:
         script = _coerce_job_text(normalized.get("script")).strip()
-        label_source = (
-            prompt
-            or (normalized["skills"][0] if normalized.get("skills") else "")
-            or script
-            or job_id
-            or "cron job"
-        )
+        label_source = prompt or script or job_id or "cron job"
         name = label_source[:50].strip() or "cron job"
     normalized["name"] = name
     normalized["schedule_display"] = _schedule_display_for_job(normalized)
@@ -1796,8 +1786,6 @@ def create_job(
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
     origin: Optional[Dict[str, Any]] = None,
-    skill: Optional[str] = None,
-    skills: Optional[List[str]] = None,
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
@@ -1815,15 +1803,13 @@ def create_job(
     Create a new cron job.
 
     Args:
-        prompt: The prompt to run (must be self-contained, or a task instruction when skill is set).
+        prompt: The prompt to run (must be self-contained).
                 Ignored when ``no_agent=True`` except as an optional name hint.
         schedule: Schedule string (see parse_schedule)
         name: Optional friendly name
         repeat: How many times to run (None = forever, 1 = once)
         deliver: Where to deliver output ("origin", "local", "discord", etc.)
         origin: Source info where job was created (for "origin" delivery)
-        skill: Optional legacy single skill name to load before running the prompt
-        skills: Optional ordered list of skills to load before running the prompt
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
@@ -1898,7 +1884,6 @@ def create_job(
     job_id = uuid.uuid4().hex[:12]
     now = _son_of_anton_now().isoformat()
 
-    normalized_skills = _normalize_skill_list(skill, skills)
     normalized_model = _normalize_job_optional_text(model)
     normalized_provider = _normalize_job_optional_text(provider)
     normalized_base_url = _normalize_job_optional_text(base_url, strip_trailing_slash=True)
@@ -1946,7 +1931,7 @@ def create_job(
     from cron.lifecycle_guard import check_gateway_lifecycle
     check_gateway_lifecycle(prompt_text, normalized_script)
 
-    label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
+    label_source = (prompt_text or (normalized_script if normalized_no_agent else None)) or "cron job"
 
     provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
         provider=normalized_provider,
@@ -1973,8 +1958,6 @@ def create_job(
         "id": job_id,
         "name": name or label_source[:50].strip(),
         "prompt": prompt_text,
-        "skills": normalized_skills,
-        "skill": normalized_skills[0] if normalized_skills else None,
         "model": normalized_model,
         "provider": normalized_provider,
         # Provider/model resolution captured at creation for unpinned jobs
@@ -2139,7 +2122,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 )
 
             previous_inference_axes = _normalized_inference_axes(job)
-            updated = _apply_skill_fields({**job, **updates})
+            updated = {**job, **updates}
 
             # Re-check execution-mode invariants on the MERGED record when
             # any participating field changes, so create-time invariants
@@ -2162,10 +2145,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)
             ) and _normalized_inference_axes(updated) != previous_inference_axes
 
-            if "skills" in updates or "skill" in updates:
-                normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
-                updated["skills"] = normalized_skills
-                updated["skill"] = normalized_skills[0] if normalized_skills else None
+            if "prompt" in updates:
+                # A record written before cron skills were removed may still
+                # carry ignored ``skill``/``skills`` fields. Re-authoring its
+                # prompt is the way to fold in what those skills did, so it
+                # also drops them (and the per-run "ignored" warning).
+                updated.pop("skills", None)
+                updated.pop("skill", None)
 
             if schedule_changed:
                 updated_schedule = updated["schedule"]
@@ -3039,7 +3025,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             rj["id"] = rj.pop("job_id", None) or uuid.uuid4().hex[:12]
             needs_save = True
 
-    jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
+    jobs = copy.deepcopy(raw_jobs)
     due = []
 
     # Normalize malformed "schedule" records (direct jobs.json edit, old writers,

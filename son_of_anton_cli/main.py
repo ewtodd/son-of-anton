@@ -126,7 +126,6 @@ def _run_and_exit_oneshot(
     model: object = None,
     provider: object = None,
     toolsets: object = None,
-    skills: object = None,
     usage_file: object = None,
 ) -> None:
     try:
@@ -137,7 +136,6 @@ def _run_and_exit_oneshot(
             model=model,
             provider=provider,
             toolsets=toolsets,
-            skills=skills,
             usage_file=usage_file,
         )
     except KeyboardInterrupt:
@@ -1387,36 +1385,16 @@ def cmd_chat(args):
         from son_of_anton_cli.banner import prefetch_banner_data, prefetch_update_check
 
         prefetch_update_check()
-        # Warm git banner state + skills index off-thread too — their
-        # subprocess/file-I/O waits overlap the CPU-bound cli import.
+        # Warm git banner state off-thread too — its subprocess waits
+        # overlap the CPU-bound cli import.
         prefetch_banner_data()
     except Exception:
         pass
 
-    # Sync bundled skills on every CLI launch. Normally runs in a background
-    # daemon thread: the sync is idempotent, hash-gated (unchanged skills are
-    # skipped), and nothing on the banner path depends on it, yet the scan
-    # alone costs ~120-170ms of rglob/hashing on the startup path. Skill
-    # loading happens at agent init (first message), by which point the
-    # sync has long finished.
-    #
-    # FIRST RUN is the exception: with an empty ~/.son-of-anton/skills the banner
-    # prefetch races the background sync, caches an empty skills index, and
-    # the very first launch greets the user with "No skills installed ·
-    # 0 skills" while 69 bundled skills land milliseconds later (full-surface
-    # CLI QA sweep, Aug 2026). Run the sync in the foreground exactly once —
-    # only when the skills dir has no SKILL.md yet — so the first impression
-    # matches reality; every later launch keeps the background path.
-    def _skills_dir_is_unseeded() -> bool:
-        try:
-            from son_of_anton_cli.config import get_son_of_anton_home
-            skills_dir = Path(get_son_of_anton_home()) / "skills"
-            if not skills_dir.is_dir():
-                return True
-            return next(skills_dir.rglob("SKILL.md"), None) is None
-        except Exception:
-            return False
-
+    # Sync bundled skills on every CLI launch, in a background daemon thread:
+    # the sync is idempotent, hash-gated (unchanged skills are skipped), and
+    # nothing on the startup path depends on it, yet the scan alone costs
+    # ~120-170ms of rglob/hashing.
     def _skills_sync_bg() -> None:
         try:
             from tools.skills_sync import sync_skills
@@ -1425,20 +1403,9 @@ def cmd_chat(args):
         except Exception:
             pass
 
-    if _skills_dir_is_unseeded():
-        _skills_sync_bg()
-        # The banner prefetch thread (started above) may have scanned the
-        # still-empty dir and cached an empty skills index — drop it so the
-        # banner recomputes against the freshly seeded tree.
-        try:
-            import son_of_anton_cli.banner as _banner_mod
-            _banner_mod._available_skills_cache = None
-        except Exception:
-            pass
-    else:
-        threading.Thread(
-            target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
-        ).start()
+    threading.Thread(
+        target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
+    ).start()
 
     # --yolo: bypass all dangerous command approvals.
     # Also set in main() before _prepare_agent_startup() — that is the
@@ -1457,7 +1424,7 @@ def cmd_chat(args):
         os.environ["SON_OF_ANTON_IGNORE_USER_CONFIG"] = "1"
 
     # --ignore-rules: skip auto-injection of AGENTS.md/SOUL.md/.cursorrules
-    # (rules), memory entries, and any preloaded skills coming from user config.
+    # (rules) and memory entries.
     # Maps to AIAgent(skip_context_files=True, skip_memory=True).
     if getattr(args, "ignore_rules", False):
         os.environ["SON_OF_ANTON_IGNORE_RULES"] = "1"
@@ -1502,7 +1469,6 @@ def cmd_chat(args):
         "provider": getattr(args, "provider", None),
         "reasoning": getattr(args, "reasoning", None),
         "toolsets": args.toolsets,
-        "skills": getattr(args, "skills", None),
         "verbose": getattr(args, "verbose", None),
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
@@ -3192,7 +3158,6 @@ _TOP_LEVEL_VALUE_FLAGS = frozenset(
         "--provider",
         "-t", "--toolsets",
         "-r", "--resume",
-        "-s", "--skills",
         "--usage-file",
         "--in",
         # ``-c / --continue`` is nargs='?' (optional value). Treat it as
@@ -3496,7 +3461,6 @@ def _try_fast_chat_launch() -> bool:
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
-            skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
         )
 
@@ -4545,7 +4509,6 @@ def main():
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
-            skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
         )
 

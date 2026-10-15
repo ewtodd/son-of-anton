@@ -12,9 +12,9 @@ import logging
 import json
 from typing import Any, Dict, List, Optional
 
-from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
 from son_of_anton_state_common import (
     SCHEMA_SQL,
+    SKILL_SCAFFOLD_SQL_LIKE,
     _PREVIEW_RAW_SELECT,
     _shape_preview,
     _sql_session_last_active,

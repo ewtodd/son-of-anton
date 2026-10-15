@@ -73,42 +73,6 @@ def _exec_version(ctx: CommandContext) -> CommandReply:
     return CommandReply(format_banner_version_label())
 
 
-
-
-def _exec_bundles(ctx: CommandContext) -> CommandReply:
-    """Core /bundles data — installed skill bundles listing."""
-    try:
-        from agent.skill_bundles import _bundles_dir, list_bundles
-    except Exception as exc:  # pragma: no cover - env-specific
-        return CommandReply(
-            f"Bundles subsystem unavailable: {exc}",
-            data={"error": str(exc)},
-        )
-
-    bundles = list_bundles()
-    bundles_dir = str(_bundles_dir())
-    if not bundles:
-        return CommandReply(
-            "No skill bundles installed.\n"
-            "Create one with: son-of-anton bundles create <name> --skill <s1> --skill <s2>\n"
-            f"Directory: {bundles_dir}",
-            data={"bundles": [], "dir": bundles_dir},
-        )
-
-    lines = [f"Skill Bundles ({len(bundles)} installed):"]
-    for info in bundles:
-        skill_count = len(info.get("skills", []))
-        desc = info.get("description") or f"Load {skill_count} skills"
-        lines.append(f"/{info['slug']} — {desc} ({skill_count} skills)")
-        for s in info.get("skills", []):
-            lines.append(f"    · {s}")
-    lines.append("Invoke a bundle with /<slug> to load all its skills.")
-    return CommandReply(
-        "\n".join(lines),
-        data={"bundles": bundles, "dir": bundles_dir},
-    )
-
-
 def _exec_help(ctx: CommandContext) -> CommandReply:
     """Core gateway /help body (pre platform mention decoration)."""
     from agent.i18n import t
@@ -124,24 +88,11 @@ def _exec_help(ctx: CommandContext) -> CommandReply:
         lines.append(
             t("gateway.help.more_commands", count=len(full_lines) - len(core_lines))
         )
-    try:
-        from agent.skill_commands import get_skill_commands
-        skill_cmds = get_skill_commands()
-        if skill_cmds:
-            lines.append(t("gateway.help.skill_header", count=len(skill_cmds)))
-            # Show first 10, then point to /commands for the rest
-            sorted_cmds = sorted(skill_cmds)
-            for cmd in sorted_cmds[:10]:
-                lines.append(f"`{cmd}` — {skill_cmds[cmd]['description']}")
-            if len(sorted_cmds) > 10:
-                lines.append(t("gateway.help.more_use_commands", count=len(sorted_cmds) - 10))
-    except Exception:
-        pass
     return CommandReply("\n".join(lines), format="markdown")
 
 
 def _exec_commands(ctx: CommandContext) -> CommandReply:
-    """Core gateway /commands body — paginated command + skill listing.
+    """Core gateway /commands body — paginated command listing.
 
     ``ctx.options["page_size"]`` is a surface parameter
     everything else 20) — for a fixed context the text is surface-invariant.
@@ -158,19 +109,7 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
     else:
         requested_page = 1
 
-    # Build combined entry list: built-in commands + skill commands
     entries = list(gateway_help_lines())
-    try:
-        from agent.skill_commands import get_skill_commands
-        skill_cmds = get_skill_commands()
-        if skill_cmds:
-            entries.append("")
-            entries.append(t("gateway.commands.skill_header"))
-            for cmd in sorted(skill_cmds):
-                desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
-                entries.append(f"`{cmd}` — {desc}")
-    except Exception:
-        pass
 
     if not entries:
         return CommandReply(t("gateway.commands.none"), format="markdown")
@@ -208,7 +147,6 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
 
 EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "version": _exec_version,
-    "bundles": _exec_bundles,
     "gateway_help": _exec_help,
     "gateway_commands": _exec_commands,
 }

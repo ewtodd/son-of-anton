@@ -31,7 +31,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "schedule", help="Schedule like '30m', 'every 2h', or '0 9 * * *'"
     )
     cron_create.add_argument(
-        "prompt", nargs="?", help="Optional self-contained prompt or task instruction"
+        "prompt", nargs="?", help="Self-contained prompt the agent runs (not needed with --no-agent)"
     )
     cron_create.add_argument("--name", help="Optional human-friendly job name")
     cron_create.add_argument(
@@ -39,12 +39,6 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Delivery target: origin, local, discord, signal, slack, or platform:chat_id",
     )
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
-    cron_create.add_argument(
-        "--skill",
-        dest="skills",
-        action="append",
-        help="Attach a skill. Repeat to add multiple skills.",
-    )
     cron_create.add_argument(
         "--script",
         help=(
@@ -139,29 +133,6 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--name", help="New job name")
     cron_edit.add_argument("--deliver", help="New delivery target")
     cron_edit.add_argument("--repeat", type=int, help="New repeat count")
-    cron_edit.add_argument(
-        "--skill",
-        dest="skills",
-        action="append",
-        help="Replace the job's skills with this set. Repeat to attach multiple skills.",
-    )
-    cron_edit.add_argument(
-        "--add-skill",
-        dest="add_skills",
-        action="append",
-        help="Append a skill without replacing the existing list. Repeatable.",
-    )
-    cron_edit.add_argument(
-        "--remove-skill",
-        dest="remove_skills",
-        action="append",
-        help="Remove a specific attached skill. Repeatable.",
-    )
-    cron_edit.add_argument(
-        "--clear-skills",
-        action="store_true",
-        help="Remove all attached skills from the job",
-    )
     cron_edit.add_argument(
         "--script",
         help=(

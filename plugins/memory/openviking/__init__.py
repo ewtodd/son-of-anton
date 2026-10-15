@@ -51,7 +51,6 @@ from urllib.request import url2pathname
 
 from agent.message_content import flatten_message_text
 from agent.memory_provider import MemoryProvider
-from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 from utils import atomic_json_write, env_var_enabled
 
@@ -218,16 +217,8 @@ def _format_openviking_exception(error: Exception) -> str:
 
 
 def _derive_openviking_user_text(content: Any) -> str:
-    """Strip Son of Anton slash-skill scaffolding before sending content to OpenViking.
-
-    Defense-in-depth: MemoryManager already strips skill scaffolding for the
-    whole provider fan-out (see ``MemoryManager._strip_skill_scaffolding``), so
-    in normal operation this receives already-clean text and passes it through
-    unchanged. It stays here so OpenViking is correct if its hooks are ever
-    invoked outside the manager. Delegates to the canonical extractor in
-    ``agent.skill_commands`` — no duplicated marker literals, no drift risk.
-    """
-    return extract_user_instruction_from_skill_message(content) or ""
+    """The user text to send to OpenViking: *content* if it is text, else ``""``."""
+    return content if isinstance(content, str) else ""
 
 
 def _sync_trace_enabled() -> bool:

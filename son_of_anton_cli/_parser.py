@@ -46,7 +46,6 @@ Examples:
     son-of-anton --resume <session_id>  Resume a specific session by ID
     son-of-anton --in ./dir             Run in a specific directory
     son-of-anton -w                     Start in isolated git worktree
-    son-of-anton -s skill-a,skill-b     Start with specific skills loaded
     son-of-anton model                  Select the default model
     son-of-anton config                 View configuration
     son-of-anton config edit            Edit config in $EDITOR
@@ -209,14 +208,6 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
-        "--skills",
-        "-s",
-        action="append",
-        default=None,
-        help="Preload one or more skills for the session (repeat flag or comma-separate)",
-    )
-    _inherited_flag(
-        parser,
         "--yolo",
         action="store_true",
         default=False,
@@ -241,7 +232,7 @@ def build_top_level_parser():
         "--ignore-rules",
         action="store_true",
         default=False,
-        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills",
+        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, and memory",
     )
     _inherited_flag(
         parser,
@@ -284,8 +275,8 @@ def build_top_level_parser():
     # own default (`None`) would silently clobber the top-level value because
     # the subparser shares the same namespace and `dest`. SUPPRESS keeps the
     # subparser action a no-op unless the user actually passes the flag after
-    # the subcommand. Matches the pattern already used for `-s/--skills` and
-    # the relaunch-inherited flags `-r/--resume`, `-c/--continue`,
+    # the subcommand. Matches the pattern already used for the
+    # relaunch-inherited flags `-r/--resume`, `-c/--continue`,
     # `-w/--worktree`, `--yolo`, etc. (see tests/son_of_anton_cli/
     # test_argparse_flag_propagation.py).
     _inherited_flag(
@@ -309,14 +300,6 @@ def build_top_level_parser():
             "high, xhigh, max, or ultra. Overrides agent.reasoning_effort for "
             "this run only (same levels as the /reasoning slash command)."
         ),
-    )
-    _inherited_flag(
-        chat_parser,
-        "-s",
-        "--skills",
-        action="append",
-        default=argparse.SUPPRESS,
-        help="Preload one or more skills for the session (repeat flag or comma-separate)",
     )
     _inherited_flag(
         chat_parser,
@@ -460,7 +443,7 @@ def build_top_level_parser():
         "--ignore-rules",
         action="store_true",
         default=argparse.SUPPRESS,
-        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.",
+        help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, and memory. Combine with --ignore-user-config for a fully isolated run.",
     )
     _inherited_flag(
         chat_parser,
