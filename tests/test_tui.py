@@ -1118,6 +1118,87 @@ def test_bare_resume_opens_a_filterable_session_picker(backend) -> None:
     asyncio.run(run())
 
 
+def test_queued_commands_never_ride_a_redirect(backend) -> None:
+    """A command queued mid-turn runs as a command when the turn ends.
+
+    ``/sendnow`` and ``/sendall`` redirect only messages; a slash command or
+    ``!`` line that rode the redirect reached the model as literal text. A
+    message queued, then ``/reasoning`` queued behind it, then ``/sendnow``
+    twice sent the model the word "/reasoning".
+    """
+    _textual()
+    b, _rec = backend
+    b.detach()
+    released = threading.Event()
+
+    class _FakeAgent:
+        _supports_active_turn_redirect = True
+
+        def __init__(self) -> None:
+            self.redirected: list = []
+
+        def redirect(self, text):
+            self.redirected.append(text)
+            return True
+
+    agent = _FakeAgent()
+    b.agent = agent
+    ran: list = []
+
+    def fake_chat(message, images=None):
+        released.wait(10)
+        return "done"
+
+    def fake_slash(command):
+        ran.append(command)
+        return True
+
+    b.chat = fake_chat
+    b.run_slash = fake_slash
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp(backend=b)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.3)
+            prompt = app.query_one("#input")
+            prompt.focus()
+
+            async def submit(text: str) -> None:
+                prompt.text = text
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+
+            await submit("long task")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and app._busy != "turn":
+                await pilot.pause(0.05)
+            assert app._busy == "turn", "turn never started"
+
+            await submit("that's fine")
+            await submit("/reasoning")
+            assert app._queued_items == ["that's fine", "/reasoning"]
+            await submit("/sendnow")
+            assert agent.redirected == ["that's fine"]
+            assert app._queued_items == ["/reasoning"]
+            assert "commands run when this turn ends" in app.query_one("#queued-strip").content.plain
+
+            await submit("/sendnow")
+            await submit("/sendall")
+            await submit("/sendnow /reasoning high")
+            await submit("!ls")
+            await submit("/sendall")
+            assert agent.redirected == ["that's fine"], "a command rode a redirect"
+            assert app._queued_items == ["/reasoning", "/reasoning high", "!ls"]
+
+            released.set()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and (app._busy is not None or app._queued_items):
+                await pilot.pause(0.05)
+            assert ran[:2] == ["/reasoning", "/reasoning high"]
+
+    asyncio.run(run())
+
+
 def test_after_dispatch_runs_queued_follow_ups_before_backend_work(backend) -> None:
     """User follow-ups queued during a turn preempt backend-scheduled work.
 

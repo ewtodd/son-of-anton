@@ -14161,12 +14161,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     def _event_steerable_text(self, event: Any) -> Optional[str]:
         """Text a live-turn steer can carry, or None when the event must queue.
 
-        Attachments, synthetic goal continuations and internal plugin events
-        cannot ride a redirect: they stay in the queue for their own turn.
+        Attachments, synthetic goal continuations, internal plugin events and
+        commands cannot ride a redirect: they stay in the queue for their own
+        turn. A command (a skill's, say) that rode one would reach the model
+        as its literal text instead of running.
         """
         if getattr(event, "internal", False):
             return None
         if self._is_goal_continuation_event(event):
+            return None
+        if event.get_command():
             return None
         if getattr(event, "media_urls", None) or getattr(event, "media_types", None):
             return None
@@ -14216,6 +14220,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         running_agent = state.turn.agent if state else None
 
         if text:
+            command = dataclasses.replace(event, text=text).get_command()
+            if command:
+                # Running it from here would skip the access check and busy
+                # policy a command sent on its own goes through.
+                return (
+                    f"`/sendnow` steers messages, not commands — send "
+                    f"`/{command}` on its own."
+                )
             if self._steer_live_turn(running_agent, text):
                 return f"Steered into the current run: '{self._steer_preview(text)}'"
             self._queue_text_follow_up(event, quick_key, text)
@@ -14236,7 +14248,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             break
         if target is None:
             if events:
-                return "No queued text to steer — attachments and automation wait for their own turn."
+                return "No queued text to steer — commands, attachments and automation wait for their own turn."
             return "Nothing queued to steer."
         if not self._steer_live_turn(running_agent, target_text):
             return "No live turn to steer — the queue is unchanged."
@@ -14246,8 +14258,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
     async def _busy_sendall_command(self, event: MessageEvent, quick_key: str, source):
         # /sendall — steer every queued text message into the live turn as one
-        # correction. Attachments, goal continuations and internal events stay
-        # queued.
+        # correction. Commands, attachments, goal continuations and internal
+        # events stay queued.
         adapter = self._adapter_for_source(source)
         events = self._queued_events_in_order(quick_key, adapter)
         steerable = []
@@ -14260,7 +14272,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             steerable.append((queued_event, text))
         if not steerable:
             if events:
-                return "No queued text to steer — attachments and automation wait for their own turn."
+                return "No queued text to steer — commands, attachments and automation wait for their own turn."
             return "Nothing queued to steer."
         state = self._peek_session_state(quick_key)
         running_agent = state.turn.agent if state else None

@@ -178,3 +178,31 @@ def test_sendall_with_only_media_reports_nothing_to_steer() -> None:
     assert "attachments" in _sendall(gw)
     assert agent.redirects == []
     assert _queue(state, adapter) == ["<media>"]
+
+
+def test_queued_commands_never_ride_a_steer() -> None:
+    # A command the busy guard did not recognize (a skill's, say) queues for
+    # its own turn; steered, it would reach the model as literal text.
+    agent = _FakeAgent()
+    gw, state, adapter = _runner(
+        agent, slot=_text_event("/some-skill go"), overflow=[_text_event("real message")]
+    )
+    reply = _sendnow(gw)
+    assert agent.redirects == ["real message"]
+    assert "other queued item" in reply
+    assert _queue(state, adapter) == ["/some-skill go"]
+    assert "commands" in _sendall(gw)
+    assert agent.redirects == ["real message"]
+    assert _queue(state, adapter) == ["/some-skill go"]
+
+
+def test_sendnow_with_a_command_neither_steers_nor_runs_it() -> None:
+    agent = _FakeAgent()
+    gw, state, adapter = _runner(agent, slot=_text_event("already queued"))
+    reply = _sendnow(gw, "/reasoning high")
+    assert agent.redirects == []
+    assert "/reasoning" in reply and "on its own" in reply
+    assert _queue(state, adapter) == ["already queued"]
+    # A path is a message, not a command.
+    _sendnow(gw, "/home/me/notes.md is the one")
+    assert agent.redirects == ["/home/me/notes.md is the one"]

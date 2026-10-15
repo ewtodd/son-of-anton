@@ -218,6 +218,20 @@ def _provider_label(provider: dict) -> str:
     return str(p.get("label") or p.get("name") or p.get("slug") or "?")
 
 
+def _runs_locally(value: str) -> bool:
+    """Whether the prompt runs ``value`` itself instead of sending it to the agent.
+
+    Slash commands, ``:q`` and ``!`` shell lines never become a user message
+    (see ``_dispatch``), so none of them may ride a redirect into the live
+    turn either: steered, they reach the model as literal text.
+    """
+    import cli as _cli
+    from son_of_anton_cli.bang_shell import is_bang_command
+
+    text = value.strip()
+    return _cli._looks_like_slash_command(text) or text in (":q", ":quit") or is_bang_command(text)
+
+
 def _compaction_stats_line(stats: dict) -> str:
     """The dim line under a compaction summary (same wording as the classic CLI)."""
     try:
@@ -1450,10 +1464,13 @@ if _TEXTUAL_AVAILABLE:
                 body.append("\n")
                 body.append(f"   +{hidden} more", style="dim")
             body.append("\n")
-            if len(items) > 1:
+            messages = sum(1 for item in items if not _runs_locally(str(item)))
+            if messages > 1:
                 body.append("/sendnow sends the oldest · /sendall sends all", style="dim")
+            elif messages == 1:
+                body.append("/sendnow sends this now" if len(items) == 1 else "/sendnow sends the message now", style="dim")
             else:
-                body.append("/sendnow sends this now", style="dim")
+                body.append("commands run when this turn ends", style="dim")
             strip.update(body)
             strip.display = True
 
@@ -1875,12 +1892,14 @@ if _TEXTUAL_AVAILABLE:
             if self._busy or self._dispatch_chains:
                 # The agent is mid-turn (or between the turns of a running
                 # chain): park the message above the prompt. /sendnow
-                # redirects the live turn onto it instead.
-                if send_now and self._busy == "turn":
+                # redirects the live turn onto it instead; a command never
+                # rides a redirect, so it queues and runs after the turn.
+                local = _runs_locally(value)
+                if send_now and self._busy == "turn" and not local:
                     self._send_text_now(value)
                 else:
                     self._queued_items.append(value)
-                    self._note("queued for the next turn", muted=True)
+                    self._note("queued — runs when this turn ends" if local else "queued for the next turn", muted=True)
                 self._update_status()
                 return
             self._start_dispatch_chain(self._dispatch(value))
@@ -1927,7 +1946,11 @@ if _TEXTUAL_AVAILABLE:
                 self._steer_warning("no live turn to steer — queued for the next turn")
 
         def _send_queued_now(self, *, send_all: bool) -> None:
-            """``/sendnow`` / ``/sendall``: redirect queued messages into the turn."""
+            """``/sendnow`` / ``/sendall``: redirect queued messages into the turn.
+
+            Only messages ride the redirect. Queued commands and ``!`` lines
+            stay queued and run when the turn ends, as they would have anyway.
+            """
             if not self._queued_items:
                 self._note("nothing queued to send", muted=True)
                 return
@@ -1935,17 +1958,20 @@ if _TEXTUAL_AVAILABLE:
                 self._note("no running turn to redirect — staying queued", muted=True)
                 self._steer_warning("no running turn to steer — the queue stays put")
                 return
-            if send_all:
-                selected = list(self._queued_items)
-                payload = "\n".join(selected)
-            else:
-                selected = [self._queued_items[0]]
-                payload = selected[0]
+            messages = [index for index, item in enumerate(self._queued_items) if not _runs_locally(item)]
+            if not messages:
+                self._note("only commands are queued — they run when this turn ends", muted=True)
+                return
+            if not send_all:
+                messages = messages[:1]
+            selected = [self._queued_items[index] for index in messages]
+            payload = "\n".join(selected)
             if not self._redirect_into_turn(payload):
                 self._note("the live turn cannot absorb a redirect — staying queued", muted=True)
                 self._steer_warning("the live turn can't take a steer right now — queue unchanged")
                 return
-            del self._queued_items[: len(selected)]
+            for index in reversed(messages):
+                del self._queued_items[index]
             self._redirect_feedback(payload)
             remaining = len(self._queued_items)
             if remaining:
