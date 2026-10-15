@@ -4,7 +4,8 @@ This module previously held the ``son-of-anton debug share``/``delete``
 command (log capture + redaction + upload to a paste service).  The fork
 removed the ``debug`` subcommand entirely, so all of that machinery is gone;
 what remains is the pending-deletion tracker for uploaded pastes, which the
-gateway's cron ticker drives: ``gateway/run.py::_start_cron_ticker`` calls
+gateway's housekeeping loop drives:
+``gateway/run.py::_start_gateway_housekeeping`` calls
 :func:`_sweep_expired_pastes` once per hour to DELETE pastes whose
 ``expire_at`` has passed.
 
@@ -42,8 +43,8 @@ def _pending_file() -> Path:
     paste that slept for 6 hours; those accumulated forever if the user
     ran a paste upload repeatedly.
 
-    Deletion is now driven by the gateway's cron ticker
-    (``gateway/run.py::_start_cron_ticker``) which calls
+    Deletion is now driven by the gateway's housekeeping loop
+    (``gateway/run.py::_start_gateway_housekeeping``) which calls
     ``_sweep_expired_pastes`` once per hour.
     """
     return get_son_of_anton_home() / "pastes" / "pending.json"

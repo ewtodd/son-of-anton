@@ -5926,11 +5926,11 @@ def run_one_job(
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
     This is the shared firing body extracted from ``tick``'s per-job closure so
-    that BOTH the built-in ticker and an external provider's ``fire_due`` (e.g.
-    Chronos) run the identical sequence — no duplicated correctness.
+    that BOTH the ticker and a manual run (``cronjob`` action ``run``) execute
+    the identical sequence — no duplicated correctness.
 
     It does NOT decide whether the job is due or acquire the initial claim —
-    both the ticker and external providers use the same store CAS before
+    both callers use the same store CAS (``claim_job_for_fire``) before
     calling it. It does keep an acquired claim alive for the full execution.
 
     Returns True if the job was processed (even if the job itself failed —
@@ -6028,8 +6028,8 @@ def _run_one_job_body(
         # mid-execution (gateway kill, OOM, segfault, hard-timeout) cannot
         # re-fire the job forever on restart. No-op for recurring jobs (they
         # use advance_next_run) and infinite/no-repeat jobs. This lives here in
-        # the shared body so BOTH the built-in ticker and the external provider
-        # (Chronos fire_due) get at-most-times semantics.
+        # the shared body so BOTH the ticker and a manual run get at-most-times
+        # semantics.
         if not claim_dispatch(job["id"]):
             logger.info(
                 "Job '%s': one-shot dispatch limit reached — skipping",
@@ -6418,69 +6418,6 @@ def _run_one_job_body(
         return False
 
 
-def _notify_provider_jobs_changed() -> None:
-    """Best-effort: tell the active scheduler provider the job set changed.
-
-    Called by the consumer surfaces (model tool / CLI / REST) AFTER a
-    successful store mutation (create/update/remove/pause/resume) so an external
-    provider (Chronos) can re-provision/cancel the affected one-shot via NAS.
-    No-op for the built-in (it re-reads jobs.json each tick), so the default
-    path is unchanged. Lives here (not in cron/jobs.py) to keep the store free
-    of provider imports — avoids an import cycle and keeps jobs.py low-coupling.
-    Never raises into the caller.
-    """
-    try:
-        from cron.scheduler_provider import resolve_cron_scheduler
-        resolve_cron_scheduler().on_jobs_changed()
-    except Exception as e:
-        logger.debug("on_jobs_changed notify failed: %s", e)
-
-
-class CronSchedulerRegistrationError(RuntimeError):
-    """A job was persisted but its first external trigger was not registered."""
-
-    def __init__(self, job: dict, cause: Exception) -> None:
-        self.job = job
-        self.cause = cause
-        super().__init__(
-            f"Cron job '{job['id']}' was saved, but its first scheduler "
-            f"registration failed ({type(cause).__name__}). Do not create a "
-            "duplicate. Pause/resume or update the job to retry registration."
-        )
-
-    def user_message(self) -> str:
-        """Human-facing variant for chat/CLI surfaces (no exception class name)."""
-        label = self.job.get("name") or self.job["id"]
-        return (
-            f"Saved cron job '{label}', but couldn't register it with the "
-            "external scheduler yet. The job is kept — don't re-create it; "
-            "pause/resume or edit it (e.g. via /cron) to retry registration."
-        )
-
-    def to_dict(self) -> dict:
-        """Return the public partial-failure contract without provider details."""
-        return {
-            "error": str(self),
-            "job_id": self.job["id"],
-            "job_saved": True,
-            "scheduler_registered": False,
-            "retry_create": False,
-        }
-
-
-def create_job_with_scheduler_registration(**kwargs) -> dict:
-    """Persist one job and register its first trigger with the active provider."""
-    from cron.jobs import create_job
-    from cron.scheduler_provider import resolve_cron_scheduler
-
-    job = create_job(**kwargs)
-    try:
-        resolve_cron_scheduler().register_job(job)
-    except Exception as exc:
-        raise CronSchedulerRegistrationError(job, exc) from exc
-    return job
-
-
 # Dead-owner claim reclaim throttle (#86721): recover_interrupted_executions
 # opens the executions ledger, so the per-tick reap is rate-limited rather
 # than run on every idle 60s cycle. Tests may reset _last_dead_owner_reap_at
@@ -6689,9 +6626,8 @@ def tick(
 
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end. Thin wrapper around the shared
-            module-level ``run_one_job`` so ``tick`` and external providers
-            (Chronos ``fire_due``) use the identical execute→save→deliver→mark
-            body."""
+            module-level ``run_one_job`` so ``tick`` and a manual run use the
+            identical execute→save→deliver→mark body."""
             # Acquire the durable claim only when this worker actually starts,
             # not while it may wait behind other work in an executor queue.
             # This prevents a queued lease from expiring before execution.

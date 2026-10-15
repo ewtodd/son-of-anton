@@ -569,7 +569,6 @@ def build_turn_context(
     summarize_user_message_for_log,
     set_session_context,
     ra,
-    moa_active: bool = False,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
@@ -1336,14 +1335,9 @@ def build_turn_context(
     # content, so the crash persist below writes both in the same row and
     # replay can reproduce the sent prefix byte-for-byte. Guarded by the
     # same predicate the api_messages build uses, so the stamped bytes are
-    # exactly the bytes the loop sends. MoA turns append per-call aggregated
-    # reference context to the same API
-    # copy AFTER this composition, so the stamped bytes would never match the
-    # wire either — skip the stamp rather than persist provably wrong "exact
-    # sent bytes" (MoA keeps its pre-sidecar cache behavior).
+    # exactly the bytes the loop sends.
     if (
-        not moa_active
-        and 0 <= current_turn_user_idx < len(messages)
+        0 <= current_turn_user_idx < len(messages)
         and messages[current_turn_user_idx].get("role") == "user"
     ):
         _turn_user_msg = messages[current_turn_user_idx]

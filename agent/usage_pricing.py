@@ -88,7 +88,7 @@ class CanonicalUsage:
         return self.prompt_tokens + self.output_tokens
 
     def __add__(self, other: "CanonicalUsage") -> "CanonicalUsage":
-        """Sum two usage buckets (e.g. MoA advisor fan-out + aggregator).
+        """Sum two usage buckets.
 
         ``raw_usage`` is dropped on the sum — it describes a single API
         response and cannot be meaningfully merged. ``request_count`` adds so

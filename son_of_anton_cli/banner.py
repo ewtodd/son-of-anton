@@ -928,7 +928,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                          session_id: str = None,
                          get_toolset_for_tool=None,
                          context_length: int = None,
-                         provider: str = None,
                          availability: Dict[str, Any] = None,
                          deferred_print=None):
     """Build and print a welcome banner with caduceus on left and info on right.
@@ -942,9 +941,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         session_id: Session identifier.
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
-        provider: Active provider id. When ``"moa"``, ``model`` is a MoA
-            preset name and the banner renders the aggregator instead of a
-            bare model slug.
         availability: Optional precomputed result of
             ``compute_toolset_availability`` (e.g. replayed from the banner
             snapshot). When provided together with ``get_toolset_for_tool``,

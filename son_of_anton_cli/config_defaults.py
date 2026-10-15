@@ -1020,9 +1020,8 @@ DEFAULT_CONFIG = {
         # Same-provider retries for a transient transport blip (connection
         # reset / timeout / 5xx / 408) on ANY auxiliary call before falling
         # back. Default 2 (→ 3 total attempts), clamped [0,6]. Matters most for
-        # pinned calls like MoA reference advisors, where provider fallback is
-        # not a meaningful recovery, so an unretried blip silently loses the
-        # call.
+        # pinned calls, where provider fallback is not a meaningful recovery,
+        # so an unretried blip silently loses the call.
         "transient_retries": 2,
         # Restrict the auxiliary auto-chain's aggregator fallback to free
         # (:free) SKUs. When true, the aggregator step is skipped entirely
@@ -1662,35 +1661,6 @@ DEFAULT_CONFIG = {
         # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
         # pings.
         "approval_mentions": False,
-        # Discord voice-channel inactivity timeout, in seconds. Set to 0 to
-        # keep the bot in VC until an explicit `/voice leave` / disconnect.
-        "voice_channel_inactivity_timeout_seconds": 300,
-        # Minimum seconds to wait for a VC playback before force-stopping it.
-        # The adapter also probes clip duration and extends this floor by a
-        # padding window, so long TTS readbacks are not cut at exactly 120s.
-        "voice_playback_timeout_seconds": 120,
-        # Voice-channel audio effects (the continuous mixer). OFF by default.
-        # When enabled, the bot installs a software mixer on the outgoing voice
-        # stream so a low ambient "thinking" bed, verbal acknowledgements, and
-        # TTS replies can OVERLAP (ducking the ambient under speech) instead of
-        # stop-and-swap — the Grok-voice-mode feel. discord.py ships no mixer;
-        # this is implemented in plugins/platforms/discord/voice_mixer.py.
-        "voice_fx": {
-            "enabled": False,         # master switch for the mixer subsystem
-            "ambient_enabled": True,  # play the idle "thinking" bed while tools run
-            "ambient_path": "",       # custom loop audio file; "" = synthesised pad
-            "ambient_gain": 0.18,     # idle bed loudness, 0.0–1.0
-            "duck_gain": 0.06,        # ambient loudness while speech plays
-            "speech_gain": 1.0,       # TTS / ack loudness, 0.0–1.0
-            "ack_enabled": True,      # speak a short phrase before the first tool call
-            "ack_phrases": [          # picked at random; set [] to disable phrases
-                "Let me look into that.",
-                "One moment.",
-                "Checking on that now.",
-                "Give me a sec.",
-                "On it.",
-            ],
-        },
     },
 
     # Approval mode for dangerous commands:
@@ -1887,17 +1857,9 @@ DEFAULT_CONFIG = {
         # not engage for the model axis — cron spend no longer shadows chat
         # `/model` switches. Empty string = fall through to model.default.
         "model": "",
-        # Inference provider paired with cron.model (NOT the scheduler
-        # provider below). Empty string = resolve from global config.
+        # Inference provider paired with cron.model. Empty string = resolve
+        # from global config.
         "model_provider": "",
-        # Active cron SCHEDULER provider (Axis B — the trigger that decides
-        # WHEN a due job fires). Empty string = the built-in in-process 60s
-        # ticker (default). Name an installed provider (plugins/cron_providers/<name>/ or
-        # $SON_OF_ANTON_HOME/plugins/<name>/) to relocate the trigger — e.g. "chronos",
-        # the NAS-mediated managed-cron provider for scale-to-zero deployments.
-        # An unknown or unavailable provider falls back to the built-in, so cron
-        # never loses its trigger.
-        "provider": "",
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,

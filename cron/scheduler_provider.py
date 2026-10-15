@@ -1,28 +1,10 @@
-"""CronScheduler provider interface (Axis B — the trigger).
+"""The cron trigger: the gateway's in-process 60s ticker.
 
-⚠️ EXPERIMENTAL — this interface is validated by exactly ONE consumer (the
-built-in) until an external provider (Chronos, Phase 4) shakes it out. Until
-then the module path, method signatures, and start() kwargs MAY change without
-a deprecation cycle. Once a second provider validates the shape it becomes
-stable. Any growth MUST be additive (new optional method with a default), never
-a changed signature on start() or a new abstractmethod.
-
-A CronScheduler decides *when* a due job fires. It does NOT decide what firing
-means: execution + delivery stay in cron.scheduler.run_job / _deliver_result,
-shared by all providers. Providers must never reimplement agent construction or
-delivery.
-
-The built-in InProcessCronScheduler runs the historical 60s daemon-thread
-ticker. Alternative providers (e.g. Chronos, a NAS-mediated managed-cron
-provider for scale-to-zero deployments) live under plugins/cron_providers/<name>/ and are
-selected via the `cron.provider` config key (empty = built-in).
+The ticker decides *when* a due job fires. It does NOT decide what firing
+means: execution + delivery stay in cron.scheduler.run_job / _deliver_result.
+The gateway runs ``InProcessCronScheduler.start`` in a daemon thread.
 """
 from __future__ import annotations
-
-import inspect
-import threading
-from abc import ABC, abstractmethod
-from typing import Any
 
 # Cap for the exponential tick backoff applied while consecutive ticks fail
 # with fd exhaustion (EMFILE/ENFILE, #87644).  Base is the tick interval
@@ -33,7 +15,7 @@ _EMFILE_BACKOFF_MAX_SECONDS = 15 * 60  # 15 minutes
 
 
 def _backoff_wait_seconds(interval: float, consecutive_failures: int) -> float:
-    """Exponential tick backoff shared by both ticker loops (#87644).
+    """Exponential tick backoff for the ticker loop (#87644).
 
     Returns the plain ``interval`` while healthy; doubles per consecutive
     fd-exhaustion failure, capped at ``_EMFILE_BACKOFF_MAX_SECONDS``.
@@ -49,7 +31,7 @@ def _backoff_wait_seconds(interval: float, consecutive_failures: int) -> float:
 def _note_tick_failure(exc: BaseException, consecutive_failures: int) -> int:
     """Classify one failed tick and return the updated failure counter.
 
-    Shared by both ticker loops (#87644): on fd exhaustion, attempt
+    On fd exhaustion (#87644), attempt
     reclamation (gc.collect + raise the soft nofile limit) so the NEXT tick
     can succeed, and bump the counter so ``_backoff_wait_seconds`` backs off
     exponentially while the process has no chance of making progress.  Any
@@ -64,370 +46,14 @@ def _note_tick_failure(exc: BaseException, consecutive_failures: int) -> int:
     return 0
 
 
-class CronScheduler(ABC):
-    """Axis-B trigger provider. Decides WHEN a due cron job fires.
+class InProcessCronScheduler:
+    """The in-process 60s ticker.
 
-    Required surface is intentionally minimal: ``name`` + ``start``. ``stop``
-    and ``is_available`` carry safe defaults. The three Phase-4 hooks
-    (``on_jobs_changed`` / ``fire_due`` / ``reconcile``) are added later as
-    NON-abstract methods so the built-in keeps satisfying the ABC without
-    overriding them — see ``test_abc_growth_stays_additive``.
+    ``start()`` blocks in the tick loop until ``stop_event`` is set. The caller
+    runs it in a daemon thread. ``can_dispatch`` is an optional synchronous
+    gate supplied by GatewayRunner during external drain; skipped ticks leave
+    due jobs intact for the next allowed tick.
     """
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """Short identifier, e.g. 'builtin', 'chronos'."""
-
-    def is_available(self) -> bool:
-        """Whether this provider can run in the current environment.
-
-        MUST NOT make network calls. The built-in is always available; an
-        external provider checks for configured endpoint/credentials. When a
-        named provider returns False, the resolver falls back to the built-in.
-        """
-        return True
-
-    @abstractmethod
-    def start(
-        self,
-        stop_event: threading.Event,
-        *,
-        adapters: Any = None,
-        loop: Any = None,
-        interval: int = 60,
-    ) -> None:
-        """Begin firing due jobs.
-
-        For the built-in this BLOCKS in the 60s loop until stop_event is set
-        (it is run inside a daemon thread by the caller, exactly as today).
-        An external provider may register a schedule/fire-endpoint and return
-        immediately; in that case it must still honor stop_event for teardown.
-        """
-
-    def stop(self) -> None:
-        """Optional eager teardown hook. Default no-op; setting the stop_event
-        is the primary stop signal. Override for providers holding external
-        resources (queue consumers, HTTP servers)."""
-        return None
-
-    # --- Optional hooks for external providers (added Phase 4). --------------
-    # All default-safe so the built-in inherits working behavior without
-    # overriding. Keep these NON-abstract — see test_abc_growth_stays_additive.
-
-    def on_jobs_changed(self) -> None:
-        """Called after a successful store mutation (create/update/remove/
-        pause/resume). External providers reconcile their registry here (e.g.
-        Chronos re-provisions/cancels the affected one-shot via NAS).
-        Built-in: no-op (it re-reads jobs.json on every tick)."""
-        return None
-
-    def register_job(self, job: dict[str, Any]) -> None:
-        """Register the first external trigger for one newly persisted job.
-
-        The built-in provider reads the local store on every tick, so its
-        default is a no-op. External providers override this when creating a
-        job requires a remote registration before callers can honestly report
-        that the job is scheduled.
-        """
-        return None
-
-    def recover_interrupted(self) -> int:
-        """Run profile-local attempt recovery for every provider lifecycle."""
-        from cron.executions import recover_interrupted_executions
-
-        return recover_interrupted_executions()
-
-    @property
-    def supports_force_fire(self) -> bool:
-        """Whether ``fire_due`` accepts the additive ``force`` keyword.
-
-        Signature detection keeps providers written before ``force`` was added
-        source-compatible. Providers accepting ``**kwargs`` are compatible.
-        """
-        return provider_supports_force_fire(self)
-
-    def fire_due(
-        self,
-        job_id: str,
-        *,
-        adapters: Any = None,
-        loop: Any = None,
-        force: bool = False,
-    ) -> bool:
-        """Run a single job NOW via the shared orchestrator. Called by the
-        inbound fire endpoint when an external scheduler signals a job is due.
-
-        The default claims the job with a store-level compare-and-set
-        (multi-machine at-most-once), then runs it via the shared
-        ``run_one_job`` body. Built-in never calls this (it has its own tick
-        loop); an external provider routes its inbound fire here.
-
-        Returns True if THIS caller claimed and processed the attempt, even if
-        the job itself failed. Returns False only if the claim was lost
-        (another machine/retry won it) or the job no longer exists.
-        """
-        claimed_job = self.claim_fire(job_id, force=force)
-        if claimed_job is None:
-            return False
-        return self.fire_claimed(claimed_job, adapters=adapters, loop=loop)
-
-    def claim_fire(self, job_id: str, *, force: bool = False) -> dict | None:
-        """Durably claim one fire and create its audit attempt before dispatch.
-
-        Fire transports call this synchronously before acknowledging the
-        external scheduler, then pass the exact owner-bearing snapshot to
-        ``fire_claimed`` in tracked background work.
-        """
-        from cron.executions import create_execution, finish_execution
-        from cron.jobs import claim_job_for_fire
-
-        execution = create_execution(job_id, source=self.name)
-        claim_kwargs = {"return_job": True}
-        if force:
-            claim_kwargs["force"] = True
-        try:
-            claimed_job = claim_job_for_fire(job_id, **claim_kwargs)
-        except BaseException as exc:
-            finish_execution(
-                execution["id"],
-                success=False,
-                error=f"Fire claim failed before dispatch: {type(exc).__name__}: {exc}",
-            )
-            raise
-        if not isinstance(claimed_job, dict):
-            finish_execution(
-                execution["id"],
-                success=False,
-                error="Fire claim was not acquired",
-            )
-            return None
-        claimed_job["execution_id"] = execution["id"]
-        return claimed_job
-
-    def fire_claimed(
-        self,
-        claimed_job: dict,
-        *,
-        adapters: Any = None,
-        loop: Any = None,
-        cancel_event: Any = None,
-    ) -> bool:
-        """Run an exact snapshot returned by ``claim_fire``.
-
-        ``cancel_event``: optional transport-owned ``threading.Event`` (or
-        compatible) that lets the caller stop this execution cooperatively
-        — e.g. the dashboard lifespan drain signalling pending fire
-        deliveries before the event loop shuts down.
-        """
-        from cron.scheduler import run_one_job
-
-        run_one_job(
-            claimed_job,
-            adapters=adapters,
-            loop=loop,
-            cancel_event=cancel_event,
-        )
-        return True
-
-
-def provider_supports_force_fire(provider: Any) -> bool:
-    """Return whether a provider can safely receive ``fire_due(force=...)``."""
-    try:
-        parameters = inspect.signature(provider.fire_due).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        or (
-            parameter.name == "force"
-            and parameter.kind
-            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-        )
-        for parameter in parameters
-    )
-
-
-DEFAULT_MISFIRE_GRACE_MINUTES = 10
-
-
-def _misfire_grace_minutes() -> float:
-    """Resolve the misfire catch-up grace window from config.
-
-    ``cron.misfire_grace_minutes`` (number, default
-    ``DEFAULT_MISFIRE_GRACE_MINUTES``). A non-positive value disables the
-    catch-up sweep entirely.
-    """
-    try:
-        from son_of_anton_cli.config import cfg_get, load_config
-
-        return float(
-            cfg_get(
-                load_config(),
-                "cron",
-                "misfire_grace_minutes",
-                default=DEFAULT_MISFIRE_GRACE_MINUTES,
-            )
-        )
-    except Exception:
-        return float(DEFAULT_MISFIRE_GRACE_MINUTES)
-
-
-def fire_overdue_jobs(
-    provider: "CronScheduler",
-    *,
-    adapters: Any = None,
-    loop: Any = None,
-    now: Any = None,
-) -> int:
-    """Fire jobs whose scheduled time passed without an external fire arriving.
-
-    The misfire catch-up half of the hosted fire path. External providers
-    (Chronos) deliver scheduled fires over HTTP to this process; when that
-    hop is down at fire time (gateway restart window, listener not bound,
-    scheduler retry budget exhausted), the job's
-    ``next_run_at`` stays parked in the past and — because external providers
-    have no local tick loop — nothing ever runs it. The day is silently lost
-    even though the gateway may be healthy again minutes later.
-
-    Called from the gateway housekeeping loop. Deliberately:
-
-    - **No-op for the built-in provider.** Its tick loop already picks up
-      past-due jobs via ``get_due_jobs`` — local scheduling self-heals.
-    - **Routes through the provider's own two-phase fire path** — a
-      synchronous ``claim_fire`` (store CAS, so a late external retry
-      landing concurrently is de-duplicated) and then ``fire_claimed`` in
-      a daemon thread, mirroring the fire-admission pattern. The
-      housekeeping loop that calls this must never block for the length
-      of an agent run. Provider-specific re-arm logic (Chronos NAS
-      one-shots) runs exactly as for a normal fire.
-    - **Waits out a grace window** (``cron.misfire_grace_minutes``, default
-      10, non-positive disables) so the external scheduler's own retry
-      backoff gets first right to deliver — catch-up is the backstop, not
-      a race.
-    - **Operates on the process-global cron store only** — same profile
-      scoping as the external provider's reconcile.
-
-    Returns the number of jobs this sweep claimed and dispatched.
-    """
-    import logging
-    import threading
-    from datetime import datetime
-
-    logger = logging.getLogger("cron.scheduler_provider")
-
-    if isinstance(provider, InProcessCronScheduler):
-        return 0
-
-    grace_minutes = _misfire_grace_minutes()
-    if grace_minutes <= 0:
-        return 0
-
-    from cron.jobs import _ensure_aware, _son_of_anton_now, is_job_runnable, load_jobs
-
-    if now is None:
-        now = _son_of_anton_now()
-
-    fired = 0
-    for job in load_jobs():
-        if not is_job_runnable(job):
-            continue
-        next_run_at = job.get("next_run_at")
-        if not next_run_at:
-            continue
-        try:
-            due_dt = _ensure_aware(datetime.fromisoformat(next_run_at))
-        except (ValueError, TypeError):
-            continue
-        overdue_seconds = (now - due_dt).total_seconds()
-        if overdue_seconds < grace_minutes * 60:
-            continue
-        job_id = str(job.get("id") or "")
-        logger.warning(
-            "Misfire catch-up: job %s (%s) was due %s (%.0f min overdue) and "
-            "no external fire arrived — firing locally.",
-            job_id,
-            job.get("name") or "unnamed",
-            next_run_at,
-            overdue_seconds / 60,
-        )
-        try:
-            # Two-phase, fire-style: claim synchronously (fast store
-            # CAS — losing means an external retry beat us, which is
-            # fine), then run the job off-thread so the caller's loop is
-            # never blocked for the length of an agent run.
-            claimed = provider.claim_fire(job_id)
-            if claimed is None:
-                continue
-            threading.Thread(
-                target=provider.fire_claimed,
-                args=(claimed,),
-                kwargs={"adapters": adapters, "loop": loop},
-                daemon=True,
-                name=f"cron-misfire-{job_id[:12]}",
-            ).start()
-            fired += 1
-        except Exception as exc:
-            logger.warning(
-                "Misfire catch-up failed for job %s: %s: %s",
-                job_id, type(exc).__name__, exc,
-            )
-    return fired
-
-
-def resolve_cron_scheduler() -> "CronScheduler":
-    """Return the active cron scheduler provider.
-
-    Reads ``cron.provider`` from config. Empty/absent → built-in. A named
-    provider that is missing, fails to load, or reports ``is_available() ==
-    False`` falls back to the built-in with a warning — cron must never be left
-    without a trigger.
-    """
-    import logging
-
-    logger = logging.getLogger("cron.scheduler_provider")
-
-    name = ""
-    try:
-        from son_of_anton_cli.config import cfg_get, load_config
-        name = (cfg_get(load_config(), "cron", "provider", default="") or "").strip()
-    except Exception:
-        pass
-
-    if not name or name in ("builtin", "in-process", "inprocess"):
-        return InProcessCronScheduler()
-
-    try:
-        from plugins.cron_providers import load_cron_scheduler
-        provider = load_cron_scheduler(name)
-        if provider is None:
-            logger.warning("cron.provider '%s' not found; using built-in ticker", name)
-            return InProcessCronScheduler()
-        if not provider.is_available():
-            logger.warning("cron.provider '%s' not available; using built-in ticker", name)
-            return InProcessCronScheduler()
-        logger.info("Using cron scheduler provider: %s", provider.name)
-        return provider
-    except Exception as e:
-        logger.warning(
-            "Failed to load cron.provider '%s' (%s); using built-in ticker", name, e
-        )
-        return InProcessCronScheduler()
-
-
-class InProcessCronScheduler(CronScheduler):
-    """Default provider: the historical in-process 60s ticker.
-
-    ``start()`` blocks in the tick loop until ``stop_event`` is set, identical
-    to the pre-refactor ``_start_cron_ticker`` core loop. The caller runs it in
-    a daemon thread. ``can_dispatch`` is an optional synchronous gate supplied
-    by GatewayRunner during external drain; skipped ticks leave due jobs intact
-    for the next allowed tick.
-    """
-
-    @property
-    def name(self) -> str:
-        return "builtin"
 
     def start(
         self,
@@ -439,6 +65,7 @@ class InProcessCronScheduler(CronScheduler):
         can_dispatch=None,
     ):
         import logging
+        from cron.executions import recover_interrupted_executions
         from cron.scheduler import tick as cron_tick
         from cron.jobs import (
             clear_ticker_error,
@@ -449,8 +76,7 @@ class InProcessCronScheduler(CronScheduler):
         logger = logging.getLogger("cron.scheduler_provider")
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
 
-        # ── Single-profile (legacy) path ──────────────────────────────────
-        recovered = self.recover_interrupted()
+        recovered = recover_interrupted_executions()
         if recovered:
             logger.warning(
                 "Marked %d interrupted cron execution(s) unknown after restart",

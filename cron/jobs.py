@@ -2796,17 +2796,16 @@ def _claim_job_for_fire_locked(
     force: bool = False,
     return_job: bool = False,
 ) -> Union[bool, Dict[str, Any]]:
-    """Atomically claim a job for a single external 'fire' (multi-machine
-    at-most-once). Returns True iff THIS caller won the claim.
+    """Atomically claim a job for a single fire (at-most-once). Returns True
+    iff THIS caller won the claim.
 
-    Used by the external-provider fire path (``CronScheduler.fire_due``) when an
-    external scheduler (Chronos) signals a job is due across N gateway replicas:
-    exactly one wins. Single-machine deployments always win.
+    Taken by the ticker's per-job worker and by a manual run, so the two can
+    never fire the same occurrence twice.
 
     Under the file lock: reject if the job is missing/disabled/paused. An
     explicit manual fire may pass ``force=True`` to atomically enable and
-    resume the job as part of the claim; external scheduler callbacks must
-    leave it false so a stale callback cannot resurrect a paused job. If a
+    resume the job as part of the claim; scheduled fires must leave it false
+    so a stale fire cannot resurrect a paused job. If a
     fresh claim (younger than ``claim_ttl_seconds``) already exists, lose.
     Otherwise stamp a ``fire_claim`` and, for recurring jobs, advance
     ``next_run_at`` (mirrors ``advance_next_run``'s at-most-once bump so a stale
@@ -3335,13 +3334,12 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             new_next,
                         )
                         # Persist the fast-forward to storage now (skip accumulated
-                        # slots). In the built-in ticker path this is shortly
-                        # overwritten by advance_next_run + mark_job_run, but it is
-                        # NOT redundant: it (a) protects the crash window between
-                        # here and mark_job_run, and (b) covers the external
-                        # fire_due provider path, which does not call
-                        # advance_next_run. mark_job_run re-anchors next_run_at off
-                        # the actual completion time, so this value is provisional.
+                        # slots). In the ticker path this is shortly overwritten
+                        # by advance_next_run + mark_job_run, but it is NOT
+                        # redundant: it protects the crash window between here
+                        # and mark_job_run. mark_job_run re-anchors next_run_at
+                        # off the actual completion time, so this value is
+                        # provisional.
                         for rj in raw_jobs:
                             if rj["id"] == job["id"]:
                                 rj["next_run_at"] = new_next

@@ -164,48 +164,6 @@ _INTENTIONALLY_MISSING = frozenset({
     ("tests/test_no_auto_router.py", "son_of_anton_cli.router"),
 })
 
-# Imports of modules deleted by earlier removals, still sitting inert in
-# try/except branches when this check was added (2026-10-15). A ratchet: the
-# list may only shrink. Fix an import, then delete its entry here —
-# test_known_missing_imports_are_still_missing fails until you do.
-_KNOWN_MISSING = frozenset({
-    ("agent/agent_runtime_helpers.py", "agent.moa_loop"),
-    ("agent/agent_runtime_helpers.py", "son_of_anton_cli.moa_config"),
-    ("agent/agent_runtime_helpers.py", "tools.read_preview_tool"),
-    ("agent/agent_runtime_helpers.py", "tools.read_terminal_tool"),
-    ("agent/agent_runtime_helpers.py", "tools.read_window_tool"),
-    ("agent/agent_runtime_helpers.py", "tools.setup_mcp_tool"),
-    ("agent/agent_runtime_helpers.py", "tools.tour_tool"),
-    ("agent/auxiliary_client.py", "son_of_anton_cli.moa_config"),
-    ("agent/chat_completion_helpers.py", "tools.browser_tool"),
-    ("agent/conversation_loop.py", "agent.moa_loop"),
-    ("agent/conversation_loop.py", "agent.nous_rate_guard"),
-    ("agent/conversation_loop.py", "son_of_anton_cli.moa_config"),
-    ("agent/model_metadata.py", "son_of_anton_cli.moa_config"),
-    ("agent/tool_executor.py", "tools.read_preview_tool"),
-    ("agent/tool_executor.py", "tools.read_terminal_tool"),
-    ("agent/tool_executor.py", "tools.read_window_tool"),
-    ("agent/tool_executor.py", "tools.setup_mcp_tool"),
-    ("agent/tool_executor.py", "tools.tour_tool"),
-    ("agent/verification_stop.py", "agent.verify.environment"),
-    ("agent/verification_stop.py", "agent.verify.recipes"),
-    ("cron/scheduler_provider.py", "plugins.cron_providers"),
-    ("gateway/run.py", "tools.transcription_tools"),
-    ("plugins/platforms/discord/adapter.py", "tools.transcription_tools"),
-    ("plugins/platforms/discord/adapter.py", "tools.tts_tool"),
-    ("plugins/platforms/discord/adapter.py", "tools.voice_mode"),
-    ("plugins/platforms/discord/ffmpeg_utils.py", "tools.transcription_tools"),
-    ("son_of_anton_cli/plugins.py", "agent.browser_provider"),
-    ("son_of_anton_cli/plugins.py", "agent.browser_registry"),
-    ("son_of_anton_cli/plugins.py", "agent.transcription_provider"),
-    ("son_of_anton_cli/plugins.py", "agent.transcription_registry"),
-    ("son_of_anton_cli/plugins.py", "agent.tts_provider"),
-    ("son_of_anton_cli/plugins.py", "agent.tts_registry"),
-    ("son_of_anton_cli/plugins.py", "son_of_anton_cli.dashboard_auth"),
-    ("son_of_anton_cli/plugins.py", "son_of_anton_cli.dashboard_auth.registry"),
-    ("tools/approval.py", "tools.computer_use"),
-})
-
 
 def _missing_module_imports() -> set[tuple[str, str]]:
     files = _first_party_files()
@@ -236,17 +194,9 @@ def test_no_import_names_a_module_that_is_gone() -> None:
     try/except would pass it silently. Any import whose top-level package is
     first-party must name a module (or package directory) that still exists.
     """
-    new = sorted(_missing_module_imports() - _KNOWN_MISSING - _INTENTIONALLY_MISSING)
+    new = sorted(_missing_module_imports() - _INTENTIONALLY_MISSING)
     assert not new, "imports of first-party modules that no longer exist:\n  " + "\n  ".join(
         f"{path}: {module}" for path, module in new
-    )
-
-
-def test_known_missing_imports_are_still_missing() -> None:
-    """Keeps _KNOWN_MISSING honest: a fixed import must leave the list."""
-    fixed = sorted(_KNOWN_MISSING - _missing_module_imports())
-    assert not fixed, "no longer dangling; delete from _KNOWN_MISSING:\n  " + "\n  ".join(
-        f"{path}: {module}" for path, module in fixed
     )
 
 
@@ -499,6 +449,60 @@ _REMOVED_SYMBOLS = (
     "scan_skill",
     "scan_skill_cached",
     "should_allow_install",
+    # Dead imports of deleted modules and the code they guarded (removed
+    # 2026-10-15): desktop-UI tool callbacks, browser cleanup, the MoA
+    # virtual provider, the external cron-provider interface, Discord voice
+    # channels and voice acks, STT transcript echo, and the plugin
+    # browser/TTS/transcription/dashboard-auth provider registries.
+    "read_terminal_callback",
+    "read_preview_callback",
+    "read_window_below_callback",
+    "setup_mcp_callback",
+    "tour_callback",
+    "cleanup_browser",
+    "build_moa_facade",
+    "consume_reference_usage",
+    "consume_and_save_trace",
+    "last_aggregator_slot",
+    "last_reference_metrics",
+    "moa_config",
+    "moa_active",
+    "_resolve_moa_aggregator",
+    "_read_main_model_for_aux",
+    "resolve_cron_scheduler",
+    "fire_overdue_jobs",
+    "on_jobs_changed",
+    "register_job",
+    "fire_due",
+    "claim_fire",
+    "fire_claimed",
+    "supports_force_fire",
+    "_stop_cron_provider",
+    "_notify_provider_jobs_changed",
+    "_active_cron_provider_name",
+    "create_job_with_scheduler_registration",
+    "register_browser_provider",
+    "register_tts_provider",
+    "register_transcription_provider",
+    "register_dashboard_auth_provider",
+    "play_ack_in_voice",
+    "voice_mixer_active",
+    "get_voice_channel_context",
+    "leave_voice_channel",
+    "voice_ack_callback",
+    "combined_tool_start_callback",
+    "_voice_mode_getter",
+    "_voice_text_channels",
+    "_voice_channel_sidecar_note",
+    "_voice_ack_guild",
+    "vc_last",
+    "_transcribe_and_echo_pending_voice",
+    "_transcribe_pending_audio_event_once",
+    "_echo_pending_stt_transcripts_once",
+    "_should_echo_stt_transcripts",
+    "stt_echo_transcripts",
+    "_release_permission_mode_dependents",
+    "_workspace_has_runnable_recipe",
 )
 
 

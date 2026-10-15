@@ -578,8 +578,6 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # "Slack-via-/son-of-anton" decision, not a silent clamp.
 #   - topup: the billing/balance surface; reached via /son-of-anton topup on Slack.
 #     (the rehaul folded the old /credits + /billing surfaces into /topup.)
-#   - moa: high-cost slash mode, available through /son-of-anton moa to avoid
-#     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /son-of-anton debug on Slack.
 #   - egress: Docker-only proxy status; reachable as /son-of-anton egress on Slack.
 #   - init: repo-scan AGENTS.md bootstrap — a cwd-centric dev command that is

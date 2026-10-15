@@ -791,9 +791,10 @@ class GatewayConfig:
     # gateway/single_user.py).
     single_user: bool = False
 
-    # STT settings
-    stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
-    stt_echo_transcripts: bool = True  # Whether to echo raw STT transcripts back to the user
+    # Inbound voice messages. There is no speech-to-text: when False, each
+    # clip is named by path and duration in the prompt; when True (default),
+    # the message carries a "could not be transcribed" marker.
+    stt_enabled: bool = True
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
@@ -967,7 +968,6 @@ class GatewayConfig:
             "inactive_message": self.inactive_message,
             "single_user": self.single_user,
             "stt_enabled": self.stt_enabled,
-            "stt_echo_transcripts": self.stt_echo_transcripts,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
@@ -1019,13 +1019,6 @@ class GatewayConfig:
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
-        stt_echo_transcripts = data.get("stt_echo_transcripts")
-        if stt_echo_transcripts is None:
-            stt_echo_transcripts = (
-                data.get("stt", {}).get("echo_transcripts")
-                if isinstance(data.get("stt"), dict)
-                else None
-            )
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
@@ -1083,7 +1076,6 @@ class GatewayConfig:
             inactive_message=str(data.get("inactive_message") or "").strip(),
             single_user=_coerce_bool(data.get("single_user"), False),
             stt_enabled=_coerce_bool(stt_enabled, True),
-            stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             systemd_watchdog_seconds=systemd_watchdog_seconds,
@@ -1198,10 +1190,6 @@ def load_gateway_config() -> GatewayConfig:
                 stt_cfg = gateway_section.get("stt")
             if isinstance(stt_cfg, dict):
                 gw_data["stt"] = stt_cfg
-            if "stt_echo_transcripts" in toml_cfg:
-                gw_data["stt_echo_transcripts"] = toml_cfg["stt_echo_transcripts"]
-            elif isinstance(gateway_section, dict) and "stt_echo_transcripts" in gateway_section:
-                gw_data["stt_echo_transcripts"] = gateway_section["stt_echo_transcripts"]
 
             gateway_cfg = toml_cfg.get("gateway")
 

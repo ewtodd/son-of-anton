@@ -8,9 +8,8 @@ and per-turn resource cleanup.
 Each function takes the parent ``AIAgent`` as its first argument
 (``agent``).  :class:`AIAgent` keeps thin forwarder methods so call
 sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
-``cleanup_vm`` / ``cleanup_browser`` in
-``test_zombie_process_cleanup.py``) are resolved through
-:func:`_ra` so the patch contract is preserved.
+``cleanup_vm``) are resolved through :func:`_ra` so the patch contract
+is preserved.
 """
 
 from __future__ import annotations
@@ -103,8 +102,7 @@ def _join_worker_for_relay_teardown(worker, *, label: str) -> None:
 def _ra():
     """Lazy ``run_agent`` reference.
 
-    Used to honor test patches like
-    ``patch("run_agent.cleanup_vm")`` / ``patch("run_agent.cleanup_browser")``
+    Used to honor test patches like ``patch("run_agent.cleanup_vm")``
     that target symbols imported into ``run_agent``'s namespace.
     """
     import run_agent
@@ -707,35 +705,17 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
 
     Shared by the interrupt-worker path (``interruptible_api_call``) and the
     inline path (``direct_api_call``) so the per-api_mode dispatch — codex /
-    anthropic / bedrock / MoA / OpenAI-compatible — lives in exactly one place.
+    anthropic / bedrock / OpenAI-compatible — lives in exactly one place.
 
     ``make_client(reason, kind=...)`` builds the per-request client for the
     codex / OpenAI-compatible (``kind="openai"``) and anthropic
     (``kind="anthropic_messages"``) branches; the worker path uses it to
     register the client with its stranger-thread abort machinery, the inline
     path uses it to capture the client for its own ``finally`` close. The
-    bedrock / MoA branches manage their own clients and never call it. All
+    bedrock branch manages its own client and never calls it. All
     interrupt, abort, cancellation, and close semantics stay in the callers —
     this helper only issues the request.
     """
-    if agent.provider == "moa":
-        # MoA is a virtual chat-completions provider backed by the
-        # in-process MoAClient facade. Do not rebuild a request-local
-        # OpenAI client from the virtual runtime metadata.
-        #
-        # After a client replacement (credential rotation /
-        # dead-connection cleanup / fallback+restore), agent.client may
-        # become a native OpenAI client while agent.provider stays
-        # "moa".  Pop the MoA-internal key so the native SDK does not
-        # reject it as an unexpected kwarg — but only when the live
-        # client is NOT the facade: the facade consumes the key, and
-        # stripping it there forces a wasteful duplicate reference
-        # fan-out (the facade re-prepares from scratch).  Only the MoA
-        # facade's completions object exposes ``prepare()``.  (#78382)
-        _completions = getattr(getattr(agent.client, "chat", None), "completions", None)
-        if not callable(getattr(_completions, "prepare", None)):
-            api_kwargs.pop("_moa_prepared_request", None)
-        return agent.client.chat.completions.create(**api_kwargs)
     request_client = make_client("chat_completion_request")
     return request_client.chat.completions.create(**api_kwargs)
 
@@ -762,12 +742,10 @@ def should_use_direct_api_call(agent) -> bool:
     invokes cross-thread to shut the active sockets — the same mechanism the
     async-delegation stall monitor (#72227) relies on.
 
-    Keep native/Codex/Bedrock/MoA transports on their established workers:
+    Keep native/Codex/Bedrock transports on their established workers:
     their cancellation and client ownership differ.
     """
     if getattr(agent, "api_mode", None) != "chat_completions":
-        return False
-    if getattr(agent, "provider", None) == "moa":
         return False
     if getattr(agent, "platform", None) == "cron":
         return True
@@ -2172,17 +2150,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             substitute_api_content(api_msg)
             # Strip Responses-API fields left in tool_calls by pre-existing
             # session-DB rows (strict gateways reject unknown keys).
-            # In MoA mode, agent.model is the virtual preset name,
-            # not the actual aggregator model.  Resolve the real
-            # aggregator model so Gemini preserves thought_signature.
-            _sanitize_model = agent.model
-            if agent.provider == "moa":
-                _moa_client = getattr(agent, "client", None)
-                if _moa_client is not None:
-                    _agg_slot = getattr(_moa_client, "last_aggregator_slot", None)
-                    if _agg_slot and _agg_slot.get("model"):
-                        _sanitize_model = _agg_slot["model"]
-            agent._sanitize_tool_calls_for_strict_api(api_msg, model=_sanitize_model)
+            agent._sanitize_tool_calls_for_strict_api(api_msg, model=agent.model)
             api_messages.append(api_msg)
 
         effective_system = agent._cached_system_prompt or ""
@@ -2403,7 +2371,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
 
 def cleanup_task_resources(agent, task_id: str) -> None:
-    """Clean up VM and browser resources for a given task.
+    """Clean up VM resources for a given task.
 
     Skips ``cleanup_vm`` when the active terminal environment is marked
     persistent (``persistent_filesystem=True``) so that long-lived sandbox
@@ -2412,11 +2380,6 @@ def cleanup_task_resources(agent, task_id: str) -> None:
     ``terminal.lifetime_seconds`` is exceeded. Non-persistent backends are
     torn down per-turn as before to prevent resource leakage (the original
     intent of this hook for the Morph backend, see commit fbd3a2fd).
-
-    Skips ``cleanup_browser`` in headed mode so the browser window stays
-    visible between turns. The inactivity reaper in
-    ``browser_tool._cleanup_inactive_browser_sessions`` still handles
-    idle sessions.
     """
     try:
         if is_persistent_env(task_id):
@@ -2430,24 +2393,6 @@ def cleanup_task_resources(agent, task_id: str) -> None:
     except Exception as e:
         if agent.verbose_logging:
             logger.warning("Failed to cleanup VM for task %s: %s", task_id, e)
-    try:
-        headed = False
-        try:
-            from tools.browser_tool import _is_headed_mode
-            headed = _is_headed_mode()
-        except Exception:
-            headed = bool(os.environ.get("AGENT_BROWSER_HEADED"))
-        if headed:
-            if agent.verbose_logging:
-                logging.debug(
-                    f"Skipping per-turn cleanup_browser for headed session {task_id}; "
-                    f"idle reaper will handle it."
-                )
-        else:
-            _ra().cleanup_browser(task_id)
-    except Exception as e:
-        if agent.verbose_logging:
-            logger.warning("Failed to cleanup browser for task %s: %s", task_id, e)
 
 
 def _text_stream_end_is_drop(content_parts: list, usage_received: bool) -> bool:
@@ -2572,11 +2517,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     request_client_holder = {"client": None, "diag": None, "owner_tid": None}
     # Transport kind of the registered request client — see the non-streaming
     # variant. Routes _close_request_client_once to anthropic vs openai abort/
-    # close helpers (#67142). ``kind="stream"`` registers a per-request
-    # *stream handle* instead of a client — used under the MoA facade, whose
-    # singleton client has no per-request sockets to abort
-    # (_abort_request_openai_client is a no-op on it), so interrupts must
-    # close the stream object itself (#57354).
+    # close helpers (#67142).
     request_client_kind = {"value": "openai"}
     request_client_lock = threading.Lock()
     # Request-local cancellation flag — see interruptible_api_call for the full
@@ -2596,44 +2537,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             request_client_holder["owner_tid"] = threading.get_ident()
         return client
 
-    def _stream_close_callable(stream):
-        close = getattr(stream, "close", None)
-        if callable(close):
-            return close
-        response = getattr(stream, "response", None)
-        close = getattr(response, "close", None)
-        if callable(close):
-            return close
-        return None
-
-    def _set_request_stream_handle(stream):
-        # Register the per-request *stream* under kind="stream" so an
-        # interrupt closes the stream handle itself. Under the MoA facade the
-        # registered "client" is the shared facade singleton whose
-        # per-request abort helpers are no-ops, leaving the underlying HTTP
-        # stream open until the provider drained it (#57354).
-        if _stream_close_callable(stream) is None:
-            return stream
-        with request_client_lock:
-            request_client_holder["client"] = stream
-            request_client_kind["value"] = "stream"
-            request_client_holder["owner_tid"] = threading.get_ident()
-        return stream
-
-    def _close_request_stream_handle(stream, reason: str) -> None:
-        close = _stream_close_callable(stream)
-        if close is None:
-            return
-        try:
-            close()
-            logger.info("Streaming response handle closed (%s)", reason)
-        except Exception as exc:
-            logger.debug(
-                "Streaming response handle close failed (%s): %s",
-                reason,
-                exc,
-            )
-
     def _close_request_client_once(reason: str) -> None:
         # See #29507 explanation in the non-streaming variant above. A
         # stranger thread (the interrupt-check / stale-stream detector loop)
@@ -2641,15 +2544,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # so the worker thread retains ownership of the FD release.
         with request_client_lock:
             request_client = request_client_holder.get("client")
-            request_kind = request_client_kind.get("value", "openai")
             owner_tid = request_client_holder.get("owner_tid")
-            # A registered stream handle (kind="stream", MoA facade path) is
-            # safe to close from any thread — closing IS the abort — so the
-            # stranger-thread ownership carve-out only applies to real
-            # per-request clients (#57354).
             stranger_thread = (
-                request_kind != "stream"
-                and request_client is not None
+                request_client is not None
                 and owner_tid is not None
                 and owner_tid != threading.get_ident()
             )
@@ -2667,11 +2564,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if request_client is None:
             return
         # Stranger threads returned under the lock above, so only the owner
-        # (or an any-thread-safe stream handle) reaches the close dispatch.
-        if request_kind == "stream":
-            _close_request_stream_handle(request_client, reason)
-        else:
-            agent._close_request_openai_client(request_client, reason=reason)
+        # reaches the close dispatch.
+        agent._close_request_openai_client(request_client, reason=reason)
 
     first_delta_fired = {"done": False}
     deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
@@ -2954,10 +2848,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 defer_logical_completion=True,
             )
         )
-        if agent.provider == "moa":
-            # Son of Anton interrupts the managed stream; Relay retains sole
-            # ownership of closing the underlying provider stream.
-            _set_request_stream_handle(stream)
         pending_text_parts: list[str] = []
 
         def _flush_pending_stream_text():

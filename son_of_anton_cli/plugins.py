@@ -238,17 +238,6 @@ VALID_HOOKS: Set[str] = {
     #   decided_by: "aux_llm"  -- only on surface="smart"
     "pre_approval_request",
     "post_approval_response",
-    # Pre-transcription transform hook. Fired by the STT dispatcher
-    # (tools.transcription_tools.transcribe_audio) after provider resolution
-    # and BEFORE any backend — built-in, command-type, or plugin-registered —
-    # is invoked. Callbacks receive keyword args:
-    #   file_path, provider, model, language, prompt, source
-    # and may return None (unchanged) or a dict mutating any of
-    # ``prompt`` / ``language`` / ``model``. Results are applied in
-    # registration order, last-writer-wins per field. ``file_path`` is
-    # read-only — attempts to change it are logged and dropped. The static
-    # ``stt.prompt`` config value is the base; hook results mutate on top.
-    "pre_transcription",
     # Kanban task lifecycle hooks. Fired by son_of_anton_cli.kanban_db when a task
     # transitions state, AFTER the change is committed to the board DB (so the
     # hook always sees durable state and a slow plugin can never hold the
@@ -648,7 +637,7 @@ _KNOWN_MANIFEST_FIELDS: Set[str] = {
     "name", "version", "description", "author", "requires_env",
     "provides_tools", "provides_hooks", "kind", "hooks", "label",
     "optional_env", "platforms", "external_dependencies", "pip_dependencies",
-    "provides_browser_providers", "provides_web_providers",
+    "provides_web_providers",
     # v2 (#64165)
     "manifest_version", "api_version", "requires_plugins",
     "python_dependencies", "config_schema", "license", "homepage", "tags",
@@ -1683,8 +1672,8 @@ class PluginContext:
         """Register a tool in the global registry **and** track it as plugin-provided.
 
         Pass ``override=True`` to replace an existing built-in tool with the
-        same name (e.g. swap the default ``browser_navigate`` for a custom
-        CDP-backed implementation). Without it, attempting to register a name
+        same name (e.g. swap the default ``web_extract`` for a custom
+        implementation). Without it, attempting to register a name
         already claimed by a different toolset is rejected.
 
         ``override=True`` against a built-in tool requires the operator to
@@ -2331,67 +2320,6 @@ class PluginContext:
         )
         return handle
 
-    # -- dashboard auth provider registration --------------------------------
-
-    @_serialized_replacement
-    def register_dashboard_auth_provider(self, provider) -> Optional[PluginRegistration]:
-        """Register a dashboard authentication provider.
-
-        ``provider`` must be an instance of
-        :class:`son_of_anton_cli.dashboard_auth.DashboardAuthProvider`. Used by
-        the dashboard OAuth auth gate, which engages when the dashboard
-        binds to a non-loopback host without ``--insecure``.
-
-        Misbehaving providers (wrong type, duplicate name) are logged at
-        WARNING and silently ignored — never raised — so a broken plugin
-        cannot crash the host. Same convention as
-        ``register_image_gen_provider``.
-        """
-        from son_of_anton_cli.dashboard_auth import (
-            DashboardAuthProvider,
-            register_provider,
-        )
-        from son_of_anton_cli.dashboard_auth.registry import restore_registration
-        from son_of_anton_cli.dashboard_auth.registry import snapshot_registration
-
-        if not isinstance(provider, DashboardAuthProvider):
-            logger.warning(
-                "Plugin '%s' tried to register a dashboard-auth provider "
-                "that does not inherit from DashboardAuthProvider. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        registry_name = provider.name
-        scope = self._manager.scope_key
-        previous = snapshot_registration(registry_name, scope=scope)
-        try:
-            register_provider(provider, scope=scope)
-        except (TypeError, ValueError) as e:
-            logger.warning(
-                "Plugin '%s' failed to register dashboard-auth provider "
-                "%r: %s",
-                self.manifest.name, getattr(provider, "name", "?"), e,
-            )
-            return
-        registered = snapshot_registration(registry_name, scope=scope)
-        if registered is not provider:
-            return None
-        handle = self._track_replacement(
-            "dashboard_auth_provider",
-            registry_name,
-            slot=("dashboard_auth_provider", scope, registry_name),
-            current=provider,
-            previous=previous,
-            restore=lambda replacement: restore_registration(
-                registry_name, provider, replacement, scope=scope
-            ),
-        )
-        logger.info(
-            "Plugin '%s' registered dashboard-auth provider: %s (%s)",
-            self.manifest.name, registry_name, provider.display_name,
-        )
-        return handle
-
     # -- video gen provider registration -------------------------------------
 
     @_serialized_replacement
@@ -2491,60 +2419,6 @@ class PluginContext:
         )
         return handle
 
-    # -- browser provider registration ---------------------------------------
-
-    @_serialized_replacement
-    def register_browser_provider(self, provider) -> Optional[PluginRegistration]:
-        """Register a cloud browser backend.
-
-        ``provider`` must be an instance of
-        :class:`agent.browser_provider.BrowserProvider`. The
-        ``provider.name`` attribute is what ``browser.cloud_provider`` in
-        ``config.toml`` matches against when routing cloud-mode
-        ``browser_*`` tool calls.
-
-        Mirrors :meth:`register_web_search_provider` exactly — same
-        registration shape, same gating, same logging. The browser
-        subsystem's dispatcher (:func:`tools.browser_tool._get_cloud_provider`)
-        consults the registry built up by these calls.
-        """
-        from agent.browser_provider import BrowserProvider
-        from agent.browser_registry import (
-            register_provider as _register_browser_provider,
-            restore_registration,
-            snapshot_registration,
-        )
-
-        if not isinstance(provider, BrowserProvider):
-            logger.warning(
-                "Plugin '%s' tried to register a browser provider that does "
-                "not inherit from BrowserProvider. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        registry_name = provider.name.strip()
-        scope = self._manager.scope_key
-        previous = snapshot_registration(registry_name, scope=scope)
-        _register_browser_provider(provider, scope=scope)
-        registered = snapshot_registration(registry_name, scope=scope)
-        if registered is not provider:
-            return None
-        handle = self._track_replacement(
-            "browser_provider",
-            registry_name,
-            slot=("browser_provider", scope, registry_name),
-            current=provider,
-            previous=previous,
-            restore=lambda replacement: restore_registration(
-                registry_name, provider, replacement, scope=scope
-            ),
-        )
-        logger.info(
-            "Plugin '%s' registered browser provider: %s",
-            self.manifest.name, registry_name,
-        )
-        return handle
-
     # -- secret source registration -------------------------------------------
 
     @_serialized_replacement
@@ -2611,132 +2485,6 @@ class PluginContext:
             )
             return handle
         return None
-
-    # -- TTS provider registration -------------------------------------------
-
-    @_serialized_replacement
-    def register_tts_provider(self, provider) -> Optional[PluginRegistration]:
-        """Register a text-to-speech backend.
-
-        ``provider`` must be an instance of
-        :class:`agent.tts_provider.TTSProvider`. The ``provider.name``
-        attribute is what ``tts.provider`` in ``config.toml`` matches
-        against when routing ``text_to_speech`` tool calls — **but
-        only when**:
-
-        1. ``provider.name`` is NOT a built-in TTS provider name
-           (``edge``, ``openai``, ``elevenlabs``, …). Built-ins always
-           win — the registry rejects shadowing names with a warning.
-        2. There is NO ``tts.providers.<name>: type: command`` entry
-           with the same name. Command-providers (PR #17843) win on
-           name collision because config is more local than plugin
-           install.
-
-        Coexists with the command-provider registry rather than
-        replacing it — see issue #30398 for the full design rationale.
-        """
-        from agent.tts_provider import TTSProvider
-        from agent.tts_registry import (
-            register_provider as _register_tts_provider,
-            restore_registration,
-            snapshot_registration,
-        )
-
-        if not isinstance(provider, TTSProvider):
-            logger.warning(
-                "Plugin '%s' tried to register a TTS provider that does "
-                "not inherit from TTSProvider. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        registry_name = provider.name.strip().lower()
-        scope = self._manager.scope_key
-        previous = snapshot_registration(registry_name, scope=scope)
-        _register_tts_provider(provider, scope=scope)
-        registered = snapshot_registration(registry_name, scope=scope)
-        if registered is not provider:
-            return None
-        handle = self._track_replacement(
-            "tts_provider",
-            registry_name,
-            slot=("tts_provider", scope, registry_name),
-            current=provider,
-            previous=previous,
-            restore=lambda replacement: restore_registration(
-                registry_name, provider, replacement, scope=scope
-            ),
-        )
-        logger.info(
-            "Plugin '%s' registered TTS provider: %s",
-            self.manifest.name, registry_name,
-        )
-        return handle
-
-    # -- transcription (STT) provider registration ---------------------------
-
-    @_serialized_replacement
-    def register_transcription_provider(self, provider) -> Optional[PluginRegistration]:
-        """Register a speech-to-text backend.
-
-        ``provider`` must be an instance of
-        :class:`agent.transcription_provider.TranscriptionProvider`.
-        The ``provider.name`` attribute is what ``stt.provider`` in
-        ``config.toml`` matches against when routing
-        :func:`tools.transcription_tools.transcribe_audio` calls —
-        **but only when**:
-
-        1. ``provider.name`` is NOT a built-in STT provider name
-           (``local``, ``local_command``, ``groq``, ``openai``,
-           ``mistral``, ``xai``). Built-ins always win — the registry
-           rejects shadowing names with a warning.
-        2. There is NO ``stt.providers.<name>: type: command`` entry
-           with the same name. Command-providers win on name
-           collision because config is more local than plugin install
-           — same precedence rule as TTS.
-
-        Coexists with the in-tree dispatcher and the STT
-        command-provider registry rather than replacing them. The 6
-        built-in STT backends keep their native implementations in
-        ``tools/transcription_tools.py``; this hook is for *new* Python
-        engines (OpenRouter, SenseAudio, Gemini-STT, custom proprietary
-        backends).
-        """
-        from agent.transcription_provider import TranscriptionProvider
-        from agent.transcription_registry import (
-            register_provider as _register_stt_provider,
-            restore_registration,
-            snapshot_registration,
-        )
-
-        if not isinstance(provider, TranscriptionProvider):
-            logger.warning(
-                "Plugin '%s' tried to register a transcription provider that "
-                "does not inherit from TranscriptionProvider. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        registry_name = provider.name.strip().lower()
-        scope = self._manager.scope_key
-        previous = snapshot_registration(registry_name, scope=scope)
-        _register_stt_provider(provider, scope=scope)
-        registered = snapshot_registration(registry_name, scope=scope)
-        if registered is not provider:
-            return None
-        handle = self._track_replacement(
-            "transcription_provider",
-            registry_name,
-            slot=("transcription_provider", scope, registry_name),
-            current=provider,
-            previous=previous,
-            restore=lambda replacement: restore_registration(
-                registry_name, provider, replacement, scope=scope
-            ),
-        )
-        logger.info(
-            "Plugin '%s' registered transcription provider: %s",
-            self.manifest.name, registry_name,
-        )
-        return handle
 
     # -- platform adapter registration ---------------------------------------
 

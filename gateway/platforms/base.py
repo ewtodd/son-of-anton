@@ -2399,27 +2399,17 @@ class EphemeralReply(str):
 
 
 def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
-    """Clear gateway-side STT cache attrs when media is merged into an event.
+    """Clear the gateway-side voice-note cache when media is merged into an event.
 
     ``merge_pending_message_event`` extends ``media_urls`` in place when two
     media-bearing messages arrive in quick succession.  The gateway runner
-    caches STT transcripts on the event via ``setattr`` (see
-    ``_transcribe_pending_audio_event_once``); if the cached event gains new
-    media after the cache was populated, the stale transcript must be
-    discarded so the next transcription call picks up the merged attachments.
-
-    Only the *derived* transcription cache is dropped.  The echo ledger
-    (``_gateway_pending_stt_echoed``) records which transcripts were already
-    delivered to the user and must survive the merge: the re-run transcription
-    returns the earlier notes again, so clearing the ledger would echo them a
-    second time.
+    caches the voice-annotated text on the event via ``setattr`` (see
+    ``_enrich_pending_audio_event_once``); if the cached event gains new
+    media after the cache was populated, the stale text must be discarded so
+    the next call picks up the merged attachments.
     """
-    for attr in (
-        "_gateway_pending_stt_text",
-        "_gateway_pending_stt_transcripts",
-    ):
-        if hasattr(event, attr):
-            delattr(event, attr)
+    if hasattr(event, "_gateway_pending_stt_text"):
+        delattr(event, "_gateway_pending_stt_text")
 
 
 def merge_pending_message_event(

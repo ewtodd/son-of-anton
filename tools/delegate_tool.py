@@ -398,7 +398,7 @@ def _owns_subagent_record(record: Dict[str, Any], parent_agent: Any) -> bool:
 
     Tier 2 exists because the identity chain is BRITTLE across parent-agent
     rebuilds: the CLI sets ``self.agent = None`` mid-session (route-signature
-    change, credential refresh, /model, MoA one-shots) and constructs a NEW
+    change, credential refresh, /model) and constructs a NEW
     AIAgent for the next turn while the child keeps running with a weakref to
     the old object. The delivery path always survived this (it routes by
     durable session id); the control path must use the same durable spine or

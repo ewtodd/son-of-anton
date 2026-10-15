@@ -2,7 +2,7 @@ name = "discord-platform"
 label = "Discord"
 kind = "platform"
 version = "1.0.0"
-description = "Discord gateway adapter for Son of Anton Agent. Connects to Discord via the discord.py library and relays messages between Discord guilds/DMs and the Son of Anton agent. Supports voice mode, slash commands, free-response channels, role-based DM auth, threads, and reactions.\n"
+description = "Discord gateway adapter for Son of Anton Agent. Connects to Discord via the discord.py library and relays messages between Discord guilds/DMs and the Son of Anton agent. Supports slash commands, free-response channels, role-based DM auth, threads, and reactions.\n"
 author = "NousResearch"
 
 [[requires_env]]

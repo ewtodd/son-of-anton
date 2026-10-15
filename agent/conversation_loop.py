@@ -268,20 +268,6 @@ _API_CALL_MODULES = frozenset({
 })
 
 
-def _moa_client_consumes_prepared_request(client: Any) -> bool:
-    """True when ``client`` is the in-process MoA facade.
-
-    ``_moa_prepared_request`` is a private handshake with
-    ``MoAChatCompletions.create``, and only that facade exposes ``prepare()``.
-    Every other chat-completions object raises TypeError on the unexpected
-    keyword — including the native OpenAI client that credential rotation,
-    provider fallback and dead-connection cleanup rebuild from
-    ``_client_kwargs`` while ``agent.provider`` stays ``"moa"``.
-    """
-    completions = getattr(getattr(client, "chat", None), "completions", None)
-    return callable(getattr(completions, "prepare", None))
-
-
 def _join_truncated_parts(parts: List[str]) -> str:
     """Join continuation fragments, adding a newline where two would glue together (#78577)."""
     joined = ""
@@ -290,24 +276,6 @@ def _join_truncated_parts(parts: List[str]) -> str:
             joined += "\n"
         joined += part
     return joined
-
-
-def _moa_reference_metrics_for_hook(agent: Any) -> Any:
-    """Per-advisor metrics for post_api_request, or None off the MoA path.
-
-    MoA runs N advisor models before its aggregator and returns only the
-    aggregator's response, so an observability plugin sees one generation for
-    the whole fan-out. The advisor spend is already computed per slot (see
-    ``_RefAccounting``); this only carries it across the hook boundary.
-    """
-    client = getattr(agent, "client", None)
-    getter = getattr(client, "last_reference_metrics", None)
-    if not callable(getter):
-        return None
-    try:
-        return getter()
-    except Exception:
-        return None
 
 
 def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text: str) -> None:
@@ -1410,29 +1378,13 @@ def _ensure_cached_system_prompt_static(agent, system_message=None) -> None:
     )
 
 
-def _peel_moa_guidance(
-    messages: List[Dict[str, Any]],
-    guidance: Any,
-) -> List[Dict[str, Any]]:
-    """Remove MoA reference guidance previously attached by ``_attach_reference_guidance``.
-
-    Thin wrapper over :func:`agent.moa_loop.peel_reference_guidance` (kept
-    adjacent to the attach so the forward/inverse shapes evolve together).
-    Lazy import mirrors the module's other moa_loop touchpoints.
-    """
-    from agent.moa_loop import peel_reference_guidance
-
-    return peel_reference_guidance(messages, guidance)
-
-
 def _redecorate_prompt_cache_for_provider(
     agent,
     api_messages: List[Dict[str, Any]],
     *,
     system_message=None,
-    moa_prepared: Optional[Dict[str, Any]] = None,
     tools_for_api: Optional[List[Dict[str, Any]]] = None,
-) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]] | tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Strip and re-apply cache_control for the *current* provider policy.
 
     Decoration runs once per call block before the retry loop for the primary
@@ -1443,33 +1395,15 @@ def _redecorate_prompt_cache_for_provider(
 
     The source list is the mutated in-flight request (image shrink / ASCII /
     reasoning_details recoveries already applied), never a pristine
-    pre-decoration snapshot. MoA guidance is peeled and rebased without
-    decoration; the acting aggregator plans its resolved destination later.
+    pre-decoration snapshot.
     """
     messages: List[Dict[str, Any]] = [
         dict(m) if isinstance(m, dict) else m for m in (api_messages or [])
     ]
-    prepared = moa_prepared
-    guidance = prepared.get("guidance") if isinstance(prepared, dict) else None
-    if guidance:
-        messages = _peel_moa_guidance(messages, guidance)
-
     strip_anthropic_cache_control(messages)
     planned_tools = strip_anthropic_tool_cache_control(
         tools_for_api if tools_for_api is not None else getattr(agent, "tools", [])
     )
-
-    if prepared is not None and getattr(agent, "provider", None) == "moa":
-        # Prepared MoA state is canonical: the synchronous acting-aggregator
-        # sender owns its destination-local cache plan after it resolves the slot.
-        completions = getattr(getattr(agent.client, "chat", None), "completions", None)
-        rebase = getattr(completions, "rebase_prepared_request", None)
-        if callable(rebase):
-            prepared = rebase(prepared, messages)
-            messages = prepared["messages"]
-        if tools_for_api is None:
-            return messages, prepared
-        return messages, prepared, planned_tools
 
     # Direct attribute access matches the call-block decoration site — the
     # flags are unconditionally initialized on AIAgent, and a getattr
@@ -1499,9 +1433,7 @@ def _redecorate_prompt_cache_for_provider(
         messages = plan.messages
         planned_tools = plan.tools
 
-    if tools_for_api is None:
-        return messages, prepared
-    return messages, prepared, planned_tools
+    return messages, planned_tools
 
 
 def _apply_context_engine_selection(
@@ -1651,7 +1583,6 @@ def run_conversation(
     persist_user_timestamp: Optional[float] = None,
     persist_user_display_kind: Optional[str] = None,
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
-    moa_config: Optional[dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -1681,19 +1612,6 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
-    if moa_config is None:
-        try:
-            from son_of_anton_cli.moa_config import decode_moa_turn
-
-            _decoded_message, _decoded_moa_config = decode_moa_turn(user_message)
-            if _decoded_moa_config is not None:
-                user_message = _decoded_message
-                moa_config = _decoded_moa_config
-                if persist_user_message is None:
-                    persist_user_message = _decoded_message
-        except Exception:
-            pass
-
     # The gateway caches agents across user turns.  Compaction state is
     # per-turn: carrying a prior in-place boundary forward would make a later
     # uncompacted result look like a compacted transcript to gateway writers.
@@ -1734,9 +1652,6 @@ def run_conversation(
         summarize_user_message_for_log=_summarize_user_message_for_log,
         set_session_context=set_session_context,
         ra=_ra,
-        # MoA turns append per-call aggregated context to the API copy of the
-        # user message, so no byte-stable api_content sidecar can be stamped.
-        moa_active=bool(moa_config),
     )
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
@@ -2113,28 +2028,7 @@ def run_conversation(
             # tool_calls by pre-existing session-DB rows, for strict providers
             # like Mistral, Fireworks, etc. that reject unknown fields.  Uses
             # new dicts so the internal messages list is never mutated.
-            # In MoA mode, agent.model is the virtual preset name
-            # (e.g. "closed"), not the actual aggregator model.  Use
-            # the resolved aggregator model so Gemini aggregators
-            # correctly preserve thought_signature (extra_content).
-            _sanitize_model = agent.model
-            if agent.provider == "moa":
-                if moa_config:
-                    _agg = moa_config.get("aggregator") or {}
-                    if _agg.get("model"):
-                        _sanitize_model = _agg["model"]
-                if _sanitize_model == agent.model:
-                    # Virtual-provider mode: no moa_config is threaded
-                    # through run_conversation — the facade resolves the
-                    # preset internally. Ask the facade for the resolved
-                    # aggregator slot from the previous create() instead
-                    # (set before any history replay that could carry
-                    # thought_signature).
-                    _moa_client = getattr(agent, "client", None)
-                    _agg_slot = getattr(_moa_client, "last_aggregator_slot", None)
-                    if _agg_slot and _agg_slot.get("model"):
-                        _sanitize_model = _agg_slot["model"]
-            agent._sanitize_tool_calls_for_strict_api(api_msg, model=_sanitize_model)
+            agent._sanitize_tool_calls_for_strict_api(api_msg, model=agent.model)
             # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
             # The signature field helps maintain reasoning continuity
             api_messages.append(api_msg)
@@ -2159,57 +2053,6 @@ def run_conversation(
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
-
-        if moa_config:
-            try:
-                from agent.message_content import flatten_message_text as _flatten_mt
-                from agent.moa_loop import _preset_temperature, aggregate_moa_context
-
-                _moa_context = aggregate_moa_context(
-                    user_prompt=(
-                        original_user_message
-                        if isinstance(original_user_message, str)
-                        # Multimodal / decorated content list: extract the
-                        # visible text instead of str()-ing a Python repr of
-                        # the parts (which would leak base64 image payloads
-                        # into the aggregator prompt).
-                        else _flatten_mt(original_user_message)
-                    ),
-                    api_messages=api_messages,
-                    reference_models=moa_config.get("reference_models") or [],
-                    aggregator=moa_config.get("aggregator") or {},
-                    temperature=_preset_temperature(moa_config, "reference_temperature"),
-                    aggregator_temperature=_preset_temperature(moa_config, "aggregator_temperature"),
-                    reference_max_tokens=moa_config.get("reference_max_tokens"),
-                    # None = no per-preset override; inherit
-                    # auxiliary.moa_reference.timeout via call_llm.
-                    reference_timeout=(
-                        float(moa_config["reference_timeout"])
-                        if moa_config.get("reference_timeout")
-                        else None
-                    ),
-                    degraded_reference_policy=str(
-                        moa_config.get("degraded_reference_policy") or "loud"
-                    ),
-                    agent=agent,
-                )
-                if _moa_context:
-                    for _msg in reversed(api_messages):
-                        if _msg.get("role") == "user":
-                            _base = _msg.get("content", "")
-                            if isinstance(_base, str):
-                                _msg["content"] = _base + "\n\n" + _moa_context
-                            elif isinstance(_base, list):
-                                # Multimodal user turn (text + image parts):
-                                # append the MoA context as a trailing text
-                                # part instead of silently dropping it.
-                                _msg["content"] = [
-                                    *_base,
-                                    {"type": "text", "text": "\n\n" + _moa_context},
-                                ]
-                            break
-            except Exception as _moa_exc:
-                logger.warning("MoA context aggregation failed: %s", _moa_exc)
 
         # Inject ephemeral prefill messages right after the system prompt
         # but before conversation history. Same API-call-time-only pattern.
@@ -2302,7 +2145,7 @@ def run_conversation(
         # last also keeps breakpoints off messages that the orphan sweep or
         # the thinking-only drop is about to remove or merge away.
         tools_for_api = agent.tools
-        if agent._use_prompt_caching and agent.provider != "moa":
+        if agent._use_prompt_caching:
             _static_system_prefix = getattr(agent, "_cached_system_prompt_static", None)
             _initial_cache_plan = build_prompt_cache_plan(
                 api_messages,
@@ -2324,21 +2167,6 @@ def run_conversation(
             )
             api_messages = _initial_cache_plan.messages
             tools_for_api = _initial_cache_plan.tools
-
-        # Build a persistent-MoA request before measuring the request size.
-        # MoA reference output is injected into the aggregator prompt, but it
-        # is deliberately ephemeral and therefore absent from ``messages``.
-        # Preparing here makes the size log reflect the exact prompt the
-        # aggregator will receive; ``create()`` consumes this private prepared
-        # request later without running the advisors a second time.
-        _moa_prepared_request = None
-        if agent.provider == "moa":
-            _moa_completions = getattr(getattr(agent.client, "chat", None), "completions", None)
-            _prepare_moa_request = getattr(_moa_completions, "prepare", None)
-            if callable(_prepare_moa_request):
-                _moa_prepared_request = _prepare_moa_request(api_messages)
-            if _moa_prepared_request is not None:
-                api_messages = _moa_prepared_request["messages"]
 
         # One image-stripped message estimate feeds both figures. Was: a
         # str(msg) char walk (re-serialized base64 every call) + a second
@@ -2443,57 +2271,6 @@ def run_conversation(
         agent._current_api_request_id = api_request_id
 
         while retry_count < max_retries:
-            # ── Nous Portal rate limit guard ──────────────────────
-            # If another session already recorded that Nous is rate-
-            # limited, skip the API call entirely.  Each attempt
-            # (including SDK-level retries) counts against RPH and
-            # deepens the rate limit hole.
-            if agent.provider == "nous":
-                try:
-                    from agent.nous_rate_guard import (
-                        nous_rate_limit_remaining,
-                        format_remaining as _fmt_nous_remaining,
-                    )
-                    _nous_remaining = nous_rate_limit_remaining()
-                    if _nous_remaining is not None and _nous_remaining > 0:
-                        _nous_msg = (
-                            f"Nous Portal rate limit active — "
-                            f"resets in {_fmt_nous_remaining(_nous_remaining)}."
-                        )
-                        agent._buffer_vprint(
-                            f"⏳ {_nous_msg} Trying fallback..."
-                        )
-                        agent._buffer_status(f"⏳ {_nous_msg}")
-                        if agent._try_activate_fallback():
-                            active_system_prompt = _sync_failover_system_message(
-                                agent, api_messages, active_system_prompt)
-                            retry_count = 0
-                            compaction_attempts = 0
-                            _retry.primary_recovery_attempted = False
-                            _retry.restart_with_rebuilt_messages = True
-                            break
-                        # No fallback available — surface buffered context
-                        # so user sees the rate-limit message that led here.
-                        agent._flush_status_buffer()
-                        agent._persist_session(messages, conversation_history)
-                        return {
-                            "final_response": (
-                                f"⏳ {_nous_msg}\n\n"
-                                "No fallback provider available. "
-                                "Try again after the reset, or add a "
-                                "fallback provider in config.toml."
-                            ),
-                            "messages": messages,
-                            "api_calls": api_call_count,
-                            "completed": False,
-                            "failed": True,
-                            "error": _nous_msg,
-                        }
-                except ImportError:
-                    pass
-                except Exception:
-                    pass  # Never let rate guard break the agent loop
-
             try:
                 agent._reset_stream_delivery_tracking()
                 # api_messages is built once, before this retry loop, while the
@@ -2508,14 +2285,11 @@ def run_conversation(
                 # fallback refreshes the policy flags, but the decorated list
                 # still carries the primary's breakpoints (or none). Strip and
                 # re-render for the current provider before building kwargs.
-                api_messages, _moa_prepared_request, tools_for_api = (
-                    _redecorate_prompt_cache_for_provider(
-                        agent,
-                        api_messages,
-                        system_message=system_message,
-                        moa_prepared=_moa_prepared_request,
-                        tools_for_api=tools_for_api,
-                    )
+                api_messages, tools_for_api = _redecorate_prompt_cache_for_provider(
+                    agent,
+                    api_messages,
+                    system_message=system_message,
+                    tools_for_api=tools_for_api,
                 )
                 if tools_for_api == agent.tools:
                     api_kwargs = agent._build_api_kwargs(api_messages)
@@ -2628,29 +2402,6 @@ def run_conversation(
                 if env_var_enabled("SON_OF_ANTON_DUMP_REQUESTS"):
                     agent._dump_api_request_debug(api_kwargs, reason="preflight")
 
-                # This object is private to the in-process MoA facade.  Add it
-                # only after middleware, hooks, and debug dumps so none of them
-                # attempts to serialize it as part of the provider payload.
-                if _moa_prepared_request is not None and agent.provider == "moa":
-                    # Re-read the live client instead of trusting the one that
-                    # prepared the request above. Credential rotation, provider
-                    # fallback and dead-connection cleanup all rebuild
-                    # agent.client from _client_kwargs between attempts, and
-                    # the prepared request carries across exactly that
-                    # boundary. The rebuilt client is a
-                    # native OpenAI client while provider stays "moa", so this
-                    # private key would reach the SDK as an unexpected keyword
-                    # — a non-retryable TypeError that kills every remaining
-                    # turn on the session.
-                    if _moa_client_consumes_prepared_request(agent.client):
-                        api_kwargs["_moa_prepared_request"] = _moa_prepared_request
-                    else:
-                        logger.warning(
-                            "MoA client replaced mid-turn (client=%s); sending the "
-                            "prepared prompt without the MoA handshake",
-                            type(agent.client).__name__,
-                        )
-
                 # Always prefer the streaming path — even without stream
                 # consumers.  Streaming gives us fine-grained health
                 # checking (90s stale-stream detection, 60s read timeout)
@@ -2679,17 +2430,6 @@ def run_conversation(
                 # ACP endpoints communicate via subprocess stdio and return a
                 # plain SimpleNamespace, not an iterable stream.
                 elif str(agent.base_url or "").lower().startswith("acp+tcp://"):
-                    _use_streaming = False
-                # MoA streams only when a display/TTS consumer is present to
-                # receive the deltas. MoAChatCompletions.create() honors
-                # stream=True (runs the references, then returns the aggregator's
-                # raw token stream) and is reached here because, for provider
-                # "moa", _create_request_openai_client returns the MoA facade
-                # itself. Without consumers (quiet mode, subagents, health-check
-                # probes) we keep the complete-response path: the facade returns a
-                # whole response when stream is not requested, preserving the
-                # prior behavior for those callers.
-                elif agent.provider == "moa" and not agent._has_stream_consumers():
                     _use_streaming = False
                 elif not agent._has_stream_consumers():
                     # No display/TTS consumer. Still prefer streaming for
@@ -3524,44 +3264,6 @@ def run_conversation(
                         provider=agent.provider,
                         api_mode=agent.api_mode,
                     )
-                    # Aggregator-only usage is retained for cost pricing: MoA
-                    # advisor tokens must be priced at each advisor's OWN model
-                    # rate, not the aggregator's, so they are added as dollars
-                    # (below) rather than folded into the priced usage.
-                    aggregator_usage = canonical_usage
-                    # MoA: fold the reference (advisor) fan-out's token usage
-                    # into this turn's REPORTED token counts. MoA runs advisors
-                    # before the aggregator and returns only the aggregator's
-                    # usage, so without this the entire advisor spend — usually
-                    # the bulk of a MoA turn — is invisible in token counts.
-                    _moa_ref_cost = None
-                    _moa_client = getattr(agent, "client", None)
-                    if _moa_client is not None and hasattr(_moa_client, "consume_reference_usage"):
-                        try:
-                            _ref_usage, _moa_ref_cost = _moa_client.consume_reference_usage()
-                            if _ref_usage is not None:
-                                canonical_usage = canonical_usage + _ref_usage
-                        except Exception as _moa_acct_exc:  # pragma: no cover - defensive
-                            logger.debug("MoA reference usage accounting failed: %s", _moa_acct_exc)
-                    # Flush the full-turn MoA trace (references + aggregator I/O)
-                    # to disk when moa.save_traces is on. No-op otherwise and
-                    # for non-MoA clients. Uses the live session_id so traces
-                    # land in the right per-session file. On the streaming path
-                    # the aggregator's output wasn't captured inline (its raw
-                    # token stream went to the live consumer), so pass the
-                    # resolved streamed acting text as a fallback — makes the
-                    # trace self-contained instead of only pointing at state.db.
-                    if _moa_client is not None and hasattr(_moa_client, "consume_and_save_trace"):
-                        try:
-                            _agg_streamed_text = (
-                                getattr(agent, "_current_streamed_assistant_text", "") or ""
-                            )
-                            _moa_client.consume_and_save_trace(
-                                agent.session_id,
-                                aggregator_output_fallback=_agg_streamed_text or None,
-                            )
-                        except Exception as _moa_trace_exc:  # pragma: no cover - defensive
-                            logger.debug("MoA trace flush failed: %s", _moa_trace_exc)
                     prompt_tokens = canonical_usage.prompt_tokens
                     completion_tokens = canonical_usage.output_tokens
                     total_tokens = canonical_usage.total_tokens
@@ -3663,38 +3365,15 @@ def run_conversation(
                         api_duration, _cache_pct,
                     )
 
-                    # On the MoA path, agent.model/provider are the virtual
-                    # preset name ("closed") and "moa", which have no pricing
-                    # entry — estimating against them returns None and silently
-                    # drops the aggregator's own spend, leaving the session cost
-                    # as advisor-fan-out only (a ~50% undercount when the
-                    # aggregator does the full acting loop). Price the aggregator
-                    # turn at its REAL model/provider, read from the MoA client's
-                    # resolved aggregator slot.
-                    _agg_cost_model = agent.model
-                    _agg_cost_provider = agent.provider
-                    _agg_cost_base_url = agent.base_url
-                    _agg_slot = getattr(_moa_client, "last_aggregator_slot", None) if _moa_client is not None else None
-                    if _agg_slot and _agg_slot.get("model"):
-                        _agg_cost_model = _agg_slot["model"]
-                        _agg_cost_provider = _agg_slot.get("provider") or agent.provider
-                        _agg_cost_base_url = _agg_slot.get("base_url") or agent.base_url
                     cost_result = estimate_usage_cost(
-                        _agg_cost_model,
-                        aggregator_usage,
-                        provider=_agg_cost_provider,
-                        base_url=_agg_cost_base_url,
+                        agent.model,
+                        canonical_usage,
+                        provider=agent.provider,
+                        base_url=agent.base_url,
                         api_key=getattr(agent, "api_key", ""),
                     )
                     if cost_result.amount_usd is not None:
                         agent.session_estimated_cost_usd += float(cost_result.amount_usd)
-                    # Add MoA advisor cost (already priced per-advisor at each
-                    # advisor's own model rate) on top of the aggregator cost.
-                    if _moa_ref_cost is not None:
-                        try:
-                            agent.session_estimated_cost_usd += float(_moa_ref_cost)
-                        except (TypeError, ValueError):  # pragma: no cover - defensive
-                            pass
                     agent.session_cost_status = cost_result.status
                     agent.session_cost_source = cost_result.source
 
@@ -3715,18 +3394,9 @@ def run_conversation(
                             # affects 0 rows without error).
                             if not agent._session_db_created:
                                 agent._ensure_db_session()
-                            # Per-call cost delta = aggregator cost + MoA
-                            # advisor cost (each priced at its own rate). Folded
-                            # here so state.db's estimated_cost_usd includes the
-                            # full MoA spend, matching the folded token counts.
                             _cost_delta = None
                             if cost_result.amount_usd is not None:
                                 _cost_delta = float(cost_result.amount_usd)
-                            if _moa_ref_cost is not None:
-                                try:
-                                    _cost_delta = (_cost_delta or 0.0) + float(_moa_ref_cost)
-                                except (TypeError, ValueError):  # pragma: no cover
-                                    pass
                             # Enqueued, not written: the background writer
                             # applies the delta off the turn thread (a cold
                             # state.db UPDATE here stalled the tool loop for
@@ -3795,15 +3465,6 @@ def run_conversation(
                 # usable content. Empty responses still loop through the
                 # empty-retry path below; the buffer is cleared when
                 # genuinely successful content is detected later (~L4127).
-                # Clear Nous rate limit state on successful request —
-                # proves the limit has reset and other sessions can
-                # resume hitting Nous.
-                if agent.provider == "nous":
-                    try:
-                        from agent.nous_rate_guard import clear_nous_rate_limit
-                        clear_nous_rate_limit()
-                    except Exception:
-                        pass
                 from agent import relay_llm
 
                 relay_llm.complete_logical_call(
@@ -4677,74 +4338,6 @@ def run_conversation(
                         _retry.primary_recovery_attempted = False
                         _retry.restart_with_rebuilt_messages = True
                         break
-
-                # ── Nous Portal: record rate limit & skip retries ─────
-                # When Nous returns a 429 that is a genuine account-
-                # level rate limit, record the reset time to a shared
-                # file so ALL sessions (cron, gateway, auxiliary) know
-                # not to pile on, then skip further retries -- each
-                # one burns another RPH request and deepens the hole.
-                # The retry loop's top-of-iteration guard will catch
-                # this on the next pass and try fallback or bail.
-                #
-                # IMPORTANT: Nous Portal multiplexes multiple upstream
-                # providers (DeepSeek, Kimi, MiMo, Son of Anton).  A 429 can
-                # also mean an UPSTREAM provider is out of capacity
-                # for one specific model -- transient, clears in
-                # seconds, nothing to do with the caller's quota.
-                # Tripping the cross-session breaker on that would
-                # block every Nous model for minutes.  We use
-                # ``is_genuine_nous_rate_limit`` to tell the two
-                # apart via the 429's own x-ratelimit-* headers and
-                # the last-known-good state captured on the previous
-                # successful response.
-                if (
-                    is_rate_limited
-                    and agent.provider == "nous"
-                    and classified.reason == FailoverReason.rate_limit
-                    and not recovered_with_pool
-                ):
-                    _genuine_nous_rate_limit = False
-                    try:
-                        from agent.nous_rate_guard import (
-                            is_genuine_nous_rate_limit,
-                            record_nous_rate_limit,
-                        )
-                        _err_resp = getattr(api_error, "response", None)
-                        _err_hdrs = (
-                            getattr(_err_resp, "headers", None)
-                            if _err_resp else None
-                        )
-                        _genuine_nous_rate_limit = is_genuine_nous_rate_limit(
-                            headers=_err_hdrs,
-                            last_known_state=agent._rate_limit_state,
-                        )
-                        if _genuine_nous_rate_limit:
-                            record_nous_rate_limit(
-                                headers=_err_hdrs,
-                                error_context=error_context,
-                            )
-                        else:
-                            logger.info(
-                                "Nous 429 looks like upstream capacity "
-                                "(no exhausted bucket in headers or "
-                                "last-known state) -- not tripping "
-                                "cross-session breaker."
-                            )
-                    except Exception:
-                        pass
-                    if _genuine_nous_rate_limit:
-                        # Re-enter the loop exactly once so the
-                        # top-of-loop Nous guard handles fallback or
-                        # bails cleanly. (Setting retry_count to
-                        # max_retries would make the while condition
-                        # false immediately and the guard would never
-                        # run -- no fallback, generic exhaustion error.)
-                        retry_count = max(0, max_retries - 1)
-                        continue
-                    # Upstream capacity 429: fall through to normal
-                    # retry logic.  A different model (or the same
-                    # model a moment later) will typically succeed.
 
                 is_payload_too_large = (
                     classified.reason == FailoverReason.payload_too_large
@@ -5891,7 +5484,6 @@ def run_conversation(
                         assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
-                        moa_references=_moa_reference_metrics_for_hook(agent),
                     )
             except Exception:
                 pass

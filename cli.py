@@ -5918,7 +5918,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     session_id=self.session_id,
                     get_toolset_for_tool=lambda name: toolset_map.get(name),
                     context_length=ctx_len,
-                    provider=self.provider,
                     availability=snapshot["availability"],
                     deferred_print=_cprint,
                 )
@@ -5965,7 +5964,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     enabled_toolsets=self.enabled_toolsets,
                     session_id=self.session_id,
                     context_length=ctx_len,
-                    provider=self.provider,
                     availability=availability,
                     deferred_print=_cprint,
                 )
@@ -8917,7 +8915,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         enabled_toolsets=self.enabled_toolsets,
                         session_id=self.session_id,
                         context_length=ctx_len,
-                        provider=self.provider,
                         deferred_print=_cprint,
                     )
                 _cprint("  (◕‿◕) Fresh start! Screen cleared and conversation reset.\n")

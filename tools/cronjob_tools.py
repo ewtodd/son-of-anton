@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from cron.jobs import (
     AmbiguousJobReference,
     claim_job_for_fire,
+    create_job,
     effective_job_state,
     get_job,
     is_job_runnable,
@@ -52,16 +53,6 @@ from cron.jobs import (
     resume_job,
     update_job,
 )
-
-
-def _notify_provider_jobs_changed_safe() -> None:
-    """Tell the active cron scheduler provider the job set changed (no-op for
-    the built-in). Best-effort — never lets a provider error break the tool."""
-    try:
-        from cron.scheduler import _notify_provider_jobs_changed
-        _notify_provider_jobs_changed()
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -665,13 +656,13 @@ def _execute_job_now(
     """Execute a cron job immediately, outside the scheduler tick.
 
     Atomically claims the job first via ``claim_job_for_fire`` — the same
-    at-most-once CAS the scheduler/external-provider fire path uses — so a
+    at-most-once CAS the scheduler tick uses — so a
     concurrently-running gateway ticker cannot also fire it (the claim both
     blocks a duplicate fire and advances ``next_run_at`` for recurring jobs).
     If the claim is lost (another fire is in flight), this is a no-op.
 
     The actual firing is delegated to ``run_one_job`` — the single shared
-    execute→save→deliver→mark body the ticker and external providers use — so
+    execute→save→deliver→mark body the ticker uses — so
     failure delivery, ``[SILENT]`` handling, and live-adapter delivery stay
     identical across paths and can't drift.
 
@@ -1251,42 +1242,33 @@ def cronjob(
             if continuity is not None:
                 context_from = _apply_continuity(context_from, continuity)
 
-            from cron.scheduler import (
-                CronSchedulerRegistrationError,
-                create_job_with_scheduler_registration,
+            job = create_job(
+                prompt=prompt or "",
+                schedule=schedule,
+                name=name,
+                repeat=repeat,
+                deliver=_resolve_cron_context_deliver(
+                    _normalize_deliver_param(deliver)
+                ),
+                origin=_origin_from_env(),
+                model=_normalize_optional_job_value(model),
+                provider=_normalize_optional_job_value(provider),
+                base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                script=_normalize_optional_job_value(script),
+                context_from=context_from,
+                enabled_toolsets=enabled_toolsets or None,
+                workdir=_normalize_optional_job_value(workdir),
+                no_agent=_no_agent,
+                attach_to_session=attach_to_session,
+                monitor_script=_normalize_optional_job_value(monitor_script),
+                monitor_url=_normalize_optional_job_value(monitor_url),
+                # reasoning_effort reaches here from the CLI
+                # (son-of-anton cron create --reasoning-effort) ONLY — it is
+                # deliberately absent from CRONJOB_SCHEMA and the model
+                # dispatch below: models do not make model-config
+                # decisions (standing policy).
+                reasoning_effort=reasoning_effort,
             )
-
-            try:
-                job = create_job_with_scheduler_registration(
-                    prompt=prompt or "",
-                    schedule=schedule,
-                    name=name,
-                    repeat=repeat,
-                    deliver=_resolve_cron_context_deliver(
-                        _normalize_deliver_param(deliver)
-                    ),
-                    origin=_origin_from_env(),
-                    model=_normalize_optional_job_value(model),
-                    provider=_normalize_optional_job_value(provider),
-                    base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
-                    script=_normalize_optional_job_value(script),
-                    context_from=context_from,
-                    enabled_toolsets=enabled_toolsets or None,
-                    workdir=_normalize_optional_job_value(workdir),
-                    no_agent=_no_agent,
-                    attach_to_session=attach_to_session,
-                    monitor_script=_normalize_optional_job_value(monitor_script),
-                    monitor_url=_normalize_optional_job_value(monitor_url),
-                    # reasoning_effort reaches here from the CLI
-                    # (son-of-anton cron create --reasoning-effort) ONLY — it is
-                    # deliberately absent from CRONJOB_SCHEMA and the model
-                    # dispatch below: models do not make model-config
-                    # decisions (standing policy).
-                    reasoning_effort=reasoning_effort,
-                )
-            except CronSchedulerRegistrationError as exc:
-                _partial = exc.to_dict()
-                return tool_error(_partial.pop("error"), success=False, **_partial)
             _create_message = f"Cron job '{job['name']}' created."
             _local_notice = _local_delivery_notice(job, _normalize_deliver_param(deliver))
             if _local_notice:
@@ -1344,7 +1326,6 @@ def cronjob(
             removed = remove_job(job_id)
             if not removed:
                 return tool_error(f"Failed to remove job '{job_id}'", success=False)
-            _notify_provider_jobs_changed_safe()
             return json.dumps(
                 {
                     "success": True,
@@ -1360,12 +1341,10 @@ def cronjob(
 
         if normalized == "pause":
             updated = pause_job(job_id, reason=reason)
-            _notify_provider_jobs_changed_safe()
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized == "resume":
             updated = resume_job(job_id)
-            _notify_provider_jobs_changed_safe()
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized in {"run", "run_now", "trigger"}:
@@ -1397,7 +1376,6 @@ def cronjob(
                 job, session_id=session_id, extra_prompt=extra_prompt
             )
             if bg is not None and bg.get("dispatched"):
-                _notify_provider_jobs_changed_safe()
                 result = _format_job(get_job(job_id) or {"id": job_id})
                 result["executed"] = True
                 result["execution_mode"] = "background"
@@ -1422,12 +1400,6 @@ def cronjob(
                 bg if bg is not None
                 else _execute_job_now(job, extra_prompt=extra_prompt)
             )
-            # A claimed direct run advances next_run_at and may race the
-            # external one-shot for the same occurrence. If Chronos loses that
-            # claim, its consumed fire cannot re-arm itself; reconcile from the
-            # winning direct path after the run has persisted its final state.
-            if exec_result.get("claimed", False):
-                _notify_provider_jobs_changed_safe()
             # Re-read so the response reflects the post-run last_run_at/last_status.
             result = _format_job(get_job(job_id) or {"id": job_id})
             result["executed"] = exec_result.get("claimed", False)
@@ -1581,7 +1553,6 @@ def cronjob(
             if not updates:
                 return tool_error("No updates provided.", success=False)
             updated = update_job(job_id, updates)
-            _notify_provider_jobs_changed_safe()
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         return tool_error(f"Unknown cron action '{action}'", success=False)

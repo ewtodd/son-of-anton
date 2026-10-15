@@ -1230,20 +1230,11 @@ def try_recover_primary_transport(
         agent.api_key = rt["api_key"]
         agent._reasoning_echo_flag = rt.get("reasoning_echo_flag")
 
-        if (agent.provider or "").strip().lower() == "moa":
-            # MoA is a virtual provider with empty client_kwargs — rebuilding
-            # via _create_openai_client would raise "api_key client option
-            # must be set". Recreate the facade through the shared factory so
-            # the reference_callback relay survives recovery (#53802).
-            from agent.moa_loop import build_moa_facade
-
-            agent.client = build_moa_facade(agent, agent.model)
-        else:
-            agent.client = agent._create_openai_client(
-                dict(rt["client_kwargs"]),
-                reason="primary_recovery",
-                shared=True,
-            )
+        agent.client = agent._create_openai_client(
+            dict(rt["client_kwargs"]),
+            reason="primary_recovery",
+            shared=True,
+        )
 
         wait_time = min(3 + retry_count, 8)
         agent._vprint(
@@ -1456,23 +1447,11 @@ def restore_primary_runtime(agent) -> bool:
             agent._use_native_cache_layout = False
 
         # ── Rebuild client for the primary provider ──
-        if agent.provider == "moa":
-            # MoA is a virtual chat-completions provider.  It never has real
-            # OpenAI client kwargs; restoring it after a fallback must recreate
-            # the facade, not call OpenAI() with an empty api_key.  Use the
-            # shared factory so the restored facade keeps the reference_callback
-            # relay wired at init — a bare MoAClient() would silently stop
-            # emitting moa.reference/moa.aggregating display events (#53802).
-            from agent.moa_loop import build_moa_facade
-
-            agent.client = build_moa_facade(agent, agent.model)
-            agent._anthropic_client = None
-        else:
-            agent.client = agent._create_openai_client(
-                dict(rt["client_kwargs"]),
-                reason="restore_primary",
-                shared=True,
-            )
+        agent.client = agent._create_openai_client(
+            dict(rt["client_kwargs"]),
+            reason="restore_primary",
+            shared=True,
+        )
 
         # ── Restore context engine state ──
         cc = agent.context_compactor
@@ -1854,9 +1833,8 @@ def prompt_caching_disabled_from_config() -> bool:
     """Return True when ``prompt_caching.cache_ttl`` is configured as off.
 
     Same disable detection as ``agent_init`` (via ``cache_ttl_means_disabled``)
-    so stub-based policy paths (MoA slot decoration, auxiliary fallback
-    replan) honor the same config contract without holding a live
-    ``AIAgent`` (#76085 / #33555).
+    so stub-based policy paths (auxiliary fallback replan) honor the same
+    config contract without holding a live ``AIAgent`` (#76085 / #33555).
     """
     try:
         ttl = _raw_cache_ttl_from_config()
@@ -1919,8 +1897,7 @@ def plan_cache_sections_for_destination(
 ) -> Tuple[list, list]:
     """Plan request-local cache sections for one resolved destination.
 
-    Shared core of the synchronous acting-aggregator (MoA) and auxiliary
-    fallback senders: resolve the cache policy for the destination's real
+    Core of the auxiliary fallback sender: resolve the cache policy for the destination's real
     provider/base_url/api_mode/model, then either return stripped canonical
     copies (non-caching route) or a :func:`build_prompt_cache_plan` layout
     (caching route, with the direct-native tool marker when the destination
@@ -1931,11 +1908,11 @@ def plan_cache_sections_for_destination(
 
     ``cache_disabled`` threads the operator's ``prompt_caching.cache_ttl``
     disable into the blank policy stub. When omitted, the live config is
-    consulted so MoA/auxiliary paths cannot re-enable markers after the
+    consulted so auxiliary paths cannot re-enable markers after the
     user turned caching off (#76085).
 
     ``cache_ttl`` threads the operator's configured tier (default ``5m``)
-    into the destination plan so MoA/auxiliary requests stop regressing to
+    into the destination plan so auxiliary requests stop regressing to
     the 5m default while the main loop honors ``1h`` (#84733); it is
     clamped per-destination by :func:`effective_cache_ttl` (Qwen → 5m).
     ``static_system_prefix`` threads the builder-declared stable prefix so
@@ -2063,46 +2040,6 @@ def anthropic_prompt_cache_policy(
     eff_base_url = base_url if base_url is not None else (agent.base_url or "")
     eff_api_mode = api_mode if api_mode is not None else (agent.api_mode or "")
     eff_model = (model if model is not None else agent.model) or ""
-
-    # MoA virtual provider: the agent's model/provider are the preset name and
-    # "moa" — neither matches any caching branch, so the ACTING AGGREGATOR
-    # (often Claude on OpenRouter) silently lost prompt caching entirely
-    # (measured: 85% cache share solo vs 2% on the identical model via MoA —
-    # tens of millions of re-billed input tokens per benchmark run). Resolve
-    # the policy from the preset's real aggregator slot instead.
-    if eff_provider.strip().lower() == "moa":
-        try:
-            from son_of_anton_cli.config import load_config as _load_moa_cfg
-            from son_of_anton_cli.moa_config import resolve_moa_preset
-            from son_of_anton_cli.runtime_provider import resolve_runtime_provider
-
-            _preset = resolve_moa_preset(
-                _load_moa_cfg().get("moa") or {}, eff_model or None
-            )
-            _agg = _preset.get("aggregator") or {}
-            _agg_provider = str(_agg.get("provider") or "").strip()
-            _agg_model = str(_agg.get("model") or "").strip()
-            if _agg_provider and _agg_model:
-                _agg_base_url = ""
-                _agg_api_mode = ""
-                try:
-                    _rt = resolve_runtime_provider(
-                        requested=_agg_provider, target_model=_agg_model
-                    )
-                    _agg_base_url = _rt.get("base_url") or ""
-                    _agg_api_mode = _rt.get("api_mode") or ""
-                except Exception:
-                    pass
-                return anthropic_prompt_cache_policy(
-                    agent,
-                    provider=_agg_provider,
-                    base_url=_agg_base_url,
-                    api_mode=_agg_api_mode,
-                    model=_agg_model,
-                )
-        except Exception as _moa_exc:  # pragma: no cover - defensive
-            logger.debug("MoA aggregator cache-policy resolution failed: %s", _moa_exc)
-        return False, False
 
     if isinstance(eff_model, dict):
         eff_model = eff_model.get('model') or eff_model.get('default') or ''
@@ -2309,17 +2246,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
-    # The MoA virtual provider has no real OpenAI wire endpoint - the facade
-    # *is* the client. Rebuilding a native OpenAI client while
-    # agent.provider == "moa" (client replacement, stream-retry pool cleanup,
-    # credential rotation, fallback+restore) drops the facade: the next primary
-    # call either raises a `_moa_prepared_request` TypeError (#78382) or, when
-    # _client_kwargs carry an unrelated relay base_url, leaks the request to a
-    # foreign gateway. Rebuild the facade instead (build_moa_facade also
-    # re-wires the reference relay, see #53802).
-    if (getattr(agent, "provider", "") or "").strip().lower() == "moa":
-        from agent.moa_loop import build_moa_facade
-        return build_moa_facade(agent, getattr(agent, "model", None) or "default")
     ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
     ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
     httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
@@ -2565,63 +2491,43 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                     new_provider, _pool_exc,
                 )
         # ── Build new client ──
-        if (new_provider or "").strip().lower() == "moa":
-            from agent.moa_loop import build_moa_facade
-
-            # The MoA virtual provider speaks only chat.completions via the
-            # MoAClient facade — the aggregator's real transport
-            # (anthropic_messages) is resolved and applied
-            # *inside* the reference/aggregator fan-out, never on the outer
-            # primary call. determine_api_mode("moa", ...) above may have left
-            # api_mode set to the aggregator's transport; if the conversation
-            # loop sees that, it dispatches the wrong client method and the
-            # call falls through to the moa://local placeholder → HTTP 404 →
-            # fallback to a reference model. Pin chat_completions here so the
-            # primary call always goes through MoAClient.chat.completions,
-            # matching agent_init.py.
-            agent.api_mode = "chat_completions"
-            agent.api_key = api_key or "moa-virtual-provider"
-            agent.base_url = "moa://local"
-            agent._client_kwargs = {}
-            agent.client = build_moa_facade(agent, agent.model)
-        else:
-            effective_key = api_key or agent.api_key
-            effective_base = base_url or agent.base_url
-            agent._client_kwargs = {
-                "api_key": effective_key,
-                "base_url": effective_base,
-            }
-            try:
-                from son_of_anton_cli.config import (
-                    apply_custom_provider_tls_to_client_kwargs,
-                    get_compatible_custom_providers,
-                    load_config_readonly,
-                )
-
-                # Read custom_providers from live config (not the init-time
-                # snapshot on ``agent._custom_providers``) so ssl_ca_cert /
-                # ssl_verify edits are honored when switching mid-session,
-                # matching the context-length reload below (#15779).
-                apply_custom_provider_tls_to_client_kwargs(
-                    agent._client_kwargs,
-                    str(effective_base or ""),
-                    get_compatible_custom_providers(load_config_readonly()),
-                )
-            except Exception:
-                logger.debug("custom-provider TLS resolution skipped on switch_model", exc_info=True)
-            _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
-            if _sm_timeout is not None:
-                agent._client_kwargs["timeout"] = _sm_timeout
-            # Reapply provider-specific headers (e.g. OpenRouter HTTP-Referer,
-            # X-Title) that were lost when _client_kwargs was rebuilt from
-            # scratch.  Without this, model switches clear attribution headers
-            # and OpenRouter logs show "Unknown" for subsequent requests.
-            agent._apply_client_headers_for_base_url(effective_base)
-            agent.client = agent._create_openai_client(
-                dict(agent._client_kwargs),
-                reason="switch_model",
-                shared=True,
+        effective_key = api_key or agent.api_key
+        effective_base = base_url or agent.base_url
+        agent._client_kwargs = {
+            "api_key": effective_key,
+            "base_url": effective_base,
+        }
+        try:
+            from son_of_anton_cli.config import (
+                apply_custom_provider_tls_to_client_kwargs,
+                get_compatible_custom_providers,
+                load_config_readonly,
             )
+
+            # Read custom_providers from live config (not the init-time
+            # snapshot on ``agent._custom_providers``) so ssl_ca_cert /
+            # ssl_verify edits are honored when switching mid-session,
+            # matching the context-length reload below (#15779).
+            apply_custom_provider_tls_to_client_kwargs(
+                agent._client_kwargs,
+                str(effective_base or ""),
+                get_compatible_custom_providers(load_config_readonly()),
+            )
+        except Exception:
+            logger.debug("custom-provider TLS resolution skipped on switch_model", exc_info=True)
+        _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
+        if _sm_timeout is not None:
+            agent._client_kwargs["timeout"] = _sm_timeout
+        # Reapply provider-specific headers (e.g. OpenRouter HTTP-Referer,
+        # X-Title) that were lost when _client_kwargs was rebuilt from
+        # scratch.  Without this, model switches clear attribution headers
+        # and OpenRouter logs show "Unknown" for subsequent requests.
+        agent._apply_client_headers_for_base_url(effective_base)
+        agent.client = agent._create_openai_client(
+            dict(agent._client_kwargs),
+            reason="switch_model",
+            shared=True,
+        )
 
         sync_credential_pool_entry_id(agent)
     except Exception:
@@ -2993,28 +2899,6 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 ),
                 next_args,
             )
-    elif function_name == "read_terminal":
-        def _execute(next_args: dict) -> Any:
-            from tools.read_terminal_tool import read_terminal_tool as _read_terminal_tool
-            return _finish_agent_tool(
-                _read_terminal_tool(
-                    start_line=next_args.get("start_line"),
-                    count=next_args.get("count"),
-                    callback=getattr(agent, "read_terminal_callback", None),
-                ),
-                next_args,
-            )
-    elif function_name == "read_preview":
-        def _execute(next_args: dict) -> Any:
-            from tools.read_preview_tool import read_preview_tool as _read_preview_tool
-            return _finish_agent_tool(
-                _read_preview_tool(
-                    start=next_args.get("start"),
-                    count=next_args.get("count"),
-                    callback=getattr(agent, "read_preview_callback", None),
-                ),
-                next_args,
-            )
     elif function_name == "drive_preview":
         def _execute(next_args: dict) -> Any:
             from tools.drive_preview_tool import drive_preview_tool as _drive_preview_tool
@@ -3043,44 +2927,6 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                     selector=next_args.get("selector"),
                     label=next_args.get("label"),
                     callback=getattr(agent, "drive_preview_callback", None),
-                ),
-                next_args,
-            )
-    elif function_name == "read_window_below":
-        def _execute(next_args: dict) -> Any:
-            from tools.read_window_tool import read_window_below_tool as _read_window_below_tool
-            return _finish_agent_tool(
-                _read_window_below_tool(
-                    callback=getattr(agent, "read_window_below_callback", None),
-                ),
-                next_args,
-            )
-    elif function_name == "tour":
-        def _execute(next_args: dict) -> Any:
-            from tools.tour_tool import tour_tool as _tour_tool
-            return _finish_agent_tool(
-                _tour_tool(
-                    action=next_args.get("action", ""),
-                    surface=next_args.get("surface"),
-                    selector=next_args.get("selector"),
-                    title=next_args.get("title"),
-                    text=next_args.get("text"),
-                    side=next_args.get("side"),
-                    steps=next_args.get("steps"),
-                    step_index=next_args.get("step_index"),
-                    callback=getattr(agent, "tour_callback", None),
-                ),
-                next_args,
-            )
-    elif function_name == "setup_mcp":
-        def _execute(next_args: dict) -> Any:
-            from tools.setup_mcp_tool import setup_mcp_tool as _setup_mcp_tool
-            return _finish_agent_tool(
-                _setup_mcp_tool(
-                    server=next_args.get("server", ""),
-                    action=next_args.get("action", "install"),
-                    reason=next_args.get("reason", ""),
-                    callback=getattr(agent, "setup_mcp_callback", None),
                 ),
                 next_args,
             )

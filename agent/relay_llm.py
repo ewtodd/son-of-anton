@@ -346,8 +346,8 @@ def stream_current(
         # Return the raw factory result instead: the outer managed stream
         # already provides Relay tracking for the enclosing attempt, and its
         # own completed_response_predicate traps a completed response (e.g.
-        # the MoA facade's auxiliary ``call_llm(stream=True)`` returning a
-        # full response when an adapter ignores ``stream=True``).
+        # an auxiliary ``call_llm(stream=True)`` returning a full response
+        # when an adapter ignores ``stream=True``).
         return stream_factory(request)
     managed = stream(
         request,

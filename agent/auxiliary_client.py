@@ -1305,62 +1305,6 @@ def _read_main_base_url() -> str:
     return ""
 
 
-def _resolve_moa_aggregator(preset_name: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """Resolve a MoA preset to its aggregator (provider, model) pair.
-
-    "moa" is a virtual provider — the acting model of a preset is its
-    aggregator slot, and there is no real "moa" HTTP endpoint. Auxiliary
-    tasks (title generation, compaction, vision, commit messages, …) don't
-    need the reference fan-out, so every aux resolution layer maps
-    provider="moa"/model=<preset> to the aggregator's real provider+model
-    through this single helper (shared by ``_resolve_auto``,
-    ``_resolve_task_provider_model``, and ``resolve_provider_client`` so the
-    preset lookup and validation cannot drift between paths).
-
-    Args:
-        preset_name: The MoA preset name (usually carried in the "model"
-            field), or None/"" to resolve the user's default preset.
-
-    Returns:
-        (aggregator_provider, aggregator_model), or (None, None) when the
-        preset cannot be resolved (missing config, renamed/deleted preset,
-        or a malformed aggregator slot).
-    """
-    try:
-        from son_of_anton_cli.config import load_config
-        from son_of_anton_cli.moa_config import resolve_moa_preset
-
-        preset = resolve_moa_preset(load_config().get("moa") or {}, preset_name or None)
-        agg = preset.get("aggregator") or {}
-        agg_provider = str(agg.get("provider") or "").strip()
-        agg_model = str(agg.get("model") or "").strip()
-        if agg_provider and agg_model and agg_provider.lower() != "moa":
-            return agg_provider, agg_model
-    except Exception:
-        logger.debug(
-            "MoA aggregator resolution failed for preset %r", preset_name, exc_info=True
-        )
-    return None, None
-
-
-def _read_main_model_for_aux() -> str:
-    """Main model with MoA presets unwrapped to the aggregator's model.
-
-    When the main provider is ``moa``, ``_read_main_model()`` returns a MoA
-    *preset name* (e.g. "opus-gpt") — never a valid wire model id on any
-    provider. Auxiliary fallback chains that pre-fill a missing model from
-    the main model must use this reader instead, so unset aux models default
-    to the preset's acting (aggregator) model. Returns "" when the main
-    provider is moa but the preset cannot be resolved — sending nothing is
-    strictly better than sending a preset name that 400s.
-    """
-    model = _read_main_model()
-    if (_read_main_provider() or "").strip().lower() == "moa":
-        _, agg_model = _resolve_moa_aggregator(model)
-        return agg_model or ""
-    return model
-
-
 def _read_main_api_key_if_same_host(aux_base_url: str) -> str:
     """Return the main api_key only when *aux_base_url* points at the same
     host as the main model's base_url.
@@ -1786,7 +1730,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         custom_base, custom_key, custom_mode = runtime
     if not custom_base or not custom_key:
         return None, None
-    model = _read_main_model_for_aux() or "gpt-4o-mini"
+    model = _read_main_model() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
@@ -2120,8 +2064,8 @@ def _transient_retry_count() -> int:
 
     Read from ``auxiliary.transient_retries`` in config.toml (default 2 →
     3 total attempts). Clamped to [0, 6] to bound worst-case wall time. A
-    connection blip to a pinned auxiliary target (e.g. a MoA reference
-    advisor) has no meaningful provider fallback, so a couple of retries with
+    connection blip to a pinned auxiliary target has no meaningful provider
+    fallback, so a couple of retries with
     backoff is the difference between recovering and silently losing the call.
     Best-effort: any config-read failure falls back to the default.
     """
@@ -3061,13 +3005,6 @@ def _try_main_agent_model_fallback(
     """
     main_provider = (_read_main_provider() or "").strip()
     main_model = (_read_main_model() or "").strip()
-    if main_provider.lower() == "moa":
-        # MoA virtual provider: fall back to the preset's aggregator — the
-        # acting model — instead of the unreachable "moa"/<preset-name> pair.
-        _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
-        if not _agg_provider or not _agg_model:
-            return None, None, ""
-        main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
 
@@ -3524,27 +3461,6 @@ def _resolve_auto_route(
             )
             main_model = fast_model
 
-    # MoA virtual provider: the "model" is a preset name (e.g. "opus-gpt") and
-    # there is no real "moa" HTTP endpoint, so resolving an aux client against
-    # provider="moa"/model=<preset> sends the preset name as the model id and
-    # the provider 400s ("opus-gpt is not a valid model ID"). Auxiliary tasks
-    # (title generation, compaction, vision, …) don't need the reference
-    # fan-out — they should run on the aggregator, which is the preset's acting
-    # model. Resolve the MoA preset to its aggregator slot and continue Step 1
-    # with that real provider+model. Mirrors the MoA context-length resolution.
-    if main_provider == "moa":
-        _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
-        if _agg_provider and _agg_model:
-            main_provider = _agg_provider
-            main_model = _agg_model
-            # The MoA virtual runtime carries a non-HTTP base_url
-            # ("moa://local") and a placeholder api_key; they belong to the
-            # facade, not the aggregator's real provider. Drop them so the
-            # aggregator resolves through its own provider credentials.
-            runtime_base_url = ""
-            runtime_api_key = ""
-            runtime_api_mode = ""
-
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):
         resolved_provider = main_provider
@@ -3791,27 +3707,6 @@ def resolve_provider_client(
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
 
-    # MoA virtual provider chokepoint: "moa" is not a real HTTP provider —
-    # its acting model is the preset's aggregator slot. The two resolver
-    # layers above (_resolve_auto, _resolve_task_provider_model) already
-    # unwrap their own paths, but callers that route here directly (vision
-    # auto-detect, _try_main_agent_model_fallback, get_available_vision_backends,
-    # plugin code) would otherwise dead-end in the unknown-provider branch.
-    # ``model`` carries the preset name for moa calls; when the preset can't
-    # be resolved we leave the call untouched and let the normal
-    # missing-provider handling produce its diagnostic.
-    if provider == "moa":
-        _agg_provider, _agg_model = _resolve_moa_aggregator(model)
-        if _agg_provider and _agg_model:
-            original_provider = _agg_provider.strip().lower()
-            provider = _normalize_aux_provider(_agg_provider)
-            model = _agg_model
-            # The moa:// facade endpoint and placeholder key belong to the
-            # virtual runtime, not the aggregator's real provider.
-            if explicit_base_url and str(explicit_base_url).lower().startswith("moa://"):
-                explicit_base_url = None
-                explicit_api_key = None
-
     # Universal model-resolution fallback for concrete providers. ``auto`` is
     # intentionally excluded: `_resolve_auto(main_runtime=...)` returns the
     # model paired with the provider it actually selected. Pre-filling an auto
@@ -3832,10 +3727,6 @@ def resolve_provider_client(
     #      the load-bearing step for OAuth providers: an xai-oauth user
     #      with grok-4.3 configured gets grok-4.3 for title generation
     #      instead of silently dropping to whatever Step-2 fallback (#31845).
-    #      When the main provider is MoA, ``_read_main_model_for_aux()``
-    #      substitutes the preset's aggregator model — the preset NAME is
-    #      never a valid wire model id, so unset aux models default to the
-    #      preset's acting model instead.
     #
     # Each provider branch below sees a non-empty ``model`` whenever the
     # user has *anything* configured — no provider-specific empty-model
@@ -3860,7 +3751,7 @@ def resolve_provider_client(
     # cannot accept one and the Portal 404s. Leave ``model`` unset and let the
     # Portal slot through; only an explicit caller model may override it.
     if not model and provider != "auto":
-        model = _get_aux_model_for_provider(provider) or _read_main_model_for_aux() or model
+        model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
     def _wrap_if_needed(client_obj, final_model_str: str, base_url_str: str = "",
                         api_key_str: str = ""):
@@ -4028,7 +3919,7 @@ def resolve_provider_client(
                     model
                     or custom_entry.get("model")
                     or (main_runtime.get("model") if main_runtime else None)
-                    or _read_main_model_for_aux()
+                    or _read_main_model()
                     or "gpt-4o-mini",
                     provider,
                 )
@@ -4355,24 +4246,7 @@ def resolve_vision_provider_client(
         #   5. Stop
         main_provider = str(runtime.get("provider") or _read_main_provider())
         main_model = str(runtime.get("model") or _read_main_model())
-        if main_provider.strip().lower() == "moa":
-            # MoA virtual provider: main_model is a preset NAME, and every
-            # capability probe below (_PROVIDERS_WITHOUT_VISION,
-            # _main_model_supports_vision, _resolve_provider_vision_default)
-            # would run against a provider/model pair that doesn't exist on
-            # any wire. Unwrap to the preset's aggregator slot first so the
-            # checks and the eventual client target the real acting model.
-            _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
-            if _agg_provider and _agg_model:
-                main_provider, main_model = _agg_provider, _agg_model
-                # Drop the moa:// facade endpoint from the runtime view used
-                # below — it belongs to the virtual provider, not the
-                # aggregator's real provider.
-                runtime = dict(runtime)
-                runtime["base_url"] = ""
-                runtime["api_key"] = ""
-                runtime["api_mode"] = ""
-        if main_provider and main_provider not in {"auto", "", "moa"}:
+        if main_provider and main_provider not in {"auto", ""}:
             # A provider-specific vision default wins over the user's chat model:
             # static overrides (xiaomi/zai) and catalog-backed discovery (the
             # DeepInfra profile hook) both yield a *known* vision-capable model,
@@ -4621,14 +4495,13 @@ def _client_cache_key(
     )
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
     # The model MUST participate in the key. Two concurrent auxiliary calls to
-    # the SAME provider/base_url/key but DIFFERENT models (e.g. a MoA reference
-    # fan-out running opus + gpt-5.5 in parallel threads) would otherwise share
-    # one cache entry. On a cache MISS both build a client for the same key; the
-    # second's _store_cached_client sees the first as the "old" entry and CLOSES
-    # it — while the first call is still mid-request on it — yielding a spurious
-    # APIConnectionError that fails the sibling advisor (root cause of the run2
-    # double-advisor "Connection error" collapse). Keying on model gives each
-    # model its own client, so concurrent fan-out calls never cross-close.
+    # the SAME provider/base_url/key but DIFFERENT models (e.g. opus + gpt-5.5
+    # in parallel threads) would otherwise share one cache entry. On a cache
+    # MISS both build a client for the same key; the second's
+    # _store_cached_client sees the first as the "old" entry and CLOSES it —
+    # while the first call is still mid-request on it — yielding a spurious
+    # APIConnectionError that fails the sibling call. Keying on model gives
+    # each model its own client, so concurrent calls never cross-close.
     model_key = model or runtime.get("model", "")
     api_key_key = _runtime_cache_discriminator("api_key", api_key or "")
     return (provider, async_mode, base_url or "", api_key_key, api_mode or "", runtime_key, is_vision, task_key, pool_hint, model_key)
@@ -4983,13 +4856,8 @@ def _resolve_task_provider_model(
     # which downstream consumers like ContextCompactor accept as the task output.
     # The provider-side 'auto' is handled in _resolve_auto() via main_runtime
     # fallback, so dropping cfg_model to None here lets that path do its job.
-    #
-    # The explicit `model` kwarg needs the identical normalization: MoA slots
-    # (agent/moa_loop.py's _slot_runtime) forward a preset's `model:` field as
-    # this explicit argument rather than through auxiliary.<task> config, so a
-    # user-configured `model: auto` on a MoA reference/aggregator slot reaches
-    # this function here, not as cfg_model. Only normalizing cfg_model let that
-    # literal "auto" slip through via `model or cfg_model` below.
+    # The explicit `model` kwarg gets the identical normalization, so a
+    # literal "auto" cannot slip through via `model or cfg_model` below.
     if model and model.lower() == "auto":
         model = None
     if cfg_model and cfg_model.lower() == "auto":
@@ -4997,42 +4865,6 @@ def _resolve_task_provider_model(
 
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
-
-    # MoA virtual provider: an *explicit* `provider: moa` override (either the
-    # caller-passed `provider` arg or `auxiliary.<task>.provider` in
-    # config.toml) reaches this function directly — it never goes through
-    # _resolve_auto(), which only unwraps the *implicit* "main provider is
-    # moa" case (#53827). Left as-is, "moa" is returned verbatim and
-    # resolve_provider_client() looks it up in PROVIDER_REGISTRY (which has
-    # no "moa" entry — it's not a real HTTP provider), falls to the
-    # unknown-provider dead end, and call_llm surfaces a nonsensical
-    # "MOA_API_KEY environment variable" error for a provider that was never
-    # meant to be reached over the wire. Auxiliary tasks don't need the
-    # reference fan-out — resolve to the preset's aggregator slot instead,
-    # exactly like the implicit path does (shared helper: _resolve_moa_aggregator).
-    def _unwrap_moa_provider(prov: str, mdl: Optional[str]) -> Tuple[str, Optional[str]]:
-        if prov.strip().lower() != "moa":
-            return prov, mdl
-        agg_provider, agg_model = _resolve_moa_aggregator(mdl)
-        if agg_provider and agg_model:
-            return agg_provider, agg_model
-        return prov, mdl
-
-    if provider and str(provider).strip().lower() == "moa":
-        provider, resolved_model = _unwrap_moa_provider(provider, resolved_model)
-        # The moa:// virtual endpoint (if any explicit base_url/api_key was
-        # passed alongside provider="moa") belongs to the facade, not the
-        # aggregator's real provider — drop it so the aggregator resolves
-        # through its own provider credentials, mirroring _resolve_auto().
-        if provider and provider.lower() != "moa":
-            base_url = None
-            api_key = None
-    elif cfg_provider and str(cfg_provider).strip().lower() == "moa":
-        cfg_provider, cfg_model = _unwrap_moa_provider(cfg_provider, resolved_model)
-        if cfg_provider and cfg_provider.lower() != "moa":
-            resolved_model = cfg_model
-            cfg_base_url = None
-            cfg_api_key = None
 
     # Convenience aliases for direct API-key endpoints that aren't first-class
     # providers (e.g. ``provider: openai`` → custom + api.openai.com/v1).
@@ -5210,12 +5042,6 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     chat.completions passes it through, the Codex Responses adapter maps it
     to top-level ``reasoning``/``include``, and the Anthropic auxiliary
     client maps it to ``build_anthropic_kwargs(reasoning_config=...)``.
-
-    MoA tasks are excluded by design: reasoning depth for MoA is a per-slot
-    setting in the MoA preset (``moa.presets.<name>.reference_models[].
-    reasoning_effort`` / ``aggregator.reasoning_effort``), not an
-    auxiliary-task knob — an ensemble-wide value would override the
-    per-slot ones.
     """
     task_config = _get_auxiliary_task_config(task)
     raw = task_config.get("extra_body")
@@ -5223,15 +5049,6 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     if "reasoning" not in result:
         effort = task_config.get("reasoning_effort")
         if effort is not None and effort != "":
-            if task in ("moa_reference", "moa_aggregator"):
-                logger.warning(
-                    "auxiliary.%s.reasoning_effort is not supported — MoA "
-                    "reasoning depth is per-slot: set reasoning_effort on the "
-                    "preset's reference_models entries / aggregator instead "
-                    "(moa.presets.<name>...). Ignoring.",
-                    task,
-                )
-                return result
             from son_of_anton_constants import parse_reasoning_effort
             parsed = parse_reasoning_effort(effort)
             if parsed is not None:
@@ -5512,7 +5329,6 @@ def _build_call_kwargs(
             _provider_norm in {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron"}
             or base_url_host_matches(_effective_base, "integrate.api.nvidia.com")
         )
-        _is_moa = bool(task) and str(task) == "moa_reference"
         # Bounded tasks: the "omit the cap" rule above is right for open-ended
         # auxiliary output (compaction summaries, vision descriptions), where a
         # cap risks truncation. It is wrong for tasks whose output is a handful
@@ -5528,7 +5344,6 @@ def _build_call_kwargs(
         if (
             _is_anthropic_compat_endpoint(provider, _effective_base)
             or _is_nvidia_nim
-            or _is_moa
             or _is_bounded_task
         ):
             # Use auxiliary_max_tokens_param() so models that require
@@ -5942,8 +5757,7 @@ def _create_with_progress(
         )
         return client.chat.completions.create(**kwargs)
 
-    # Some shims (MoA virtual provider under quiet mode, defensive adapters)
-    # return a complete response even when stream=True was requested.
+    # Some shims (defensive adapters) return a complete response even when stream=True was requested.
     if hasattr(chunks, "choices"):
         _notify_aux_progress()
         return chunks
@@ -6305,15 +6119,14 @@ def _call_llm_impl(
         tools: Tool definitions (for function calling).
         timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
         extra_body: Additional request body fields.
-        reasoning_config: Optional Son of Anton reasoning config for direct model calls
-              such as MoA reference/aggregator slots.
+        reasoning_config: Optional Son of Anton reasoning config for direct
+              model calls.
         extra_headers: Additional per-request HTTP headers. These override
             client-level defaults for providers that gate capabilities on
             request attribution (for example Copilot's ``x-initiator``).
         stream: When True, return the raw SDK streaming iterator instead of a
             validated complete response. The caller is responsible for consuming
-            chunks (and for any fallback). Used by the MoA aggregator so its
-            output can stream to the user.
+            chunks (and for any fallback).
         stream_options: Passed through to the request when stream is True
             (e.g. {"include_usage": True}).
 
@@ -6451,8 +6264,7 @@ def _call_llm_impl(
     if _is_anthropic_compat_endpoint(request_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
-    # Streaming path: return the raw SDK Stream iterator directly. This is used by
-    # the MoA aggregator so its tokens stream to the user. It deliberately skips
+    # Streaming path: return the raw SDK Stream iterator directly. It deliberately skips
     # _validate_llm_response and the temperature/max_tokens/payment fallback chain
     # below — those all assume a complete response object, whereas a stream is
     # consumed chunk-by-chunk by the caller. The caller (the agent's streaming
@@ -6477,12 +6289,10 @@ def _call_llm_impl(
         # (connection reset / streaming-close / incomplete chunked read / 5xx /
         # 408) before the except-chain below escalates to provider/model
         # fallback. A dropped connection shouldn't abandon an otherwise-healthy
-        # provider — this especially matters for pinned auxiliary calls like MoA
-        # reference advisors, where "fallback to another provider" is not a
-        # meaningful recovery (the advisor is a specific model), so a transient
-        # blip that isn't retried simply loses that advisor for the turn (root
-        # of the run2 double-advisor "Connection error" collapse — a genuine
-        # upstream blip hitting both parallel advisors at once).
+        # provider — this especially matters for pinned auxiliary calls, where
+        # "fallback to another provider" is not a meaningful recovery (the call
+        # targets a specific model), so a transient blip that isn't retried
+        # simply loses that call.
         #
         # Attempts are bounded and use exponential backoff. Count is configurable
         # via auxiliary.transient_retries (default 2 retries → 3 total attempts);

@@ -15,13 +15,8 @@ ContextVar semantics give us the right isolation for free:
 * concurrent agents in one process (gateway sessions, delegate subagents)
   never see each other's accounting context;
 * worker threads spawned via ``tools.thread_context.propagate_context_to_thread``
-  (MoA fan-out, background review) inherit the parent turn's context;
+  inherit the parent turn's context;
 * asyncio tasks inherit the context of the code that created them.
-
-MoA reference/aggregator slots are explicitly EXCLUDED from recording:
-``agent/conversation_loop.py`` already folds MoA advisor usage and cost into
-the main loop's ``update_token_counts`` delta, so recording them here would
-double-count (see ``_EXCLUDED_TASKS``).
 """
 
 from __future__ import annotations
@@ -36,11 +31,6 @@ logger = logging.getLogger(__name__)
 _accounting: ContextVar[Optional[tuple]] = ContextVar(
     "aux_accounting_context", default=None
 )
-
-# Aux tasks whose usage is already accounted by the main loop — recording
-# them here would double-count. MoA advisor/aggregator usage is folded into
-# conversation_loop's update_token_counts delta (tokens AND cost).
-_EXCLUDED_TASKS = frozenset({"moa_reference", "moa_aggregator"})
 
 
 def set_accounting_context(session_db: Any, session_id: Optional[str]):
@@ -77,7 +67,7 @@ def record_aux_usage(
     call). No-ops when:
 
     * no accounting context is published (call is outside any agent turn),
-    * the task is main-loop-accounted (MoA slots — see ``_EXCLUDED_TASKS``),
+    * the call has no task name,
     * the response carries no usage object.
 
     The model is read from ``response.model`` (accurate even after the aux
@@ -85,7 +75,7 @@ def record_aux_usage(
     originally-resolved route and are best-effort.
     """
     try:
-        if not task or task in _EXCLUDED_TASKS:
+        if not task:
             return
         ctx = _accounting.get()
         if ctx is None:

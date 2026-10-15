@@ -2645,26 +2645,6 @@ def approve_session(session_key: str, pattern_key: str):
         _session_approved.setdefault(session_key, set()).add(pattern_key)
 
 
-def _release_permission_mode_dependents(session_key: str) -> None:
-    """Drop resources whose immutable mode is derived from Son of Anton YOLO.
-
-    The import stays lazy so approval-only sessions do not load computer-use.
-    Releasing on both edges makes enabling YOLO replace an existing standard
-    backend and makes disabling YOLO revoke a private unrestricted daemon
-    immediately, even when no later computer-use call occurs.
-    """
-    try:
-        from tools.computer_use import release_computer_use_session
-
-        release_computer_use_session(session_key)
-    except Exception:
-        logger.debug(
-            "Failed to release permission-mode dependent resources for %s",
-            session_key,
-            exc_info=True,
-        )
-
-
 def set_session_permission_mode(session_key: str, mode: str | None) -> None:
     """Override the permission mode for one session (``None`` clears it).
 
@@ -2681,9 +2661,6 @@ def set_session_permission_mode(session_key: str, mode: str | None) -> None:
             _session_permission.pop(session_key, None)
         else:
             _session_permission[session_key] = mode
-    # Same release the yolo toggles perform: a mode change must invalidate
-    # resources whose privileges were fixed under the previous mode.
-    _release_permission_mode_dependents(session_key)
 
 
 def get_session_permission_mode(session_key: str) -> str | None:
@@ -2705,7 +2682,6 @@ def enable_session_yolo(session_key: str) -> None:
         return
     with _lock:
         _session_yolo.add(session_key)
-    _release_permission_mode_dependents(session_key)
 
 
 def disable_session_yolo(session_key: str) -> None:
@@ -2714,7 +2690,6 @@ def disable_session_yolo(session_key: str) -> None:
         return
     with _lock:
         _session_yolo.discard(session_key)
-    _release_permission_mode_dependents(session_key)
 
 
 def clear_session(session_key: str) -> None:
@@ -2732,7 +2707,6 @@ def clear_session(session_key: str) -> None:
         # immediately so the old run can unwind instead of idling until timeout.
         entry.result = "deny"
         entry.event.set()
-    _release_permission_mode_dependents(session_key)
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:
