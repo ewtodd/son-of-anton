@@ -470,10 +470,9 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "browser_click": "ref", "browser_type": "text",
         "image_generate": "prompt", "text_to_speech": "text",
         "vision_analyze": "question",
-        "skill_view": "name", "skills_list": "category",
         "cronjob": "action",
         "execute_code": "code", "browser_exec": "code", "delegate_task": "goal",
-        "clarify": "question", "skill_manage": "name",
+        "clarify": "question",
     }
 
     # browser_exec: prefer the leading `# …` comment as a friendly step label
@@ -572,16 +571,6 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             msg = msg[:17] + "..."
         return f"to {target}: \"{msg}\""
 
-    if tool_name == "skill_view":
-        name = _oneline(str(args.get("name") or ""))
-        file_path = args.get("file_path")
-        if file_path:
-            file_path = _oneline(str(file_path))
-            preview = f"{name} → {file_path}" if name else file_path
-        else:
-            preview = name
-        return _truncate_preview(preview, max_len) if preview else None
-
     key = primary_args.get(tool_name)
     if not key:
         for fallback_key in ("query", "text", "command", "path", "name", "prompt", "code", "goal"):
@@ -662,9 +651,6 @@ _TOOL_VERBS: dict[str, str] = {
     "text_to_speech": "Generating speech",
     "vision_analyze": "Looking at the image",
     "session_search": "Searching past sessions",
-    "skill_view": "Reading skill",
-    "skills_list": "Listing skills",
-    "skill_manage": "Updating skill",
     "delegate_task": "Delegating",
     "cronjob": "Scheduling",
     "clarify": "Asking",
@@ -674,7 +660,6 @@ _TOOL_VERBS: dict[str, str] = {
 
 # Verbs that read better without the raw argument preview appended.
 _TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({
-    "skills_list",
     "session_search",
 })
 
@@ -818,36 +803,6 @@ def _display_diff_path(path: Path) -> str:
         return str(path)
 
 
-def _resolve_skill_manage_paths(args: dict) -> list[Path]:
-    """Resolve skill_manage write targets to filesystem paths."""
-    action = args.get("action")
-    name = args.get("name")
-    if not action or not name:
-        return []
-
-    from tools.skill_manager_tool import _find_skill, _resolve_skill_dir
-
-    if action == "create":
-        skill_dir = _resolve_skill_dir(name, args.get("category"))
-        return [skill_dir / "SKILL.md"]
-
-    existing = _find_skill(name)
-    if not existing:
-        return []
-
-    skill_dir = Path(existing["path"])
-    if action in {"edit", "patch"}:
-        file_path = args.get("file_path")
-        return [skill_dir / file_path] if file_path else [skill_dir / "SKILL.md"]
-    if action in {"write_file", "remove_file"}:
-        file_path = args.get("file_path")
-        return [skill_dir / file_path] if file_path else []
-    if action == "delete":
-        files = [path for path in sorted(skill_dir.rglob("*")) if path.is_file()]
-        return files
-    return []
-
-
 def _resolve_local_edit_paths(tool_name: str, function_args: dict | None) -> list[Path]:
     """Resolve local filesystem targets for write-capable tools."""
     if not isinstance(function_args, dict):
@@ -860,9 +815,6 @@ def _resolve_local_edit_paths(tool_name: str, function_args: dict | None) -> lis
     if tool_name == "patch":
         path = function_args.get("path")
         return [_resolved_path(path)] if path else []
-
-    if tool_name == "skill_manage":
-        return _resolve_skill_manage_paths(function_args)
 
     return []
 
@@ -939,7 +891,7 @@ def extract_edit_diff(
             if isinstance(diff, str) and diff.strip():
                 return diff
 
-    if tool_name not in {"write_file", "patch", "skill_manage"}:
+    if tool_name not in {"write_file", "patch"}:
         return None
     if not _result_succeeded(result):
         return None
@@ -1514,14 +1466,6 @@ def _get_cute_tool_message(
             old = old if old else "<missing old_text>"
             return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(old, 20)}\"  {dur}")
         return _wrap(f"┊ 🧠 memory    {action}  {dur}")
-    if tool_name == "skills_list":
-        return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
-    if tool_name == "skill_view":
-        label = args.get("name", "")
-        file_path = args.get("file_path")
-        if file_path:
-            label = f"{label} → {file_path}" if label else str(file_path)
-        return _wrap(f"┊ 📚 skill     {_trunc(label, 44)}  {dur}")
     if tool_name == "image_generate":
         return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
     if tool_name == "text_to_speech":
@@ -1533,8 +1477,7 @@ def _get_cute_tool_message(
     if tool_name == "cronjob":
         action = args.get("action", "?")
         if action == "create":
-            skills = args.get("skills") or ([] if not args.get("skill") else [args.get("skill")])
-            label = args.get("name") or (skills[0] if skills else None) or args.get("prompt", "task")
+            label = args.get("name") or args.get("prompt", "task")
             return _wrap(f"┊ ⏰ cron      create {_trunc(label, 24)}  {dur}")
         if action == "list":
             return _wrap(f"┊ ⏰ cron      listing  {dur}")

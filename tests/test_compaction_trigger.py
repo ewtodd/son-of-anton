@@ -202,7 +202,7 @@ def test_fallback_summary_uses_the_same_sections_as_the_llm_template(monkeypatch
     ]
     cc._generate_summary(turns)
     assert "prompt" in captured, "the summarizer prompt was not built"
-    template_sections = [h for h in _headings(captured["prompt"]) if h != "## Pruned Skills"]
+    template_sections = _headings(captured["prompt"])
     assert template_sections[0] == "## Historical Task Snapshot", "grounding keys on the snapshot heading"
     assert template_sections[1:] == [
         "## Objective", "## Important Details", "## Work State", "### Completed",

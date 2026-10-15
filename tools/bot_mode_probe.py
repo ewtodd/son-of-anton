@@ -209,7 +209,7 @@ def get_bot_mode_protocol_section(home: str | os.PathLike | None = None, *, forc
 #
 # Bot Chat sessions are effectively eternal — the "new sessions come along
 # often" assumption behind build-once system prompts does not hold. When the
-# user changes a bot's capabilities (skills, toolsets, MCP servers, SOUL) or
+# user changes a bot's capabilities (toolsets, MCP servers, SOUL) or
 # the teammate roster changes, they expect the change to work on the NEXT
 # message. The fingerprint below hashes exactly that capability surface; the
 # built Bot Chat prompt embeds it, and the restore path in
@@ -226,9 +226,9 @@ _EPOCH_RE_TEXT = r"Capability epoch: ([0-9a-f]{12})"
 def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     """12-hex digest of the capability surface for ``home``'s profile.
 
-    Sources: the profile's disabled skills + enabled toolsets + MCP server
-    config (config.toml), SOUL.md bytes, installed skill names, and the
-    Bot-Mode roster (managed profile names). Deliberately NOT cached — the
+    Sources: the profile's enabled toolsets + MCP server config
+    (config.toml), SOUL.md bytes, and the Bot-Mode roster (managed profile
+    names). Deliberately NOT cached — the
     whole point is detecting on-disk drift; callers compare it against the
     epoch embedded in a stored prompt. Never raises.
     """
@@ -248,11 +248,8 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
             cfg = load_config_readonly() or {}
         finally:
             reset_son_of_anton_home_override(token)
-        skills_cfg = cfg.get("skills") if isinstance(cfg.get("skills"), dict) else {}
         tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
-        skills_cfg = skills_cfg or {}
         tools_cfg = tools_cfg or {}
-        surface["disabled_skills"] = sorted(str(s).lower() for s in (skills_cfg.get("disabled") or []))
         surface["enabled_toolsets"] = sorted(str(t) for t in (tools_cfg.get("enabled_toolsets") or []))
         mcp = cfg.get("mcp_servers")
         surface["mcp"] = json.dumps(mcp, sort_keys=True, default=str) if isinstance(mcp, dict) else ""
@@ -263,15 +260,6 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         surface["soul"] = hashlib.sha256(soul.read_bytes()).hexdigest() if soul.is_file() else ""
     except Exception:
         surface["soul"] = ""
-    try:
-        names = []
-        skills_root = resolved / "skills"
-        if skills_root.is_dir():
-            for skill_md in skills_root.glob("**/SKILL.md"):
-                names.append(str(skill_md.parent.relative_to(skills_root)))
-        surface["skills"] = sorted(names)
-    except Exception:
-        surface["skills"] = []
     try:
         root = _son_of_anton_root(resolved)
         surface["roster"] = sorted(n for n, d in _roster(root) if _is_bot_managed(d))

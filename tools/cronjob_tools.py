@@ -1632,7 +1632,7 @@ CRONJOB_SCHEMA = {
     "name": "cronjob",
     "description": """Manage scheduled cron jobs with a single compacted tool.
 
-Use action='create' to schedule a new job from a prompt or one or more skills.
+Use action='create' to schedule a new job from a prompt.
 Use action='list' to inspect jobs.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
 
@@ -1641,8 +1641,6 @@ action='run' fires the job immediately in the BACKGROUND (like delegate_task): t
 To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
-If skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
-On update, passing skills=[] clears attached skills.
 
 NOTE: The agent's final response is auto-delivered to the target. Put the primary
 user-facing content in the final response. Cron jobs run autonomously with no user
@@ -1662,7 +1660,7 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills. For run: optional transient context appended to the stored prompt for that single fire only (never persisted)."
+                "description": "For create: the full self-contained prompt. For run: optional transient context appended to the stored prompt for that single fire only (never persisted)."
             },
             "schedule": {
                 "type": "string",
@@ -1679,11 +1677,6 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
             "deliver": {
                 "type": "string",
                 "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), 'all' (fan out to every connected home channel), or platform:chat_id:thread_id for a specific destination. Combine with comma: 'origin,all' delivers to the origin plus every other connected channel. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567', 'all'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting. 'all' resolves at fire time, so a job created before a channel was wired up will pick it up automatically once connected."
-            },
-            "skills": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional ordered list of skill names to load before executing the cron prompt. On update, pass an empty array to clear attached skills."
             },
             "script": {
                 "type": "string",
@@ -1704,7 +1697,7 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
                     "Default: False (LLM-driven job — the agent runs the prompt each tick). "
                     "Set True to skip the LLM entirely: the scheduler just runs ``script`` on schedule and delivers its stdout verbatim. No tokens, no agent loop, no model override honoured. "
                     "\n\n"
-                    "REQUIREMENTS when True: ``script`` MUST be set (``prompt`` and ``skills`` are ignored). "
+                    "REQUIREMENTS when True: ``script`` MUST be set (``prompt`` is ignored). "
                     "\n\n"
                     "DELIVERY SEMANTICS when True: "
                     "(a) non-empty stdout is sent verbatim as the message; "
@@ -1785,11 +1778,25 @@ def check_cronjob_requirements() -> bool:
 # --- Registry ---
 from tools.registry import registry, tool_error
 
-registry.register(
-    name="cronjob",
-    toolset="cronjob",
-    schema=CRONJOB_SCHEMA,
-    handler=lambda args, **kw: cronjob(
+
+def _cronjob_tool_handler(args, **kw):
+    """Model-facing entry point for the ``cronjob`` tool.
+
+    The model no longer attaches skills to cron jobs: the schema has no
+    ``skills`` parameter, and a non-empty ``skills``/``skill`` argument (a
+    model replaying an older call shape) is refused rather than silently
+    dropped, so the job is never created without the instructions the model
+    meant to attach. An empty value is a no-op and is ignored. Skills already
+    attached to an existing job are left alone; ``son-of-anton cron`` still
+    manages them.
+    """
+    if args.get("skills") or args.get("skill"):
+        return tool_error(
+            "cronjob no longer accepts 'skills'. Put the job's full "
+            "instructions in 'prompt' instead.",
+            success=False,
+        )
+    return cronjob(
         action=args.get("action", ""),
         job_id=args.get("job_id"),
         prompt=args.get("prompt"),
@@ -1798,8 +1805,6 @@ registry.register(
         repeat=args.get("repeat"),
         deliver=args.get("deliver"),
         include_disabled=args.get("include_disabled", True),
-        skill=args.get("skill"),
-        skills=args.get("skills"),
         # model / provider / base_url are intentionally NOT read from the
         # agent's arguments: per-job inference pins are user-owned (dashboard,
         # `son-of-anton cron create/edit --model`, or hand-edited jobs). The agent
@@ -1816,7 +1821,14 @@ registry.register(
         monitor_url=args.get("monitor_url"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
-    ),
+    )
+
+
+registry.register(
+    name="cronjob",
+    toolset="cronjob",
+    schema=CRONJOB_SCHEMA,
+    handler=_cronjob_tool_handler,
     check_fn=check_cronjob_requirements,
     emoji="⏰",
 )

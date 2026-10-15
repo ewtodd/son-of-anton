@@ -19,8 +19,8 @@ modes: the normal agent loop, and a physics research loop.
 <!---->
 ## What it does
 <!---->
-All chat runs one loop — the hermes loop: terminal, files, web, skills,
-memory, delegation, cron.
+All chat runs one loop — the hermes loop: terminal, files, web, memory,
+delegation, cron.
 <!---->
 Physics is a separate thing, and it is explicit. The Autophysicist — one
 research manager with append-only memory, a windowed scratchpad, a token
@@ -676,8 +676,8 @@ declared by the NixOS or Home Manager module, `systemctl` runs the service, and
 that module's `settings` owns `config.toml`. `gateway` has two actions, `run`
 and `status`.
 <!---->
-(`skills install` stays — it adds content the agent manages at runtime, not
-the install itself. MCP servers are declared under `mcp_servers` in that same
+(`skills install` stays — it adds skills you invoke as `/<name>`, not the
+install itself. MCP servers are declared under `mcp_servers` in that same
 `settings`; nothing installs or adds one at runtime.)
 <!---->
 ## Commands

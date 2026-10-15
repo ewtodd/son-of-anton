@@ -17,8 +17,8 @@ Three tiers are joined with ``\\n\\n``:
 * ``context``  — caller-supplied ``system_message`` plus context files
   (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``,
   plus the session's coding-workspace snapshot.
-* ``volatile`` — skills index, memory snapshot, USER.md profile, external
-  memory provider block, timestamp/session/model/provider line.
+* ``volatile`` — memory snapshot, USER.md profile, external memory
+  provider block, timestamp/session/model/provider line.
 
 Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 """
@@ -42,7 +42,6 @@ from agent.prompt_builder import (
     PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
-    SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
     TELEGRAM_RICH_MESSAGES_HINT,
@@ -66,9 +65,9 @@ _PLUGIN_SECTION_FRAME_RE = re.compile(
 def _ra():
     """Lazy reference to the ``run_agent`` module.
 
-    Helpers like ``load_soul_md``, ``build_environment_hints``,
-    ``build_skills_system_prompt`` and ``get_toolset_for_tool`` are
-    imported into ``run_agent``'s namespace.  Many tests
+    Helpers like ``load_soul_md``, ``build_environment_hints`` and
+    ``build_context_files_prompt`` are imported into ``run_agent``'s
+    namespace.  Many tests
     ``patch("run_agent.load_soul_md", ...)``; if we imported them
     directly here those patches would not reach us.  Looking them up
     through ``run_agent`` on every call preserves the patch contract.
@@ -306,12 +305,6 @@ def _agent_home(agent: Any) -> Optional[Path]:
     return None
 
 
-def _agent_skills_dir(agent: Any) -> Optional[Path]:
-    """The agent's own ``<home>/skills`` dir, or None to use ambient home."""
-    home = _agent_home(agent)
-    return (home / "skills") if home is not None else None
-
-
 def _profile_name_for_home(home: Path) -> str:
     """Derive the profile name for an explicit agent home.
 
@@ -342,8 +335,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
       * ``context``  — the workspace snapshot followed by the remaining
         session-stable guidance, context files, and caller-supplied
         system_message.
-      * ``volatile`` — skills index, memory snapshot, user profile,
-        external memory provider block, timestamp line.
+      * ``volatile`` — memory snapshot, user profile, external memory
+        provider block, timestamp line.
 
     Joined into a single string by :func:`build_system_prompt` and
     cached on ``agent._cached_system_prompt`` for the lifetime of the
@@ -387,7 +380,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
-    # Pointer to the son-of-anton skill + docs for user questions about Son of Anton itself.
+    # Pointer to the repository docs for user questions about Son of Anton itself.
     stable_parts.append(SON_OF_ANTON_AGENT_HELP_GUIDANCE)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
@@ -429,8 +422,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             tool_guidance.append(USER_PROFILE_GUIDANCE)
     if "session_search" in agent.valid_tool_names:
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
-    if "skill_manage" in agent.valid_tool_names:
-        tool_guidance.append(SKILLS_GUIDANCE)
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
 
@@ -505,37 +496,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             _exec_inject = any(p in model_lower for p in EXECUTION_GUIDANCE_MODELS)
         if _exec_inject:
             stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
-
-    has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
-    if has_skills_tools:
-        avail_toolsets = {
-            toolset
-            for toolset in (
-                _r.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names
-            )
-            if toolset
-        }
-        # Focus mode (opt-in) demotes non-coding skill categories to
-        # names-only in the index (never hidden — skill_view/skills_list
-        # reach everything, and every name stays visible for recall). The
-        # default coding posture leaves the index untouched.
-        _compact_cats = frozenset()
-        try:
-            from agent.coding_context import coding_compact_skill_categories
-
-            _compact_cats = coding_compact_skill_categories(
-                platform=agent.platform, cwd=resolve_context_cwd()
-            )
-        except Exception:
-            _compact_cats = frozenset()
-        skills_prompt = _r.build_skills_system_prompt(
-            available_tools=agent.valid_tool_names,
-            available_toolsets=avail_toolsets,
-            compact_categories=_compact_cats or None,
-            skills_dir_override=_agent_skills_dir(agent),
-        )
-    else:
-        skills_prompt = ""
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt
@@ -631,7 +591,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                     post_workspace_parts.append(_bot_section)
                     # Eternal-session support: stamp the capability epoch so
                     # the restore path can detect user-initiated capability
-                    # changes (skills/toolsets/MCP/SOUL/roster) and rebuild
+                    # changes (toolsets/MCP/SOUL/roster) and rebuild
                     # ONCE per change instead of waiting for /new or
                     # compaction. Also marks this prompt as timeless — the
                     # volatile timestamp line is omitted (see below), since a
@@ -785,21 +745,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
     volatile_parts: List[str] = []
-    # Skills are runtime-mutable: the agent adds and patches them across a
-    # session (SKILLS_GUIDANCE tells it to patch a skill the moment it goes
-    # stale). The built prompt is cached per session and only rebuilt on
-    # compaction/restore (see build_system_prompt), so a skill change is not
-    # byte-stable across rebuilds. With the index in the stable band, a rebuild
-    # that picked up a skill change would bust the cached prefix from the index
-    # down, taking the whole scaffold with it. Render it at the FRONT of the
-    # volatile band instead, ahead of the turn-varying memory/timestamp tail:
-    # on an implicit longest-prefix backend an unchanged index still falls
-    # inside the reused prefix, and a changed one only re-prefills from here on.
-    # (No effect for single-block cache_control backends, where the whole
-    # system message is one cache unit regardless of internal order.)
-    if skills_prompt:
-        volatile_parts.append(skills_prompt)
-
     if agent._memory_store:
         if agent._memory_enabled:
             mem_block = agent._memory_store.format_for_system_prompt("memory")
@@ -893,7 +838,7 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
 
     Layers are ordered cache-friendly: stable identity/guidance first,
     then session-stable context files, then per-call volatile content
-    (skills index, memory, USER profile, timestamp). For explicit
+    (memory, USER profile, timestamp). For explicit
     cache_control backends the whole string is one cached block. For
     implicit longest-prefix backends the order is what matters: the
     content most likely to change is rendered last, so when the prompt is

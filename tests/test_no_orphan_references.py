@@ -381,6 +381,19 @@ _REMOVED_SYMBOLS = (
     "snapshot_skills",
     "referenced_skill_names",
     "rewrite_skill_refs",
+    # Model-facing skills surface (tools, prompt index, compaction ghost-skills)
+    "build_skills_system_prompt",
+    "clear_skills_system_prompt_cache",
+    "reset_skill_view_dedup",
+    "coding_compact_skill_categories",
+    "compact_skill_categories",
+    "SKILLS_GUIDANCE",
+    "_skill_view_with_bump",
+    "_resolve_skill_manage_paths",
+    "_collect_protected_skill_names",
+    "_collect_ghosted_skill_names",
+    "_reinject_pruned_skill_markers",
+    "_pruned_skill_reload_notice",
 )
 
 

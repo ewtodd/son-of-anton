@@ -5493,19 +5493,6 @@ class PluginManager:
             if qn.startswith(prefix)
         )
 
-    def list_plugin_skill_metadata(self) -> List[Dict[str, Any]]:
-        """Return progressive-disclosure metadata for registered plugin skills."""
-
-        return [
-            {
-                "name": qualified,
-                "description": str(entry.get("description", "")),
-                "category": "plugin",
-                "frontmatter": dict(entry.get("frontmatter", {})),
-            }
-            for qualified, entry in sorted(self._plugin_skills.items())
-        ]
-
     def get_portable_mcp_servers(self) -> Dict[str, Dict[str, Any]]:
         """Return a defensive copy of enabled portable MCP server configs."""
 

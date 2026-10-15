@@ -2048,9 +2048,8 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "
             "corrupt the file (read_file showed you EXTRACTED text, not the real "
-            "bytes). Use the docx/xlsx/powerpoint skills or a library like "
-            "python-docx/openpyxl/python-pptx via the terminal to create or edit "
-            "this document."
+            "bytes). Use a library like python-docx/openpyxl/python-pptx via "
+            "the terminal to create or edit this document."
         )
     if is_pdf_path(filepath):
         try:
@@ -2062,9 +2061,8 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
                 return (
                     f"Refusing to overwrite existing PDF '{filepath}' with plain text. "
                     "read_file showed you EXTRACTED text, not the real bytes — writing "
-                    "text back would destroy the document. Use the pdf skill or a PDF "
-                    "library via the terminal to modify it. (Creating a NEW .pdf file "
-                    "is allowed.)"
+                    "text back would destroy the document. Use a PDF library via the "
+                    "terminal to modify it. (Creating a NEW .pdf file is allowed.)"
                 )
         except OSError:
             pass

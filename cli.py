@@ -11122,9 +11122,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Reload skills: rescan ~/.son-of-anton/skills/ and queue a note for the
         next user turn.
 
-        Skills don't need to live in the system prompt for the model to use
-        them (they're invoked via ``/skill-name``, ``skills_list``, or
-        ``skill_view`` at runtime), so this does NOT clear the prompt cache.
+        Skills are not in the system prompt (they're invoked via
+        ``/skill-name`` at runtime), so this does NOT clear the prompt cache.
         It rescans the slash-command map, prints the diff for the user, and
         — if any skills were added or removed — queues a one-shot note that
         gets prepended to the next user message. This preserves message
@@ -11174,10 +11173,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # pattern as ``_pending_model_switch_note``. Nothing is written
             # to conversation_history here, so message alternation stays
             # intact and no out-of-band user turn is persisted.
-            #
-            # Format matches how the system prompt renders pre-existing
-            # skills (``    - name: description``) so the model reads the
-            # diff in the same shape as its original skill catalog.
             sections = ["[USER INITIATED SKILLS RELOAD:"]
             if added:
                 sections.append("")
@@ -11189,8 +11184,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 sections.append("Removed Skills:")
                 for item in removed:
                     sections.append(_fmt_line(item))
-            sections.append("")
-            sections.append("Use skills_list to see the updated catalog.]")
+            sections[-1] += "]"
             self._pending_skills_reload_note = "\n".join(sections)
 
         except Exception as e:

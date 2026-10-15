@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
-Skill Manager Tool -- Agent-Managed Skill Creation & Editing
+Skill Manager -- skill creation & editing helpers
 
-Allows the agent to create, update, and delete skills, turning successful
-approaches into reusable procedural knowledge. New skills are created in
-~/.son-of-anton/skills/. Existing skills (bundled, hub-installed, or user-created)
-can be modified or deleted wherever they live.
-
-Skills are the agent's procedural memory: they capture *how to do a specific
-type of task* based on proven experience. General memory (MEMORY.md, USER.md) is
-broad and declarative. Skills are narrow and actionable.
+No longer a model tool: the agent is never offered ``skill_manage``. The
+``skill_manage()`` function survives only so an already-staged skill write
+(``skills.write_approval``) can still be approved and replayed via
+``apply_skill_pending()``; ``_find_skill()`` backs the write-approval preview.
+New skills are created in ~/.son-of-anton/skills/. Existing skills (bundled,
+hub-installed, or user-created) can be modified or deleted wherever they live.
 
 Actions:
   create     -- Create a new skill (SKILL.md + directory structure)
@@ -40,9 +38,10 @@ import contextvars as _ctxvars
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from son_of_anton_constants import get_son_of_anton_home, display_son_of_anton_home
+from son_of_anton_constants import get_son_of_anton_home
 from utils import atomic_write_text, is_truthy_value
 from son_of_anton_cli.config import cfg_get
+from tools.registry import tool_error
 from agent.skill_utils import (
     extract_skill_description,
     is_skill_description_truncated_for_prompt,
@@ -1505,11 +1504,6 @@ def skill_manage(
             )
         except Exception:
             pass
-        try:
-            from agent.prompt_builder import clear_skills_system_prompt_cache
-            clear_skills_system_prompt_cache(clear_snapshot=True)
-        except Exception:
-            pass
         # Curator telemetry: bump patch_count on edit/patch/write_file (the actions
         # that mutate an existing skill's guidance), drop the record on delete.
         # Only mark a skill as agent-created when the background self-improvement
@@ -1547,150 +1541,3 @@ def skill_manage(
         # gate returns early above), so we never push un-reviewed content.
         # Inert unless the access gate is open (the user is a Nous admin on the
     return json.dumps(result, ensure_ascii=False)
-
-
-# =============================================================================
-# OpenAI Function-Calling Schema
-# =============================================================================
-
-SKILL_MANAGE_SCHEMA = {
-    "name": "skill_manage",
-    "description": (
-        "Manage skills (create, update, delete). Skills are your procedural "
-        "memory — reusable approaches for recurring task types. "
-        f"New skills go to {display_son_of_anton_home()}/skills/; existing skills can be modified wherever they live.\n\n"
-        "Actions: create (full SKILL.md + optional category), "
-        "patch (old_string/new_string — preferred for fixes), "
-        "edit (full SKILL.md rewrite — major overhauls only), "
-        "delete, write_file, remove_file.\n\n"
-        "On delete, pass `absorbed_into=<umbrella>` when you're merging this "
-        "skill's content into another one, or `absorbed_into=\"\"` when you're "
-        "pruning it with no forwarding target. This lets the curator tell "
-        "consolidation from pruning without guessing, so downstream consumers "
-        "(cron jobs that reference the old skill name, etc.) get updated "
-        "correctly. The target you name in `absorbed_into` must already "
-        "exist — create/patch the umbrella first, then delete.\n\n"
-        "Create when: complex task succeeded (5+ calls), errors overcome, "
-        "user-corrected approach worked, non-trivial workflow discovered, "
-        "or user asks you to remember a procedure.\n"
-        "Update when: instructions stale/wrong, OS-specific failures, "
-        "missing steps or pitfalls found during use. "
-        "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"
-        "After difficult/iterative tasks, offer to save as a skill. "
-        "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
-        "Good skills: trigger conditions, numbered steps with exact commands, "
-        "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
-        "Description: long descriptions are truncated to the first 57 chars "
-        "plus '...' in the system prompt skill index; longer text is visible "
-        "via skills_list/skill_view. Keep the trigger self-contained in that "
-        "first 57-char window: 'Use when <trigger>. <one-line behavior>.'\n\n"
-        "Pinned skills are protected from deletion only — skill_manage(action='delete') "
-        "will refuse with a message pointing the user to `son-of-anton curator unpin <name>`. "
-        "Patches and edits go through on pinned skills so you can still improve them as "
-        "pitfalls come up; pin only guards against irrecoverable loss."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file"],
-                "description": "The action to perform."
-            },
-            "name": {
-                "type": "string",
-                "description": (
-                    "Skill name (lowercase, hyphens/underscores, max 64 chars). "
-                    "Must match an existing skill for patch/edit/delete/write_file/remove_file."
-                )
-            },
-            "content": {
-                "type": "string",
-                "description": (
-                    "Full SKILL.md content (TOML frontmatter + markdown body). "
-                    "Required for 'create' and 'edit'. For 'edit', read the skill "
-                    "first with skill_view() and provide the complete updated text."
-                )
-            },
-            "old_string": {
-                "type": "string",
-                "description": (
-                    "Text to find in the file (required for 'patch'). Must be unique "
-                    "unless replace_all=true. Include enough surrounding context to "
-                    "ensure uniqueness."
-                )
-            },
-            "new_string": {
-                "type": "string",
-                "description": (
-                    "Replacement text (required for 'patch'); must differ from "
-                    "old_string. Can be empty string to delete the matched text."
-                )
-            },
-            "replace_all": {
-                "type": "boolean",
-                "description": "For 'patch': replace all occurrences instead of requiring a unique match (default: false)."
-            },
-            "category": {
-                "type": "string",
-                "description": (
-                    "Optional category/domain for organizing the skill (e.g., 'devops', "
-                    "'data-science', 'mlops'). Creates a subdirectory grouping. "
-                    "Only used with 'create'."
-                )
-            },
-            "file_path": {
-                "type": "string",
-                "description": (
-                    "Path to a supporting file within the skill directory. "
-                    "For 'write_file'/'remove_file': required, must be under references/, "
-                    "templates/, scripts/, or assets/. "
-                    "For 'patch': optional, defaults to SKILL.md if omitted."
-                )
-            },
-            "file_content": {
-                "type": "string",
-                "description": "Content for the file. Required for 'write_file'."
-            },
-            "absorbed_into": {
-                "type": "string",
-                "description": (
-                    "For 'delete' only — declares intent so the curator can "
-                    "tell consolidation from pruning without guessing. "
-                    "Pass the umbrella skill name when this skill's content "
-                    "was merged into another (the target must already exist). "
-                    "Pass an empty string when the skill is truly stale and "
-                    "being pruned with no forwarding target. Omitting the arg "
-                    "on delete is supported for backward compatibility but "
-                    "downstream tooling (e.g. cron-job skill reference "
-                    "rewriting) will have to guess at intent."
-                )
-            },
-        },
-        "required": ["action", "name"],
-    },
-}
-
-
-# --- Registry ---
-from tools.registry import registry, tool_error
-
-registry.register(
-    name="skill_manage",
-    toolset="skills",
-    schema=SKILL_MANAGE_SCHEMA,
-    handler=lambda args, **kw: skill_manage(
-        action=args.get("action", ""),
-        name=args.get("name", ""),
-        content=args.get("content"),
-        category=args.get("category"),
-        file_path=args.get("file_path"),
-        file_content=args.get("file_content"),
-        old_string=args.get("old_string"),
-        new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False),
-        absorbed_into=args.get("absorbed_into"),
-        task_id=kw.get("task_id"),
-        session_id=kw.get("session_id")),
-    emoji="📝",
-)

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Skills Tool Module
+Skill loading helpers.
 
-This module provides tools for listing and viewing skill documents.
 Skills are organized as directories containing a SKILL.md file (the main instructions)
 and optional supporting files like references, templates, and examples.
 
-Inspired by Anthropic's Claude Skills system with progressive disclosure architecture:
-- Metadata (name ≤64 chars, description ≤1024 chars) - shown in skills_list
-- Full Instructions - loaded via skill_view when needed
-- Linked Files (references, templates) - loaded on demand
+This module is no longer a model tool: the agent is never offered a
+skill-listing or skill-loading tool. ``skill_view()`` remains as a plain
+Python loader for the user-invoked surfaces that still read skills
+(``/<skill>`` slash commands, cron jobs with attached skills), and
+``_find_all_skills()`` backs the user-facing skill listings.
 
 Directory Structure:
     skills/
@@ -49,27 +49,19 @@ SKILL.md Format (TOML Frontmatter, agentskills.io compatible):
 
     Full instructions and content here...
 
-Available tools:
-- skills_list: List skills with metadata (progressive disclosure tier 1)
-- skill_view: Load full skill content (progressive disclosure tier 2-3)
-
 Usage:
-    from tools.skills_tool import skills_list, skill_view, check_skills_requirements
+    from tools.skills_tool import skill_view
 
-    # List all skills (returns metadata only - token efficient)
-    result = skills_list()
-
-    # View a skill's main content (loads full instructions)
+    # Load a skill's main content (full instructions)
     content = skill_view("axolotl")
 
-    # View a reference file within a skill (loads linked file)
+    # Load a reference file within a skill (linked file)
     content = skill_view("axolotl", "references/dataset-formats.md")
 """
 
 import json
 import logging
 import time
-import threading
 
 from son_of_anton_constants import get_son_of_anton_home, display_son_of_anton_home
 import os
@@ -78,7 +70,7 @@ from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, Any, List, Optional, Set, Tuple
 
-from tools.registry import registry, tool_error
+from tools.registry import tool_error
 from son_of_anton_cli.config import cfg_get
 from utils import env_var_enabled
 from agent.skill_utils import (
@@ -543,11 +535,6 @@ def _build_setup_note(
     return None
 
 
-def check_skills_requirements() -> bool:
-    """Skills are always available -- the directory is created on first use if needed."""
-    return True
-
-
 def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     """Parse TOML frontmatter from markdown content.
 
@@ -793,79 +780,6 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
-
-
-def skills_list(category: str = None, task_id: str = None) -> str:
-    """
-    List all available skills (progressive disclosure tier 1 - minimal metadata).
-
-    Returns only name + description to minimize token usage. Use skill_view() to
-    load full content, tags, related files, etc.
-
-    Args:
-        category: Optional category filter (e.g., "mlops")
-        task_id: Optional task identifier used to probe the active backend
-
-    Returns:
-        JSON string with minimal skill info: name, description, category
-    """
-    try:
-        active_skills_dir = _skills_dir()
-        if not active_skills_dir.exists():
-            active_skills_dir.mkdir(parents=True, exist_ok=True)
-
-        # Find all skills
-        all_skills = _find_all_skills()
-        try:
-            from son_of_anton_cli.plugins import discover_plugins, get_plugin_manager
-
-            discover_plugins()
-            for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
-                frontmatter = plugin_skill.pop("frontmatter", {})
-                if not skill_matches_platform(frontmatter):
-                    continue
-                if _is_skill_disabled(plugin_skill["name"]):
-                    continue
-                all_skills.append(plugin_skill)
-        except Exception:
-            logger.debug("Plugin skill listing failed", exc_info=True)
-
-        if not all_skills:
-            return json.dumps(
-                {
-                    "success": True,
-                    "skills": [],
-                    "categories": [],
-                    "message": "No skills found in skills/ directory.",
-                },
-                ensure_ascii=False,
-            )
-
-        # Filter by category if specified
-        if category:
-            all_skills = [s for s in all_skills if s.get("category") == category]
-
-        # Sort by category then name
-        all_skills = _sort_skills(all_skills)
-
-        # Extract unique categories
-        categories = sorted(
-            {s.get("category") for s in all_skills if s.get("category")}
-        )
-
-        return json.dumps(
-            {
-                "success": True,
-                "skills": all_skills,
-                "categories": categories,
-                "count": len(all_skills),
-                "hint": "Use skill_view(name) to see full content, tags, and linked files",
-            },
-            ensure_ascii=False,
-        )
-
-    except Exception as e:
-        return tool_error(str(e), success=False)
 
 
 # ── Plugin skill serving ──────────────────────────────────────────────────
@@ -1841,257 +1755,3 @@ def skill_view(
 
     except Exception as e:
         return tool_error(str(e), success=False)
-
-
-if __name__ == "__main__":
-    """Test the skills tool"""
-    print("🎯 Skills Tool Test")
-    print("=" * 60)
-
-    # Test listing skills
-    print("\n📋 Listing all skills:")
-    result = json.loads(skills_list())
-    if result["success"]:
-        print(
-            f"Found {result['count']} skills in {len(result.get('categories', []))} categories"
-        )
-        print(f"Categories: {result.get('categories', [])}")
-        print("\nFirst 10 skills:")
-        for skill in result["skills"][:10]:
-            cat = f"[{skill['category']}] " if skill.get("category") else ""
-            print(f"  • {cat}{skill['name']}: {skill['description'][:60]}...")
-    else:
-        print(f"Error: {result['error']}")
-
-    # Test viewing a skill
-    print("\n📖 Viewing skill 'axolotl':")
-    result = json.loads(skill_view("axolotl"))
-    if result["success"]:
-        print(f"Name: {result['name']}")
-        print(f"Description: {result.get('description', 'N/A')[:100]}...")
-        print(f"Content length: {len(result['content'])} chars")
-        if result.get("linked_files"):
-            print(f"Linked files: {result['linked_files']}")
-    else:
-        print(f"Error: {result['error']}")
-
-    # Test viewing a reference file
-    print("\n📄 Viewing reference file 'axolotl/references/dataset-formats.md':")
-    result = json.loads(skill_view("axolotl", "references/dataset-formats.md"))
-    if result["success"]:
-        print(f"File: {result['file']}")
-        print(f"Content length: {len(result['content'])} chars")
-        print(f"Preview: {result['content'][:150]}...")
-    else:
-        print(f"Error: {result['error']}")
-
-
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
-
-SKILLS_LIST_SCHEMA = {
-    "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "category": {
-                "type": "string",
-                "description": "Optional category filter to narrow results",
-            }
-        },
-        "required": [],
-    },
-}
-
-SKILL_VIEW_SCHEMA = {
-    "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "name": {
-                "type": "string",
-                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans').",
-            },
-            "file_path": {
-                "type": "string",
-                "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.toml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
-            },
-        },
-        "required": ["name"],
-    },
-}
-
-registry.register(
-    name="skills_list",
-    toolset="skills",
-    schema=SKILLS_LIST_SCHEMA,
-    handler=lambda args, **kw: skills_list(
-        category=args.get("category"), task_id=kw.get("task_id")
-    ),
-    check_fn=check_skills_requirements,
-    emoji="📚",
-)
-# ── skill_view repeat-view dedup ────────────────────────────────────────
-# Per-task cache of (skill name, file_path) -> (skill file mtime+size).
-# On a repeat view of an UNCHANGED skill file, return a short stub instead
-# of re-sending the full content — the earlier tool result in this
-# conversation already carries it verbatim. Cleared on context compaction
-# via reset_skill_view_dedup() (wired next to read_file's reset_file_dedup)
-# because after compaction the original content is summarized away.
-_skill_view_tracker: Dict[str, Dict[tuple, tuple]] = {}
-_skill_view_tracker_lock = threading.Lock()
-_SKILL_VIEW_DEDUP_CAP = 200
-
-_SKILL_VIEW_DEDUP_MESSAGE = (
-    "Skill content unchanged since it was loaded earlier in this "
-    "conversation — refer to the earlier skill_view result; it is still "
-    "current and complete. (Re-issued after context compaction, this "
-    "returns the full content again.)"
-)
-
-
-def _skill_view_fingerprint(payload: dict) -> tuple | None:
-    """Stat the skill file a successful skill_view served, for change detection."""
-    src = payload.get("_source_path")
-    if not src:
-        return None
-    try:
-        st = os.stat(src)
-        return (src, st.st_mtime_ns, st.st_size)
-    except OSError:
-        return None
-
-
-def _record_skill_view(task_id, name, file_path, payload: dict) -> None:
-    """Record a served skill_view so an identical repeat can be deduped."""
-    if not task_id:
-        return
-    # Never dedup setup-needed views: readiness depends on config/env state
-    # that can change without the skill file changing, and the model must
-    # see the refreshed setup status on a re-view.
-    if payload.get("setup_needed") or payload.get("readiness_status") == "setup_needed":
-        return
-    fp = _skill_view_fingerprint(payload)
-    if fp is None:
-        return
-    key = (str(payload.get("name") or name), file_path or "")
-    with _skill_view_tracker_lock:
-        cache = _skill_view_tracker.setdefault(str(task_id), {})
-        cache[key] = fp
-        while len(cache) > _SKILL_VIEW_DEDUP_CAP:
-            try:
-                cache.pop(next(iter(cache)))
-            except (StopIteration, KeyError):
-                break
-
-
-def _check_skill_view_dedup(task_id, name, file_path) -> str | None:
-    """Return a dedup stub when this exact skill file was already served
-    to this task and is unchanged on disk; None otherwise."""
-    if not task_id:
-        return None
-    with _skill_view_tracker_lock:
-        cache = _skill_view_tracker.get(str(task_id))
-        if not cache:
-            return None
-        # The record key uses the RESOLVED name; check both the raw arg and
-        # resolved forms so 'category/skill' and bare-name views coalesce.
-        for key, (src, mtime_ns, size) in list(cache.items()):
-            rec_name, rec_fp = key
-            if rec_fp != (file_path or ""):
-                continue
-            if rec_name != str(name) and not str(name).endswith("/" + rec_name) \
-                    and not rec_name.endswith("/" + str(name)) \
-                    and str(name).split(":")[-1] != rec_name:
-                continue
-            try:
-                st = os.stat(src)
-                if (st.st_mtime_ns, st.st_size) != (mtime_ns, size):
-                    cache.pop(key, None)
-                    return None
-            except OSError:
-                cache.pop(key, None)
-                return None
-            return json.dumps(
-                {
-                    "success": True,
-                    "status": "unchanged",
-                    "name": rec_name,
-                    "file": file_path or "SKILL.md",
-                    "dedup": True,
-                    "content_returned": False,
-                    "message": _SKILL_VIEW_DEDUP_MESSAGE,
-                },
-                ensure_ascii=False,
-            )
-    return None
-
-
-def reset_skill_view_dedup(task_id: str | None = None) -> None:
-    """Clear the skill_view dedup cache (all tasks when task_id is None).
-
-    Called on context compaction: the original skill content is
-    summarized away, so a re-view must return full content again.
-    """
-    with _skill_view_tracker_lock:
-        if task_id is None:
-            _skill_view_tracker.clear()
-        else:
-            _skill_view_tracker.pop(str(task_id), None)
-
-
-def _skill_view_with_bump(args, **kw):
-    """Invoke skill_view, then bump view_count on success. Best-effort: a
-    telemetry failure never breaks the tool call."""
-    name = args.get("name", "")
-    task_id = kw.get("task_id")
-    # ── Repeat-view dedup ────────────────────────────────────────────
-    # Mirrors read_file's unchanged-stub: when this session already
-    # loaded the SAME skill file and it hasn't changed on disk, return a
-    # short stub instead of re-sending the full content (production
-    # mining: ~286k tokens of verbatim repeat skill_view content in one
-    # 400k-message window). The stub only ever replaces content that is
-    # already fully present earlier in this conversation, so the
-    # "skills must be loaded fully" rule is preserved — and the cache is
-    # cleared on context compaction (same hook as read_file's dedup)
-    # so a post-compaction re-view returns full content again.
-    stub = _check_skill_view_dedup(task_id, name, args.get("file_path"))
-    if stub is not None:
-        return stub
-    result = skill_view(
-        name, file_path=args.get("file_path"), task_id=task_id
-    )
-    try:
-        parsed = json.loads(result)
-        if isinstance(parsed, dict) and parsed.get("success"):
-            _record_skill_view(task_id, name, args.get("file_path"), parsed)
-            # Use the resolved skill name from the payload when present —
-            # qualified forms ("plugin:skill") return with the canonical name.
-            resolved = parsed.get("name") or name
-            if resolved:
-                from tools.skill_usage import bump_use, bump_view
-                bump_view(str(resolved))
-                # A skill_view tool call is the agent actively loading the skill
-                # to act on it — that counts as use, not just a browse/view.
-                # Curator's stale timer keys off last_used_at (see agent/curator.py).
-                bump_use(
-                    str(resolved),
-                    task_id=kw.get("task_id"),
-                    session_id=kw.get("session_id"),
-                )
-    except Exception:
-        pass
-    return result
-
-
-registry.register(
-    name="skill_view",
-    toolset="skills",
-    schema=SKILL_VIEW_SCHEMA,
-    handler=_skill_view_with_bump,
-    check_fn=check_skills_requirements,
-    emoji="📚",
-)

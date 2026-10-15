@@ -313,8 +313,7 @@ def get_read_block_error(path: str) -> Optional[str]:
                 continue
             return (
                 f"Access denied: {path} is an internal Son of Anton cache file "
-                "and cannot be read directly to prevent prompt injection. "
-                "Use the skills_list or skill_view tools instead."
+                "and cannot be read directly to prevent prompt injection."
             )
 
     # Credential / secret stores. Exact-file matches under either

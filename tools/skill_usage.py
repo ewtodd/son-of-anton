@@ -819,18 +819,6 @@ def _emit_skill_lifecycle(
 # Public counter-bump helpers — telemetry for ALL skills (observability only)
 # ---------------------------------------------------------------------------
 
-def bump_view(skill_name: str) -> None:
-    """Bump view_count and last_viewed_at. Called from skill_view().
-
-    Tracks every skill regardless of provenance — built-ins and hub skills
-    included. Usage telemetry is observability, not a curation signal.
-    """
-    def _apply(rec: Dict[str, Any]) -> None:
-        rec["view_count"] = _non_negative_int(rec.get("view_count")) + 1
-        rec["last_viewed_at"] = _now_iso()
-    _mutate(skill_name, _apply)
-
-
 def bump_use(
     skill_name: str,
     *,

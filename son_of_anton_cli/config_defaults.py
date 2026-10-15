@@ -224,9 +224,7 @@ DEFAULT_CONFIG = {
         #                      Toolsets are never touched; messaging platforms
         #                      unaffected.
         #   "focus"          — auto + collapse the toolset to the lean coding
-        #                      set (+ enabled MCP servers) + demote non-coding
-        #                      skill categories to names-only in the prompt's
-        #                      skill index. Explicit opt-in.
+        #                      set (+ enabled MCP servers). Explicit opt-in.
         #   "on"             — force the prompt posture everywhere.
         #   "off"            — disable entirely.
         "coding_context": "auto",
@@ -1253,7 +1251,7 @@ DEFAULT_CONFIG = {
         # clarify) into scrollback so the question and decision survive the
         # panel repaint. Set false to keep scrollback untouched.
         "persist_prompts": True,
-        "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
+        "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch)
         # File-mutation verifier footer.  When true (default), the agent
         # appends a one-line advisory to its final response whenever a
         # write_file / patch call failed during the turn and was never

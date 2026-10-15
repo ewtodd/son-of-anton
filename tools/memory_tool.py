@@ -1442,8 +1442,7 @@ MEMORY_SCHEMA = {
         "and is NOT injected into the terminal scope. Omit scope to write to the current "
         "session's scope; pass scope='shared' for a fact that must apply on every surface.\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
-        "completed-work logs, temporary TODO state (use session_search for those). Reusable "
-        "procedures belong in a skill, not memory."
+        "completed-work logs, temporary TODO state (use session_search for those)."
     ),
     "parameters": {
         "type": "object",

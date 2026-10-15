@@ -792,14 +792,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"[bold green]Installed:[/] {install_dir.resolve().relative_to(Path(SKILLS_DIR).resolve()).as_posix()}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
-    if invalidate_cache:
-        # Invalidate the skills prompt cache so the new skill appears immediately
-        try:
-            from agent.prompt_builder import clear_skills_system_prompt_cache
-            clear_skills_system_prompt_cache(clear_snapshot=True)
-        except Exception:
-            pass
-    else:
+    if not invalidate_cache:
         c.print("[dim]Skill will be available in your next session.[/]")
         c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
 
@@ -1113,13 +1106,7 @@ def do_uninstall(name: str, console: Optional[Console] = None,
     success, msg = uninstall_skill(name)
     if success:
         c.print(f"[bold green]{msg}[/]\n")
-        if invalidate_cache:
-            try:
-                from agent.prompt_builder import clear_skills_system_prompt_cache
-                clear_skills_system_prompt_cache(clear_snapshot=True)
-            except Exception:
-                pass
-        else:
+        if not invalidate_cache:
             c.print("[dim]Change will take effect in your next session.[/]")
             c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
     else:
@@ -1160,13 +1147,7 @@ def do_reset(name: str, restore: bool = False,
         c.print(f"[dim]Updated: {', '.join(synced['updated'])}[/]")
     c.print()
 
-    if invalidate_cache:
-        try:
-            from agent.prompt_builder import clear_skills_system_prompt_cache
-            clear_skills_system_prompt_cache(clear_snapshot=True)
-        except Exception:
-            pass
-    else:
+    if not invalidate_cache:
         c.print("[dim]Change will take effect in your next session.[/]")
         c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
 
@@ -1300,13 +1281,6 @@ def do_opt_out(remove: bool = False,
         c.print(f"[dim]Removed: {', '.join(result['removed'])}[/]")
     c.print()
 
-    if invalidate_cache:
-        try:
-            from agent.prompt_builder import clear_skills_system_prompt_cache
-            clear_skills_system_prompt_cache(clear_snapshot=True)
-        except Exception:
-            pass
-
 
 def do_opt_in(sync: bool = False,
               console: Optional[Console] = None,
@@ -1330,12 +1304,6 @@ def do_opt_in(sync: bool = False,
         synced = sync_skills(quiet=True)
         copied = len(synced.get("copied", []))
         c.print(f"[dim]Re-seeded {copied} bundled skill(s).[/]")
-        if invalidate_cache:
-            try:
-                from agent.prompt_builder import clear_skills_system_prompt_cache
-                clear_skills_system_prompt_cache(clear_snapshot=True)
-            except Exception:
-                pass
     c.print()
 
 
@@ -1372,13 +1340,6 @@ def do_repair_official(name: str, restore: bool = False,
         c.print(f"[dim]Backed up: {', '.join(result['backed_up'])}[/]")
         c.print(f"[dim]Backup dir: {result.get('backup_dir')}[/]")
     c.print()
-
-    if invalidate_cache:
-        try:
-            from agent.prompt_builder import clear_skills_system_prompt_cache
-            clear_skills_system_prompt_cache(clear_snapshot=True)
-        except Exception:
-            pass
 
 
 def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:

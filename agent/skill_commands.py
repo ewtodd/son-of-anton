@@ -317,8 +317,6 @@ def _build_skill_message(
     session_id: str | None = None,
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
-    from tools.skills_tool import SKILLS_DIR
-
     content = str(loaded_skill.get("content") or "")
 
     # ── Template substitution and inline-shell expansion ──
@@ -334,7 +332,7 @@ def _build_skill_message(
     parts = [activation_note, "", content.strip()]
 
     # ── Inject the absolute skill directory so the agent can reference
-    #    bundled scripts without an extra skill_view() round-trip. ──
+    #    bundled scripts and files by absolute path. ──
     if skill_dir:
         parts.append("")
         parts.append(f"[Skill directory: {skill_dir}]")
@@ -385,18 +383,13 @@ def _build_skill_message(
                         supporting.append(rel)
 
     if supporting and skill_dir:
-        try:
-            skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
-        except ValueError:
-            # Skill is from an external dir — use the skill name instead
-            skill_view_target = skill_dir.name
         parts.append("")
         parts.append("[This skill has supporting files:]")
         for sf in supporting:
             parts.append(f"- {sf}  ->  {skill_dir / sf}")
         parts.append(
-            f'\nLoad any of these with skill_view(name="{skill_view_target}", '
-            f'file_path="<path>"), or run scripts directly by absolute path '
+            "\nRead any of these with the read_file tool at its absolute path, "
+            "or run scripts directly by absolute path "
             f"(e.g. `node {skill_dir}/scripts/foo.js`)."
         )
 
@@ -581,9 +574,8 @@ def reload_skills() -> Dict[str, Any]:
     slash-command map (``agent.skill_commands._skill_commands``) reflects
     skills added or removed on disk.
 
-    This does NOT invalidate the skills system-prompt cache. Skills are
-    called by name via ``/skill-name``, ``skills_list``, or ``skill_view``
-    — they don't need to be in the system prompt for the model to use them.
+    This does NOT touch the system prompt. Skills are invoked by name via
+    ``/skill-name`` — they are not in the system prompt.
     Keeping the prompt cache intact preserves prefix caching across the
     reload, so a user invoking ``/reload-skills`` pays no cache-reset cost.
 

@@ -1000,9 +1000,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         from model_tools import get_toolset_for_tool
 
     tools = tools or []
-    enabled_toolsets = enabled_toolsets or []
-
-    _enabled_ts = {str(t) for t in enabled_toolsets}
 
     # Single centred column. The old two-column grid existed to park the
     # per-category tool/skill listings beside the model info; with those gone
@@ -1078,14 +1075,11 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         except Exception:
             mcp_status = []
 
-    _skills_enabled = (not _enabled_ts) or ("skills" in _enabled_ts)
-    if _skills_enabled:
-        if skills_by_category is None:
-            skills_by_category = get_available_skills()
-        total_skills = sum(len(s) for s in skills_by_category.values())
-    else:
-        skills_by_category = {}
-        total_skills = 0
+    # Skills are user-invoked (/skill-name), not a toolset, so the count does
+    # not depend on the enabled toolsets.
+    if skills_by_category is None:
+        skills_by_category = get_available_skills()
+    total_skills = sum(len(s) for s in skills_by_category.values())
 
     right_lines.append("")
     mcp_connected = sum(1 for s in mcp_status if s["connected"]) if mcp_status else 0

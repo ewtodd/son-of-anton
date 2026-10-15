@@ -314,32 +314,18 @@ def _looks_like_compaction_summary(msg: Dict[str, Any], content: str) -> bool:
 
 
 def _salvage_reduce_todo_snapshot(out: List[Dict[str, Any]]) -> None:
-    """Last-resort shrink: reduce or drop the synthetic todo snapshot.
+    """Last-resort shrink: drop the synthetic todo snapshot row.
 
     The snapshot is the only in-transcript todo re-injection at a compaction
-    boundary, and since 7a16840add the pruned-skill reload notice is coupled
-    into the same string — so it is only touched when the cheaper shrink ops
-    could not get under budget. When the snapshot carries a reload notice,
-    keep just the notice (the coupling must survive salvage); otherwise drop
-    the row entirely.
+    boundary, so it is only touched when the cheaper shrink ops could not get
+    under budget.
     """
-    from agent.conversation_compaction import _PRUNED_SKILL_RELOAD_NOTICE_HEADER
-
     for i in range(len(out) - 1, -1, -1):
         msg = out[i]
         if not isinstance(msg, dict):
             continue
         if msg.get("_todo_snapshot_synthetic") and msg.get("role") == "user":
-            content = msg.get("content")
-            notice_idx = (
-                content.find(_PRUNED_SKILL_RELOAD_NOTICE_HEADER)
-                if isinstance(content, str)
-                else -1
-            )
-            if isinstance(content, str) and notice_idx >= 0:
-                msg["content"] = content[notice_idx:]
-            else:
-                del out[i]
+            del out[i]
             return
 
 
@@ -357,9 +343,9 @@ def salvage_grown_transcript(
 
     Shrink order is cheapest-information-loss first: stale reasoning keys and
     codex replay sidecars, then old tool bodies, then an oversized summary cap.
-    The synthetic todo snapshot (which carries the pruned-skill reload notice,
-    see ``_salvage_reduce_todo_snapshot``) is only reduced as a LAST resort
-    when everything else still leaves the candidate at or over budget.
+    The synthetic todo snapshot (see ``_salvage_reduce_todo_snapshot``) is
+    only dropped as a LAST resort when everything else still leaves the
+    candidate at or over budget.
     """
     if not candidate or not original:
         return None
@@ -664,142 +650,6 @@ def _is_clarify_non_response_sentinel(response: Any) -> bool:
         )
     return False
 
-# Ghost-skill defense (#32106): when compaction reduces an old ``skill_view``
-# result to a 1-line metadata summary, the model still believes the skill is
-# loaded even though its instructions are gone. The marker below is the ONE
-# canonical prune signal — ``_skill_pruned_marker()`` builds it and every
-# presence check matches against the same string, so the emit side and the
-# check side can never drift apart (the original PR #44166 emitted
-# ``[SKILL_PRUNED:`` but presence-checked ``[SKILL_PRUNED]``, making
-# re-injection fire even when the marker had survived).
-SKILL_PRUNED_MARKER_PREFIX = "[SKILL_PRUNED:"
-# skill_view results at or below this size stay verbatim in pruned
-# summaries — small skills are cheap to keep and their loss is unlikely to
-# ghost the model. Shared by the emit site and the summarizer-input scan.
-_SKILL_VIEW_PRUNE_MIN_CHARS = 5000
-# Cap for the deterministic marker re-injection list — keeps a very long
-# session from growing an unbounded "## Pruned Skills" block in every
-# iterative summary update. Newest-referenced skills win.
-_MAX_PRUNED_SKILL_MARKERS = 20
-
-
-def _skill_pruned_marker(skill_name: str) -> str:
-    """Return the canonical prune marker for *skill_name*.
-
-    Used verbatim by BOTH the emit sites (tool-result summarization,
-    summary re-injection) and the survival check in
-    ``_reinject_pruned_skill_markers`` — one string, no drift.
-    """
-    return (
-        f"{SKILL_PRUNED_MARKER_PREFIX} content lost in compaction; "
-        f"reload with skill_view(name='{skill_name}')]"
-    )
-
-
-# Matches the canonical marker and captures the skill name. Anchored on the
-# shared prefix constant so a wording change to the marker body updates the
-# emit helper and this extractor together.
-_SKILL_PRUNED_MARKER_RE = re.compile(
-    re.escape(SKILL_PRUNED_MARKER_PREFIX)
-    + r"[^\]]*?reload with skill_view\(name='([^']+)'\)"
-)
-
-
-def _extract_pruned_skill_names(text: str) -> list[str]:
-    """Return skill names referenced by prune markers in *text*, in order."""
-    names: list[str] = []
-    for match in _SKILL_PRUNED_MARKER_RE.finditer(text or ""):
-        name = match.group(1)
-        if name not in names:
-            names.append(name)
-    return names
-
-
-def _collect_ghosted_skill_names(turns: List[Dict[str, Any]]) -> list[str]:
-    """Skill names whose instructions are about to be lost in compaction.
-
-    Covers BOTH shapes a compacted middle window can carry:
-
-    - a ``skill_view`` result already demoted by Phase-1 pruning — the
-      canonical ``[SKILL_PRUNED: ...]`` marker is in the row content;
-    - a RAW ``skill_view`` body that was never demoted (it sat inside the
-      protected tail of an earlier prune, then aged into the compaction
-      window). The summarizer will paraphrase the instructions away, which
-      is exactly the ghost-skill failure — so it needs a marker too.
-    """
-    names: list[str] = []
-
-    def _add(name: str) -> None:
-        if name and name not in names:
-            names.append(name)
-
-    call_id_to_skill: dict[str, str] = {}
-    for idx, skill in _skill_view_call_sites(turns):
-        msg = turns[idx]
-        for tc in msg.get("tool_calls") or []:
-            tc_fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", None)
-            tc_name = tc_fn.get("name", "") if isinstance(tc_fn, dict) else getattr(tc_fn, "name", "")
-            if tc_name != "skill_view":
-                continue
-            cid = tc.get("id", "") if isinstance(tc, dict) else (getattr(tc, "id", "") or "")
-            if cid:
-                call_id_to_skill[cid] = skill
-    for msg in turns:
-        content = msg.get("content")
-        text = content if isinstance(content, str) else _content_text_for_contains(content)
-        for name in _extract_pruned_skill_names(text):
-            _add(name)
-        if (
-            msg.get("role") == "tool"
-            and isinstance(content, str)
-            and len(content) > _SKILL_VIEW_PRUNE_MIN_CHARS
-        ):
-            skill = call_id_to_skill.get(str(msg.get("tool_call_id") or ""))
-            if skill:
-                _add(skill)
-    return names
-
-
-_PRUNED_SKILLS_SECTION_HEADING = "## Pruned Skills"
-
-
-def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
-    """Deterministically restore prune markers the summarizer dropped.
-
-    ``skill_names`` was extracted from the summarizer INPUT before the LLM
-    call. For every skill whose canonical marker (``_skill_pruned_marker``)
-    is absent from the model's output, append it under a ``## Pruned
-    Skills`` section. Presence is checked against the SAME canonical string
-    the emit sites produce — a paraphrased or renamed marker counts as
-    dropped and is restored (the original PR checked the literal
-    ``[SKILL_PRUNED]``, which never matches the emitted ``[SKILL_PRUNED:``
-    form, so it duplicated markers that HAD survived).
-
-    The appended block is plain body text: it never carries a handoff
-    prefix, the merged-summary delimiter, or a start-of-content scaffolding
-    marker, so ``classify_summary_content`` / todo-snapshot flag handling
-    are unaffected. The block is routed through ``_redact_compaction_text``
-    like every other compaction-boundary text.
-    """
-    if not skill_names:
-        return summary
-    missing = [
-        name for name in skill_names
-        if _skill_pruned_marker(name) not in summary
-    ]
-    if not missing:
-        return summary
-    lines = [_skill_pruned_marker(name) for name in missing]
-    block = (
-        "\n\n" + _PRUNED_SKILLS_SECTION_HEADING + "\n"
-        + "\n".join(lines)
-        + "\n(The listed skills' instructions were pruned during context "
-        "compaction. Reload with the skill_view call in each marker before "
-        "relying on that skill; one reload per skill is enough — ignore any "
-        "older markers for the same skill.)"
-    )
-    return summary + _redact_compaction_text(block)
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lean tail mode (#compaction-v2)
@@ -1056,84 +906,6 @@ def _serialize_turns_for_digest(
         parts.append(f"[{role}] {content}")
     return "\n\n".join(parts)
 
-
-# A skill_view call within this many trailing messages counts as "just
-# loaded": its full instruction body must survive the Phase-1 prune even when
-# the token-budget boundary would otherwise demote it (#32106). Distinct from
-# the protected-tail boundary, which is token-based and can land immediately
-# after a bulky just-loaded skill body.
-_SKILL_PRUNE_RECENT_WINDOW = 10
-
-
-def _skill_view_call_sites(
-    messages: List[Dict[str, Any]],
-) -> list[tuple[int, str]]:
-    """Yield ``(message_index, skill_name)`` for every skill_view tool call."""
-    sites: list[tuple[int, str]] = []
-    for i, msg in enumerate(messages):
-        if msg.get("role") != "assistant":
-            continue
-        for tc in msg.get("tool_calls") or []:
-            if isinstance(tc, dict):
-                fn = tc.get("function", {})
-                name = fn.get("name", "") if isinstance(fn, dict) else ""
-                args_str = fn.get("arguments", "") if isinstance(fn, dict) else ""
-            else:
-                fn = getattr(tc, "function", None)
-                name = getattr(fn, "name", "") if fn else ""
-                args_str = getattr(fn, "arguments", "") if fn else ""
-            if name != "skill_view" or not isinstance(args_str, str) or not args_str:
-                continue
-            try:
-                args = json.loads(args_str)
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if isinstance(args, dict):
-                skill = args.get("name", "")
-                if isinstance(skill, str) and skill:
-                    sites.append((i, skill))
-    return sites
-
-
-def _collect_protected_skill_names(
-    messages: List[Dict[str, Any]], prune_boundary: int,
-) -> set[str]:
-    """Skill names whose skill_view bodies must survive Phase-1 demotion.
-
-    A skill is protected (lower-cased set) when any of these hold:
-
-    - its most recent ``skill_view`` call sits within the last
-      ``_SKILL_PRUNE_RECENT_WINDOW`` messages (just loaded / just reloaded);
-    - its most recent ``skill_view`` call sits inside the protected tail
-      (at or after *prune_boundary*);
-    - its name is mentioned in a user message inside the protected tail
-      (the user is actively steering work that depends on it).
-
-    Protection applies to the ordinary Phase-1/2 prune only. The Pass-4
-    pressure demotion deliberately ignores it: when the protected region
-    itself exceeds the soft budget, exempting skill bodies would recreate
-    the #61932 dead-end shape.
-    """
-    total = len(messages)
-    if not total:
-        return set()
-    recent_start = max(0, total - _SKILL_PRUNE_RECENT_WINDOW)
-    tail_start = max(0, prune_boundary)
-    tail_user_texts: list[str] = []
-    for msg in messages[tail_start:]:
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content")
-        if isinstance(content, str) and content:
-            tail_user_texts.append(content.lower())
-    protected: set[str] = set()
-    for idx, skill in _skill_view_call_sites(messages):
-        key = skill.lower()
-        if idx >= recent_start or idx >= tail_start:
-            protected.add(key)
-        elif any(key in text for text in tail_user_texts):
-            protected.add(key)
-    return protected
 
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
@@ -1808,22 +1580,6 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
         if len(code_str) > 60:
             code_preview += "..."
         return f"[execute_code] `{code_preview}` ({line_count} lines output)"
-
-    if tool_name == "skill_view":
-        name = args.get("name", "?")
-        if content_len > _SKILL_VIEW_PRUNE_MIN_CHARS:
-            # Ghost-skill defense (#32106): a metadata-only summary makes the
-            # model believe the skill is still loaded. The canonical marker
-            # tells it the instructions are gone AND how to get them back.
-            return (
-                f"[skill_view] name={name} ({content_len:,} chars) "
-                + _skill_pruned_marker(str(name))
-            )
-        return f"[skill_view] name={name} ({content_len:,} chars)"
-
-    if tool_name in {"skills_list", "skill_manage"}:
-        name = args.get("name", "?")
-        return f"[{tool_name}] name={name} ({content_len:,} chars)"
 
     if tool_name == "vision_analyze":
         question = _str_arg(args, "question")[:50]
@@ -3573,14 +3329,7 @@ class ContextCompactor(ContextEngine):
                 result[i] = {**msg, "content": stripped}
             pruned += 1
 
-        # Ghost-skill defense (#32106): skills just loaded (or actively
-        # referenced in the protected tail) keep their full skill_view
-        # bodies through the ordinary prune passes. Without this, a skill
-        # loaded moments before a compaction can be demoted to metadata
-        # while the model still believes its instructions are in context.
-        protected_skills = _collect_protected_skill_names(result, prune_boundary)
-
-        def _demote_tool_result_at(idx: int, *, spare_protected_skills: bool = True) -> bool:
+        def _demote_tool_result_at(idx: int) -> bool:
             """Replace a bulky tool result at ``idx`` with a 1-line summary.
 
             Returns True when the message was modified.
@@ -3619,16 +3368,6 @@ class ContextCompactor(ContextEngine):
                 return False
             call_id = msg.get("tool_call_id", "")
             tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
-            if spare_protected_skills and tool_name == "skill_view" and protected_skills:
-                # Just-loaded / actively-referenced skills survive verbatim
-                # (#32106). Pass-4 pressure demotion overrides this.
-                try:
-                    _args = json.loads(tool_args) if tool_args else {}
-                except (json.JSONDecodeError, TypeError):
-                    _args = {}
-                _skill = _args.get("name", "") if isinstance(_args, dict) else ""
-                if isinstance(_skill, str) and _skill.lower() in protected_skills:
-                    return False
             summary = _summarize_tool_result(tool_name, tool_args, content)
             result[idx] = {**msg, "content": summary}
             pruned += 1
@@ -3693,10 +3432,7 @@ class ContextCompactor(ContextEngine):
             if demote_end > prune_boundary and _protected_region_tokens() > soft_ceiling:
                 pressure_hits = 0
                 for i in range(max(0, prune_boundary), demote_end):
-                    # Pressure passes override the just-loaded-skill guard:
-                    # when the protected region itself blows the soft budget,
-                    # sparing skill bodies would recreate the #61932 dead-end.
-                    if _demote_tool_result_at(i, spare_protected_skills=False):
+                    if _demote_tool_result_at(i):
                         pressure_hits += 1
                     if _truncate_tool_call_args_at(i):
                         pressure_hits += 1
@@ -3716,7 +3452,7 @@ class ContextCompactor(ContextEngine):
                         if last_tool_idx is not None and i == last_tool_idx:
                             continue
                         if result[i].get("role") == "tool":
-                            if _demote_tool_result_at(i, spare_protected_skills=False):
+                            if _demote_tool_result_at(i):
                                 pressure_hits += 1
                         elif result[i].get("role") == "assistant":
                             if _truncate_tool_call_args_at(i):
@@ -3730,9 +3466,7 @@ class ContextCompactor(ContextEngine):
                         and last_tool_idx >= prune_boundary
                         and _protected_region_tokens() > soft_ceiling
                     ):
-                        if _demote_tool_result_at(
-                            last_tool_idx, spare_protected_skills=False
-                        ):
+                        if _demote_tool_result_at(last_tool_idx):
                             pressure_hits += 1
                 if pressure_hits and not self.quiet_mode:
                     logger.info(
@@ -4169,19 +3903,9 @@ class ContextCompactor(ContextEngine):
 
 ## Last Dropped Turns
 {_bullets(last_dropped_turns, limit=8)}"""
-        # Ghost-skill defense (#32106): the fallback's per-turn truncation
-        # (``_FALLBACK_TURN_MAX_CHARS``) routinely cuts [SKILL_PRUNED: ...]
-        # markers out of the compacted turns. Re-derive the ghosted skills
-        # from the raw turn contents and re-inject deterministically,
-        # exactly like the LLM-summary path.
-        _pruned_names = _collect_ghosted_skill_names(turns_to_summarize)
-        del _pruned_names[_MAX_PRUNED_SKILL_MARKERS:]
         summary = self._with_summary_prefix(_redact_compaction_text(body.strip()))
         if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
             summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
-        # Re-inject AFTER the size cap: the markers live at the end of the
-        # body, exactly where the truncation above cuts.
-        summary = _reinject_pruned_skill_markers(summary, _pruned_names)
         summary = self._augment_summary_lean(summary, turns_to_summarize)
         return summary
 
@@ -4193,7 +3917,6 @@ class ContextCompactor(ContextEngine):
         Keeps the newest ``_LEAN_TAIL_KEEP_TOOL_ROUNDS`` tool rounds verbatim;
         every older tail tool result above ``_LEAN_TAIL_DEMOTE_MIN_CHARS`` is
         replaced with a one-line stub carrying a session_search pointer.
-        Skill-marker rows are never touched (ghost-skill defense #32106).
         Returns a new list; untouched messages are shared, demoted ones copied.
         """
         session_id = getattr(self, "_session_id", "") or ""
@@ -4223,8 +3946,6 @@ class ContextCompactor(ContextEngine):
             if not isinstance(content, str):
                 continue
             if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS:
-                continue
-            if SKILL_PRUNED_MARKER_PREFIX in content:
                 continue
             if content.startswith("[") and " chars)" in content and len(content) < 400:
                 continue  # already a summary stub
@@ -4430,22 +4151,6 @@ class ContextCompactor(ContextEngine):
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
-        # P2 ghost-skill defense (#32106): [SKILL_PRUNED: ...] markers entering
-        # the summarizer are prompt INPUT only — LLMs routinely paraphrase them
-        # into vague prose ("some skills were loaded"), which erases the reload
-        # instruction. Collect the ghosted skills deterministically BEFORE the
-        # call (both already-pruned marker rows AND raw skill_view bodies whose
-        # instructions are about to be summarized away);
-        # ``_reinject_pruned_skill_markers`` restores any marker the model
-        # dropped AFTER the call. Markers already carried by the previous
-        # summary must survive iterative rewrites the same way. Collection
-        # walks the turn LIST, so the serialized input bound below cannot
-        # hide a marker in its omitted middle.
-        _pruned_skill_names = _collect_ghosted_skill_names(turns_to_summarize)
-        for _name in _extract_pruned_skill_names(self._previous_summary or ""):
-            if _name not in _pruned_skill_names:
-                _pruned_skill_names.append(_name)
-        del _pruned_skill_names[_MAX_PRUNED_SKILL_MARKERS:]
         content_to_summarize = self._bound_summary_input(content_to_summarize)
         _sanitized_memory_context = sanitize_memory_context(memory_context)
         _serialized_memory_context = json.dumps(
@@ -4615,12 +4320,6 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
 ## Relevant Files
 - [file or directory path: why it matters, or "(none)"]
 
-{_PRUNED_SKILLS_SECTION_HEADING}
-[If any [SKILL_PRUNED: ...reload with skill_view(...)] markers appear in the input,
-repeat each one verbatim here — copy the exact text, do NOT paraphrase, summarize,
-or describe them. These markers tell the agent which skills must be reloaded before
-use. If none appear, omit this section entirely.]
-
 Rules:
 - Keep every section, even when empty.
 - Use terse bullets, not prose paragraphs. Target ~{summary_budget} tokens.
@@ -4785,9 +4484,6 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = _redact_compaction_text(content.strip())
-            # P2 ghost-skill defense (#32106): deterministically restore any
-            # [SKILL_PRUNED: ...] marker the summarizer paraphrased away.
-            summary = _reinject_pruned_skill_markers(summary, _pruned_skill_names)
             summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
             summary = self._augment_summary_lean(summary, turns_to_summarize)
             self._validate_summary_user_provenance(summary, has_user_turn)

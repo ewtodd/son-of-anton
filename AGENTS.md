@@ -15,7 +15,7 @@ surface, and extended with the physics mode from
 permission modes carry over from it.
 
 One agent loop for all chat — `standard`, the hermes loop (terminal, files,
-web, skills, memory, delegation, cron). Physics — the Autophysicist: a single
+web, memory, delegation, cron). Physics — the Autophysicist: a single
 research manager with permanent memory + scratchpad, token budget,
 `submit_final_answer`, git workspace, per-iteration critic — runs only on
 **explicit** invocation via `son-of-anton problem create/run`; a chat message
@@ -567,8 +567,9 @@ Skill authoring standards:
 All toolsets are defined in `toolsets.py` as a single `TOOLSETS` dict. Each platform's
 adapter picks a base toolset; `_SON_OF_ANTON_CORE_TOOLS` is the default bundle most
 platforms inherit from: web_search/web_extract, terminal/process, file ops (read_file,
-write_file, patch, search_files), vision_analyze, skills (list/view/manage), todo, memory,
-session_search, clarify, execute_code, delegate_task, cronjob.
+write_file, patch, search_files), vision_analyze, todo, memory, session_search, clarify,
+execute_code, delegate_task, cronjob. The model is never offered a skill tool: there is no
+skill listing, loading, or writing tool, and no skills index in the system prompt.
 
 Enable/disable per platform via `son-of-anton tools` (the curses UI) or the
 `tools.<platform>.enabled` / `tools.<platform>.disabled` lists in `config.toml`.
@@ -612,7 +613,7 @@ period clamped to 120s–2h; 120s grace for one-shot jobs; file lock at
 toolsets mid-conversation, or reload memories/rebuild system prompts mid-conversation.
 The ONLY time we alter context is during context compaction.
 
-Slash commands that mutate system-prompt state (skills, tools, memory, etc.) must be
+Slash commands that mutate system-prompt state (tools, memory, etc.) must be
 **cache-aware**: default to deferred invalidation (change takes effect next session),
 with an opt-in `--now` flag for immediate invalidation.
 

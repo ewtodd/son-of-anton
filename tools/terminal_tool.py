@@ -2450,7 +2450,7 @@ def terminal_tool(
                 #     checks still IN_PROGRESS.
                 #   * grepping for TTY-only banners ("All checks were
                 #     successful") that never appear when stdout is piped.
-                # The canonical patterns in the green-ci-policy skill avoid
+                # The canonical patterns named in the hint below avoid
                 # every one of these — drive the loop off exit codes or on
                 # tab-separated `awk -F"\t" "$2==\"pending\""` (column 2).
                 # The detector here is deliberately narrow: it flags the
@@ -2488,17 +2488,14 @@ def terminal_tool(
                             "edge cases silently exit the loop, conclusion-vs-"
                             "status field confusion exits early with bogus "
                             "all-green verdicts, TTY-only summary banners "
-                            "never appear when piped. Use the canonical "
-                            "snippets in the green-ci-policy skill instead: "
-                            "the exit-code-driven `gh pr checks $PR >/dev/null` "
+                            "never appear when piped. Use a canonical poller "
+                            "instead: the exit-code-driven "
+                            "`gh pr checks $PR >/dev/null` "
                             "(rc 0 = green, 8 = pending, else fail) for "
                             "exit-on-first-fail behavior, or the column-2 "
                             "awk-on-tabs poller "
                             "(`awk -F\"\\t\" \"$2==\\\"pending\\\"\"`) for "
-                            "sharded matrices. Load skill_view("
-                            "name='github/son-of-anton-dev', "
-                            "file_path='references/green-ci-policy.md') for "
-                            "the verbatim snippets. If you must roll a custom "
+                            "sharded matrices. If you must roll a custom "
                             "loop with rich structured output, write each tick "
                             "to a known file (`tee -a /tmp/ci.log`) and rely "
                             "on `process(action='log')` to read THAT file — "

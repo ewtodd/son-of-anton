@@ -748,7 +748,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
         # Bot Chat capability epoch: an eternal bot session must adopt
-        # user-initiated capability changes (skills/toolsets/MCP/SOUL/roster)
+        # user-initiated capability changes (toolsets/MCP/SOUL/roster)
         # on the next message, not at /new or compaction. The stored prompt
         # embeds a fingerprint of the capability surface; a mismatch against
         # disk is a deliberate, once-per-change rebuild — the /model
@@ -796,16 +796,6 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 agent.session_id,
             )
             agent._session_title_hint = "Bot Chat"
-            # The skills index inside the prompt comes from a two-layer cache
-            # (in-process LRU + disk snapshot) that doesn't watch the skills
-            # dir; a capability refresh must rebuild THROUGH it or a freshly
-            # installed skill stays invisible in the new prompt.
-            try:
-                from agent.prompt_builder import clear_skills_system_prompt_cache
-
-                clear_skills_system_prompt_cache(clear_snapshot=True)
-            except Exception:
-                pass
             agent._cached_system_prompt = agent._build_system_prompt(system_message)
             agent._bot_capability_refreshed = True
             # Persist the refreshed prompt so the NEXT turn restores the new
@@ -909,7 +899,16 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
-    """Return False when the persisted runtime-identity lines are stale."""
+    """Return False when the persisted runtime-identity lines are stale.
+
+    Also False for a prompt stored before skills were removed (2026-10-15):
+    it lists skills and tells the model to load them with tools that no
+    longer exist. The tool list changed in the same release, so the first
+    resumed turn misses the prefix cache anyway and rebuilding then costs
+    nothing extra; the rebuilt prompt is persisted and reused from there on.
+    """
+    if "<available_skills>" in prompt:
+        return False
 
     def line_value(label: str) -> str:
         """Last matching line wins.
@@ -6219,7 +6218,7 @@ def run_conversation(
                 # This classification is needed regardless of whether the turn has visible content,
                 # because a substantive tool-only turn must invalidate any older housekeeping fallback.
                 _HOUSEKEEPING_TOOLS = frozenset({
-                    "memory", "todo", "skill_manage", "session_search",
+                    "memory", "todo", "session_search",
                 })
                 _all_housekeeping = all(
                     tc.function.name in _HOUSEKEEPING_TOOLS
@@ -6242,13 +6241,13 @@ def run_conversation(
 
                 # If this turn has both content AND tool_calls, capture the content
                 # as a fallback final response. Common pattern: model delivers its
-                # answer and calls memory/skill tools as a side-effect in the same
+                # answer and calls memory/todo tools as a side-effect in the same
                 # turn. If the follow-up turn after tools is empty, we use this.
                 if turn_content and agent._has_content_after_think_block(turn_content):
                     agent._last_content_with_tools = turn_content
                     # Only mute subsequent output when EVERY tool call in
                     # this turn is post-response housekeeping (memory, todo,
-                    # skill_manage, etc.).  If any substantive tool is present
+                    # session_search).  If any substantive tool is present
                     # (search_files, read_file, write_file, terminal, ...),
                     # keep output visible so the user sees progress.
                     agent._last_content_tools_all_housekeeping = _all_housekeeping

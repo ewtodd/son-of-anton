@@ -468,7 +468,7 @@ CLARIFY_SCHEMA = {
         "Use this tool when:\n"
         "- The task is ambiguous and you need the user to choose an approach\n"
         "- You want post-task feedback ('How did that work out?')\n"
-        "- You want to offer to save a skill or update memory\n"
+        "- You want to offer to update memory\n"
         "- A decision has meaningful trade-offs the user should weigh in on\n\n"
         "Do NOT use this tool for simple yes/no confirmation of dangerous "
         "commands (the terminal tool handles that). Prefer making a reasonable "

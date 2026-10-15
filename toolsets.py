@@ -37,8 +37,6 @@ _SON_OF_ANTON_CORE_TOOLS = [
     "read_file", "write_file", "patch", "search_files",
     # Vision
     "vision_analyze",
-    # Skills
-    "skills_list", "skill_view", "skill_manage",
     # Planning & memory
     "todo", "memory",
     # Session history search
@@ -76,12 +74,6 @@ TOOLSETS = {
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
-        "includes": []
-    },
-
-    "skills": {
-        "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
-        "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
 
@@ -162,13 +154,12 @@ TOOLSETS = {
     # Coding posture (base Son of Anton — CLI/TUI). Auto-selected in a code
     # workspace; see agent/coding_context.py.
     "coding": {
-        "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision",
+        "description": "Coding-focused toolset: files, terminal, search, web docs, todo, delegate, vision",
         "tools": [
             "web_search", "web_extract",
             "terminal", "process",
             "read_file", "write_file", "patch", "search_files",
             "vision_analyze",
-            "skills_list", "skill_view", "skill_manage",
             "todo", "memory",
             "session_search", "clarify",
             "execute_code", "delegate_task",
