@@ -61,31 +61,13 @@ PAIRING_DIR = get_son_of_anton_dir("platforms/pairing", "pairing")
 # Platforms absent from this map (or with no allowlist configured) keep the
 # pairing store as the sole grant record, honored by the authz union.
 _PLATFORM_ALLOWLIST_ENV = {
-    "discord": "DISCORD_ALLOWED_USERS",
-    "slack": "SLACK_ALLOWED_USERS",
     "signal": "SIGNAL_ALLOWED_USERS",
 }
 
 
 def _allowlist_env_for_platform(platform: str) -> Optional[str]:
-    """Return the per-platform allowlist env var name, or None.
-
-    Falls back to the platform registry for plugin platforms so a plugin's
-    own ``allowed_users_env`` is honored too.
-    """
-    platform = (platform or "").lower().strip()
-    env_var = _PLATFORM_ALLOWLIST_ENV.get(platform)
-    if env_var:
-        return env_var
-    try:
-        from gateway.platform_registry import platform_registry
-
-        entry = platform_registry.get(platform)
-        if entry and entry.allowed_users_env:
-            return entry.allowed_users_env
-    except Exception:
-        pass
-    return None
+    """Return the per-platform allowlist env var name, or None."""
+    return _PLATFORM_ALLOWLIST_ENV.get((platform or "").lower().strip())
 
 
 def _split_allowlist(raw: str) -> list:

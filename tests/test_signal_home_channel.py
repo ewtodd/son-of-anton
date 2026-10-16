@@ -81,10 +81,3 @@ def test_explicit_home_channel_still_wins(monkeypatch) -> None:
     )
     monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", GROUP)
     assert config.get_home_channel(Platform.SIGNAL) is explicit
-
-
-def test_other_platforms_are_untouched(monkeypatch, config) -> None:
-    """Discord and Slack keep asking, because for them it is a real choice."""
-    monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", GROUP)
-    for platform in (Platform.DISCORD, Platform.SLACK):
-        assert config.get_home_channel(platform) is None

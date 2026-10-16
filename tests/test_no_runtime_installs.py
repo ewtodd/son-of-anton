@@ -67,20 +67,6 @@ def test_runtime_installer_modules_are_gone(module: str) -> None:
     raise AssertionError(f"{module} is importable again — a runtime installer is back")
 
 
-def test_platforms_cannot_register_an_installer() -> None:
-    """The registry only probes; nothing may install a platform's SDK."""
-    from gateway.platform_registry import PlatformEntry
-
-    with pytest.raises(TypeError):
-        PlatformEntry(
-            name="example",
-            label="Example",
-            adapter_factory=lambda cfg: None,
-            check_fn=lambda: False,
-            ensure_deps_fn=lambda: True,
-        )
-
-
 def test_missing_optional_sdk_names_the_nix_group(monkeypatch) -> None:
     """A provider whose SDK is not in the build says how to add it, not pip."""
     import tools.web_tools as web_tools

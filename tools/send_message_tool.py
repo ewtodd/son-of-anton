@@ -1,35 +1,20 @@
 """Send Message Tool -- cross-channel messaging via platform APIs.
 
-Sends a message to a user or channel on any connected messaging platform
-(Discord, Slack, Signal). Supports listing available targets and resolving
+Sends a message to a user or group on the connected messaging platform
+(Signal). Supports listing available targets and resolving
 human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
-import asyncio
 import json
 import logging
 import os
 import re
 import time
 
-
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
-_NUMERIC_TOPIC_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
-# Slack conversation IDs: C (public channel), G (private/group channel), D (DM).
-# Must be uppercase alphanumeric, 9+ chars. User IDs (U...) are parsed as
-# explicit user targets (``user:U...``) and are converted to D... conversations
-# via conversations.open before chat.postMessage — posting directly to a U/W
-# ID fails because the API requires a conversation ID. ``@handle`` targets are
-# resolved through users.list first (``user_name:...``).
-_SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
-_SLACK_USER_ID_RE = re.compile(r"^\s*(U[A-Z0-9]{8,})\s*$")
-_SLACK_USER_NAME_RE = re.compile(r"^\s*@([A-Za-z0-9._-]{1,80})\s*$")
-_SLACK_MENTION_RE = re.compile(r"^\s*<@(U[A-Z0-9]{8,})(?:\|[^>]+)?>\s*$")
-# Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
-_SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 # Platforms that address recipients by phone number and accept E.164 format
 # (with a leading '+'). Without this, "+15551234567" fails the isdigit() check
 # below and falls through to channel-name resolution, which has no way to
@@ -41,63 +26,6 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".m2a", ".wav", ".m4a", ".flac"}
 _VOICE_EXTS = {".ogg", ".opus"}
-
-# Extensions that carry a native caption on the media bubble itself
-# (photo/video/document). Voice/audio notes are excluded: a caption on a
-# voice note reads as a separate label rather than a bubble caption, and the
-# established convention is to keep the accompanying text as its own message.
-_CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {
-    ".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".zip",
-}
-
-# Per-platform native caption length limits (characters). Text longer than
-# the limit can't ride on the media bubble and stays a separate body message.
-_DEFAULT_CAPTION_LIMIT = 4096
-
-def prepare_send_message_platforms() -> None:
-    """Load enabled standalone plugins before tool schemas/cache keys are built."""
-    from son_of_anton_cli.plugins import discover_plugins
-
-    discover_plugins()
-
-
-def _media_caption_split(text, media_files, *, max_caption_len):
-    """Decide whether the accompanying text should ride on the media bubble.
-
-    Single enforced chokepoint for the ``MEDIA:<path> caption`` behavior
-    across every standalone sender. ``son-of-anton send`` (and the send_message
-    tool / cron) strips the ``MEDIA:`` tag and leaves the remaining prose as
-    ``text``; historically each platform sent that ``text`` as a *separate*
-    message before an uncaptioned media bubble, splitting the reported case
-    ``son-of-anton send --to discord "MEDIA:/x.png This Caption"`` into two parts.
-
-    Returns ``(caption, body_text)``:
-
-    * ``(caption, "")`` — attach ``text`` to the media as its native caption
-      and send *no* separate body message. Only when there is exactly one
-      media file, it is a captionable kind (image/video/document, not a
-      voice/audio note), and ``text`` fits ``max_caption_len``.
-    * ``(None, text)`` — keep the historical behavior: ``text`` is a separate
-      body message and the media carries no caption. Applies to multi-file
-      sends (caption→file association is ambiguous), voice/audio notes, empty
-      text, or text longer than the caption limit.
-    """
-    stripped = (text or "").strip()
-    media = media_files or []
-    if not stripped or len(media) != 1:
-        return None, text
-    media_path, is_voice = media[0]
-    if is_voice:
-        return None, text
-    ext = os.path.splitext(media_path)[1].lower()
-    if ext not in _CAPTIONABLE_EXTS:
-        return None, text
-    # Measure the caption in Unicode codepoints — a portable upper bound that
-    # never under-counts UTF-16 units for BMP text, so an
-    # over-count only fails safe (falls back to a separate message).
-    if len(stripped) > max_caption_len:
-        return None, text
-    return stripped, ""
 _URL_SECRET_QUERY_RE = re.compile(
     r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|signature|sig)=)([^&#\s]+)",
     re.IGNORECASE,
@@ -135,12 +63,6 @@ def send_message_tool(args, **kw):
     if action == "list":
         return _handle_list()
 
-    if action == "react":
-        return _handle_react(args)
-
-    if action == "unreact":
-        return _handle_react(args, remove=True)
-
     return _handle_send(args)
 
 
@@ -151,96 +73,6 @@ def _handle_list():
         return json.dumps({"targets": format_directory_for_display()})
     except Exception as e:
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
-
-
-def _handle_react(args, remove=False):
-    """Attach (or with ``remove=True`` retract) an emoji reaction on a message
-    via a live gateway adapter.
-
-    Only adapters that expose ``add_reaction(chat_id, emoji, message_id)`` /
-    ``remove_reaction(chat_id, message_id)`` coroutines support this (e.g.
-    message reactions). Requires the gateway to be running in this
-    process — there is no standalone fallback, since reacting needs the
-    adapter's live message-id state.
-    """
-    target = args.get("target", "")
-    emoji = (args.get("emoji") or "").strip()
-    message_id = (args.get("message_id") or "").strip() or None
-    if not target or (not remove and not emoji):
-        return tool_error(
-            "Both 'target' and 'emoji' are required when action='react'"
-            if not remove
-            else "'target' is required when action='unreact'"
-        )
-
-    parts = target.split(":", 1)
-    platform_name = parts[0].strip().lower()
-    target_ref = parts[1].strip() if len(parts) > 1 else None
-    chat_id = None
-    prepare_send_message_platforms()
-    if target_ref:
-        # Platform-native ids passed through verbatim
-        # match no parser pattern and no directory entry, so hand them to
-        # the adapter unchanged; it validates them.
-        chat_id, _thread_id, resolution_error = resolve_send_target(
-            platform_name, target_ref, pass_unresolved_references=True
-        )
-        if resolution_error:
-            return tool_error(resolution_error)
-
-    try:
-        from gateway.config import Platform, load_gateway_config
-        platform = Platform(platform_name)
-    except (ValueError, KeyError):
-        return tool_error(f"Unknown platform: {platform_name}")
-
-    if not chat_id:
-        try:
-            config = load_gateway_config()
-            home = config.get_home_channel(platform)
-        except Exception:
-            home = None
-        if not home:
-            return tool_error(
-                f"No chat specified and no home channel set for {platform_name}. "
-                f"Use '{platform_name}:chat_id'."
-            )
-        chat_id = home.chat_id
-
-    runner = None
-    try:
-        from gateway.run import _gateway_runner_ref
-        runner = _gateway_runner_ref()
-    except Exception:
-        runner = None
-    adapter = runner.adapters.get(platform) if runner is not None else None
-    if adapter is None:
-        return tool_error(
-            f"Reactions require a live {platform_name} adapter in the running "
-            "gateway (not available from cron/standalone contexts)."
-        )
-    fn_name = "remove_reaction" if remove else "add_reaction"
-    react_fn = getattr(adapter, fn_name, None)
-    if not callable(react_fn):
-        return tool_error(
-            f"Platform '{platform_name}' does not support message reactions."
-        )
-
-    try:
-        from model_tools import _run_async
-        if remove:
-            result = _run_async(
-                react_fn(chat_id=chat_id, message_id=message_id)
-            )
-        else:
-            result = _run_async(
-                react_fn(chat_id=chat_id, emoji=emoji, message_id=message_id)
-            )
-    except Exception as e:
-        return json.dumps(_error(f"Reaction failed: {e}"))
-    if isinstance(result, dict):
-        return json.dumps(result)
-    return json.dumps({"success": bool(result)})
 
 
 def _handle_send(args):
@@ -256,7 +88,6 @@ def _handle_send(args):
     chat_id = None
     thread_id = None
 
-    prepare_send_message_platforms()
     if target_ref:
         chat_id, thread_id, resolution_error = resolve_send_target(
             platform_name, target_ref
@@ -274,14 +105,6 @@ def _handle_send(args):
     except Exception as e:
         return json.dumps(_error(f"Failed to load gateway config: {e}"))
 
-    from gateway.platform_registry import platform_registry
-
-    entry = platform_registry.get(platform_name)
-    is_builtin = platform_name in {member.value for member in Platform}
-    if not is_builtin and entry is None:
-        return tool_error(
-            f"Unknown or unregistered plugin platform: {platform_name}"
-        )
     try:
         platform = Platform(platform_name)
     except (ValueError, KeyError):
@@ -320,23 +143,6 @@ def _handle_send(args):
     if duplicate_skip:
         return json.dumps(duplicate_skip)
 
-    # Slack: resolve user targets to DM channel IDs before sending.
-    # _parse_target_ref emits internal ``user:U...`` / ``user_name:@handle``
-    # targets; a bare U... id can also arrive from session metadata or the
-    # home-channel config. All are opened via conversations.open (fixes #19236).
-    if platform_name == "slack" and chat_id:
-        _slack_dm_target = chat_id
-        if _slack_dm_target.startswith("U") and _SLACK_USER_ID_RE.fullmatch(_slack_dm_target):
-            _slack_dm_target = f"user:{_slack_dm_target}"
-        if _slack_dm_target.startswith(("user:", "user_name:")):
-            from model_tools import _run_async
-            _resolved, _resolve_err = _run_async(
-                _resolve_slack_user_target(pconfig.token, _slack_dm_target)
-            )
-            if _resolve_err:
-                return json.dumps(_resolve_err)
-            chat_id = _resolved
-
     try:
         from model_tools import _run_async
         send_kwargs = {
@@ -344,10 +150,6 @@ def _handle_send(args):
             "media_files": media_files,
             "force_document": force_document_attachments,
         }
-        # Preserve the exact built-in call contract; only custom handlers need
-        # the complete typed request.
-        if entry is not None and entry.send_message_handler is not None:
-            send_kwargs["args"] = args
         result = _run_async(
             _send_to_platform(
                 platform,
@@ -388,23 +190,6 @@ def _handle_send(args):
 
 def _parse_target_ref(platform_name: str, target_ref: str):
     """Parse a tool target into chat_id/thread_id and whether it is explicit."""
-    if platform_name == "discord":
-        match = _NUMERIC_TOPIC_RE.fullmatch(target_ref)
-        if match:
-            return match.group(1), match.group(2), True
-    if platform_name == "slack":
-        match = _SLACK_THREAD_TARGET_RE.fullmatch(target_ref)
-        if match:
-            return match.group(1), match.group(2), True
-        match = _SLACK_TARGET_RE.fullmatch(target_ref)
-        if match:
-            return match.group(1), None, True
-        match = _SLACK_USER_ID_RE.fullmatch(target_ref) or _SLACK_MENTION_RE.fullmatch(target_ref)
-        if match:
-            return f"user:{match.group(1)}", None, True
-        match = _SLACK_USER_NAME_RE.fullmatch(target_ref)
-        if match:
-            return f"user_name:{match.group(1)}", None, True
     stripped_target = target_ref.strip()
     if platform_name == "signal" and stripped_target.startswith("group:"):
         group_id = stripped_target[len("group:"):].strip()
@@ -427,83 +212,20 @@ def resolve_send_target(
 ) -> tuple[str | None, str | None, str | None]:
     """Resolve one send target the same way for every caller (model tool, CLI, cron).
 
-    Channel-directory IDs are trusted. Plugin platforms must explicitly parse
-    native target syntax; for the model-facing send tool (the default), a
-    target that can't be resolved is an error — the model can read the error
-    and pick a listed target instead.
+    Channel-directory IDs are trusted. For the model-facing send tool (the
+    default), a target that can't be resolved is an error — the model can read
+    the error and pick a listed target instead.
 
     ``pass_unresolved_references=True`` restores the old pass-through behavior for
     callers that have no model in the loop (cron delivering a stored job's
-    output, react/unreact on platform-native message ids): if the target
-    can't be resolved and the platform is built in, or is a plugin platform
-    that declares no parser, the string is handed to the adapter exactly as
-    written and the adapter decides whether it's valid. A plugin platform
-    that DOES declare a parser stays strict for every caller — its parser is
-    the authority on native syntax.
-
-    The optional validator has the final say over parser-normalized,
-    directory-resolved, and passed-through IDs alike.
+    output): if the target can't be resolved, the string is handed to the
+    adapter exactly as written and the adapter decides whether it's valid.
     """
-    from gateway.config import Platform
-    from gateway.platform_registry import platform_registry
-
-    entry = platform_registry.get(platform_name)
-
-    def _validate(candidate: str) -> str | None:
-        if entry is None or entry.validate_target_ref_fn is None:
-            return None
-        try:
-            verdict = entry.validate_target_ref_fn(candidate)
-        except Exception:
-            logger.debug(
-                "Plugin target validator failed for %s", platform_name, exc_info=True
-            )
-            return f"Target validator failed for platform '{platform_name}'"
-        if verdict is True:
-            return None
-        if isinstance(verdict, str) and verdict:
-            return f"Invalid target '{target_ref}' on {platform_name}: {verdict}"
-        return f"Invalid target '{target_ref}' on {platform_name}"
-
-    if entry is not None and entry.parse_target_ref_fn is not None:
-        try:
-            parsed = entry.parse_target_ref_fn(target_ref)
-        except Exception:
-            logger.debug(
-                "Plugin target parser failed for %s", platform_name, exc_info=True
-            )
-            return None, None, f"Target parser failed for platform '{platform_name}'"
-        if parsed is not None:
-            if (
-                not isinstance(parsed, tuple)
-                or len(parsed) != 2
-                or not isinstance(parsed[0], str)
-                or not parsed[0]
-                or (parsed[1] is not None and not isinstance(parsed[1], str))
-            ):
-                return (
-                    None,
-                    None,
-                    f"Target parser for platform '{platform_name}' returned an invalid result",
-                )
-            parsed_chat_id, parsed_thread_id = parsed
-            error = _validate(parsed_chat_id)
-            return (None, None, error) if error else (
-                parsed_chat_id,
-                parsed_thread_id,
-                None,
-            )
-
     parsed_chat_id, parsed_thread_id, explicit = _parse_target_ref(
         platform_name, target_ref
     )
     if explicit and parsed_chat_id is not None:
-        error = _validate(parsed_chat_id)
-        return (None, None, error) if error else (
-            parsed_chat_id,
-            parsed_thread_id,
-            None,
-        )
+        return parsed_chat_id, parsed_thread_id, None
 
     resolution_failed = False
     try:
@@ -517,41 +239,15 @@ def resolve_send_target(
         parsed_chat_id, parsed_thread_id, _ = _parse_target_ref(
             platform_name, resolved
         )
-        chat_id = parsed_chat_id or resolved
-        error = _validate(chat_id)
-        return (None, None, error) if error else (
-            chat_id,
-            parsed_thread_id,
-            None,
-        )
+        return parsed_chat_id or resolved, parsed_thread_id, None
 
-    is_builtin = platform_name in {member.value for member in Platform}
-    if entry is None and not is_builtin:
-        return None, None, f"Unknown or unregistered plugin platform: {platform_name}"
-
-    def _pass_through_unresolved():
-        """Hand the raw target to the adapter unchanged (it validates)."""
-        error = _validate(target_ref)
-        if error:
-            return None, None, error
+    if pass_unresolved_references:
         logger.debug(
             "Handing unresolved target '%s' to the %s adapter unchanged "
             "(the adapter validates it)",
             target_ref, platform_name,
         )
         return target_ref, None, None
-
-    if entry is not None and entry.source == "plugin" and not is_builtin:
-        if pass_unresolved_references and entry.parse_target_ref_fn is None:
-            return _pass_through_unresolved()
-        return (
-            None,
-            None,
-            f"Could not resolve '{target_ref}' on {platform_name}. "
-            "The plugin parser did not recognize it and no channel-directory entry matched.",
-        )
-    if pass_unresolved_references:
-        return _pass_through_unresolved()
     hint = (
         "Try using a numeric channel ID instead."
         if resolution_failed
@@ -625,409 +321,13 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
-async def _send_via_adapter(
-    platform,
-    pconfig,
-    chat_id,
-    chunk,
-    *,
-    thread_id=None,
-    media_files=None,
-    force_document=False,
-):
-    """Send a message via a live gateway adapter, with a standalone fallback
-    for out-of-process callers (e.g. cron running separately from the gateway).
-
-    Order of attempts:
-      1. Live in-process adapter via ``_gateway_runner_ref()`` (the path that
-         existed before this change).
-      2. The plugin's ``standalone_sender_fn`` registered on its
-         ``PlatformEntry`` (used when the gateway is not in this process, so
-         the runner weakref is ``None``).
-      3. A descriptive error explaining both options.
-    """
-    platform_name = platform.value if hasattr(platform, "value") else str(platform)
-    runner = None
-    try:
-        from gateway.run import _gateway_runner_ref
-        runner = _gateway_runner_ref()
-    except Exception:
-        runner = None
-
-    if runner is not None:
-        try:
-            adapter = runner.adapters.get(platform)
-        except Exception:
-            adapter = None
-        if adapter is not None:
-            try:
-                metadata = {}
-                if thread_id:
-                    metadata["thread_id"] = thread_id
-                if chat_id:
-                    metadata["publish_topic"] = chat_id
-                if not metadata:
-                    metadata = None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                return {"error": f"Plugin platform send failed: {e}"}
-            if result.success:
-                return {"success": True, "message_id": result.message_id}
-            return {"error": f"Adapter send failed: {result.error}"}
-
-    entry = None
-    try:
-        from gateway.platform_registry import platform_registry
-        entry = platform_registry.get(platform_name)
-    except Exception:
-        entry = None
-
-    if entry is not None and entry.standalone_sender_fn is not None:
-        try:
-            result = await entry.standalone_sender_fn(
-                pconfig,
-                chat_id,
-                chunk,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.debug("Plugin standalone send for %s raised", platform_name, exc_info=True)
-            return {"error": f"Plugin standalone send failed: {e}"}
-
-        if isinstance(result, dict) and (result.get("success") or result.get("error")):
-            return result
-        return {
-            "error": (
-                f"Plugin standalone send for '{platform_name}' returned an "
-                f"invalid result: expected a dict with 'success' or 'error' "
-                f"keys, got {type(result).__name__}"
-            )
-        }
-
-    return {
-        "error": (
-            f"No live adapter for platform '{platform_name}'. Is the gateway "
-            f"running with this platform connected? For out-of-process delivery "
-            f"(e.g. cron in a separate process), the platform plugin must "
-            f"register a standalone_sender_fn on its PlatformEntry."
-        )
-    }
-
-
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
-    """Route a message to the appropriate platform sender.
-
-    Long messages are automatically chunked to fit within platform limits
-    using the same smart-splitting algorithm as the gateway adapters
-    (preserves code-block boundaries, adds part indicators).
-    """
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+    """Route a message to the platform sender (Signal)."""
     from gateway.config import Platform
 
-    platform_name = platform.value if hasattr(platform, "value") else str(platform)
-
-    media_files = media_files or []
-
-    from gateway.platforms.base import BasePlatformAdapter
-
-    media_files = media_files or []
-
-    # Platform message length limits come from the plugin registry's
-    # PlatformEntry.max_message_length for plugin platforms.
-    _MAX_LENGTHS: dict = {}
-
-    # Check plugin registry for max_message_length
-    if platform not in _MAX_LENGTHS:
-        try:
-            from gateway.platform_registry import platform_registry
-            entry = platform_registry.get(platform.value)
-            if entry and entry.max_message_length > 0:
-                _MAX_LENGTHS[platform] = entry.max_message_length
-        except Exception:
-            pass
-
-    # Smart-chunk the message to fit within platform limits.
-    # For short messages or platforms without a known limit this is a no-op.
-    max_len = _MAX_LENGTHS.get(platform)
-    if max_len:
-        chunks = BasePlatformAdapter.truncate_message(message, max_len)
-    else:
-        chunks = [message]
-
-    # --- Discord: chunked delivery via the registry's standalone_sender_fn.
-    # The plugin's ``_standalone_send`` (registered in
-    # plugins/platforms/discord/adapter.py) handles forum channels, threads,
-    # and multipart media uploads.  ``_send_via_adapter`` tries the live
-    # in-process adapter first via ``adapter.send()``, but Discord's elif
-    # historically went straight to the HTTP path; we preserve that by
-    # explicitly invoking the registry hook here so behavior is unchanged.
-    if platform == Platform.DISCORD:
-        from gateway.platform_registry import platform_registry
-        entry = platform_registry.get("discord")
-        if entry is None or entry.standalone_sender_fn is None:
-            return {"error": "Discord plugin not registered or missing standalone_sender_fn"}
-        # MEDIA:<path> caption: single captionable file + short text rides as
-        # the media message content instead of a separate message before the
-        # attachment (single enforced decision in _media_caption_split). Cap on
-        # the platform's own message limit so the caption is always deliverable.
-        _dc_caption, _ = _media_caption_split(
-            message, media_files,
-            max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT),
-        )
-        if _dc_caption is not None:
-            result = await entry.standalone_sender_fn(
-                pconfig,
-                chat_id,
-                "",
-                thread_id=thread_id,
-                media_files=media_files,
-                caption=_dc_caption,
-            )
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            return result
-        last_result = None
-        for i, chunk in enumerate(chunks):
-            is_last = (i == len(chunks) - 1)
-            result = await entry.standalone_sender_fn(
-                pconfig,
-                chat_id,
-                chunk,
-                thread_id=thread_id,
-                media_files=media_files if is_last else [],
-            )
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            last_result = result
-        return last_result
-
-    # --- Signal: native attachment support via JSON-RPC attachments param ---
-    if platform == Platform.SIGNAL and media_files:
-        last_result = None
-        for i, chunk in enumerate(chunks):
-            is_last = (i == len(chunks) - 1)
-            result = await _send_signal(
-                pconfig.extra,
-                chat_id,
-                chunk,
-                media_files=media_files if is_last else [],
-            )
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            last_result = result
-        return last_result
-
-    # --- Slack: native media via files_upload_v2 in the plugin's
-    # standalone_sender_fn (plugins/platforms/slack/adapter.py::_standalone_send).
-    # Gateway in-channel MEDIA: delivery already worked; send_message previously
-    # omitted Slack attachments and told the model media was unsupported.
-    if platform == Platform.SLACK and media_files:
-        from gateway.platform_registry import platform_registry as _pr_slack
-        from son_of_anton_cli.plugins import discover_plugins as _dp_slack
-        _dp_slack()
-        _slack_entry = _pr_slack.get("slack")
-        if _slack_entry is None or _slack_entry.standalone_sender_fn is None:
-            return {"error": "Slack plugin not registered or missing standalone_sender_fn"}
-        _sl_caption, _ = _media_caption_split(
-            message, media_files,
-            max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT),
-        )
-        if _sl_caption is not None:
-            result = await _slack_entry.standalone_sender_fn(
-                pconfig,
-                chat_id,
-                "",
-                thread_id=thread_id,
-                media_files=media_files,
-                caption=_sl_caption,
-            )
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            return result
-        last_result = None
-        for i, chunk in enumerate(chunks):
-            is_last = (i == len(chunks) - 1)
-            result = await _slack_entry.standalone_sender_fn(
-                pconfig,
-                chat_id,
-                chunk,
-                thread_id=thread_id,
-                media_files=media_files if is_last else [],
-            )
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            last_result = result
-        return last_result
-
-    # --- Slack: prefer the live gateway adapter, then the plugin's
-    # standalone sender.  The live adapter is multi-workspace aware (it maps
-    # channels to the workspace client that owns them) and honors adapter-side
-    # gates like ignored_channels; the standalone Web-API path may only have a
-    # comma-separated token list.  ``_send_via_adapter`` tries the in-process
-    # adapter first and falls back to the registry standalone sender for
-    # out-of-process cron runs, preserving MEDIA delivery on the fallback
-    # (media-bearing sends were already intercepted by the branch above).
-    if platform == Platform.SLACK:
-        last_result = None
-        for i, chunk in enumerate(chunks):
-            is_last = i == len(chunks) - 1
-            result = await _send_via_adapter(
-                platform,
-                pconfig,
-                chat_id,
-                chunk,
-                thread_id=thread_id,
-                media_files=media_files if is_last else [],
-                force_document=force_document,
-            )
-            if isinstance(result, dict) and result.get("error"):
-                return result
-            last_result = result
-        return last_result
-
-    # --- Non-media platforms ---
-    if media_files and not message.strip():
-        return {
-            "error": (
-                f"send_message MEDIA delivery is currently only supported for discord, signal and slack; "
-                f"target {platform.value} had only media attachments"
-            )
-        }
-    warning = None
-    if media_files:
-        warning = (
-            f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for discord, signal and slack"
-        )
-
-    last_result = None
-    for chunk in chunks:
-        if platform == Platform.SIGNAL:
-            result = await _send_signal(pconfig.extra, chat_id, chunk)
-        else:
-            from gateway.platform_registry import platform_registry
-
-            entry = platform_registry.get(platform_name)
-            handler = entry.send_message_handler if entry is not None else None
-            if handler is not None:
-                try:
-                    import inspect
-
-                    result = handler(args or {}, chat_id, platform_name, pconfig)
-                    if inspect.isawaitable(result):
-                        result = await result
-                    return result
-                except Exception as e:
-                    return {"error": f"Plugin send_message handler failed: {e}"}
-            # Plugin platform: route through the gateway's live adapter if
-            # available, otherwise the plugin's standalone_sender_fn.
-            result = await _send_via_adapter(
-                platform,
-                pconfig,
-                chat_id,
-                chunk,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document,
-            )
-
-        if isinstance(result, dict) and result.get("error"):
-            return result
-        last_result = result
-
-    if warning and isinstance(last_result, dict) and last_result.get("success"):
-        warnings = list(last_result.get("warnings", []))
-        warnings.append(warning)
-        last_result["warnings"] = warnings
-    return last_result
-
-
-# wired via standalone_sender_fn and reached through _registry_standalone_send. #41112.
-
-
-async def _resolve_slack_user_target(token, chat_id):
-    """Resolve a Slack user target to a D... DM conversation ID.
-
-    ``chat_id`` may be a Slack conversation ID (C/G/D...) — returned unchanged —
-    or an internal user target (``user:U...`` / ``user_name:<handle>``). User
-    targets are opened as DMs via conversations.open because Slack
-    chat.postMessage requires a conversation ID. ``user_name:`` targets are
-    first resolved to a user ID through users.list (stable handle match only).
-
-    Returns ``(chat_id, None)`` on success or ``(None, error_dict)`` on failure.
-    """
-    if not (chat_id.startswith("user:") or chat_id.startswith("user_name:")):
-        return chat_id, None
-    try:
-        import aiohttp
-    except ImportError:
-        from son_of_anton_constants import missing_dependency_message
-
-        return None, {"error": missing_dependency_message("aiohttp", "messaging")}
-    try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _proxy = resolve_proxy_url()
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
-        base_url = "https://slack.com/api"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-        async def post_api(session, method, payload):
-            async with session.post(f"{base_url}/{method}", headers=headers, json=payload, **_req_kw) as resp:
-                return await resp.json()
-
-        async def resolve_user_name(session, name):
-            query = name.strip().lstrip("@").lower()
-            matches = []
-            cursor = None
-            for _page in range(20):
-                payload = {"limit": 200}
-                if cursor:
-                    payload["cursor"] = cursor
-                data = await post_api(session, "users.list", payload)
-                if not data.get("ok"):
-                    return None, f"Slack users.list error: {data.get('error', 'unknown')}"
-                for member in data.get("members", []):
-                    if member.get("deleted") or member.get("is_bot"):
-                        continue
-                    # ``@name`` should match the stable Slack handle only. Display
-                    # and real names are mutable/non-unique enough that using them
-                    # could DM the wrong person with sensitive content.
-                    if str(member.get("name", "")).strip().lower() == query:
-                        matches.append(member)
-                cursor = (data.get("response_metadata") or {}).get("next_cursor")
-                if not cursor:
-                    break
-            if not matches:
-                return None, f"Could not resolve Slack user '@{name}'."
-            if len(matches) > 1:
-                return None, f"Slack user '@{name}' matched multiple Slack users. Use a Slack user ID instead."
-            return matches[0].get("id"), None
-
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            if chat_id.startswith("user_name:"):
-                user_id, error = await resolve_user_name(session, chat_id[len("user_name:"):])
-                if error:
-                    return None, _error(error)
-                chat_id = f"user:{user_id}"
-
-            user_id = chat_id[len("user:"):]
-            opened = await post_api(session, "conversations.open", {"users": user_id})
-            if not opened.get("ok"):
-                return None, _error(
-                    f"Slack conversations.open error: {opened.get('error', 'unknown')}. "
-                    "Check bot permissions (im:write)."
-                )
-            dm_id = (opened.get("channel") or {}).get("id")
-            if not dm_id:
-                return None, _error("Slack conversations.open did not return a DM channel ID")
-            return dm_id, None
-    except Exception as e:
-        return None, _error(f"Slack DM resolution failed: {e}")
+    if platform != Platform.SIGNAL:
+        return {"error": f"Unknown platform: {platform.value}"}
+    return await _send_signal(pconfig.extra, chat_id, message, media_files=media_files)
 
 
 async def _send_signal(extra, chat_id, message, media_files=None):
@@ -1267,8 +567,6 @@ from tools.registry import tool_error
 # ``_send_via_adapter``, ``_parse_target_ref``, the per-platform ``_send_*``
 # helpers) remains the shared transport used by:
 #   - cron delivery (cron/scheduler.py)
-#   - the ``son-of-anton send`` CLI command (son_of_anton_cli/send_cmd.py)
-#   - the gateway kanban notifier (dashboard-toggled, outside agent control)
 #   - the standalone MCP server (mcp_serve.py), which is an opt-in surface
 # Those callers import the helpers directly; none of them need the registry
 # entry.

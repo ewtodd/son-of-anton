@@ -1333,8 +1333,7 @@ DEFAULT_CONFIG = {
         "status_phrases": {},
         # How a reasoning/thinking summary renders when show_reasoning is on.
         # "code" (default) = 💭 fenced code block; "blockquote" = "> " lines;
-        # "subtext" = "-# " lines (Discord small grey metadata text). Discord
-        # defaults to "subtext"; override per-platform via
+        # "subtext" = "-# " lines; override per-platform via
         # display.platforms.<platform>.reasoning_style.
         "reasoning_style": "code",
         # Auto-delete system-notice replies (e.g. "✨ New session started!",
@@ -1346,24 +1345,10 @@ DEFAULT_CONFIG = {
         # (disabled) preserves prior behavior.
         "ephemeral_system_ttl": 0,
         # Per-platform display/streaming overrides. Each key is a gateway
-        # platform ("discord", "slack", "signal", …) mapping to a dict of
-        # display settings that override the global value for that platform
-        # only. A setting left unset here falls through to the global default.
-        #
-        # Shipped defaults encode the streaming experience that works best
-        # per platform:
-        #   - Discord and Slack only have edit-based streaming (repeated
-        #     editMessage), which flickers and is noticeably jankier, so
-        #     streaming is off by default for both.
-        # These are gap-fillers: a user who explicitly sets, e.g.,
-        # display.platforms.discord.streaming: true keeps their value
-        # (config deep-merge has user values win over defaults). The global
-        # streaming.enabled master switch still gates everything — these
-        # per-platform flags only take effect once streaming is enabled.
-        "platforms": {
-            "discord": {"streaming": False},
-            "slack": {"streaming": False},
-        },
+        # platform ("signal", …) mapping to a dict of display settings that
+        # override the global value for that platform only. A setting left
+        # unset here falls through to the global default.
+        "platforms": {},
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders
         # e.g. `model · 68% · ~/projects/son-of-anton`. Per-platform overrides go under
@@ -1412,7 +1397,7 @@ DEFAULT_CONFIG = {
         "memory_enabled": True,
         "user_profile_enabled": True,
         # Built-in memory scope override. Empty = auto by session platform:
-        # "cli" -> cli, signal/discord/slack -> gateway, everything else ->
+        # "cli" -> cli, signal -> gateway, everything else ->
         # shared. Pin it when a non-standard front-end should see a scope
         # (e.g. a cron worker that needs the workstation notes).
         "scope": "",
@@ -1587,82 +1572,6 @@ DEFAULT_CONFIG = {
     # Empty string means use server-local time.
     "timezone": "",
 
-    # Slack platform settings (gateway mode)
-    "slack": {
-        "require_mention": True,       # Require @mention to respond in channels
-        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
-        "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
-        # Channel IDs where @mention is ALWAYS required, even when
-        # require_mention is false globally (per-channel force-mention override).
-        "require_mention_channels": "",
-        # Ignore a channel/thread message addressed to another user (first token
-        # @mentions someone other than the bot) unless the bot is also mentioned.
-        # Opt-in; default off keeps existing behaviour. Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
-        "ignore_other_user_mentions": False,
-        # If True, require @mention in Slack thread replies too.
-        "thread_require_mention": False,
-        "channel_prompts": {},         # Per-channel ephemeral system prompts
-    },
-
-    # Discord platform settings (gateway mode)
-    "discord": {
-        "require_mention": True,       # Require @mention to respond in server channels
-        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
-        "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
-        "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
-        "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)
-        "bots_require_inline_mention": False,  # Multi-bot rooms: if True, another bot must type @thisbot in its message to trigger a reply; a Discord reply/quote alone won't. Prevents two bots auto-replying to each other forever. Does not affect humans.
-        "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
-        "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
-        "missed_message_backfill": {
-            "enabled": False,             # Replay missed Discord messages after reconnect/startup
-            "channels": "",               # Comma-separated channel IDs; empty uses free_response_channels
-            "window_seconds": 21600,      # Only inspect messages from the last 6 hours
-            "limit": 100,                 # Global cap on messages scanned per reconnect
-            "max_dispatches": 10,         # Cap on recovered messages dispatched per reconnect
-        },
-        "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
-        # Discord Gateway transport health. These settings inspect the active
-        # WebSocket's ready/open/heartbeat state; they never use Discord REST as
-        # proof that Gateway events are still arriving. Set any value to 0 to
-        # disable this compatibility-safe probe during a rollback.
-        "websocket_liveness_interval_seconds": 15,
-        "websocket_liveness_failure_threshold": 2,
-        "websocket_heartbeat_ack_max_age_seconds": 60,
-        "websocket_max_latency_seconds": 30,
-        "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
-        # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES
-        # authorizes only guild messages in the role's own guild — DMs require
-        # DISCORD_ALLOWED_USERS. Set dm_role_auth_guild to a guild ID to also
-        # authorize DMs from members of that one trusted guild holding the
-        # allowed role. Unset / empty / 0 = secure default (DM role-auth off).
-        "dm_role_auth_guild": "",
-        # discord / discord_admin tools: restrict which actions the agent may call.
-        # Default (empty) = all actions allowed (subject to bot privileged intents).
-        # Accepts comma-separated string ("list_guilds,list_channels,fetch_messages")
-        # or TOML list. Unknown names are dropped with a warning at load time.
-        # Actions: list_guilds, server_info, list_channels, channel_info,
-        # list_roles, member_info, search_members, fetch_messages, list_pins,
-        # pin_message, unpin_message, create_thread, add_role, remove_role.
-        "server_actions": "",
-        # DEPRECATED / no-op. Any uploaded file is now always cached and
-        # surfaced to the agent regardless of file type — authorization to
-        # message the agent is the gate, not the extension. Kept so existing
-        # configs that set it do not error. Env override:
-        # DISCORD_ALLOW_ANY_ATTACHMENT.
-        "allow_any_attachment": False,
-        # Maximum bytes per attachment the gateway will cache. The whole file
-        # is held in memory while being written, so unlimited uploads carry a
-        # real memory cost. Default 32 MiB matches the historical hardcoded
-        # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
-        "max_attachment_bytes": 33554432,
-        # When True, Discord approval prompts mention numeric allowed users so
-        # owners notice approval requests in shared channels/threads. Env
-        # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
-        # pings.
-        "approval_mentions": False,
-    },
-
     # Approval mode for dangerous commands:
     #   manual — always prompt the user
     #   smart  — use auxiliary LLM to auto-approve low-risk commands (default)
@@ -1728,8 +1637,8 @@ DEFAULT_CONFIG = {
         # When true, destructive session slash commands (/clear, /new, /reset,
         # /undo) ask the user to confirm before discarding conversation state.
         # Three-option prompt (Approve Once / Always Approve / Cancel) routed
-        # through tools.slash_confirm — native yes/no buttons on Discord and
-        # Slack; text fallback elsewhere.  Users click "Always
+        # through tools.slash_confirm — a text prompt on messaging platforms.
+        # Users click "Always
         # Approve" to silence the prompt permanently; that flips this key to
         # false.  TUI also honors this setting for its /clear, /new, and /reset
         # modal; SON_OF_ANTON_TUI_NO_CONFIRM=1 force-skips that modal regardless of
@@ -1744,14 +1653,14 @@ DEFAULT_CONFIG = {
 
     # Per-platform system-prompt hint overrides. Lets an admin append to or
     # replace Son of Anton' built-in platform hint for a single messaging platform
-    # (Discord, Slack, Signal, ...) without affecting other platforms.
+    # (Signal, ...) without affecting other platforms.
     # Each key is a platform name; the value is either:
     #   { "append": "extra text" }   — keep the default hint, append text
     #   { "replace": "full text" }   — substitute the default hint entirely
     #   "extra text"                 — shorthand for { "append": ... }
     # `replace` wins over `append` if both are given. Example:
     #   platform_hints:
-    #     slack:
+    #     signal:
     #       append: >
     #         When tabular output would be useful, emit a fenced code block
     #         instead of a Markdown table.
@@ -1869,18 +1778,9 @@ DEFAULT_CONFIG = {
         # deliveries live only in the cron job's own session). Per-job
         # `attach_to_session` overrides this for a single job.
         #
-        # Behaviour is THREAD-PREFERRED, scoped to the job's origin chat:
-        #   - Thread-capable platforms (Discord
-        #     threads, Slack threads): a dedicated thread is opened for the job
-        #     via the adapter's create_handoff_thread, the brief is delivered
-        #     into it, and that thread's session is seeded so the user's reply
-        #     in-thread continues with full context. Each continuable job gets
-        #     its own scrollback, isolated from the parent channel.
-        #   - DM-only platforms (Signal): no threads exist, so
-        #     the brief is mirrored into the origin DM session instead — the
-        #     DM itself is the continuation surface.
-        # Both paths ride the shipped gateway.mirror.mirror_to_session and are
-        # alternation- and cache-safe (appended at a turn boundary, never
+        # The brief is mirrored into the origin chat's session — the chat
+        # itself is the continuation surface. Rides the shipped
+        # gateway.mirror.mirror_to_session and is alternation- and cache-safe (appended at a turn boundary, never
         # mid-loop, never mutating the cached system prompt). Only the origin
         # chat is ever touched — fan-out / broadcast targets are never mirrored.
         "mirror_delivery": False,
@@ -2077,9 +1977,6 @@ DEFAULT_CONFIG = {
         # one user (gateway/single_user.py), so a shared instance cannot
         # flip it by accident.
         "single_user": False,
-        # Optional named-profile allowlist for multiplex mode. None preserves
-        # the historical serve-all behavior; [] serves only the default.
-        "multiplex_profile_allowlist": None,
 
         # Durable delivery-obligation ledger: final agent responses are
         # recorded in state.db around the platform send, and a gateway that
@@ -2114,18 +2011,6 @@ DEFAULT_CONFIG = {
         # external tooling and downgrade safety; set to false to stop
         # producing ~/.son-of-anton/sessions/sessions.json entirely.
         "write_sessions_json": True,
-
-        # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
-        # and, when an instance is opted in via the NAS "Labs" toggle (carried as
-        # the SON_OF_ANTON_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent
-        # AND a wakeUrl is registered, drives the relay transport dormant so the
-        # platform (e.g. Fly autostop:"suspend") can suspend the now-idle machine;
-        # it wakes on the connector's wakeUrl poke. This is the idle TIMEOUT only
-        # — whether the feature is enabled at all is the Labs toggle, never a
-        # config key (decisions.md D2/D11). 0/negative falls back to the default.
-        "scale_to_zero": {
-            "idle_timeout_minutes": 2,
-        },
 
         # Auto-resume restart-loop breaker (#30719, defense-3). When the
         # gateway is killed mid-turn (SIGTERM) and revived by a supervisor
@@ -2849,51 +2734,6 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": 'tool',
         "advanced": True,
-    },
-    "DISCORD_BOT_TOKEN": {
-        "description": 'Discord bot token from Developer Portal',
-        "prompt": 'Discord bot token',
-        "url": 'https://discord.com/developers/applications',
-        "password": True,
-        "category": 'messaging',
-    },
-    "DISCORD_ALLOWED_USERS": {
-        "description": 'Comma-separated Discord user IDs allowed to use the bot',
-        "prompt": 'Allowed Discord user IDs (comma-separated)',
-        "url": None,
-        "password": False,
-        "category": 'messaging',
-    },
-    "DISCORD_REPLY_TO_MODE": {
-        "description": "Discord reply threading mode: 'off' (no reply references), 'first' (reply on first message only, default), 'all' (reply on every chunk)",
-        "prompt": 'Discord reply mode (off/first/all)',
-        "url": None,
-        "password": False,
-        "category": 'messaging',
-    },
-    "SLACK_BOT_TOKEN": {
-        "description": 'Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. Required scopes: chat:write, app_mentions:read, channels:history, groups:history, im:history, im:read, im:write, mpim:history, mpim:read, users:read, files:read, files:write',
-        "prompt": 'Slack Bot Token (xoxb-...)',
-        "help": 'In your Slack app, add the required bot scopes, install the app to the workspace, then copy OAuth & Permissions > Bot User OAuth Token.',
-        "url": 'https://api.slack.com/apps',
-        "password": True,
-        "category": 'messaging',
-    },
-    "SLACK_APP_TOKEN": {
-        "description": 'Slack app-level token (xapp-) for Socket Mode. Get from Basic Information → App-Level Tokens. Also ensure Event Subscriptions include: message.im, message.channels, message.groups, message.mpim, app_mention',
-        "prompt": 'Slack App Token (xapp-...)',
-        "help": 'In your Slack app, enable Socket Mode, then create Basic Information > App-Level Tokens with the connections:write scope.',
-        "url": 'https://api.slack.com/apps',
-        "password": True,
-        "category": 'messaging',
-    },
-    "SLACK_ALLOWED_USERS": {
-        "description": 'Comma-separated Slack member IDs allowed to use Son of Anton, e.g. U01ABC2DEF3. Without this, Slack may connect but deny messages by default.',
-        "prompt": 'Allowed Slack member IDs',
-        "help": 'In Slack, open your profile, choose More or the three-dot menu, then Copy member ID. Add multiple IDs comma-separated.',
-        "url": 'https://api.slack.com/apps',
-        "password": False,
-        "category": 'messaging',
     },
     "SUDO_PASSWORD": {
         "description": 'Sudo password for terminal commands requiring root access; set to an explicit empty string to try empty without prompting',

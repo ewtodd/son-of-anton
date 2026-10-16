@@ -135,7 +135,7 @@
             '';
           };
 
-          gateway.enable = lib.mkEnableOption "the messaging gateway service (Discord, Slack, Signal)";
+          gateway.enable = lib.mkEnableOption "the messaging gateway service (Signal)";
         };
 
       config = lib.mkIf cfg.enable (

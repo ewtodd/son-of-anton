@@ -11,7 +11,7 @@ rewrites.
 Field notes:
 
 - All fields are written once by ``_run_agent_inner`` while wiring up the turn
-  (a few — ``_progress_metadata``, ``_progress_reply_to``, ``agent_holder`` —
+  (a few — ``_progress_metadata``, ``agent_holder`` —
   are computed slightly later than construction and assigned onto the ctx as
   soon as the original locals were bound).  None of the original closures
   *rebound* their captured names (no ``nonlocal``); mutable state uses the
@@ -36,8 +36,6 @@ class TurnContext:
     # --- read-only turn identity / wiring -------------------------------
     source: Any = None
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]
-    _live_status_adapter: Any = None
-    _live_status_mode: str = "off"
     _thinking_enabled: bool = False
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
@@ -63,7 +61,6 @@ class TurnContext:
     # --- progress threading metadata (assigned after construction, before
     #     send_progress_messages is scheduled) ----------------------------
     _progress_metadata: Optional[dict] = None
-    _progress_reply_to: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # run_sync extraction (second wave of the seam): the closed-over locals
@@ -127,11 +124,3 @@ class TurnContext:
     _event_callback_sync: Optional[Callable] = None
     _status_callback_sync: Optional[Callable] = None
 
-    # --- Slack-native task-card progress (opt-in; #29483) ------------------
-    # True when the Slack adapter's ``native_task_cards_enabled()`` opt-in is
-    # set for this turn's platform. The ID-bearing lifecycle callbacks are
-    # published by TurnRunner (like progress_callback above) so tool starts
-    # and completions correlate by real tool-call ID instead of tool name.
-    _native_slack_task_cards: bool = False
-    native_tool_start_callback: Optional[Callable] = None
-    native_tool_complete_callback: Optional[Callable] = None

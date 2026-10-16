@@ -192,9 +192,7 @@ def show_status(args):
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
 
     platforms = {
-        "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
         "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
-        "Slack": ("SLACK_BOT_TOKEN", None),
     }
 
     for name, (token_var, home_var) in platforms.items():
@@ -210,23 +208,6 @@ def show_status(args):
             status += f" (home: {home_channel})"
         
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
-
-    # Plugin-registered platforms
-    try:
-        from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
-            # Per-entry guard: one raising probe must not abort the listing
-            # of every remaining plugin platform (matches the other three
-            # check_fn call sites).
-            try:
-                configured = bool(entry.check_fn())
-            except Exception:
-                configured = False
-            status_str = "configured" if configured else "not configured"
-            label = entry.label
-            print(f"  {label:<12}  {check_mark(configured)} {status_str} (plugin)")
-    except Exception:
-        pass
 
     # =========================================================================
     # Gateway Status

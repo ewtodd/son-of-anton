@@ -42,7 +42,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union, cast, TYPE_CHECKING
+from typing import Awaitable, Callable, Dict, Optional, Any, List, Union, cast, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.session_activity import ActivityProvenance
@@ -430,40 +430,6 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
-def _non_conversational_metadata(
-    metadata: Optional[Dict[str, Any]] = None,
-    *,
-    platform: Any = None,
-) -> Optional[Dict[str, Any]]:
-    """Mark Discord lifecycle/status sends without changing other platforms."""
-    if _gateway_platform_value(platform) != "discord":
-        return metadata
-    merged = dict(metadata or {})
-    merged["non_conversational"] = True
-    return merged
-
-
-def _interim_metadata(
-    metadata: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Mark a mid-turn status/advisory send as NOT the turn-final.
-
-    Stream-is-the-message adapters (relay Slack native streaming) intercept
-    the first unmarked send to an armed (chat, turn) key and seal the live
-    stream with its content. Every gateway-side send that can fire while a
-    turn is streaming — heartbeats, inactivity warnings, approval fallbacks,
-    background-review notices — MUST carry this marker or it will seal the
-    user's answer stream with status text (PR 85796 review, B5: probed live,
-    the 3-minute heartbeat sealed the stream and the real final arrived as
-    a duplicate while later frames were silently swallowed by the seal
-    tombstone). The marker is gateway-internal; adapters strip it before
-    the wire.
-    """
-    merged = dict(metadata or {})
-    merged["_interim_send"] = True
-    return merged
-
-
 def _seed_hygiene_system_prompt(
     agent: Any,
     session_row: Optional[Dict[str, Any]],
@@ -714,8 +680,7 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to chat surfaces.
 
-    Every human-facing chat surface (Discord, Slack, Signal, plugin
-    platforms, etc.) should receive concise, safe
+    Every human-facing chat surface (Signal) should receive concise, safe
     provider failure categories with secrets redacted instead of raw HTTP
     bodies, request IDs, leaked credentials, or policy text. Only programmatic
     surfaces in ``_GATEWAY_RAW_TEXT_PLATFORMS`` (CLI/TUI ``local``
@@ -788,8 +753,7 @@ def render_notice_line(notice) -> str:
     (⚠ / • / ✕ / ✓) into the text, and the TUI + CLI REPL render that text
     verbatim — so we emit it as-is here too. Prepending a per-level glyph would
     DOUBLE it ("⚠ ⚠ Credits 90% used", "⛔ ✕ Credit access paused"). Plaintext
-    only — no markdown — so it renders uniformly across Discord/Slack/Signal
-    without per-platform escaping. Fail-soft: a malformed/empty notice
+    only — no markdown — so it renders without per-platform escaping. Fail-soft: a malformed/empty notice
     degrades to "" rather than raising on the agent's callback path.
     """
     return str(getattr(notice, "text", "") or "").strip()
@@ -899,77 +863,14 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
     return response
 
 
-def _resolve_progress_thread_id(
-    platform: Any,
-    source_thread_id: Any,
-    event_message_id: Any,
-    *,
-    reply_in_thread: bool = True,
-) -> Optional[str]:
-    """Return thread/root ID that progress/status bubbles should target.
-
-    ``reply_in_thread=False`` (Slack ``platforms.slack.extra.reply_in_thread``)
-    disables the synthetic-thread fallback: progress messages must not create
-    a thread the final flat reply would then inherit. A source.thread_id equal
-    to the event's own message id is the adapter's synthetic session-keying
-    thread, not a real thread — treat it as "no thread" too (#18859).
-    """
-    platform_value = getattr(platform, "value", platform)
-    platform_key = str(platform_value or "").lower()
-    if not reply_in_thread:
-        if (
-            source_thread_id
-            and event_message_id
-            and str(source_thread_id) == str(event_message_id)
-        ):
-            return None
-        return str(source_thread_id) if source_thread_id else None
-    if source_thread_id:
-        return str(source_thread_id)
-    if platform_key == "slack" and event_message_id:
-        return str(event_message_id)
-    return None
-
-
-def _has_platform_display_override(user_config: dict, platform_key: str, setting: str) -> bool:
-    """Return True when display.platforms.<platform> explicitly sets setting."""
-    display = user_config.get("display") if isinstance(user_config, dict) else None
-    if not isinstance(display, dict):
-        return False
-    platforms = display.get("platforms")
-    if not isinstance(platforms, dict):
-        return False
-    platform_cfg = platforms.get(platform_key)
-    return isinstance(platform_cfg, dict) and setting in platform_cfg
-
-
 def _resolve_gateway_display_bool(
     user_config: dict,
     platform_key: str,
     setting: str,
     *,
     default: bool = False,
-    platform: Any = None,
-    require_platform_override_for: set[Any] | None = None,
 ) -> bool:
-    """Resolve a boolean display setting with optional platform-only opt-in.
-
-    Some display features expose assistant scratch text rather than deliberate
-    user-facing output.  For high-noise threaded chat surfaces, a global
-    opt-in is too broad: they must be enabled with an explicit
-    display.platforms.<platform>.<setting> override.
-    """
-    current_platform = _gateway_platform_value(platform or platform_key)
-    platform_only = {
-        _gateway_platform_value(candidate)
-        for candidate in (require_platform_override_for or set())
-    }
-    if (
-        current_platform in platform_only
-        and not _has_platform_display_override(user_config, platform_key, setting)
-    ):
-        return False
-
+    """Resolve a boolean display setting for a platform."""
     from gateway.display_config import resolve_display_setting
 
     value = resolve_display_setting(user_config, platform_key, setting, default)
@@ -1093,17 +994,6 @@ def _startup_restore_drain_timeout_secs() -> float:
         return float(raw)
     except (TypeError, ValueError):
         return float(_STARTUP_RESTORE_DRAIN_TIMEOUT_SECS_DEFAULT)
-
-
-def _as_thread_info(info: Any) -> Optional[Tuple[str, str]]:
-    """*info* as a (thread_id, initial_name) pair, or None if it isn't one.
-
-    The pair comes back across the relay connector boundary, so its shape is
-    the connector's word rather than ours.
-    """
-    if isinstance(info, tuple) and len(info) == 2 and all(isinstance(x, str) for x in info):
-        return cast(Tuple[str, str], info)
-    return None
 
 
 def _float_env(name: str, default: float) -> float:
@@ -1352,53 +1242,6 @@ def _build_replay_entry(
         if ts:
             entry["timestamp"] = ts
     return entry
-
-
-def _csv_or_list_to_set(raw: Any) -> set[str]:
-    """Normalize a config list or comma-separated scalar into a string set."""
-    if raw is None:
-        return set()
-    if isinstance(raw, list):
-        return {str(part).strip() for part in raw if str(part).strip()}
-    s = str(raw).strip()
-    if not s:
-        return set()
-    return {part.strip() for part in s.split(",") if part.strip()}
-
-
-def _slack_ignored_channels_from_gateway_config(config: Any) -> set[str]:
-    """Return Slack channels that the generic gateway must never dispatch.
-
-    The Slack adapter has the first-line drop, but this runner-level guard is
-    intentionally duplicated as a fail-safe. If a future Slack code path, test
-    hook, malformed event, or stale adapter instance bypasses the Slack plugin
-    adapter, ignored channels still cannot reach auth, pairing, sessions, or
-    the agent/home-channel prompt pipeline.
-    """
-    platform_cfg = getattr(config, "platforms", {}).get(Platform.SLACK)
-    raw = None
-    if platform_cfg is not None:
-        raw = getattr(platform_cfg, "extra", {}).get("ignored_channels")
-    if raw is None:
-        # Top-level ``slack.ignored_channels`` config flows through the
-        # plugin's TOML→env bridge (SLACK_IGNORED_CHANNELS) rather than
-        # PlatformConfig.extra — honor it here too (#46925).
-        raw = os.getenv("SLACK_IGNORED_CHANNELS") or None
-    return _csv_or_list_to_set(raw)
-
-
-def _slack_parent_channel_id(chat_id: Any) -> str:
-    """Return the parent Slack channel from a possibly thread-scoped chat ID."""
-    if not chat_id:
-        return ""
-    return str(chat_id).split(":", 1)[0]
-
-
-def _is_slack_ignored_channel(config: Any, chat_id: Any) -> bool:
-    """Check the generic Slack gateway blacklist for channel or thread IDs."""
-    channel_id = _slack_parent_channel_id(chat_id)
-    ignored = _slack_ignored_channels_from_gateway_config(config)
-    return bool(channel_id and ("*" in ignored or channel_id in ignored))
 
 
 def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
@@ -1798,7 +1641,7 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
-# Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
+# Must run BEFORE any HTTP library (aiohttp, etc.) is imported.
 # ---------------------------------------------------------------------------
 def _ensure_ssl_certs() -> None:
     """Set SSL_CERT_FILE if the system doesn't expose CA certs to Python.
@@ -2020,26 +1863,6 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     with one home per process the process's own .env is already the right one.
     """
     return load_gateway_config()
-
-def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:
-    """Return True when a token-authenticated platform has a usable bot credential.
-
-    Platforms that do not use ``PlatformConfig.token`` always return True so we
-    never skip them here (Signal session paths, port-binding HTTP adapters, etc.).
-    """
-    from gateway.config import PLATFORM_TOKEN_ENV_NAMES
-
-    if platform not in PLATFORM_TOKEN_ENV_NAMES:
-        return True
-    token = getattr(platform_config, "token", None) or ""
-    if isinstance(token, str) and token.strip():
-        return True
-    # Some adapters also accept api_key as the primary credential.
-    api_key = getattr(platform_config, "api_key", None) or ""
-    if isinstance(api_key, str) and api_key.strip():
-        return True
-    return False
-
 
 # This env var is internal bridge plumbing, not a user-facing configuration
 # source. Initialize it from the canonical config default after dotenv loading
@@ -2360,10 +2183,7 @@ if _IS_GATEWAY_PROCESS:
 from gateway.config import (
     ChannelOverride,
     Platform,
-    _BUILTIN_PLATFORM_VALUES,
     GatewayConfig,
-    PlatformConfig,
-    _getenv,
     load_gateway_config,
 )
 from gateway.session import (
@@ -2374,7 +2194,6 @@ from gateway.session import (
     SessionContext,
     build_session_context,
     build_session_context_prompt,
-    build_channel_continuity_note,
     build_session_key,
     is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
@@ -2402,10 +2221,8 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
-    _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     merge_pending_message_event,
-    utf16_len,
 )
 from gateway.shutdown_watchdog import (
     DEFAULT_HEARTBEAT_INTERVAL_S,
@@ -2429,47 +2246,6 @@ from gateway.restart import (
 
 
 logger = logging.getLogger(__name__)
-
-
-_OWN_POLICY_OPEN_ENV = {
-    # No built-in platform ships an open-policy default that needs an
-    # allow-all opt-in anymore; the entries for removed platforms were
-    # deleted.  Plugin platforms with open-policy defaults can add entries
-    # here if the startup-abort guard should apply to them.
-}
-
-
-def _own_policy_open_startup_violation(config) -> Optional[str]:
-    """Return a startup-abort reason when open policy lacks allow-all opt-in."""
-    for platform, platform_config in getattr(config, "platforms", {}).items():
-        if not getattr(platform_config, "enabled", False):
-            continue
-        open_env = _OWN_POLICY_OPEN_ENV.get(platform)
-        if not open_env:
-            continue
-        dm_env, group_env, allow_all_env = open_env
-        extra = getattr(platform_config, "extra", None) or {}
-        dm_policy = str(
-            extra.get("dm_policy")
-            or (_getenv(dm_env, "pairing") if dm_env else "pairing")
-        ).strip().lower()
-        group_policy = str(
-            extra.get("group_policy")
-            or (_getenv(group_env, "pairing") if group_env else "pairing")
-        ).strip().lower()
-        if dm_policy != "open" and group_policy != "open":
-            continue
-        gateway_allow_all = os.getenv(
-            "GATEWAY_ALLOW_ALL_USERS", ""
-        ).lower() in {"true", "1", "yes"}
-        platform_opted_in = gateway_allow_all or (
-            allow_all_env
-            and _getenv(allow_all_env, "").lower() in {"true", "1", "yes"}
-        )
-        if platform_opted_in:
-            continue
-        return f"{platform.value}: open policy without allow-all opt-in"
-    return None
 
 
 # Sentinel placed into _running_agents immediately when a session starts
@@ -3930,32 +3706,6 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
-        # Live status line (Slack's assistant status): stash the current
-        # tool phrase on the adapter; the _keep_typing refresh renders it
-        # within a couple of seconds. Handled before every other gate
-        # because it's independent of progress bubbles and queues (Slack
-        # keeps tool_progress off by default, but the ephemeral status
-        # line is always safe). Plain dict write — safe from the agent's
-        # sync worker thread, no event-loop hop needed.
-        if (
-            ctx._live_status_adapter is not None
-            and ctx._live_status_mode != "off"
-            and tool_name != "_thinking"
-        ):
-            try:
-                if event_type == "tool.started" and tool_name and ctx._run_still_current():
-                    from agent.display import build_status_phrase
-                    _phrase = build_status_phrase(
-                        tool_name,
-                        args if ctx._live_status_mode == "full" else None,
-                    )
-                    ctx._live_status_adapter.set_status_text(ctx.source.chat_id, _phrase)
-                elif event_type == "tool.completed":
-                    # Between tools the model is genuinely "thinking"
-                    # again — revert to the static default.
-                    ctx._live_status_adapter.set_status_text(ctx.source.chat_id, None)
-            except Exception as _ls_err:
-                logger.debug("live status update failed: %s", _ls_err)
         # "log" mode: append tool.started lines to the log queue and stay
         # silent in chat. Handled before the progress_queue guard because
         # log mode runs without a chat progress queue.
@@ -4010,16 +3760,6 @@ class TurnRunner:
             msg = thinking_text if thinking_text else None
             if msg:
                 ctx.progress_queue.put(msg)
-            return
-
-        # Native task cards consume the authoritative ID-bearing
-        # tool_start/tool_complete callbacks instead. Do not also enqueue
-        # name-correlated text events, which would duplicate cards and
-        # mispair concurrent calls to the same tool.
-        if ctx._native_slack_task_cards and event_type in {
-            "tool.started",
-            "tool.completed",
-        }:
             return
 
         # If tool_progress is off, only _thinking passes through (above).
@@ -4196,202 +3936,6 @@ class TurnRunner:
 
         ctx.progress_queue.put(msg)
 
-    async def _send_native_task_card_progress(self, adapter) -> None:
-        """Drain the progress queue into Slack-native plan/task cards (#29483).
-
-        Consumes the ID-bearing lifecycle dicts queued by
-        native_tool_start_callback / native_tool_complete_callback and renders
-        them through the adapter's chat.startStream plan/task-card stream.
-        On any native failure, falls back to an editable in-thread text
-        message so progress stays live for the rest of the turn.
-        """
-        ctx = self._ctx
-        tasks: Dict[str, Dict[str, str]] = {}
-        task_order: List[str] = []
-        fallback_msg_id: Optional[str] = None
-        native_failed = False
-        anonymous_seq = 0
-
-        def _compact(value: Any, limit: int = 120) -> str:
-            text = re.sub(r"\s+", " ", str(value or "")).strip()
-            if len(text) <= limit:
-                return text
-            return text[: limit - 3].rstrip() + "..."
-
-        def _visible_tasks() -> List[Dict[str, str]]:
-            return [tasks[task_id] for task_id in task_order[-8:]]
-
-        def _fallback_text() -> str:
-            labels = {
-                "in_progress": "running",
-                "complete": "complete",
-                "error": "error",
-            }
-            lines = [
-                f"- {task['title']} - {labels.get(task['status'], task['status'])}"
-                for task in _visible_tasks()
-            ]
-            return "Son of Anton is working\n" + "\n".join(lines)
-
-        def _apply_native_event(raw: Any) -> bool:
-            nonlocal anonymous_seq
-            if not isinstance(raw, dict):
-                return False
-            event_type = raw.get("type")
-            if event_type not in {"tool.started", "tool.completed"}:
-                return False
-            call_id = str(raw.get("tool_call_id") or "")
-            if not call_id:
-                anonymous_seq += 1
-                call_id = f"anonymous_{anonymous_seq}"
-            tool_name = str(raw.get("tool_name") or "tool")
-
-            if event_type == "tool.started":
-                title = tool_name
-                preview = _compact(raw.get("preview"), 64)
-                if preview:
-                    title = f"{tool_name} - {preview}"
-                if call_id not in tasks:
-                    task_order.append(call_id)
-                tasks[call_id] = {
-                    "id": call_id,
-                    "title": _compact(title),
-                    "status": "in_progress",
-                }
-                return True
-
-            task = tasks.get(call_id)
-            if task is None:
-                # Completion-only events are rare but valid on some
-                # runtimes. Keep their real ID instead of guessing a
-                # same-name pending call.
-                task = {
-                    "id": call_id,
-                    "title": _compact(tool_name),
-                    "status": "in_progress",
-                }
-                tasks[call_id] = task
-                task_order.append(call_id)
-            task["status"] = "error" if raw.get("is_error") else "complete"
-            return True
-
-        async def _send_or_edit_fallback() -> None:
-            nonlocal fallback_msg_id
-            text = _fallback_text()
-            if fallback_msg_id:
-                result = await adapter.edit_message(
-                    chat_id=ctx.source.chat_id,
-                    message_id=fallback_msg_id,
-                    content=text,
-                    metadata=ctx._progress_metadata,
-                )
-                if getattr(result, "success", False):
-                    return
-            result = await adapter.send(
-                chat_id=ctx.source.chat_id,
-                content=text,
-                reply_to=ctx._progress_reply_to,
-                metadata=ctx._progress_metadata,
-            )
-            if getattr(result, "success", False) and getattr(
-                result, "message_id", None
-            ):
-                fallback_msg_id = str(result.message_id)
-                if ctx._cleanup_progress:
-                    ctx._cleanup_msg_ids.append(fallback_msg_id)
-
-        async def _publish_native_progress() -> None:
-            nonlocal native_failed
-            if not tasks:
-                return
-            if not native_failed:
-                result = await adapter.send_native_task_card_progress(
-                    chat_id=ctx.source.chat_id,
-                    tasks=_visible_tasks(),
-                    title="Son of Anton is working",
-                    reply_to=ctx._progress_reply_to,
-                    metadata=ctx._progress_metadata,
-                    fallback_text=_fallback_text(),
-                )
-                if getattr(result, "success", False):
-                    return
-                native_failed = True
-                logger.warning(
-                    "Slack native task-card progress failed; falling back "
-                    "to an editable text update: %s",
-                    getattr(result, "error", "unknown error"),
-                )
-            # Once the native rail fails, every later lifecycle event
-            # edits the same fallback message so progress remains live.
-            await _send_or_edit_fallback()
-
-        def _drain_native_queue() -> bool:
-            changed = False
-            while True:
-                try:
-                    changed = _apply_native_event(
-                        ctx.progress_queue.get_nowait()
-                    ) or changed
-                except queue.Empty:
-                    return changed
-                except Exception:
-                    logger.debug(
-                        "Slack native progress queue drain failed",
-                        exc_info=True,
-                    )
-                    return changed
-
-        def _agent_interrupted() -> bool:
-            try:
-                _agent = ctx.agent_holder[0] if ctx.agent_holder else None
-                return bool(
-                    _agent is not None and getattr(_agent, "is_interrupted", False)
-                )
-            except Exception:
-                return False
-
-        try:
-            while True:
-                if not ctx._run_still_current():
-                    return
-                try:
-                    raw = ctx.progress_queue.get_nowait()
-                except queue.Empty:
-                    await asyncio.sleep(0.1)
-                    continue
-
-                if _agent_interrupted():
-                    continue
-
-                if _apply_native_event(raw):
-                    await _publish_native_progress()
-        except asyncio.CancelledError:
-            if _drain_native_queue() and ctx._run_still_current():
-                if not _agent_interrupted():
-                    await _publish_native_progress()
-            return
-        finally:
-            if hasattr(adapter, "stop_native_task_card_progress"):
-                # Best-effort: this finally runs on the turn-cleanup path.
-                # An escaping transport exception here propagated through
-                # the cleanup awaits (which caught only CancelledError) and
-                # skipped final-delivery logic (review B7). Adapters now
-                # return failed SendResults, but defend the seam anyway —
-                # any adapter, any transport.
-                try:
-                    await adapter.stop_native_task_card_progress(
-                        ctx.source.chat_id,
-                        reply_to=ctx._progress_reply_to,
-                        metadata=ctx._progress_metadata,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.debug(
-                        "task-card stop failed during turn cleanup",
-                        exc_info=True,
-                    )
-
     async def send_progress_messages(self):
         ctx = self._ctx
         if not ctx.progress_queue:
@@ -4399,12 +3943,6 @@ class TurnRunner:
 
         adapter = self._runner._adapter_for_source(ctx.source)
         if not adapter:
-            return
-
-        if ctx._native_slack_task_cards and hasattr(
-            adapter, "send_native_task_card_progress"
-        ):
-            await self._send_native_task_card_progress(adapter)
             return
 
         # Skip tool progress for platforms that don't support message
@@ -4513,7 +4051,6 @@ class TurnRunner:
             result = await adapter.send(
                 chat_id=ctx.source.chat_id,
                 content=text,
-                reply_to=ctx._progress_reply_to,
                 metadata=ctx._progress_metadata,
             )
             _track_progress_result(result)
@@ -4668,7 +4205,6 @@ class TurnRunner:
                         _flood_result = await adapter.send(
                             chat_id=ctx.source.chat_id,
                             content=msg,
-                            reply_to=ctx._progress_reply_to,
                             metadata=ctx._progress_metadata,
                         )
                         if (
@@ -4684,7 +4220,6 @@ class TurnRunner:
                         result = await adapter.send(
                             chat_id=ctx.source.chat_id,
                             content=full_text,
-                            reply_to=ctx._progress_reply_to,
                             metadata=ctx._progress_metadata,
                         )
                     else:
@@ -4692,7 +4227,6 @@ class TurnRunner:
                         result = await adapter.send(
                             chat_id=ctx.source.chat_id,
                             content=msg,
-                            reply_to=ctx._progress_reply_to,
                             metadata=ctx._progress_metadata,
                         )
                     if result.success and result.message_id:
@@ -4753,60 +4287,6 @@ class TurnRunner:
                 logger.error("Progress message error: %s", e)
                 await asyncio.sleep(1)
 
-    # ── Slack-native task cards: ID-bearing lifecycle callbacks (#29483) ──
-    # These ride agent.tool_start_callback / agent.tool_complete_callback so
-    # start/completion events correlate by the REAL tool-call id — the
-    # name-correlated text events in progress_callback would duplicate cards
-    # and mispair concurrent calls to the same tool.
-
-    def native_tool_start_callback(self, call_id, tool_name, args):
-        """Queue an ID-correlated native progress start from the agent thread."""
-        ctx = self._ctx
-        if not ctx.progress_queue or not ctx._run_still_current():
-            return
-        try:
-            _agent = ctx.agent_holder[0] if ctx.agent_holder else None
-            if _agent is not None and getattr(_agent, "is_interrupted", False):
-                return
-        except Exception:
-            pass
-        from agent.display import build_tool_preview
-
-        ctx.progress_queue.put(
-            {
-                "type": "tool.started",
-                "tool_call_id": str(call_id or ""),
-                "tool_name": str(tool_name or "tool"),
-                "preview": build_tool_preview(
-                    str(tool_name or "tool"), args or {}, max_len=64
-                )
-                or "",
-            }
-        )
-
-    def native_tool_complete_callback(self, call_id, tool_name, args, result):
-        """Queue the matching native completion using the real tool-call ID."""
-        ctx = self._ctx
-        if not ctx.progress_queue or not ctx._run_still_current():
-            return
-        try:
-            _agent = ctx.agent_holder[0] if ctx.agent_holder else None
-            if _agent is not None and getattr(_agent, "is_interrupted", False):
-                return
-        except Exception:
-            pass
-        from agent.display import _detect_tool_failure
-
-        is_error, _ = _detect_tool_failure(str(tool_name or "tool"), result)
-        ctx.progress_queue.put(
-            {
-                "type": "tool.completed",
-                "tool_call_id": str(call_id or ""),
-                "tool_name": str(tool_name or "tool"),
-                "is_error": bool(is_error),
-            }
-        )
-
     def _step_callback_sync(self, iteration: int, prev_tools: list) -> None:
         ctx = self._ctx
         if not ctx._run_still_current():
@@ -4866,31 +4346,6 @@ class TurnRunner:
 
             agent._title_failure_callback = _title_failure_cb
 
-            session_id = getattr(agent, "session_id", None)
-            source = ctx.source
-
-            # Both lanes below spend a rate-limited platform call per title, so
-            # they take the model's title and skip the derived one — see
-            # TitleCallback. Renaming twice lands on the same name at twice the
-            # cost, and Discord's 2-per-10-minutes channel budget can spend
-            # itself on the throwaway and drop the one worth showing.
-            if self._runner._is_discord_auto_thread_lane(source) or (
-                self._runner._is_relay_discord_channel_lane(source)
-            ):
-                # Relay note: the second predicate is shape-only (relay
-                # Discord channel event). Whether the connector actually
-                # auto-threaded our reply is only knowable AFTER delivery
-                # (send-result feedback), so the callback must be registered
-                # eagerly and the rename lane performs the cache lookup at
-                # fire time (staging repro 2026-07-31: gating registration on
-                # the cache read meant it never registered and no
-                # thread_rename op was ever sent).
-                agent._on_session_title = lambda title, title_source: (
-                    title_source == "llm"
-                    and self._runner._schedule_discord_semantic_thread_rename(
-                        source, session_id, title,
-                    )
-                )
         except Exception:
             logger.debug("Failed to attach session title callback", exc_info=True)
 
@@ -5375,21 +4830,7 @@ class TurnRunner:
             if (
                 ctx.needs_progress_queue
                 or ctx.log_mode_enabled
-                or ctx._live_status_adapter is not None
             )
-            else None
-        )
-        # Slack's native task cards ride the authoritative start callback,
-        # so they never have to infer identity from tool names.
-        agent.tool_start_callback = (
-            ctx.native_tool_start_callback
-            if ctx._native_slack_task_cards
-            else None
-        )
-        agent.tool_complete_callback = (
-            ctx.native_tool_complete_callback
-            if ctx._native_slack_task_cards
-            and ctx.native_tool_complete_callback is not None
             else None
         )
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
@@ -5695,7 +5136,7 @@ class TurnRunner:
                     ctx._status_adapter.send(
                         ctx._status_chat_id,
                         msg,
-                        metadata=_interim_metadata(ctx._status_thread_metadata),
+                        metadata=ctx._status_thread_metadata,
                     ),
                     ctx._loop_for_step,
                     logger=logger,
@@ -6630,16 +6071,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self._loop_floor_timer_handle = None
         self._loop_liveness_watchdog = None
 
-        # scale-to-zero (Phase 0, F13): gateway-scoped "last inbound seen" clock.
-        # There is no such clock today (only a per-agent _last_activity_ts), so the
-        # idle predicate needs this. Stamped in _handle_message (the single inbound
-        # chokepoint all adapters call); seeded to "now" so a fresh gateway isn't
-        # considered idle from epoch. The scale-to-zero watcher (started only when
-        # the instance is opted in + relay-only + has a wakeUrl) reads it.
-        self._last_inbound_at: float = time.time()
-        # Set after a wake (re-arm cooldown, 0.F) so we don't immediately re-go
-        # dormant before the drained backlog has a chance to update the clock.
-        self._scale_to_zero_cooldown_until: float = 0.0
 
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
@@ -7276,12 +6707,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             "attempts": 0,
             "next_retry": time.monotonic(),
             "queued_at": time.monotonic(),
-            "credential_claim": self._adapter_credential_claim(
-                adapter.platform, adapter
-            ),
-            "listener_claim": self._adapter_listener_claim(
-                adapter.platform, adapter
-            ),
         }
         logger.info(
             "%s queued for background reconnection",
@@ -7507,343 +6932,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """
         return 0
 
-
-    # ── scale-to-zero idle detection / dormant-quiesce (Phase 0) ──────────────
-    # The gateway-side BEHAVIOUR that consumes the relay scale-to-zero primitives
-    # (gateway-gateway Phase 5). Pure logic lives in gateway/scale_to_zero.py; the
-    # methods here bind it to the live runner/transport. See ~/nous/specs/
-    # scale-to-zero (decisions.md) for the design + the F12/F14 distinctions.
-
-    def _scale_to_zero_has_live_background_work(self) -> bool:
-        """Live background work that must block a suspend (D3/F7).
-
-        Backgrounded delegate_task / kanban / terminal(background=true) are NOT
-        counted by _running_agent_count(), but suspending mid-flight loses them.
-        Checks the runner's own tracked tasks + the process registry's running
-        processes + any pending process-completion watchers.
-
-        PERMANENT supervised watchers (tagged _son_of_anton_supervised_watcher by
-        _spawn_supervised) are excluded: they live for the whole process —
-        including the scale-to-zero watcher itself — so counting them would
-        make this predicate True forever and the gateway could never go
-        dormant. Verified live on staging (2026-08-12): an armed, fully idle
-        instance never logged "going dormant" because ~9 supervised watchers
-        sat in _background_tasks. Fly's coarse autostop used to mask this;
-        with the gateway owning the suspend it became load-bearing.
-        """
-        if any(
-            not t.done() and not getattr(t, "_son_of_anton_supervised_watcher", False)
-            for t in self._background_tasks
-        ):
-            return True
-        try:
-            from tools.async_delegation import active_count
-
-            if active_count() > 0:
-                return True
-        except Exception:  # noqa: BLE001 - never let the idle check raise
-            logger.debug("scale-to-zero async-delegation check failed", exc_info=True)
-        try:
-            from tools.process_registry import process_registry
-
-            if process_registry.has_any_active():
-                return True
-            if process_registry.pending_watchers:
-                return True
-        except Exception:  # noqa: BLE001 - never let the idle check raise
-            logger.debug("scale-to-zero bg-work check failed", exc_info=True)
-        return False
-
-    def _scale_to_zero_idle_timeout_seconds(self) -> float:
-        from gateway.scale_to_zero import parse_idle_timeout_seconds
-
-        raw = None
-        try:
-            user_cfg = _load_gateway_config()
-            gw = user_cfg.get("gateway") if isinstance(user_cfg, dict) else None
-            stz = gw.get("scale_to_zero") if isinstance(gw, dict) else None
-            if isinstance(stz, dict):
-                raw = stz.get("idle_timeout_minutes")
-        except Exception:  # noqa: BLE001
-            raw = None
-        return parse_idle_timeout_seconds(raw)
-
-    def _restart_loop_guard_config(self) -> tuple:
-        """Return ``(max_restarts, window_seconds, max_gap_seconds)`` for the
-        auto-resume restart-loop breaker (#30719, defense-3), read from
-        ``gateway.restart_loop_guard`` in config.toml with the module defaults
-        as fallback. ``max_restarts <= 0`` disables the breaker.
-
-        ``max_gap_seconds`` is the longest spacing between two consecutive
-        restart-interrupted boots that still counts them as the same loop, so
-        a crash cycle slower than ``window_seconds`` stays visible (#81642).
-        """
-        from gateway import restart_loop_guard as _rlg
-
-        max_restarts = _rlg.DEFAULT_MAX_RESTARTS
-        window_seconds = _rlg.DEFAULT_WINDOW_SECONDS
-        max_gap_seconds = _rlg.DEFAULT_MAX_GAP_SECONDS
-        try:
-            user_cfg = _load_gateway_config()
-            gw = user_cfg.get("gateway") if isinstance(user_cfg, dict) else None
-            rlg = gw.get("restart_loop_guard") if isinstance(gw, dict) else None
-            if isinstance(rlg, dict):
-                if isinstance(rlg.get("max_restarts"), int):
-                    max_restarts = rlg["max_restarts"]
-                if isinstance(rlg.get("window_seconds"), int) and rlg["window_seconds"] > 0:
-                    window_seconds = rlg["window_seconds"]
-                if (
-                    isinstance(rlg.get("max_gap_seconds"), int)
-                    and rlg["max_gap_seconds"] > 0
-                ):
-                    max_gap_seconds = rlg["max_gap_seconds"]
-        except Exception:  # noqa: BLE001
-            pass
-        return max_restarts, window_seconds, max_gap_seconds
-
-    def _scale_to_zero_active_messaging_platforms(self) -> list:
-        """ENABLED platforms that count for the relay-only arm gate (D1/F6).
-
-        Two filters, both load-bearing:
-        - enabled only: config.platforms is pre-seeded with disabled
-          placeholders for the full platform catalog (the F25 bug).
-        - MESSAGING only: non-messaging surfaces must not disarm scale-to-zero.
-          Mirrors the non-messaging exclusion set used for handoff eligibility
-          (see the `messaging_platforms` computation in _connect_platforms).
-        """
-        if not self.config:
-            return []
-        non_messaging = {Platform.LOCAL}
-        try:
-            return [
-                p
-                for p, pc in self.config.platforms.items()
-                if getattr(pc, "enabled", False) and p not in non_messaging
-            ]
-        except Exception:  # noqa: BLE001
-            return []
-
-    def _scale_to_zero_should_arm(self) -> bool:
-        """Whether to start the idle watcher (D1/D11/§3.4(1))."""
-        from gateway.relay import relay_wake_url
-        from gateway.scale_to_zero import (
-            messaging_is_relay_only_or_absent,
-            scale_to_zero_enabled,
-            should_arm,
-        )
-
-        platforms = self._scale_to_zero_active_messaging_platforms()
-        try:
-            wake_url = relay_wake_url()
-        except Exception:  # noqa: BLE001
-            wake_url = None
-        return should_arm(
-            enabled=scale_to_zero_enabled(),
-            relay_only_or_absent=messaging_is_relay_only_or_absent(platforms),
-            wake_url=wake_url,
-        )
-
-    def _log_scale_to_zero_not_armed_reason(self) -> None:
-        """Log why the idle watcher did NOT arm — but only for an OPTED-IN instance.
-
-        A non-opted instance (no SON_OF_ANTON_SCALE_TO_ZERO stamp) not arming is the normal
-        case and must stay silent. When the Labs stamp IS set but the watcher still
-        didn't arm, that's the surprising case worth one INFO line so "why won't it
-        suspend/wake?" is a log grep, not a box-dive.
-        """
-        from gateway.relay import relay_wake_url
-        from gateway.scale_to_zero import (
-            messaging_is_relay_only_or_absent,
-            scale_to_zero_enabled,
-        )
-
-        try:
-            enabled = scale_to_zero_enabled()
-            if not enabled:
-                return  # not opted in — normal, stay quiet
-            active = [
-                getattr(p, "value", p)
-                for p in self._scale_to_zero_active_messaging_platforms()
-            ]
-            relay_only = messaging_is_relay_only_or_absent(active)
-            try:
-                wake_url = relay_wake_url()
-            except Exception:  # noqa: BLE001
-                wake_url = None
-            logger.info(
-                "scale-to-zero: NOT armed despite opt-in — "
-                "relay_only_or_absent=%s (enabled platforms=%s), wake_url=%s. "
-                "Need relay-only messaging + a registered wake URL.",
-                relay_only,
-                active or "none",
-                "set" if wake_url else "MISSING",
-            )
-        except Exception:  # noqa: BLE001 - diagnostics must never block startup
-            logger.debug("scale-to-zero: not-armed reason logging failed", exc_info=True)
-
-    def _scale_to_zero_is_idle(self) -> bool:
-        from gateway.scale_to_zero import is_idle
-
-        # The FULL work aggregate, not _running_agent_count(): cron jobs run
-        # on the scheduler's own thread pool and API-server runs live on the
-        # adapter — both outside _running_agents (the #60432 blind spot), so
-        # counting agents alone let a suspend land mid-cron-job.
-        #
-        # Fail-AWAKE accounting: the shared shutdown-drain counters
-        # (_active_cron_job_count/_active_stateless_run_count) swallow exceptions to
-        # 0, which is fine for a drain but unsafe for a suspend predicate — a
-        # transient read failure would make live work look idle and reopen the
-        # mid-job freeze. Here an unreadable source counts as work (sentinel 1)
-        # so the machine stays awake until the source is readable again.
-        try:
-            from cron.scheduler import get_running_job_ids
-
-            cron_count = len(get_running_job_ids())
-        except Exception:  # noqa: BLE001 - unreadable source => assume busy
-            logger.debug("scale-to-zero: cron work count unreadable — staying awake", exc_info=True)
-            cron_count = 1
-        # The former API-server platform is removed; no adapter can contribute
-        # API-server work outside ``_running_agents`` anymore.
-        api_count = 0
-        return is_idle(
-            active_work_count=self._running_agent_count() + cron_count + api_count,
-            seconds_since_last_inbound=time.time() - self._last_inbound_at,
-            idle_timeout_seconds=self._scale_to_zero_idle_timeout_seconds(),
-            has_live_background_work=self._scale_to_zero_has_live_background_work(),
-        )
-
-    def _scale_to_zero_note_real_inbound(self) -> None:
-        """Stamp real inbound and restore lifecycle after a dormant wake.
-
-        The watcher marks runtime status `draining` as it quiesces the relay, but
-        dormancy is not the stop/restart drain path: the process remains alive and
-        should present as running once real traffic wakes it and re-enters the
-        gateway. Internal completion/replay events intentionally do not call this
-        helper, so they do not keep an otherwise idle gateway awake.
-        """
-        self._last_inbound_at = time.time()
-        if getattr(self, "_scale_to_zero_cooldown_until", 0.0) > 0:
-            try:
-                self._update_runtime_status("running")
-            except Exception:  # noqa: BLE001 - status restoration is best-effort
-                logger.debug("scale-to-zero: status restore failed", exc_info=True)
-            self._scale_to_zero_cooldown_until = 0.0
-
-    def _relay_adapter_for_dormancy(self):
-        """Return the connected RELAY adapter, if any (the one go_dormant targets)."""
-        try:
-            from gateway.platforms.base import Platform
-        except Exception:  # noqa: BLE001
-            return None
-        return self.adapters.get(Platform.RELAY)
-
-    async def _scale_to_zero_watcher(self, interval: float = 30.0) -> None:
-        """Watch for idle, drive the relay dormant, then self-suspend the machine.
-
-        Started ONLY when _scale_to_zero_should_arm() (opted in via the Labs
-        SON_OF_ANTON_SCALE_TO_ZERO stamp + relay-only/absent messaging + a wakeUrl).
-        On a sustained idle window it runs the DORMANT sequence (D12/F12/F14):
-          - mark runtime status `draining` (composes with the existing state
-            machine, §3.4(6); does NOT set _running=False),
-          - relay adapter.go_dormant() — going_idle->ack + supervisor-preserving
-            socket close (NOT disconnect(), NOT the run.py stop path),
-          - deliberately NO mark_resume_pending (D13 — suspend preserves RAM),
-          - THEN suspend this machine through the local flaps socket
-            (gateway.scale_to_zero.suspend_self). The gateway owns the suspend
-            because Fly Proxy autostop judges idle on INBOUND connections only:
-            it cannot see an in-flight agent turn (outbound-only LLM traffic)
-            and, since the mid-2026 proxy change, an open outbound relay socket
-            no longer holds the machine awake — autostop:"suspend" would freeze
-            the machine mid-job or before the relay flip (the buffered-event
-            black hole). NAS therefore provisions scale-to-zero machines with
-            autostop:"off"; the suspend only ever happens HERE, strictly after
-            the idle predicate held and the dormant quiesce completed.
-        Autostart stays platform-side: the connector's wakeUrl poke (Fly-proxied)
-        wakes the machine, the preserved reconnect supervisor re-dials, and the
-        connector drains the buffered backlog. After driving dormant we set a
-        re-arm cooldown so a wake's drained backlog isn't immediately re-quiesced.
-        Off-Fly (no flaps socket / machine identity) the suspend step is skipped:
-        dormancy still happens, the process just stays running — fail-awake.
-        """
-        await asyncio.sleep(min(interval, 30.0))  # let startup settle
-        while self._running:
-            try:
-                await asyncio.sleep(interval)
-                if not self._running:
-                    return
-                if time.time() < self._scale_to_zero_cooldown_until:
-                    continue
-                if not self._scale_to_zero_is_idle():
-                    continue
-                adapter = self._relay_adapter_for_dormancy()
-                if adapter is None:
-                    continue
-                go_dormant = getattr(adapter, "go_dormant", None)
-                if not callable(go_dormant):
-                    continue
-                logger.info(
-                    "scale-to-zero: gateway idle for >= %.0fs — going dormant "
-                    "(relay buffered, socket closed) then self-suspending",
-                    self._scale_to_zero_idle_timeout_seconds(),
-                )
-                try:
-                    self._update_runtime_status("draining")
-                except Exception:  # noqa: BLE001 - status is best-effort
-                    logger.debug("scale-to-zero: status mark failed", exc_info=True)
-                dormant_ok = True
-                try:
-                    result = go_dormant()
-                    if asyncio.iscoroutine(result):
-                        await result
-                except Exception:  # noqa: BLE001 - dormancy is best-effort
-                    dormant_ok = False
-                    logger.debug("scale-to-zero: go_dormant failed", exc_info=True)
-                # 0.F: after a wake the drained inbound updates _last_inbound_at,
-                # but give it a window so we don't immediately re-go-dormant on the
-                # same idle reading before traffic lands.
-                self._scale_to_zero_cooldown_until = time.time() + max(interval, 60.0)
-                # Self-suspend ONLY after a clean quiesce: the relay flip must be
-                # set (buffered delivery + wake poke armed) before the freeze, or
-                # inbound events black-hole while we sleep. Re-check idle one last
-                # time — inbound may have landed during the quiesce await.
-                if not dormant_ok:
-                    continue
-                if not self._scale_to_zero_is_idle():
-                    logger.info(
-                        "scale-to-zero: inbound arrived during quiesce — skipping suspend"
-                    )
-                    continue
-                await self._scale_to_zero_self_suspend()
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - the watcher must never crash the gateway
-                logger.debug("scale-to-zero watcher iteration error", exc_info=True)
-
-    async def _scale_to_zero_self_suspend(self) -> None:
-        """Suspend this Fly machine via the local flaps socket (fail-awake).
-
-        Runs the blocking unix-socket call in a worker thread so the event loop
-        stays live right up to the kernel freeze. On success the process is
-        frozen shortly after — nothing meaningful runs until the wake resume.
-        Off-Fly (self_suspend_available() False) this is a silent no-op.
-        """
-        from gateway.scale_to_zero import self_suspend_available, suspend_self
-
-        try:
-            if not self_suspend_available():
-                logger.debug(
-                    "scale-to-zero: flaps socket / machine identity absent — "
-                    "dormant without platform suspend"
-                )
-                return
-            accepted = await asyncio.to_thread(suspend_self)
-            if not accepted:
-                logger.warning(
-                    "scale-to-zero: self-suspend not accepted — machine stays "
-                    "awake (fail-awake); will retry on the next idle window"
-                )
-        except Exception:  # noqa: BLE001 - suspend is best-effort, never crash
-            logger.debug("scale-to-zero: self-suspend failed", exc_info=True)
 
     def _status_action_label(self) -> str:
         return "restart" if self._restart_requested else "shutdown"
@@ -8889,7 +7977,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return True  # message queued; ack already delivered recently
 
         from gateway.display_config import resolve_display_setting
-        platform_key = _platform_config_key(event.source.platform)
 
         self._session_state(session_key).turn.busy_ack_ts = now
 
@@ -10621,9 +9708,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 )
             )
             # PERMANENT for the process lifetime, same as a
-            # _spawn_supervised watcher — tag it so
-            # _scale_to_zero_has_live_background_work() doesn't treat an
-            # armed, otherwise-idle gateway as busy forever.
+            # _spawn_supervised watcher.
             self._loop_heartbeat_task._son_of_anton_supervised_watcher = True  # type: ignore[attr-defined]
             _bg = getattr(self, "_background_tasks", None)
             if _bg is not None:
@@ -10789,70 +9874,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         
         # Warn if no user allowlists are configured and open access is not opted in
         _builtin_allowed_vars = (
-            "DISCORD_ALLOWED_USERS",
-            "SLACK_ALLOWED_USERS",
             "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
             "GATEWAY_ALLOWED_USERS",
         )
-        _builtin_allow_all_vars = (
-            "DISCORD_ALLOW_ALL_USERS",
-            "SLACK_ALLOW_ALL_USERS",
-            "SIGNAL_ALLOW_ALL_USERS",
-        )
-        # Also pick up plugin-registered platforms — each entry can declare
-        # its own allowed_users_env / allow_all_env, so the warning stays
-        # accurate as plugin platforms come online.
-        _plugin_allowed_vars: tuple = ()
-        _plugin_allow_all_vars: tuple = ()
-        try:
-            from gateway.platform_registry import platform_registry
-            _plugin_allowed_vars = tuple(
-                e.allowed_users_env for e in platform_registry.plugin_entries()
-                if e.allowed_users_env
-            )
-            _plugin_allow_all_vars = tuple(
-                e.allow_all_env for e in platform_registry.plugin_entries()
-                if e.allow_all_env
-            )
-        except Exception:
-            pass
-        _any_allowlist = any(
-            os.getenv(v) for v in _builtin_allowed_vars + _plugin_allowed_vars
-        )
-        _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"} or any(
+        _any_allowlist = any(os.getenv(v) for v in _builtin_allowed_vars)
+        _allow_all = any(
             os.getenv(v, "").lower() in {"true", "1", "yes"}
-            for v in _builtin_allow_all_vars + _plugin_allow_all_vars
+            for v in ("GATEWAY_ALLOW_ALL_USERS", "SIGNAL_ALLOW_ALL_USERS")
         )
         if not _any_allowlist and not _allow_all:
             logger.warning(
-                "No env user allowlists configured. Messaging platforms default to "
-                "pairing/allowlist policies and will deny unknown senders unless you "
-                "configure platform allowlists (e.g., DISCORD_ALLOWED_USERS=your_id) "
-                "or explicitly opt in with GATEWAY_ALLOW_ALL_USERS=true plus "
-                "dm_policy/group_policy: open on the platform."
+                "No env user allowlists configured. Unknown senders are denied "
+                "unless you configure SIGNAL_ALLOWED_USERS or explicitly opt in "
+                "with GATEWAY_ALLOW_ALL_USERS=true."
             )
-
-        reason = _own_policy_open_startup_violation(self.config)
-        if reason:
-            platform_value = reason.split(":", 1)[0]
-            allow_all_env = None
-            for platform, open_env in _OWN_POLICY_OPEN_ENV.items():
-                if platform.value == platform_value:
-                    allow_all_env = open_env[2]
-                    break
-            logger.error(
-                "Refusing to start: %s has dm_policy/group_policy set to 'open' "
-                "but neither GATEWAY_ALLOW_ALL_USERS nor %s is enabled.",
-                platform_value,
-                allow_all_env or "a platform allow-all flag",
-            )
-            try:
-                from gateway.status import write_runtime_status
-                write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
-            except Exception:
-                pass
-            self._request_clean_exit(reason)
-            return True
         
         # Discover Python plugins before shell hooks so plugin block
         # decisions take precedence in tie cases.  The CLI startup path
@@ -10866,38 +9901,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception:
             logger.warning(
                 "plugin discovery failed at gateway startup", exc_info=True,
-            )
-
-        # Register the generic relay adapter when a connector relay URL is
-        # configured (GATEWAY_RELAY_URL / gateway.relay_url). No URL -> no-op, so
-        # direct/single-tenant deployments are unaffected. When configured, the
-        # adapter dials the connector over a WebSocket, negotiates its capability
-        # descriptor at handshake, and bridges inbound/outbound like any platform.
-        try:
-            from gateway.relay import (
-                register_relay_adapter,
-                relay_url,
-                self_provision_relay,
-                send_relay_policy,
-            )
-
-            # Boot-time relay self-provision: resolve the agent's NAS token ->
-            # POST /relay/provision -> set GATEWAY_RELAY_* in os.environ BEFORE
-            # registration reads them. No-op when relay is unconfigured, a secret
-            # is already pinned, or no NAS token resolves (self-hosted, unenrolled).
-            # Never raises.
-            self_provision_relay()
-
-            if register_relay_adapter():
-                logger.info("relay adapter registered (connector at %s)", relay_url())
-                # Declare this gateway's relevance policy (mention-gating /
-                # free-response / allow-bots) to the connector so the SAME
-                # behavior governs relay delivery (Phase 6 Unit ζ). Runs after
-                # the secret is resolved; never raises, never blocks boot.
-                send_relay_policy()
-        except Exception:
-            logger.warning(
-                "relay adapter registration failed at gateway startup", exc_info=True,
             )
 
         # Register declarative shell hooks from cli-config.toml.  Gateway
@@ -11153,8 +10156,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     "attempts": 1,
                     "next_retry": time.monotonic() + 30,
                     "queued_at": time.monotonic(),
-                    "credential_claim": self._adapter_credential_claim(platform, adapter),
-                    "listener_claim": self._adapter_listener_claim(platform, adapter),
                 }
                 continue
             if outcome == "ok":
@@ -11190,8 +10191,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                             "config": platform_config,
                             "attempts": 1,
                             "next_retry": time.monotonic() + 30,
-                            "credential_claim": self._adapter_credential_claim(platform, adapter),
-                            "listener_claim": self._adapter_listener_claim(platform, adapter),
                         }
                 else:
                     self._update_platform_runtime_status(
@@ -11204,8 +10203,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         "attempts": 1,
                         "next_retry": time.monotonic() + 30,
                         "queued_at": time.monotonic(),
-                        "credential_claim": self._adapter_credential_claim(platform, adapter),
-                        "listener_claim": self._adapter_listener_claim(platform, adapter),
                     }
 
         if await self._abort_startup_if_shutdown_requested():
@@ -11476,29 +10473,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         from gateway.relay_workers import relay_event_loop as _relay_event_loop
 
         self._spawn_supervised(lambda: _relay_event_loop(self), "relay_events")
-
-        # Start the scale-to-zero idle watcher ONLY when this instance is opted
-        # in (the NAS "Labs" SON_OF_ANTON_SCALE_TO_ZERO stamp), messaging is
-        # relay-only/absent, and a wakeUrl is registered (decisions.md D1/D11/
-        # §3.4(1)). A non-opted instance never starts it, so behaviour is exactly
-        # as today. When armed, the watcher drives the relay dormant on sustained
-        # idle and then suspends the machine itself via the local flaps socket
-        # (Fly Proxy autostop is inbound-only and job-blind, so the gateway owns
-        # the suspend decision; NAS provisions these machines autostop:"off").
-        try:
-            if self._scale_to_zero_should_arm():
-                logger.info(
-                    "scale-to-zero: armed (idle timeout %.0fs) — watching for idle",
-                    self._scale_to_zero_idle_timeout_seconds(),
-                )
-                self._spawn_supervised(self._scale_to_zero_watcher, "scale_to_zero_watcher")
-            else:
-                # Surface WHY an OPTED-IN instance didn't arm (a non-opted instance
-                # not arming is normal — stay silent there). Without this, a failed
-                # arm is invisible and "why won't it suspend/wake?" needs a box-dive.
-                self._log_scale_to_zero_not_armed_reason()
-        except Exception:  # noqa: BLE001 - arming must never block startup
-            logger.debug("scale-to-zero: arm check failed at startup", exc_info=True)
 
         # Start background drain-control watcher — reconciles the gateway's
         # new-turn accept-state with the external ``.drain_request.json`` marker
@@ -12236,17 +11210,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
                 platform_config = info["config"]
                 attempt = info["attempts"] + 1
-                # Empty-token primary configs can never reconnect; drop them so
-                # multiplex setups where a secondary profile owns the bot do
-                # not spin forever (#64674).
-                if not _platform_has_bot_credential(platform, platform_config):
-                    logger.warning(
-                        "Reconnect %s: no bot credential on queued config, "
-                        "removing from retry queue",
-                        platform.value,
-                    )
-                    del self._failed_platforms[platform]
-                    continue
                 logger.info(
                     "Reconnecting %s (attempt %d)...",
                     platform.value, attempt,
@@ -13126,92 +12089,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     def _primary_platform_event_handler(self):
         return self._handle_gateway_platform_event
 
-    @staticmethod
-    def _adapter_credential_claim(
-        platform: Platform, adapter: Any
-    ) -> Optional[tuple]:
-        """Return the exclusive credential resource claimed by an adapter."""
-        fingerprint = GatewayRunner._adapter_credential_fingerprint(adapter)
-        if fingerprint is None:
-            return None
-        return (platform, fingerprint)
-
-    @staticmethod
-    def _adapter_listener_claim(platform: Platform, adapter: Any) -> Optional[tuple]:
-        """Return the exclusive listener resource claimed by an adapter.
-
-        Plugin platforms that bind a host port (none remain in the built-in
-        set) can represent that endpoint as a claim so multiplex startup
-        rejects the later adapter before either ``connect()`` or
-        ``disconnect()`` can disturb the first profile.
-        """
-        return None
-
-    @staticmethod
-    def _adapter_credential_fingerprint(adapter: Any) -> Optional[str]:
-        """Return a stable, log-safe fingerprint of an adapter's credential.
-
-        Used only to detect two profiles claiming the same platform credential.
-        Returns a salted hash (never the credential itself) of the adapter's
-        primary credential, or None when no credential is discoverable (in
-        which case we don't attempt conflict detection for it).
-        """
-        token = None
-        for attr in (
-            "token",
-            "bot_token",
-            "_token",
-            "api_token",
-            "_bot_token",
-            "_project_secret",
-        ):
-            val = getattr(adapter, attr, None)
-            if isinstance(val, str) and val.strip():
-                token = val.strip()
-                break
-        # Many adapters (e.g. Discord) store the token on their `config`
-        # sub-object rather than directly on the adapter. Without this lookup
-        # those adapters all return None here, the same-token conflict check
-        # is silently skipped, and every profile's adapter for that platform
-        # starts polling the same bot token — producing a per-message race
-        # for which adapter answers. See test_reads_config_token.
-        if not token:
-            cfg = getattr(adapter, "config", None)
-            if cfg is not None:
-                for attr in ("token", "bot_token"):
-                    val = getattr(cfg, attr, None)
-                    if isinstance(val, str) and val.strip():
-                        token = val.strip()
-                        break
-        if not token:
-            config = getattr(adapter, "config", None)
-            val = getattr(config, "token", None)
-            if isinstance(val, str) and val.strip():
-                token = val.strip()
-        if not token:
-            # Shared-account platforms (Signal) carry their exclusive
-            # credential as daemon URL + account instead of a token. Combine
-            # both so two profiles that genuinely use different accounts on
-            # one daemon do not collide.
-            url = getattr(adapter, "http_url", None) or ""
-            account = getattr(adapter, "account", None) or ""
-            if isinstance(url, str) and (url.strip() or account.strip()):
-                token = f"{url.strip()}|{str(account).strip()}"
-        if not token:
-            return None
-        import hashlib
-        return hashlib.sha256(("son-of-anton-mux:" + token).encode("utf-8")).hexdigest()[:16]
-
     def _create_adapter(
         self, 
         platform: Platform, 
         config: Any
     ) -> Optional[BasePlatformAdapter]:
-        """Create the appropriate adapter for a platform.
-
-        Checks the platform_registry first (plugin adapters), then falls
-        through to the built-in if/elif chain for core platforms.
-        """
+        """Create the appropriate adapter for a platform."""
         if hasattr(config, "extra") and isinstance(config.extra, dict):
             config.extra.setdefault(
                 "group_sessions_per_user",
@@ -13221,31 +12104,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 "thread_sessions_per_user",
                 getattr(self.config, "thread_sessions_per_user", False),
             )
-
-        # ── Plugin-registered platforms (checked first) ───────────────────
-        try:
-            from gateway.platform_registry import platform_registry
-            if platform_registry.is_registered(platform.value):
-                adapter = platform_registry.create_adapter(platform.value, config)
-                if adapter is not None:
-                    # Inject a back-reference to the gateway runner so every
-                    # adapter can deliver cross-platform admin alerts.
-                    # Unconditional: ``BasePlatformAdapter`` declares
-                    # ``gateway_runner``, so this reaches ALL platforms, not
-                    # just the ones that pre-declared it.
-                    adapter.gateway_runner = self
-                    return adapter
-                # Registered but failed to instantiate — don't silently fall
-                # through to built-ins (there are none for plugin platforms).
-                logger.error(
-                    "Platform '%s' is registered but adapter creation failed "
-                    "(check dependencies and config)",
-                    platform.value,
-                )
-                return None
-        except Exception as e:
-            logger.debug("Platform registry lookup for '%s' failed: %s", platform.value, e)
-        # Fall through to built-in adapters below
 
         if platform == Platform.SIGNAL:
             from gateway.platforms.signal import (
@@ -13308,40 +12166,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if not adapter:
             return
 
-        config = getattr(self, "config", None)
-        if (
-            config
-            and getattr(source, "platform", None) == Platform.SLACK
-            and _is_slack_ignored_channel(config, getattr(source, "chat_id", None))
-        ):
-            logger.info(
-                "Skipping Slack platform notice for configured ignored channel %s",
-                getattr(source, "chat_id", None),
-            )
-            return
-
-        notice_delivery = "public"
-        if config and hasattr(config, "get_notice_delivery"):
-            notice_delivery = config.get_notice_delivery(source.platform)
-
         metadata = self._thread_metadata_for_source(source)
-        if notice_delivery == "private" and getattr(source, "user_id", None):
-            try:
-                result = await adapter.send_private_notice(
-                    source.chat_id,
-                    source.user_id,
-                    content,
-                    metadata=metadata,
-                )
-                if getattr(result, "success", False):
-                    return
-            except Exception:
-                logger.debug(
-                    "[%s] send_private_notice failed, falling back to public",
-                    getattr(source, "platform", "?"),
-                    exc_info=True,
-                )
-
         await adapter.send(source.chat_id, content, metadata=metadata)
 
     async def _resolve_async_delegation_session(
@@ -13889,25 +12714,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
 
-        # Ignored-channel guard runs FIRST — before startup-restore queueing,
-        # plugin hooks, auth, and session setup — so a configured ignored
-        # channel can never reach pairing/auth/session state (#51899).
-        # getattr: bare test runners construct GatewayRunner via
-        # object.__new__ without config (see AGENTS.md pitfall on
-        # object.__new__ test pattern).
-        if (
-            not is_internal
-            and getattr(source, "platform", None) == Platform.SLACK
-            and _is_slack_ignored_channel(
-                getattr(self, "config", None), getattr(source, "chat_id", None)
-            )
-        ):
-            logger.info(
-                "Dropping Slack message from configured ignored channel %s",
-                getattr(source, "chat_id", None),
-            )
-            return None
-
         if (
             getattr(self, "_startup_restore_in_progress", False)
             and not is_internal
@@ -13915,14 +12721,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         ):
             self._queue_startup_restore_event(event)
             return None
-
-        # scale-to-zero (Phase 0, 0.B/F13): stamp the gateway-scoped last-inbound
-        # clock for real (user-originated) inbound only. Internal/system events
-        # (background-process completions, startup-restore replays) are NOT
-        # traffic — counting them would keep a genuinely idle gateway awake. This
-        # clock is what the idle predicate (gateway/scale_to_zero.is_idle) reads.
-        if not is_internal:
-            self._scale_to_zero_note_real_inbound()
 
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
@@ -15123,16 +13921,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # (mirrors the same field's treatment in
             # build_session_context_prompt via _format_untrusted_prompt_value).
             _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
-            # On Slack, expose the current author's verifiable user ID next to
-            # the display name (#17916): "mention me again" requests need a
-            # trusted `<@U...>` target for the CURRENT speaker — display names
-            # are ambiguous and historical mentions may point at someone else.
-            # The user_id comes from the Slack event envelope (not
-            # user-editable text), so it does not need neutralization.
-            if source.platform == Platform.SLACK and source.user_id:
-                _safe_user_name = (
-                    f"{_safe_user_name} | Slack user <@{source.user_id}>"
-                )
             message_text = f"[{_safe_user_name}] {message_text}"
 
         # Prepend channel context from history backfill (if any).  This
@@ -15309,25 +14097,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
                 context_note = _build_document_context_note(display_name, agent_path, mtype)
                 message_text = f"{context_note}\n\n{message_text}"
-
-        # Discord: surface the triggering message id per-turn on the user
-        # message rather than in the cached system prompt. message_id changes
-        # every turn, so baking it into build_session_context_prompt() would
-        # bust the agent-cache signature and rebuild the AIAgent every message
-        # (destroying prompt caching). The static IDs block points the agent
-        # here; the volatile id rides the per-turn user content.
-        if (
-            source is not None
-            and getattr(source, "platform", None) == Platform.DISCORD
-            and getattr(event, "message_id", None)
-        ):
-            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
-            if _disc_tools_loaded():
-                message_text = (
-                    f"[Triggering message id: `{event.message_id}` — use as "
-                    f"`message_id` for reply/react/pin via the discord tools.]\n\n"
-                    f"{message_text}"
-                )
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text
@@ -15663,10 +14432,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         source = dataclasses.replace(entry.origin)
         try:
-            if not self._is_user_authorized(
-                source,
-                allow_adapter_delegation=False,
-            ):
+            if not self._is_user_authorized(source):
                 logger.warning(
                     "Plugin message injection denied by current gateway authorization: "
                     "plugin=%s session=%s",
@@ -15886,17 +14652,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 context_note = "[System note: The previous gateway session could not be recovered after a restart (API recovery timed out). This is a fresh conversation — use /resume to restore history if needed.]"
             else:
                 context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
-            # Slack/Discord channels/threads are long-lived: point the agent at
-            # the specific prior same-channel session so it recalls that context
-            # via session_search instead of an unrelated recent session.  Returns
-            # None (appends nothing) for other platforms or when there's no prior
-            # activity to recall.  Deterministic — no extra API/DB calls (#36220).
-            try:
-                continuity_note = build_channel_continuity_note(session_entry, source)
-            except Exception:
-                continuity_note = None
-            if continuity_note:
-                context_note = context_note + "\n\n" + continuity_note
             turn_sidecar_notes.append(context_note)
 
             # Send a user-facing notification explaining the reset, unless:
@@ -16838,19 +15593,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             except Exception:
                 pass
             if not home_env:
-                # Slack dispatches all Son of Anton commands through a single
-                # parent slash command `/son-of-anton`; bare `/sethome` is not
-                # registered and would fail with "app did not respond".
-                sethome_cmd = (
-                    "/son-of-anton sethome"
-                    if source.platform == Platform.SLACK
-                    else "/sethome"
-                )
                 notice = (
                     f"No home channel is set for {platform_name.title()}. "
                     f"A home channel is where Son of Anton delivers cron job results "
                     f"and cross-platform messages.\n\n"
-                    f"Type {sethome_cmd} to make this chat your home channel, "
+                    f"Type /sethome to make this chat your home channel, "
                     f"or ignore to skip."
                 )
                 await self._deliver_platform_notice(source, notice)
@@ -17109,7 +15856,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     _platform_config_key(source.platform),
                     "show_reasoning",
                     default=bool(getattr(self, "_show_reasoning", False)),
-                    platform=source.platform,
                 )
             except Exception:
                 _show_reasoning_effective = getattr(self, "_show_reasoning", False)
@@ -18240,21 +16986,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 logger.debug("loop wakeup watcher error: %s", exc)
             await asyncio.sleep(interval)
 
-    @staticmethod
-    def _get_guild_id(event: MessageEvent) -> Optional[int]:
-        """Extract Discord guild_id from the raw message object."""
-        raw = getattr(event, "raw_message", None)
-        if raw is None:
-            return None
-        # Slash command interaction
-        if hasattr(raw, "guild_id") and raw.guild_id:
-            return int(raw.guild_id)
-        # Regular message
-        if hasattr(raw, "guild") and raw.guild:
-            return raw.guild.id
-        return None
-
-
     async def _deliver_media_from_response(
         self,
         response: str,
@@ -18696,258 +17427,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 pass
 
 
-    def _is_discord_auto_thread_lane(self, source: SessionSource) -> bool:
-        """Return True only for Discord threads Son of Anton just auto-created."""
-        return (
-            source.platform == Platform.DISCORD
-            and source.chat_type == "thread"
-            and bool(getattr(source, "auto_thread_created", False))
-            and bool(source.thread_id)
-            and bool(getattr(source, "auto_thread_initial_name", None))
-        )
-
-    def _is_relay_discord_channel_lane(self, source: SessionSource) -> bool:
-        """Shape-only check: a relay-delivered Discord CHANNEL event whose
-        reply the connector MAY auto-thread (title-turn registration gate).
-
-        Deliberately does NOT consult the send-result cache: at registration
-        time (before delivery) the feedback can't exist yet. The rename lane
-        polls the cache at fire time instead."""
-        return (
-            source.platform == Platform.DISCORD
-            and bool(source.chat_id)
-            and not source.thread_id
-            and source.chat_type in ("group", "channel")
-            and getattr(source, "delivered_via_upstream_relay", False) is True
-        )
-
-    def _relay_auto_thread_info(
-        self, source: SessionSource
-    ) -> Optional[Tuple[str, str]]:
-        """(thread_id, initial_name) when the RELAY connector auto-threaded our
-        reply to this source's chat — the title-turn sibling of
-        _is_discord_auto_thread_lane.
-
-        The marker-based check above only lights up for events ARRIVING IN an
-        auto-created thread (turn 2+). The auto-title fires on the FIRST
-        exchange, whose source is the PARENT channel event — the thread did
-        not exist at ingest, so no markers can be present and the native lane
-        check never matches on the relay title turn (staging repro
-        2026-07-29: initial titles fine, semantic renames never happened).
-
-        Preferred path: the connector stamps ``prospective_thread_id`` on the
-        inbound (the anchor message id, which IS the id of the thread it will
-        auto-create). It's deterministic and per-message, so it identifies the
-        EXACT thread even when several auto-threads spawn from one channel —
-        unlike the send-result cache below, which held a single slot per parent
-        chat and so only the FIRST thread in a channel ever renamed (staging
-        repro 2026-08-02: thread A renamed, sibling thread B stuck at raw
-        text). The connector's own created-name guard (prefer_connector_created)
-        enforces no-clobber, so no initial name is needed here.
-
-        Fallback: the connector reports where the reply actually landed on the
-        send result (contract §SendResult thread_id/auto_thread_name); the
-        relay adapter caches it per chat and this reads it back — kept for
-        older connectors that don't stamp prospective_thread_id.
-        """
-        if source.platform != Platform.DISCORD or not source.chat_id:
-            return None
-        if not getattr(source, "delivered_via_upstream_relay", False):
-            return None
-        prospective = getattr(source, "prospective_thread_id", None)
-        if prospective:
-            # Deterministic per-thread identity; the empty initial-name marker
-            # signals the caller to rely on the connector-side no-clobber guard.
-            return (str(prospective), "")
-        adapter = self._adapter_for_source(source)
-        info_fn = getattr(adapter, "auto_thread_info_for_chat", None)
-        if not callable(info_fn):
-            return None
-        try:
-            return _as_thread_info(info_fn(str(source.chat_id)))
-        except Exception:
-            return None
-
-    async def _await_relay_auto_thread_info(
-        self, source: SessionSource
-    ) -> Optional[Tuple[str, str]]:
-        """``_relay_auto_thread_info``, waited out until this turn delivers.
-
-        The legacy send-result path can only answer once the reply is sent, and
-        the caller asks at title time — one turn early. The adapter answers on
-        the send either way, so the timeout is only a backstop for a turn that
-        never sends at all; the turn's own inactivity limit is exactly how long
-        that turn could still be alive.
-        """
-        # The connector-stamped prospective id is known at ingest, so most
-        # sessions answer here and never wait at all.
-        known = self._relay_auto_thread_info(source)
-        if known is not None:
-            return known
-        adapter = self._adapter_for_source(source)
-        wait_fn = getattr(adapter, "wait_for_auto_thread_info", None)
-        if not callable(wait_fn) or not source.chat_id:
-            return None
-        # 0 means the operator disabled the turn limit; the backstop still needs one.
-        timeout = _float_env("SON_OF_ANTON_AGENT_TIMEOUT", 1800) or 1800
-        try:
-            return _as_thread_info(await wait_fn(str(source.chat_id), timeout))
-        except Exception:
-            return None
-
-    def _sanitize_discord_thread_title(self, title: str) -> str:
-        """Return a Discord-safe semantic thread title from a session title.
-
-        Discord thread names are capped at 100 characters measured in UTF-16
-        code units (emoji count double), so truncate with the UTF-16 helpers
-        rather than Python code-point slices.
-        """
-        cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
-        if not cleaned:
-            return "Son of Anton Chat"
-        if utf16_len(cleaned) > 80:
-            cleaned = _prefix_within_utf16_limit(cleaned, 77).rstrip() + "..."
-        return cleaned
-
-    async def _rename_discord_auto_thread_for_session_title(
-        self,
-        source: SessionSource,
-        session_id: str,
-        title: str,
-        relay_info: Optional[Tuple[str, str]] = None,
-    ) -> None:
-        """Best-effort semantic rename of a newly auto-created Discord thread.
-
-        ``relay_info`` is the (thread_id, initial_name) pair from the relay
-        connector's send-result feedback — supplied on the title turn, where
-        the source is the parent-channel event and carries no auto-thread
-        markers (see _relay_auto_thread_info). When absent, the native
-        marker-based lane supplies thread identity from the source itself.
-        """
-        if relay_info is None and not await asyncio.to_thread(
-            self._is_discord_auto_thread_lane, source
-        ):
-            # Relay title turn with no feedback captured at schedule time: the
-            # title comes off the user's opening message, so it beats the
-            # delivery that produces the connector's send-result feedback
-            # (thread_id + initial name) by the whole length of the turn. Wait
-            # on the adapter for that send rather than guessing how long the
-            # turn will take.
-            if not self._is_relay_discord_channel_lane(source):
-                return
-            relay_info = await self._await_relay_auto_thread_info(source)
-            if relay_info is None:
-                # True miss: the connector did not auto-thread this reply
-                # (policy off, DM, already-threaded, or send failed).
-                return
-        adapter = self._adapter_for_source(source) if getattr(self, "adapters", None) else None
-        if adapter is None:
-            return
-        rename_thread = getattr(adapter, "rename_thread", None)
-        if rename_thread is None:
-            return
-        target_thread_id = relay_info[0] if relay_info else str(source.thread_id)
-        # Relay lane (relay_info present): ask the CONNECTOR to enforce the
-        # no-clobber guard from its own created-name memory — the gateway
-        # can't reliably reproduce the thread's initial name byte-for-byte
-        # (normalization drift silently declined every rename before this).
-        # Native-marker lane keeps the legacy string guard.
-        use_connector_guard = relay_info is not None
-        guard_name = (
-            None
-            if use_connector_guard
-            else getattr(source, "auto_thread_initial_name", None)
-        )
-        thread_name = self._sanitize_discord_thread_title(title)
-        # Relay lane only: the connector's egress guard resolves the owning
-        # tenant from the outbound metadata's scope_id (guild) / user_id
-        # (author). Those discriminator caches are keyed by the PARENT channel
-        # chat_id (learned at inbound), NOT the thread id. rename_thread
-        # defaults chat_id to the thread id when no parent is given, so the
-        # scope/author lookup misses and the connector declines the op
-        # ("target not routed to an onboarded tenant" — the live failure on
-        # staging 2026-08-01). Pass the parent channel id (the relay source's
-        # chat_id IS the parent channel; the thread came from send-result
-        # feedback) so the discriminators resolve. Native lane needs nothing:
-        # its source IS the thread and it renames via the direct Discord API,
-        # not the relay egress guard.
-        parent_chat_id = (
-            str(source.chat_id) if use_connector_guard and source.chat_id else None
-        )
-        logger.info(
-            "discord auto-thread rename: thread=%s lane=%s new_title=%r",
-            target_thread_id,
-            "relay" if use_connector_guard else "native",
-            thread_name,
-        )
-        try:
-            renamed = await rename_thread(
-                target_thread_id,
-                thread_name,
-                prefer_connector_created=use_connector_guard,
-                only_if_current_name=guard_name,
-                parent_chat_id=parent_chat_id,
-            )
-            logger.info(
-                "discord auto-thread rename result: thread=%s applied=%s",
-                target_thread_id,
-                bool(renamed),
-            )
-        except Exception:
-            logger.debug("Failed to rename Discord auto-thread for generated session title", exc_info=True)
-
-    def _schedule_discord_semantic_thread_rename(
-        self,
-        source: SessionSource,
-        session_id: str,
-        title: str,
-    ) -> None:
-        """Schedule Discord auto-thread rename from the auto-title background thread."""
-        relay_info = None
-        if not title:
-            return
-        if not self._is_discord_auto_thread_lane(source):
-            # Relay title turn: the source is the PARENT channel event (the
-            # thread didn't exist at ingest, so no auto-thread markers). The
-            # connector's send-result feedback tells us where the reply
-            # landed — but the auto-title thread races the delivery that
-            # produces it, so a cache miss HERE is not a verdict. Schedule
-            # whenever the SHAPE matches; the async rename lane polls the
-            # cache (with a bounded wait) and no-ops on a true miss.
-            relay_info = self._relay_auto_thread_info(source)
-            if relay_info is None and not self._is_relay_discord_channel_lane(
-                source
-            ):
-                return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = getattr(self, "_gateway_loop", None)
-        if loop is None or loop.is_closed():
-            return
-        try:
-            copied_source = dataclasses.replace(source)
-        except Exception:
-            copied_source = source
-        future = safe_schedule_threadsafe(
-            self._rename_discord_auto_thread_for_session_title(
-                copied_source, session_id, title, relay_info=relay_info
-            ),
-            loop,
-            logger=logger,
-            log_message="Discord semantic thread rename failed to schedule",
-        )
-        if future is None:
-            return
-
-        def _log_rename_failure(fut) -> None:
-            try:
-                fut.result()
-            except Exception:
-                logger.debug("Discord semantic thread rename failed", exc_info=True)
-
-        future.add_done_callback(_log_rename_failure)
-
     async def _execute_mcp_reload(self, event: MessageEvent) -> str:
         """Actually disconnect, reconnect, and notify MCP tool changes.
 
@@ -19278,28 +17757,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             chat_type=getattr(source, "chat_type", None),
             reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
         )
-        if getattr(source, "platform", None) == Platform.SLACK:
-            # Per-turn egress identity (R3-5, connector PR gateway-gateway#210).
-            # Slack's chat.startStream requires recipient_user_id (+
-            # recipient_team_id) when streaming to a channel, and the relay
-            # connector fills those from metadata.user_id / metadata.scope_id.
-            # The relay adapter's _with_scope fallback resolves BOTH from
-            # per-chat caches keyed only by chat_id — mutable state that a
-            # CONCURRENT turn overwrites: two users with overlapping turns in
-            # one channel would open U1's stream with U2 as the recipient.
-            # Stamp the authentic per-turn values from THIS turn's source here,
-            # where they are still turn-scoped; _with_scope only fills keys
-            # that are absent, so the cache degrades to what it should be — a
-            # restart/synthetic-send fallback.
-            team_id = getattr(source, "scope_id", None)
-            user_id = getattr(source, "user_id", None)
-            if team_id or user_id:
-                metadata = dict(metadata or {})
-                if team_id:
-                    metadata["slack_team_id"] = str(team_id)
-                    metadata.setdefault("scope_id", str(team_id))
-                if user_id:
-                    metadata.setdefault("user_id", str(user_id))
         return metadata
 
     def _thread_metadata_for_target(
@@ -19316,10 +17773,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if thread_id is None:
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
-        if platform == Platform.SLACK and reply_to_message_id is not None:
-            # Slack's reply_in_thread=false path uses message_id to distinguish
-            # real existing threads from synthetic top-level session keys.
-            metadata["message_id"] = str(reply_to_message_id)
         return metadata
 
     @staticmethod
@@ -19336,9 +17789,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
 
     # Built-in messaging platforms where the ``/update`` command is allowed.
-    # Plugin-migrated platforms (discord, slack) are NOT listed here — they
-    # declare ``allow_update_command=True`` on their ``PlatformEntry`` and are
-    # honored via the registry fallback at ``_handle_update_command`` below.
     _UPDATE_ALLOWED_PLATFORMS = frozenset({
         Platform.SIGNAL, Platform.LOCAL,
     })
@@ -19469,7 +17919,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     await adapter.send(
                         chat_id,
                         f"```\n{chunk}\n```",
-                        metadata=_non_conversational_metadata(metadata, platform=platform),
+                        metadata=metadata,
                     )
                 except Exception as e:
                     logger.debug("Update stream send failed: %s", e)
@@ -19495,13 +17945,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         await adapter.send(
                             chat_id,
                             "Son of Anton update finished.",
-                            metadata=_non_conversational_metadata(metadata, platform=platform),
+                            metadata=metadata,
                         )
                     else:
                         await adapter.send(
                             chat_id,
                             "Son of Anton update failed (exit code {}).".format(exit_code),
-                            metadata=_non_conversational_metadata(metadata, platform=platform),
+                            metadata=metadata,
                         )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 except Exception as e:
@@ -19559,7 +18009,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     prompt=prompt_text,
                                     default=default,
                                     session_key=session_key,
-                                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                                    metadata=metadata,
                                 )
                                 sent_buttons = True
                             except Exception as btn_err:
@@ -19573,7 +18023,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                 f"{prompt_text}{default_hint}\n\n"
                                 f"Reply `{_p}approve` (yes) or `{_p}deny` (no), "
                                 f"or type your answer directly.",
-                                metadata=_non_conversational_metadata(metadata, platform=platform),
+                                metadata=metadata,
                             )
                         # Keep the prompt marker on disk until the user
                         # answers. If the gateway restarts mid-prompt, the
@@ -19599,7 +18049,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 await adapter.send(
                     chat_id,
                     "Son of Anton update timed out after 30 minutes.",
-                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                    metadata=metadata,
                 )
             except Exception:
                 pass
@@ -19711,7 +18161,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 await adapter.send(
                     chat_id,
                     msg,
-                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                    metadata=metadata,
                 )
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",
@@ -19772,17 +18222,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 reply_to_message_id=message_id,
                 adapter=transport.adapter,
             )
-            if data.get("delivered_via_upstream_relay") is True:
-                metadata = dict(metadata or {})
-                if data.get("user_id"):
-                    metadata["user_id"] = str(data["user_id"])
-                if data.get("scope_id"):
-                    metadata["scope_id"] = str(data["scope_id"])
             result = await transport.send(
                 platform,
                 str(chat_id),
                 "Gateway restarted successfully. Your session continues.",
-                metadata=_non_conversational_metadata(metadata, platform=platform),
+                metadata=metadata,
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")
             # and returns SendResult(success=False) rather than raising, so
@@ -19851,22 +18295,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     home.thread_id,
                     adapter=transport.adapter,
                 )
-                if transport.is_relay:
-                    metadata = dict(metadata or {})
-                    if home.user_id:
-                        metadata["user_id"] = home.user_id
-                    if home.scope_id:
-                        metadata["scope_id"] = home.scope_id
-                send_metadata = _non_conversational_metadata(metadata, platform=platform)
-                if send_metadata is not None or transport.is_relay:
-                    result = await transport.send(
-                        platform,
-                        str(home.chat_id),
-                        message,
-                        metadata=send_metadata,
-                    )
-                else:
-                    result = await transport.adapter.send(str(home.chat_id), message)
+                result = await transport.send(
+                    platform,
+                    str(home.chat_id),
+                    message,
+                    metadata=metadata,
+                )
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",
@@ -19944,22 +18378,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     home.thread_id,
                     adapter=transport.adapter,
                 )
-                if transport.is_relay:
-                    metadata = dict(metadata or {})
-                    if home.user_id:
-                        metadata["user_id"] = home.user_id
-                    if home.scope_id:
-                        metadata["scope_id"] = home.scope_id
-                send_metadata = _non_conversational_metadata(metadata, platform=platform)
-                if send_metadata is not None or transport.is_relay:
-                    result = await transport.send(
-                        platform,
-                        str(home.chat_id),
-                        message,
-                        metadata=send_metadata,
-                    )
-                else:
-                    result = await transport.adapter.send(str(home.chat_id), message)
+                result = await transport.send(
+                    platform,
+                    str(home.chat_id),
+                    message,
+                    metadata=metadata,
+                )
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
                         "state.db warning notification failed for %s:%s: %s",
@@ -20006,7 +18430,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_id_alt=str(context.source.user_id_alt) if context.source.user_id_alt else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
-            scope_id=str(getattr(context.source, "scope_id", "") or ""),
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             async_delivery=_async_delivery,
@@ -20361,16 +18784,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         try:
             platform = Platform(platform_name)
-            # Reject arbitrary strings that create dynamic pseudo-members.
-            # Built-in platforms are always valid; plugin platforms must be
-            # registered in the platform registry.
-            if platform.value not in _BUILTIN_PLATFORM_VALUES:
-                try:
-                    from gateway.platform_registry import platform_registry
-                    if not platform_registry.is_registered(platform.value):
-                        raise ValueError(platform_name)
-                except Exception:
-                    raise ValueError(platform_name)
         except Exception:
             logger.warning(
                 "Synthetic process event has invalid platform metadata: %r",
@@ -20378,21 +18791,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             )
             return None
 
-        scope_id = str(evt.get("scope_id") or "").strip() or None
-        if scope_id is None and chat_type not in ("dm", "thread"):
-            # Reconstructed (non-persisted) source for a scoped chat with no
-            # scope discriminator: on a relay-fronted deployment the
-            # connector's fail-closed tenant guard may decline the reply
-            # unless user_id resolves it (resolveByUser). Don't fail here —
-            # DMs and author-bound scoped chats still route, and native
-            # adapters don't need scope_id — but say so, so a post-restart
-            # egress decline isn't silent.
-            logger.warning(
-                "Synthetic event source for %s chat=%s (%s) reconstructed "
-                "without scope_id; scoped relay egress may be declined by "
-                "the connector's tenant guard (user_id fallback only).",
-                platform_name, chat_id, chat_type,
-            )
         return SessionSource(
             platform=platform,
             chat_id=chat_id,
@@ -20400,7 +18798,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             thread_id=str(evt.get("thread_id") or "").strip() or None,
             user_id=str(evt.get("user_id") or "").strip() or None,
             user_name=str(evt.get("user_name") or "").strip() or None,
-            scope_id=scope_id,
         )
 
     async def _drain_watch_notifications(self, completion_queue) -> None:
@@ -20446,13 +18843,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             )
             return None
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-        # Alias-aware resolution (relay-plane): a relay-fronted gateway
-        # registers ONE adapter under Platform.RELAY fronting N logical
-        # platforms, so a literal ``p.value == platform_name`` scan misses
-        # "slack" and silently drops the completion as "no gateway route"
-        # (staging incident 2026-08-09, second occurrence). Resolve through
-        # the shared transport resolver — native adapter wins; relay is
-        # eligible only when it advertises fronting the logical platform.
         adapter = None
         try:
             _platform_enum = Platform(platform_name)
@@ -20506,15 +18896,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 source.chat_id,
                 source.thread_id,
             )
-            # Relay-plane egress priming (defect #4, staging 2026-08-09): a
-            # synthetic turn injected right after a restart reaches a relay
-            # adapter whose per-chat routing caches are cold (they warm only
-            # on inbound), so its replies egress without tenant
-            # discriminators and the connector's fail-closed guard declines
-            # them. Prime the caches from this event's session-store origin.
-            _prime = getattr(adapter, "prime_routing_cache", None)
-            if callable(_prime):
-                _prime(synth_event)
             await adapter.handle_message(synth_event)
             return True
         except Exception as e:
@@ -20580,9 +18961,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if end_reason != "compaction":
             # An ended parent is only unreachable when the USER closed the
             # thread of work (explicit boundary: /new -> session_reset /
-            # new_session, user_exit, session_switch). Idle/timeout ends are
-            # the norm on scale-to-zero relay deployments — the platform chat
-            # remains routable, and the #55578 resolver retargets the
+            # new_session, user_exit, session_switch). After an idle/timeout
+            # end the platform chat remains routable, and the #55578 resolver retargets the
             # completion to the chat's current session. Dropping those loses
             # finished work (staging incident 2026-08-09: completed
             # delegation batch never delivered because the parent had
@@ -21376,7 +19756,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                             await adapter.send(
                                 chat_id,
                                 message_text,
-                                metadata=_non_conversational_metadata(send_meta, platform=platform_name),
+                                metadata=send_meta,
                             )
                         except Exception as e:
                             logger.error("Watcher delivery error: %s", e)
@@ -21407,7 +19787,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         await adapter.send(
                             chat_id,
                             message_text,
-                            metadata=_non_conversational_metadata(send_meta, platform=platform_name),
+                            metadata=send_meta,
                         )
                     except Exception as e:
                         logger.error("Watcher delivery error: %s", e)
@@ -22425,34 +20805,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         src = context.source
         platform = src.platform.value if src.platform else ""
 
-        discord_ids: tuple = ()
-        discord_tools = ""
-        if src.platform == Platform.DISCORD:
-            from gateway.session import _discord_tools_loaded
-
-            discord_tools = "1" if _discord_tools_loaded() else "0"
-            discord_ids = (
-                str(src.guild_id or ""),
-                str(src.parent_chat_id or ""),
-                str(src.thread_id or ""),
-                str(src.chat_id or ""),
-                # Only PRESENCE is rendered (the id itself is delivered
-                # per-turn in the user message) — keying on the value would
-                # re-render every message for zero byte change.
-                "1" if src.message_id else "0",
-            )
-
-        # Slack renders a capability-aware platform note gated on
-        # _slack_tools_loaded() — the gate state must appear in the key
-        # (same parity contract as the Discord gate above) so a config /
-        # MCP-registration flip re-renders once instead of serving a
-        # stale pinned note for the rest of the session.
-        slack_tools = ""
-        if src.platform == Platform.SLACK:
-            from gateway.session import _slack_tools_loaded
-
-            slack_tools = "1" if _slack_tools_loaded() else "0"
-
         try:
             from son_of_anton_constants import display_son_of_anton_home
 
@@ -22470,9 +20822,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             str(src.user_name or ""),
             str(src.user_id or ""),
             bool(context.shared_multi_user_session),
-            discord_ids,
-            discord_tools,
-            slack_tools,
             tuple(p.value for p in context.connected_platforms),
             tuple(
                 (
@@ -23189,21 +21538,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             setting: str,
             *,
             default: bool = False,
-            require_platform_override_for: set[Any] | None = None,
             allow_generic: bool = False,
         ) -> str:
             """Return off|raw|generic for a gateway visibility surface."""
-            if require_platform_override_for:
-                current_platform = _gateway_platform_value(source.platform)
-                platform_only = {
-                    _gateway_platform_value(item)
-                    for item in require_platform_override_for
-                }
-                if (
-                    current_platform in platform_only
-                    and not _has_platform_display_override(user_config, platform_key, setting)
-                ):
-                    return "off"
             value = resolve_display_setting(user_config, platform_key, setting, default)
             if isinstance(value, str) and value.strip().lower() == "generic":
                 return "generic" if allow_generic else "off"
@@ -23222,23 +21559,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             except Exception as _phrase_err:
                 logger.debug("generic status phrase selection failed: %s", _phrase_err)
                 return "still on it" if kind in {"heartbeat", "waiting", "long_running", "status"} else "one sec"
-        from gateway.config import Platform
         tool_progress_enabled = progress_mode not in {"off", "log"}
-        # Live working-state status for text-rendering typing indicators
-        # (Slack's assistant status line). Independent of tool_progress —
-        # Slack defaults tool_progress off (permanent lines spam channels)
-        # but the status line is ephemeral, so live status stays useful
-        # there. Rendering rides the existing _keep_typing refresh: the
-        # callback only stores a phrase on the adapter, costing zero extra
-        # platform API calls.
-        _live_status_mode = resolve_display_setting(
-            user_config, platform_key, "live_status", "full"
-        )
-        _live_status_adapter = self._adapter_for_source(source)
-        if not getattr(_live_status_adapter, "supports_status_text", False):
-            _live_status_adapter = None
-        if _live_status_mode == "off":
-            _live_status_adapter = None
         # "log" mode: tool calls are written to ~/.son-of-anton/logs/tool_calls.log
         # instead of the chat (#3459 / #3458). Gateway-only by design.
         log_mode_enabled = progress_mode == "log"
@@ -23260,27 +21581,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             default=False,
         )
         _thinking_enabled = _thinking_mode != "off"
-        # Slack-native task cards (#29483): when the Slack adapter's opt-in
-        # is set, tool progress renders as native plan/task cards via
-        # chat.startStream — the progress queue is needed even though Slack
-        # keeps ordinary text tool_progress off by default (requiring both
-        # flags would silently leave the native feature inactive).
-        _progress_adapter_for_native = self._adapter_for_source(source)
-        _native_slack_task_cards = False
-        if (
-            source.platform == Platform.SLACK
-            and _progress_adapter_for_native is not None
-            and hasattr(_progress_adapter_for_native, "native_task_cards_enabled")
-        ):
-            try:
-                _native_slack_task_cards = bool(
-                    _progress_adapter_for_native.native_task_cards_enabled()
-                )
-            except Exception:
-                logger.debug("Slack native task-card config check failed", exc_info=True)
-        needs_progress_queue = (
-            tool_progress_enabled or _thinking_enabled or _native_slack_task_cards
-        )
+        needs_progress_queue = tool_progress_enabled or _thinking_enabled
 
 
         # Queue for progress messages (thread-safe)
@@ -23323,8 +21624,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         turn_ctx = TurnContext(
             source=source,
             _run_still_current=_run_still_current,
-            _live_status_adapter=_live_status_adapter,
-            _live_status_mode=_live_status_mode,
             _thinking_enabled=_thinking_enabled,
             progress_mode=progress_mode,
             progress_grouping=progress_grouping,
@@ -23348,7 +21647,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             log_mode_enabled=log_mode_enabled,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             needs_progress_queue=needs_progress_queue,
-            _native_slack_task_cards=_native_slack_task_cards,
             history=history,
             context_prompt=context_prompt,
             channel_prompt=channel_prompt,
@@ -23365,67 +21663,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Callback invoked by agent on tool lifecycle events — extracted to
         # TurnRunner.progress_callback (bound method, same signature).
         turn_ctx.progress_callback = turn_runner.progress_callback
-        turn_ctx.native_tool_start_callback = turn_runner.native_tool_start_callback
-        turn_ctx.native_tool_complete_callback = (
-            turn_runner.native_tool_complete_callback
-        )
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
-        #
-        # Threading metadata is platform-specific:
-        # - Slack DM threading needs event_message_id fallback (reply thread)
-        # - Other platforms should use explicit source.thread_id only
-        #
-        # Slack honours platforms.slack.extra.reply_in_thread=false: if the
-        # user has opted out of threaded replies, don't synthesise a thread
-        # for progress messages either — the very first progress message
-        # would otherwise create a thread that all subsequent replies
-        # (including the final answer) would inherit (#18859).
-        _progress_reply_in_thread = True
-        if source.platform == Platform.SLACK:
-            _slack_adapter_for_progress = self._adapter_for_source(source)
-            if _slack_adapter_for_progress is not None:
-                try:
-                    # Relay lane: the adapter owns mode resolution (nested
-                    # platforms.relay.extra.slack subset with flat-key
-                    # fallback). Native lane: read the flat extra as before.
-                    _mode_fn = getattr(
-                        _slack_adapter_for_progress,
-                        "_effective_reply_in_thread",
-                        None,
-                    )
-                    if callable(_mode_fn):
-                        _progress_reply_in_thread = bool(_mode_fn())
-                    else:
-                        _progress_reply_in_thread = bool(
-                            _slack_adapter_for_progress.config.extra.get(
-                                "reply_in_thread", True
-                            )
-                        )
-                except Exception:
-                    _progress_reply_in_thread = True
-        _progress_thread_id = _resolve_progress_thread_id(
-            source.platform, source.thread_id, event_message_id,
-            reply_in_thread=_progress_reply_in_thread,
-        )
-        # Relay Discord auto-thread lane: a channel-initiating message has no
-        # thread_id at ingest (the thread is born on the connector's FIRST
-        # send). The connector stamps prospective_thread_id (the anchor message
-        # id, == the id of the thread it will create) and auto-threads any
-        # outbound carrying that anchor as reply_to. Without it, the progress /
-        # tool-status bubble is sent flat (no thread, no anchor) and lands in
-        # the PARENT channel while the final reply threads — the search-status
-        # updates leaked outside the thread (staging repro 2026-08-02). Carry
-        # the anchor on the progress send so it routes into the SAME auto-thread.
-        _relay_prospective_thread_id = (
-            str(getattr(source, "prospective_thread_id", None))
-            if source.platform == Platform.DISCORD
-            and getattr(source, "delivered_via_upstream_relay", False)
-            and getattr(source, "prospective_thread_id", None)
-            and not source.thread_id
-            else None
-        )
+        _progress_thread_id = str(source.thread_id) if source.thread_id else None
         _progress_metadata = (
             self._thread_metadata_for_source(source, event_message_id)
             if _progress_thread_id == source.thread_id
@@ -23437,25 +21678,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 reply_to_message_id=event_message_id,
             )
         ) if _progress_thread_id else None
-        if _progress_metadata is None and _relay_prospective_thread_id:
-            # No real thread yet, but the connector will auto-thread on the
-            # reply anchor; carry it so progress joins that thread.
-            _progress_metadata = {"reply_to_message_id": event_message_id}
-        _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
-        if _native_slack_task_cards:
-            # chat.startStream in channels requires the recipient team/user
-            # pair; harmless extras elsewhere, so stamp them whenever known.
-            _progress_metadata = dict(_progress_metadata or {})
-            if source.scope_id:
-                _progress_metadata.setdefault("recipient_team_id", source.scope_id)
-                _progress_metadata.setdefault("slack_team_id", source.scope_id)
-            if source.user_id:
-                _progress_metadata.setdefault("recipient_user_id", source.user_id)
-        _progress_reply_to = (
-            event_message_id
-            if _relay_prospective_thread_id
-            else None
-        )
 
         async def write_tool_log():
             """Drain log_queue and append tool-call lines to tool_calls.log.
@@ -23516,7 +21738,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # metadata computed above is published onto the shared TurnContext
         # exactly where the original closure's captured locals were bound.
         turn_ctx._progress_metadata = _progress_metadata
-        turn_ctx._progress_reply_to = _progress_reply_to
         send_progress_messages = turn_runner.send_progress_messages
         
         # We need to share the agent instance for interrupt support
@@ -23558,14 +21779,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 reply_to_message_id=event_message_id,
             )
         ) if _progress_thread_id else None
-        if _status_thread_metadata is None and _relay_prospective_thread_id:
-            # Relay Discord auto-thread lane (see _progress_metadata above):
-            # carry the reply anchor so status/interim bubbles route into
-            # the same connector-created thread as the final reply.
-            _status_thread_metadata = {
-                "reply_to_message_id": event_message_id
-            }
-
         # Bridge extracted to TurnRunner._status_callback_sync; publish the
         # status wiring computed above onto the shared TurnContext at the
         # exact original binding site.
@@ -23793,7 +22006,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         _notify_res = await _notify_adapter.send(
                             source.chat_id,
                             _heartbeat_text,
-                            metadata=_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)),
+                            metadata=_status_thread_metadata,
                         )
                         if getattr(_notify_res, "success", False) and getattr(
                             _notify_res, "message_id", None
@@ -24017,7 +22230,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                                     f"If the agent does not respond soon, it will "
                                     f"be timed out in {_remaining_mins} min. "
                                     f"You can continue waiting or use /reset.",
-                                    metadata=_interim_metadata(_status_thread_metadata),
+                                    metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:
                                 logger.debug("Inactivity warning send error: %s", _warn_err)

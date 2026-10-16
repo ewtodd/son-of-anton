@@ -572,14 +572,7 @@ def execution_surface(kwargs: dict[str, Any]) -> str:
         return value
     if value in {"cron", "scheduler", "scheduled"}:
         return "scheduled_task"
-    try:
-        from son_of_anton_cli.platforms import get_all_platforms
-
-        if value in get_all_platforms():
-            return "gateway"
-    except Exception:
-        pass
-    if value in {"discord", "slack", "signal"}:
+    if value == "signal":
         return "gateway"
     return "unknown" if value == "unknown" else "other"
 

@@ -60,12 +60,11 @@ def test_a_shared_gateway_has_no_relay(live_runner) -> None:
     assert "relay" not in _definitions("signal")
 
 
-@pytest.mark.parametrize("platform", ["signal", "discord", "slack"])
-def test_a_single_user_gateway_chat_has_the_relay_up_front(live_runner, platform) -> None:
+def test_a_single_user_gateway_chat_has_the_relay_up_front(live_runner) -> None:
     live_runner(single_user=True)
     from tools.tool_search import is_deferrable_tool_name
 
-    assert "relay" in _definitions(platform)
+    assert "relay" in _definitions("signal")
     assert is_deferrable_tool_name("relay") is False  # never only behind tool search
 
 

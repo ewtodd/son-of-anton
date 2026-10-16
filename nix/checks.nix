@@ -290,8 +290,6 @@ import plugins.web.firecrawl.provider
 import plugins.web.tavily.provider
 import agent.system_prompt
 import agent.prompt_builder
-import plugins.platforms.discord.adapter
-import plugins.platforms.slack.adapter
 import gateway.platforms.signal
 import autophysicist.run
 import autophysicist.runner

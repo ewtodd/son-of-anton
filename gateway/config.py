@@ -2,7 +2,7 @@
 Gateway configuration management.
 
 Handles loading and validating configuration for:
-- Connected platforms (Discord, Slack, Signal)
+- Connected platforms (Signal)
 - Home channels for each platform
 - Session reset policies
 - Delivery preferences
@@ -13,7 +13,7 @@ import os
 import json
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any
 from enum import Enum
 
 from son_of_anton_cli.config import get_son_of_anton_home
@@ -205,126 +205,10 @@ def _getenv_str(name: str, default: str = "") -> str:
     return val if val is not None else default
 
 
-# Module-level cache for bundled platform plugin names (lives outside the
-# enum so it doesn't become an accidental enum member).
-_Platform__bundled_plugin_names: Optional[set] = None
-
-
 class Platform(Enum):
-    """Supported messaging platforms.
-
-    Built-in platforms have explicit members.  Plugin platforms use dynamic
-    members created on-demand by ``_missing_()`` so that
-    ``Platform("example_plugin")`` works without modifying this enum.
-    Dynamic members are cached in ``_value2member_map_`` for identity-stable
-    comparisons.
-    """
+    """Supported messaging platforms."""
     LOCAL = "local"
-    DISCORD = "discord"
-    SLACK = "slack"
     SIGNAL = "signal"
-    RELAY = "relay"  # generic relay adapter fronted by the connector (EXPERIMENTAL)
-    @classmethod
-    def _missing_(cls, value):
-        """Accept unknown platform names only for known plugin adapters.
-
-        Creates a pseudo-member cached in ``_value2member_map_`` so that
-        ``Platform("example_plugin") is Platform("example_plugin")`` holds True
-        (identity-stable).  Arbitrary strings are rejected to prevent enum
-        pollution.
-        """
-        if not isinstance(value, str) or not value.strip():
-            return None
-        # Normalise to lowercase to avoid case mismatches in config
-        value = value.strip().lower()
-        # Check cache first (another call may have created it already)
-        if value in cls._value2member_map_:
-            return cls._value2member_map_[value]
-
-        # Only create pseudo-members for bundled plugin platforms (discovered
-        # via filesystem scan) or runtime-registered plugin platforms.
-        global _Platform__bundled_plugin_names
-        if _Platform__bundled_plugin_names is None:
-            _Platform__bundled_plugin_names = cls._scan_bundled_plugin_platforms()
-        if value in _Platform__bundled_plugin_names:
-            pseudo = object.__new__(cls)
-            pseudo._value_ = value
-            pseudo._name_ = value.upper().replace("-", "_").replace(" ", "_")
-            cls._value2member_map_[value] = pseudo
-            cls._member_map_[pseudo._name_] = pseudo
-            return pseudo
-
-        # Runtime-registered plugins (e.g. user-installed, discovered after
-        # the enum was defined).
-        try:
-            from gateway.platform_registry import platform_registry
-            if platform_registry.is_registered(value):
-                pseudo = object.__new__(cls)
-                pseudo._value_ = value
-                pseudo._name_ = value.upper().replace("-", "_").replace(" ", "_")
-                cls._value2member_map_[value] = pseudo
-                cls._member_map_[pseudo._name_] = pseudo
-                return pseudo
-        except Exception:
-            pass
-
-        return None
-
-    @classmethod
-    def _scan_bundled_plugin_platforms(cls) -> set:
-        """Return names of bundled platform plugins under ``plugins/platforms/``."""
-        names: set = set()
-        try:
-            platforms_dir = Path(__file__).parent.parent / "plugins" / "platforms"
-            if platforms_dir.is_dir():
-                for child in platforms_dir.iterdir():
-                    if (
-                        child.is_dir()
-                        and (child / "__init__.py").exists()
-                        and (
-                            (child / "plugin.toml").exists()
-                            or (child / "plugin.toml").exists()
-                        )
-                    ):
-                        names.add(child.name.lower())
-        except Exception:
-            pass
-        return names
-
-
-# Snapshot of built-in platform values before any dynamic _missing_ lookups.
-# Used to distinguish real platforms from arbitrary strings.
-_BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
-
-
-# The env var that configures each platform's connection, for "not configured
-# (SET_THIS)" hints in status displays.  Signal is reached through a REST
-# bridge rather than a bot token, so the hint is its URL; anything without an
-# entry falls back to the bot-token convention that plugin platforms follow.
-_PLATFORM_CREDENTIAL_HINTS: dict[str, str] = {
-    "signal": "SIGNAL_HTTP_URL",
-    "relay": "GATEWAY_RELAY_URL",
-}
-
-
-def platform_credential_hint(platform: "Platform") -> str:
-    """Return the env var a user would set to configure *platform*."""
-    value = str(getattr(platform, "value", platform) or "").lower()
-    hint = _PLATFORM_CREDENTIAL_HINTS.get(value)
-    if hint:
-        return hint
-    return f"{value.upper().replace('-', '_')}_BOT_TOKEN"
-
-
-# Platforms that bind a host TCP port (HTTP listeners). Single source of
-# truth for the gateway's fail-fast startup validation and the
-# dashboard's pre-write mutation validation (son_of_anton_cli/web_server.py).
-# Stored as platform .value strings. No built-in platform binds a TCP port
-# anymore; plugin platforms can still register here dynamically if needed.
-
-# Platforms whose port-binding status depends on connection mode. Maps
-# platform value → the mode value that actually binds (#52563). Empty: no
-# built-in platform has a mode-conditional listener anymore.
 
 
 @dataclass
@@ -332,20 +216,13 @@ class HomeChannel:
     """
     Default destination for a platform.
     
-    When a cron job specifies deliver="discord" without a specific chat ID,
-    messages are sent to this home channel. Thread-aware platforms may also
-    store a thread/topic ID so the bare platform target routes to the exact
-    conversation where /sethome was run.
+    When a cron job specifies deliver="signal" without a specific chat ID,
+    messages are sent to this home channel.
     """
     platform: Platform
     chat_id: str
     name: str  # Human-readable name for display
     thread_id: Optional[str] = None
-    # Authenticated logical-target provenance observed by a platform adapter.
-    # Relay egress re-attaches these values, but the connector remains the
-    # authorization boundary and resolves them against its authoritative stores.
-    user_id: Optional[str] = None
-    scope_id: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -355,10 +232,6 @@ class HomeChannel:
         }
         if self.thread_id:
             result["thread_id"] = self.thread_id
-        if self.user_id:
-            result["user_id"] = self.user_id
-        if self.scope_id:
-            result["scope_id"] = self.scope_id
         return result
     
     @classmethod
@@ -368,13 +241,11 @@ class HomeChannel:
             chat_id=str(data["chat_id"]),
             name=data.get("name", "Home"),
             thread_id=str(data["thread_id"]) if data.get("thread_id") else None,
-            user_id=str(data["user_id"]) if data.get("user_id") else None,
-            scope_id=str(data["scope_id"]) if data.get("scope_id") else None,
         )
 
 
-def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> None:
-    """Persist a logical home without falsely enabling a Relay-fronted adapter."""
+def persist_home_channel(home: HomeChannel) -> None:
+    """Persist a home channel to config.toml."""
     from son_of_anton_cli.config import load_config, save_config
 
     config = load_config()
@@ -386,8 +257,7 @@ def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> 
     if not isinstance(platform_config, dict):
         platform_config = {}
         platforms[home.platform.value] = platform_config
-    if enabled_if_new:
-        platform_config.setdefault("enabled", True)
+    platform_config.setdefault("enabled", True)
     platform_config["home_channel"] = home.to_dict()
     save_config(config)
 
@@ -484,55 +354,20 @@ class ChannelOverride:
         )
 
 
-# Canonical map of platforms whose primary credential is ``PlatformConfig.token``
-# and the env var it loads from. Used for empty-token warnings at config
-# validation and by the multiplex primary-startup credential gate in
-# ``gateway.run`` (#64674). Platforms absent from this map authenticate some
-# other way (session files, api_key-only) and must never be skipped for a
-# missing token.
-PLATFORM_TOKEN_ENV_NAMES: dict["Platform", str] = {
-    Platform.DISCORD: "DISCORD_BOT_TOKEN",
-    Platform.SLACK: "SLACK_BOT_TOKEN",
-}
-
-
 @dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
     enabled: bool = False
-    token: Optional[str] = None  # Bot token (Discord, Slack)
-    api_key: Optional[str] = None  # API key if different from token
     home_channel: Optional[HomeChannel] = None
-
-    # Reply threading mode (Slack)
-    # - "off": Never thread replies to original message
-    # - "first": Only first chunk threads to user's message (default)
-    # - "all": All chunks in multi-part replies thread to user's message
-    reply_to_mode: str = "first"
 
     # Whether the gateway is allowed to send "♻️ Gateway online" /
     # "♻ Gateway restarted" lifecycle notifications on this platform.
-    # Default True preserves prior behavior. Set False on platforms used
-    # by end users (e.g. Slack) where operator-flavored restart pings are
-    # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
-    # Whether the gateway shows a "typing…" / "is thinking…" status indicator
-    # while the agent processes a message on this platform. Default True
-    # preserves prior behavior. Set False on platforms where the indicator is
-    # unwanted (e.g. Slack's assistant.threads.setStatus "is thinking…", which
-    # disables the compose box, or any platform where users find the bubble
-    # noisy). Drives the per-message _keep_typing refresh loop in
+    # Whether the gateway shows a "typing…" indicator while the agent
+    # processes a message. Drives the per-message _keep_typing refresh loop in
     # gateway/platforms/base.py.
     typing_indicator: bool = True
-
-    # Custom text for the working-state line on platforms whose typing
-    # indicator renders text rather than a native bubble: Slack's
-    # assistant.threads.setStatus line (shown next to the bot name; needs the
-    # assistant:write scope to render). None keeps each platform's built-in
-    # default ("is thinking..." / "Son of Anton is thinking…"). Platforms with
-    # textless indicators (Discord, …) ignore it.
-    typing_status_text: Optional[str] = None
 
     # Per-channel model/provider/system_prompt overrides (channel_id -> ChannelOverride)
     channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
@@ -544,16 +379,9 @@ class PlatformConfig:
         result = {
             "enabled": self.enabled,
             "extra": self.extra,
-            "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
             "typing_indicator": self.typing_indicator,
         }
-        if self.typing_status_text is not None:
-            result["typing_status_text"] = self.typing_status_text
-        if self.token:
-            result["token"] = self.token
-        if self.api_key:
-            result["api_key"] = self.api_key
         if self.home_channel:
             result["home_channel"] = self.home_channel.to_dict()
         if self.channel_overrides:
@@ -571,8 +399,7 @@ class PlatformConfig:
 
         # gateway_restart_notification may be bridged into extra via the
         # shared-key loop in load_gateway_config(); check both top-level
-        # and extra so TOML ``discord: gateway_restart_notification: false``
-        # works without needing a separate platforms: block.
+        # and extra.
         extra = _coerce_dict(data.get("extra", {}))
         _grn = data.get("gateway_restart_notification")
         if _grn is None:
@@ -585,12 +412,6 @@ class PlatformConfig:
         if _typing is None:
             _typing = extra.get("typing_indicator")
 
-        # typing_status_text takes the same two routes (top-level or bridged
-        # into extra); string passthrough, no coercion.
-        _typing_text = data.get("typing_status_text")
-        if _typing_text is None:
-            _typing_text = extra.get("typing_status_text")
-
         channel_overrides: Dict[str, ChannelOverride] = {}
         raw_overrides = data.get("channel_overrides") or {}
         if isinstance(raw_overrides, dict):
@@ -600,13 +421,9 @@ class PlatformConfig:
 
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
-            token=data.get("token"),
-            api_key=data.get("api_key"),
             home_channel=home_channel,
-            reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
             typing_indicator=_coerce_bool(_typing, True),
-            typing_status_text=_typing_text,
             channel_overrides=channel_overrides,
             extra=extra,
         )
@@ -711,25 +528,6 @@ class StreamingConfig:
                 data.get("fresh_final_after_seconds"), 0.0
             ),
         )
-
-
-# -----------------------------------------------------------------------------
-# Built-in platform connection checkers
-# -----------------------------------------------------------------------------
-# Each callable receives a ``PlatformConfig`` and returns ``True`` when the
-# platform is sufficiently configured to be considered "connected".  Platforms
-# that rely on the generic ``token or api_key`` check (Discord, Slack) do not
-# need an entry here.
-_PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] = {
-    Platform.SIGNAL: lambda cfg: bool(cfg.extra.get("http_url")),
-    # Relay dials OUT to a connector; it is "connected" once an endpoint URL is
-    # configured (extra["relay_url"] or extra["url"]). The capability descriptor
-    # is negotiated at handshake time, so the URL is the only config-level
-    # signal in the experimental phase. EXPERIMENTAL — may change.
-    Platform.RELAY: lambda cfg: bool(
-        cfg.extra.get("relay_url") or cfg.extra.get("url")
-    ),
-}
 
 
 @dataclass
@@ -849,47 +647,17 @@ class GatewayConfig:
 
     def _is_platform_connected(self, platform: Platform, config: PlatformConfig) -> bool:
         """Check whether a single platform is sufficiently configured."""
-        # Generic token/api_key auth covers Discord, Slack, etc.
-        if config.token or config.api_key:
-            return True
-
-        # Platform-specific check
-        checker = _PLATFORM_CONNECTED_CHECKERS.get(platform)
-        if checker is not None:
-            return checker(config)
-
-        # Plugin-registered platforms.  Force plugin discovery first so this
-        # works even when GatewayConfig is constructed directly (e.g. in tests
-        # or callers that bypass load_gateway_config(), which is what triggers
-        # discovery in the normal path).  discover_plugins() is idempotent.
-        try:
-            from gateway.platform_registry import platform_registry
-            try:
-                from son_of_anton_cli.plugins import discover_plugins
-                discover_plugins()
-            except Exception:
-                pass
-            entry = platform_registry.get(platform.value)
-            if entry:
-                if entry.is_connected is not None:
-                    return entry.is_connected(config)
-                if entry.validate_config is not None:
-                    return entry.validate_config(config)
-                return True
-        except Exception:
-            pass  # Registry not yet initialised during early import
-
+        if platform == Platform.SIGNAL:
+            return bool(config.extra.get("http_url"))
         return False
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         """Get the home channel for a platform.
 
         A home channel is the default destination for output not tied to a
-        chat — cron results, cross-platform messages. On Discord or Slack, where
-        one bot sits in many channels, choosing one is a real decision and the
-        operator makes it with ``/sethome``.
+        chat — cron results, cross-platform messages.
 
-        Signal has no such choice to make. Each gateway answers exactly one
+        Signal has no choice to make. Each gateway answers exactly one
         group (``SIGNAL_GROUP_ALLOWED_USERS`` is the routing key that makes one
         instance respond and its siblings stay silent), so that group IS the
         only place it can talk. Asking for it produced a first-turn notice on
@@ -1297,7 +1065,7 @@ def load_gateway_config() -> GatewayConfig:
             _merge_platform_map(toml_cfg.get("platforms"))
 
             # Also merge platform configs placed directly under ``gateway.*``
-            # (e.g. ``gateway.discord``) so subsections are discovered the
+            # (e.g. ``gateway.signal``) so subsections are discovered the
             # same way ``gateway.streaming`` is handled elsewhere.  Iterate
             # all ``gateway:*`` keys and merge only those that match a known
             # platform value, skipping reserved keys like ``platforms``.
@@ -1317,38 +1085,14 @@ def load_gateway_config() -> GatewayConfig:
 
             if platforms_data:
                 gw_data["platforms"] = platforms_data
-            # Iterate built-in platforms plus any registered plugin platforms
-            # so plugin authors get the same shared-key bridging (#24836).
-            try:
-                from son_of_anton_cli.plugins import discover_plugins
-                discover_plugins()  # idempotent
-                from gateway.platform_registry import platform_registry as _pr
-            except Exception as e:
-                logger.debug("plugin discovery skipped: %s", e)
-                _pr = None
-
-            _shared_loop_targets: list = list(Platform)
-            if _pr is not None:
-                for _entry in _pr.plugin_entries():
-                    try:
-                        _plat = Platform(_entry.name)
-                    except (ValueError, KeyError):
-                        continue
-                    if _plat not in _shared_loop_targets:
-                        _shared_loop_targets.append(_plat)
-
-            for plat in _shared_loop_targets:
-                if plat == Platform.LOCAL:
-                    continue
+            for plat in (Platform.SIGNAL,):
                 platform_cfg = toml_cfg.get(plat.value)
                 _cfg_toplevel = isinstance(platform_cfg, dict)
                 # Fall back to the platform's block under ``platforms`` /
                 # ``gateway.platforms`` so shared-key bridging (allow_from,
                 # require_mention, free_response_channels, …) still runs when
                 # the user configured the platform only under those nested paths
-                # and not via a top-level block.  Mirrors the identical fallback
-                # already applied to the apply_toml_config_fn dispatch below
-                # (#44f3e51).
+                # and not via a top-level block.
                 # Note: ``enabled`` is only written to plat_data from a
                 # top-level block (``_cfg_toplevel``); for nested-only configs
                 # ``_merge_platform_map`` already merged it with the correct
@@ -1406,14 +1150,6 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
                 if "group_user_allowed_commands" in platform_cfg:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
-                if plat in {Platform.DISCORD, Platform.SLACK} and platform_cfg.get("channel_skill_bindings"):
-                    # Skills are no longer loaded into chats; say so rather
-                    # than drop an operator's binding without a trace.
-                    logger.warning(
-                        "%s.channel_skill_bindings is no longer supported and is "
-                        "ignored; move the instructions into channel_prompts.",
-                        plat.value,
-                    )
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
                     if isinstance(channel_prompts, dict):
@@ -1424,8 +1160,6 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
                 if "typing_indicator" in platform_cfg:
                     bridged["typing_indicator"] = platform_cfg["typing_indicator"]
-                if "typing_status_text" in platform_cfg:
-                    bridged["typing_status_text"] = platform_cfg["typing_status_text"]
                 has_channel_overrides = "channel_overrides" in platform_cfg
                 if has_channel_overrides:
                     raw_overrides = platform_cfg.get("channel_overrides")
@@ -1444,55 +1178,10 @@ def load_gateway_config() -> GatewayConfig:
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
                 if enabled_was_explicit:
                     plat_data["enabled"] = platform_cfg["enabled"]
-                    # Mark the explicit enable/disable so the registry-driven
-                    # plugin-enable pass in _apply_env_overrides honors an
-                    # explicit ``enabled: false`` for migrated plugin platforms
-                    # (slack, …) instead of re-enabling them on token/SDK
-                    # presence. #41112.
+                    # Mark the explicit enable/disable so _apply_env_overrides
+                    # honors an explicit ``enabled: false``.
                     extra["_enabled_explicit"] = True
                 extra.update(bridged)
-
-            # Plugin-owned TOML→env config bridges (#24836).  See
-            # ``PlatformEntry.apply_toml_config_fn`` for the hook contract.
-            # Order: shared-key loop (above) → this dispatch → legacy hardcoded
-            # blocks (below; no-op when a hook already set their env var) →
-            # ``_apply_env_overrides()`` after ``GatewayConfig.from_dict``.
-            if _pr is not None:
-                for entry in _pr.all_entries():
-                    if entry.apply_toml_config_fn is None:
-                        continue
-                    platform_cfg = toml_cfg.get(entry.name)
-                    # Fall back to the platform's block under ``platforms`` /
-                    # ``gateway.platforms`` so adapter hooks still run when the
-                    # user configured the platform only under those nested paths
-                    # (e.g. ``platforms.discord.extra.allow_from``) and not via a
-                    # top-level ``discord:`` block.
-                    if not isinstance(platform_cfg, dict):
-                        for _src in (gateway_platforms, toml_cfg.get("platforms")):
-                            if isinstance(_src, dict):
-                                _candidate = _src.get(entry.name)
-                                if isinstance(_candidate, dict):
-                                    platform_cfg = _candidate
-                                    break
-                    if not isinstance(platform_cfg, dict):
-                        continue
-                    try:
-                        seeded = entry.apply_toml_config_fn(toml_cfg, platform_cfg)
-                    except Exception as e:
-                        logger.debug(
-                            "apply_toml_config_fn for %s raised: %s",
-                            entry.name, e,
-                        )
-                        continue
-                    if not isinstance(seeded, dict) or not seeded:
-                        continue
-                    _, extra = _ensure_platform_extra_dict(platforms_data, entry.name)
-                    extra.update(seeded)
-
-            # Slack settings → env vars: migrated to the slack plugin's
-            # ``apply_toml_config_fn`` hook (see plugins/platforms/slack/
-            # adapter.py::_apply_toml_config), dispatched in the
-            # ``apply_toml_config_fn`` loop above. #41112 / #3823.
 
             # Signal settings → env vars (env vars take precedence)
             signal_cfg = toml_cfg.get("signal", {})
@@ -1540,46 +1229,6 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
         )
         policy.idle_minutes = 1440
 
-    # Warn about empty bot tokens — platforms that loaded an empty string
-    # won't connect and the cause can be confusing without a log line.
-    _token_env_names = PLATFORM_TOKEN_ENV_NAMES
-    for platform, pconfig in config.platforms.items():
-        if not pconfig.enabled:
-            continue
-        env_name = _token_env_names.get(platform)
-        if env_name and pconfig.token is not None and not pconfig.token.strip():
-            logger.warning(
-                "%s is enabled but %s is empty. "
-                "The adapter will likely fail to connect.",
-                platform.value, env_name,
-            )
-
-    # Reject known-weak placeholder tokens.
-    # Ported from openclaw/openclaw#64586: users who copy .env.example
-    # without changing placeholder values get a clear startup error instead
-    # of a confusing "auth failed" from the platform API.
-    try:
-        from son_of_anton_cli.auth import has_usable_secret
-    except ImportError:
-        has_usable_secret = None  # type: ignore[assignment]
-
-    if has_usable_secret is not None:
-        for platform, pconfig in config.platforms.items():
-            if not pconfig.enabled:
-                continue
-            env_name = _token_env_names.get(platform)
-            if not env_name:
-                continue
-            token = pconfig.token
-            if token and token.strip() and not has_usable_secret(token, min_length=4):
-                logger.error(
-                    "%s is enabled but %s is set to a placeholder value ('%s'). "
-                    "Set a real bot token before starting the gateway. "
-                    "The adapter will NOT be started.",
-                    platform.value, env_name, token.strip()[:6] + "...",
-                )
-                pconfig.enabled = False
-
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
@@ -1591,79 +1240,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             return config.platforms[platform]
 
         platform_config = config.platforms[platform]
-        # Read (don't pop) the explicit-enable marker: the registry-driven
-        # plugin-enable pass later in this function also needs it to avoid
-        # re-enabling a platform the user explicitly disabled (#41112). The
-        # flag is cleared once for all platforms in the final cleanup at the
-        # end of _apply_env_overrides.
+        # Read (don't pop) the explicit-enable marker; it is cleared for all
+        # platforms at the end of _apply_env_overrides.
         enabled_was_explicit = bool(platform_config.extra.get("_enabled_explicit", False))
         if not platform_config.enabled and not enabled_was_explicit:
             platform_config.enabled = True
         return platform_config
 
-    # Discord
-    discord_token = getenv("DISCORD_BOT_TOKEN")
-    if discord_token:
-        discord_config = _enable_from_env(Platform.DISCORD)
-        discord_config.token = discord_token
-    
-    discord_home = getenv("DISCORD_HOME_CHANNEL")
-    if discord_home and Platform.DISCORD in config.platforms:
-        config.platforms[Platform.DISCORD].home_channel = HomeChannel(
-            platform=Platform.DISCORD,
-            chat_id=discord_home,
-            name=getenv("DISCORD_HOME_CHANNEL_NAME", "Home"),
-            thread_id=getenv("DISCORD_HOME_CHANNEL_THREAD_ID") or None,
-        )
-    
-    # Reply threading mode for Discord (off/first/all)
-    discord_reply_mode = getenv("DISCORD_REPLY_TO_MODE", "").lower()
-    if discord_reply_mode in {"off", "first", "all"}:
-        if Platform.DISCORD not in config.platforms:
-            config.platforms[Platform.DISCORD] = PlatformConfig()
-        config.platforms[Platform.DISCORD].reply_to_mode = discord_reply_mode
-    
-    # Slack
-    slack_token = getenv("SLACK_BOT_TOKEN")
-    if slack_token:
-        if Platform.SLACK not in config.platforms:
-            # No config block for Slack — env-only setup, enable it
-            config.platforms[Platform.SLACK] = PlatformConfig()
-            config.platforms[Platform.SLACK].enabled = True
-        else:
-            slack_config = config.platforms[Platform.SLACK]
-            # Read (don't pop) the explicit-enable marker: the registry-driven
-            # plugin-enable pass below also needs it to avoid re-enabling a
-            # platform the user explicitly disabled (Slack is now a plugin
-            # entry — #41112). The flag is cleared once for all platforms in
-            # the final cleanup at the end of _apply_env_overrides.
-            enabled_was_explicit = bool(slack_config.extra.get("_enabled_explicit", False))
-            if not slack_config.enabled and not enabled_was_explicit:
-                # Top-level Slack settings such as channel prompts should not
-                # turn an env-token setup into a disabled platform. Only an
-                # explicit slack.enabled/platforms.slack.enabled false should.
-                slack_config.enabled = True
-        # If a config block exists, respect its enabled flag (don't override
-        # explicit enabled: false). Token is still stored so outbound Slack
-        # sends can use it without activating the gateway adapter.
-        config.platforms[Platform.SLACK].token = slack_token
-    slack_home = getenv("SLACK_HOME_CHANNEL")
-    if slack_home:
-        slack_config = config.platforms.setdefault(
-            Platform.SLACK,
-            PlatformConfig(enabled=False),
-        )
-        existing_home = slack_config.home_channel
-        same_home = existing_home is not None and existing_home.chat_id == slack_home
-        slack_config.home_channel = HomeChannel(
-            platform=Platform.SLACK,
-            chat_id=slack_home,
-            name=getenv("SLACK_HOME_CHANNEL_NAME", ""),
-            thread_id=getenv("SLACK_HOME_CHANNEL_THREAD_ID") or None,
-            user_id=existing_home.user_id if existing_home and same_home else None,
-            scope_id=existing_home.scope_id if existing_home and same_home else None,
-        )
-    
     # Signal
     signal_url = getenv("SIGNAL_HTTP_URL")
     signal_account = getenv("SIGNAL_ACCOUNT")
@@ -1697,225 +1280,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
             pass
-
-    # Registry-driven enable for plugin platforms.  Built-ins have explicit
-    # blocks above.  A plugin platform is enabled when its credentials are
-    # configured (``is_connected``) and its dependencies are in the build
-    # (``check_fn``; nothing is installed at runtime).  Plugins that need to
-    # seed ``PlatformConfig.extra`` from env vars can supply
-    # ``env_enablement_fn`` on their PlatformEntry — called here BEFORE
-    # adapter construction.
-    #
-    # Enablement gate (#31116): when a plugin registers ``is_connected``
-    # (the "has the user actually configured credentials for this?" check),
-    # we MUST consult it before flipping ``enabled = True``.  Otherwise
-    # ``check_fn`` alone — a passive "is the SDK importable?" probe —
-    # silently enables platforms the user never opted into, and the gateway
-    # then tries to connect with no token and emits noisy retry-forever
-    # errors.  ``_platform_status`` was already fixed for the same bug class
-    # in commit 7849a3d73; this is the runtime counterpart.
-    try:
-        from son_of_anton_cli.plugins import discover_plugins
-        discover_plugins()  # idempotent
-        from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
-            try:
-                platform = Platform(entry.name)
-            except Exception as e:
-                logger.debug("unknown platform name %r: %s", entry.name, e)
-                continue
-            existing_cfg = config.platforms.get(platform)
-            # Respect an explicit ``enabled: false`` (TOML / gateway.json /
-            # dashboard PUT).  ``_enabled_explicit`` is set in
-            # load_gateway_config() (via _merge_platform_map / the shared-key
-            # loop) when the user wrote ``enabled`` for this platform; if they
-            # explicitly disabled it, never re-enable here just because
-            # check_fn() / is_connected() pass (e.g. a token is present but
-            # the user set the platform to disabled). #41112.
-            if (
-                existing_cfg is not None
-                and not existing_cfg.enabled
-                and bool((existing_cfg.extra or {}).get("_enabled_explicit", False))
-            ):
-                continue
-            # Seed candidate extras from ``env_enablement_fn`` so plugins
-            # whose ``is_connected`` reads ``config.extra`` see the same
-            # state they will after enablement. Without this, env-vars-only
-            # setups silently fail the gate below even though the user is
-            # configured.  Plugins whose ``is_connected`` reads env vars
-            # directly are unaffected; this only restores the extra-seeding
-            # plugins.
-            seed_for_probe = None
-            if entry.env_enablement_fn is not None:
-                try:
-                    seed_for_probe = entry.env_enablement_fn()
-                except Exception as e:
-                    logger.debug(
-                        "env_enablement_fn for %s raised: %s", entry.name, e
-                    )
-                    seed_for_probe = None
-
-            # Only consult is_connected for platforms that are NOT already
-            # explicitly configured in TOML / env (existing_cfg with
-            # enabled=True means the user wrote it themselves or another
-            # env-var bridge enabled it — keep that decision).
-            if existing_cfg is None or not existing_cfg.enabled:
-                if entry.is_connected is not None:
-                    try:
-                        # Probe with ``enabled=True`` since we're asking
-                        # "would this plugin BE configured if we enabled
-                        # it?" not "is it currently enabled?".  Some plugins'
-                        # ``_is_connected`` short-circuits on ``config.enabled``
-                        # being False, which on the default
-                        # ``PlatformConfig()`` would fail the gate even with
-                        # proper env vars set.
-                        if existing_cfg is not None:
-                            probe_cfg = existing_cfg
-                            if not probe_cfg.enabled:
-                                probe_cfg = PlatformConfig(
-                                    enabled=True,
-                                    extra=dict(probe_cfg.extra or {}),
-                                )
-                        else:
-                            probe_cfg = PlatformConfig(enabled=True)
-                        if isinstance(seed_for_probe, dict) and seed_for_probe:
-                            # Don't mutate ``existing_cfg``; the probe gets
-                            # a transient view with env-seeded extras layered
-                            # on top of whatever's already there.
-                            probe_extra = dict(getattr(probe_cfg, "extra", {}) or {})
-                            for k, v in seed_for_probe.items():
-                                if k == "home_channel":
-                                    continue
-                                probe_extra.setdefault(k, v)
-                            probe_cfg = PlatformConfig(
-                                enabled=True,
-                                extra=probe_extra,
-                            )
-                        configured = bool(entry.is_connected(probe_cfg))
-                    except Exception as exc:
-                        logger.debug(
-                            "is_connected for %s raised: %s — skipping enablement",
-                            entry.name, exc,
-                        )
-                        configured = False
-                    if not configured:
-                        logger.debug(
-                            "Plugin platform '%s' available but not configured "
-                            "(is_connected returned False) — skipping enable",
-                            entry.name,
-                        )
-                        continue
-            # Verify dependencies LAST — only for platforms that are already
-            # enabled or passed the credential gate above, so the warning
-            # below reaches only users who configured the platform.
-            # ``check_fn`` is a passive probe; nothing is installed.
-            try:
-                deps_ok = bool(entry.check_fn())
-            except Exception as e:
-                logger.debug("check_fn for %s raised: %s", entry.name, e)
-                deps_ok = False
-            if not deps_ok:
-                # A plugin without ``is_connected`` reaches here unconfigured;
-                # only warn users who enabled or configured the platform.
-                if (existing_cfg is not None and existing_cfg.enabled) or entry.is_connected is not None:
-                    logger.warning(
-                        "Platform '%s' is configured but its dependencies are not "
-                        "in this build%s",
-                        entry.name,
-                        f": {entry.install_hint}" if entry.install_hint else "",
-                    )
-                continue
-            if platform not in config.platforms:
-                config.platforms[platform] = PlatformConfig()
-            config.platforms[platform].enabled = True
-            # Commit env-seeded extras onto the now-enabled platform.
-            # We've already called ``env_enablement_fn`` above (for the
-            # probe); reuse that result instead of calling it twice.
-            if isinstance(seed_for_probe, dict) and seed_for_probe:
-                seed = dict(seed_for_probe)
-                # Extract the home_channel dict (if provided) so we wire it
-                # up as a proper HomeChannel dataclass.  Everything else is
-                # merged into ``extra``.
-                home = seed.pop("home_channel", None)
-                config.platforms[platform].extra.update(seed)
-                if isinstance(home, dict) and home.get("chat_id"):
-                    config.platforms[platform].home_channel = HomeChannel(
-                        platform=platform,
-                        chat_id=str(home["chat_id"]),
-                        name=str(home.get("name") or "Home"),
-                        thread_id=(
-                            str(home["thread_id"])
-                            if home.get("thread_id")
-                            else None
-                        ),
-                    )
-    except Exception as e:
-        logger.debug("Plugin platform enable pass failed: %s", e)
-
-    # Relay (generic connector-fronted platform, EXPERIMENTAL). Enabled when a
-    # connector relay URL is configured via GATEWAY_RELAY_URL (env) or
-    # gateway.relay_url (config.toml). The adapter is registered into the
-    # platform_registry at gateway startup (gateway.relay.register_relay_adapter)
-    # and dials OUT to the connector — so, like Discord/Slack, it has no public
-    # inbound port and just needs Platform.RELAY present+enabled in
-    # config.platforms for start_gateway()'s connect loop to bring it up. The
-    # connected-checker (Platform.RELAY in _PLATFORM_CONNECTED_CHECKERS) keys on
-    # extra["relay_url"], so mirror the URL into extra here.
-    relay_url_env = getenv("GATEWAY_RELAY_URL", "").strip()
-    relay_url_config = ""
-    existing_relay = config.platforms.get(Platform.RELAY)
-    if existing_relay is not None:
-        relay_url_config = str(existing_relay.extra.get("relay_url") or "").strip()
-    relay_url_val = relay_url_env or relay_url_config
-    if relay_url_val:
-        relay_config = _enable_from_env(Platform.RELAY)
-        relay_config.extra["relay_url"] = relay_url_val.rstrip("/")
-
-    # Relay-exclusive: a GATEWAY_RELAY_URL env stamp marks a connector-fronted
-    # deployment where the connector owns every platform connection. Any
-    # directly-connected messaging adapter in the same process would be a
-    # second, unmanaged ingress path (duplicate deliveries, split sessions,
-    # and a live socket that disarms scale-to-zero), so the env stamp disables
-    # all other messaging platforms — including ones explicitly enabled in
-    # config.toml. Non-messaging surfaces (local — the same exclusion set as
-    # the scale-to-zero arm gate) are untouched.
-    # Deployments that configure relay only via gateway.relay_url in
-    # config.toml keep the old additive behavior (relay beside direct
-    # adapters).
-    #
-    # Opt-out: GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true keeps direct
-    # adapters running beside the relay for deployments that intentionally
-    # mix both ingress paths. Like the trigger, it is a deploy-stamp env var,
-    # not a config.toml setting. Both reads go through the profile-scope-aware
-    # getenv so multiplexed profiles see their own values, not the process
-    # globals.
-    allow_direct = is_truthy_value(
-        getenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS", "")
-    )
-    if relay_url_env and not allow_direct:
-        non_messaging = {Platform.LOCAL}
-        for platform, platform_config in config.platforms.items():
-            if platform is Platform.RELAY or platform in non_messaging:
-                continue
-            if not platform_config.enabled:
-                continue
-            if platform_config.extra.get("_enabled_explicit"):
-                logger.warning(
-                    "Relay connector is configured via GATEWAY_RELAY_URL; "
-                    "disabling directly-connected platform '%s' even though "
-                    "it is explicitly enabled in this profile's configuration. "
-                    "All messaging goes through the connector on this "
-                    "deployment. Set GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true "
-                    "to keep direct platforms alongside the relay.",
-                    platform.value,
-                )
-            else:
-                logger.info(
-                    "Relay connector is configured via GATEWAY_RELAY_URL; "
-                    "disabling directly-connected platform '%s'.",
-                    platform.value,
-                )
-            platform_config.enabled = False
 
     for platform_config in config.platforms.values():
         platform_config.extra.pop("_enabled_explicit", None)

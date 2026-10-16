@@ -63,15 +63,13 @@ CONFIGURABLE_TOOLSETS = [
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run"),
-    ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
-    ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
 ]
 
 
 # Toolsets that are OFF by default for new installs.
 # They're still in _SON_OF_ANTON_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"discord", "discord_admin", "video"}
+_DEFAULT_OFF_TOOLSETS = {"video"}
 
 
 # Config-only capabilities: they appear in `son-of-anton tools` for provider/API-key
@@ -81,28 +79,6 @@ _DEFAULT_OFF_TOOLSETS = {"discord", "discord_admin", "video"}
 # per-platform enable/disable checklist; configured via the "Reconfigure an
 # existing tool" flow and the GUI provider matrix instead.
 _CONFIG_ONLY_TOOLSETS = set()
-
-
-# Platform-scoped toolsets: only appear in the `son-of-anton tools` checklist for
-# these platforms, and only resolve/save for these platforms.  A toolset
-# absent from this map is available on every platform (current behaviour).
-#
-# Use this for tools whose APIs only make sense on one platform (Discord
-# server admin, Slack workspace admin, etc.).  Keeps every other platform's
-# checklist from filling up with irrelevant toggles.
-_TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
-    "discord": {"discord"},
-    "discord_admin": {"discord"},
-}
-
-
-def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
-    """Return True if ``ts_key`` is configurable on ``platform``.
-
-    Toolsets without a restriction entry are allowed everywhere (the default).
-    """
-    allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
-    return allowed is None or platform in allowed
 
 
 def _get_effective_configurable_toolsets():
@@ -149,8 +125,8 @@ def _checklist_toolset_keys(platform: str) -> Set[str]:
     for ``platform``.
 
     This mirrors exactly what ``_prompt_toolset_checklist`` renders:
-    ``_get_effective_configurable_toolsets()`` (built-in + plugin toolsets),
-    filtered by ``_toolset_allowed_for_platform``. The checklist's returned
+    ``_get_effective_configurable_toolsets()`` (built-in + plugin toolsets).
+    The checklist's returned
     selection can therefore only ever be a subset of this universe.
 
     Non-configurable toolsets that ``_get_platform_tools`` resolves at read
@@ -164,8 +140,7 @@ def _checklist_toolset_keys(platform: str) -> Set[str]:
     return {
         ts_key
         for ts_key, _, _ in _get_effective_configurable_toolsets()
-        if _toolset_allowed_for_platform(ts_key, platform)
-        and ts_key not in _CONFIG_ONLY_TOOLSETS
+        if ts_key not in _CONFIG_ONLY_TOOLSETS
     }
 
 # Platform display config — derived from the canonical registry so every
@@ -298,10 +273,6 @@ def _run_post_setup(post_setup_key: str):
 def _get_enabled_platforms() -> List[str]:
     """Return platform keys that are configured (have tokens or are CLI)."""
     enabled = ["cli"]
-    if get_env_value("DISCORD_BOT_TOKEN"):
-        enabled.append("discord")
-    if get_env_value("SLACK_BOT_TOKEN"):
-        enabled.append("slack")
     return enabled
 
 
@@ -374,28 +345,6 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     return names
 
 
-def _exempt_explicit_platform_native(
-    default_off: Set[str], platform: str, *, explicitly_configured: bool
-) -> None:
-    """Let platform-native default-off toolsets through on explicit config.
-
-    Toolsets that are both in ``_DEFAULT_OFF_TOOLSETS`` and restricted to
-    ``platform`` via ``_TOOLSET_PLATFORM_RESTRICTIONS`` (currently
-    ``discord``/``discord_admin`` on the discord platform) are the platform's
-    own native tools. They are kept off for *unconfigured* platforms (security
-    opt-in), but once a user explicitly saves a toolset list for the platform
-    the composite they chose (e.g. ``son-of-anton-discord``, which contains those
-    tools) is an opt-in — stripping them silently defeats the explicit
-    configuration (#35527). Mutates ``default_off`` in place.
-    """
-    if not explicitly_configured:
-        return
-    for ts in list(default_off):
-        allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts)
-        if allowed is not None and platform in allowed:
-            default_off.discard(ts)
-
-
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -407,11 +356,6 @@ def _get_platform_tools(
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
-    # Track whether the user explicitly saved a toolset list for this platform
-    # (vs. falling back to the platform default). An explicit composite (e.g.
-    # ``son-of-anton-discord``) is an opt-in to the platform's native default-off
-    # toolsets — see _exempt_explicit_platform_native (#35527).
-    explicitly_configured = isinstance(toolset_names, list)
 
     if toolset_names is None or not isinstance(toolset_names, list):
         plat_info = PLATFORMS.get(platform)
@@ -444,7 +388,7 @@ def _get_platform_tools(
     if has_explicit_config:
         enabled_toolsets = {
             ts for ts in toolset_names
-            if ts in explicit_known_keys and _toolset_allowed_for_platform(ts, platform)
+            if ts in explicit_known_keys
         }
         # Mixed config: composite toolset alongside configurables. Without
         # expansion the composite name is silently dropped, leaving sessions
@@ -463,8 +407,6 @@ def _get_platform_tools(
         if composite_tools:
             expanded = set()
             for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
-                if not _toolset_allowed_for_platform(ts_key, platform):
-                    continue
                 # Compare the toolset's STATIC membership: a tool registered
                 # into a toolset (e.g. delegate_cli -> delegation, desktop-only
                 # read_terminal -> terminal) that the composite never listed must
@@ -474,11 +416,8 @@ def _get_platform_tools(
                     expanded.add(ts_key)
 
             default_off = set(_DEFAULT_OFF_TOOLSETS)
-            if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
+            if platform in default_off:
                 default_off.remove(platform)
-            _exempt_explicit_platform_native(
-                default_off, platform, explicitly_configured=explicitly_configured
-            )
             expanded -= default_off
 
             enabled_toolsets |= expanded
@@ -492,8 +431,6 @@ def _get_platform_tools(
 
         enabled_toolsets = set()
         for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
-            if not _toolset_allowed_for_platform(ts_key, platform):
-                continue
             # Compare the toolset's STATIC membership against the composite (see
             # issue #49622): get_toolset() merges registry-registered tools into
             # a toolset, but platform composites enumerate static tool names, so
@@ -505,18 +442,12 @@ def _get_platform_tools(
 
         default_off = set(_DEFAULT_OFF_TOOLSETS)
         # Legacy safety: if the platform's own name matches a default-off
-        # toolset, keep that toolset enabled on first install.  Skip this
-        # dodge for platform-restricted toolsets — those are always opt-in
-        # even on their own platform (e.g. `discord` + `discord` should stay
-        # OFF).
-        if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
+        # toolset, keep that toolset enabled on first install.
+        if platform in default_off:
             default_off.remove(platform)
-        _exempt_explicit_platform_native(
-            default_off, platform, explicitly_configured=explicitly_configured
-        )
         enabled_toolsets -= default_off
 
-    # Recover non-configurable platform toolsets (e.g. discord).  These are
+    # Recover non-configurable platform toolsets (e.g. relay).  These are
     # part of the platform's default composite but
     # absent from CONFIGURABLE_TOOLSETS, so they can't appear in the TUI
     # checklist or in a user-saved config.  Must run in BOTH branches —
@@ -675,14 +606,6 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     that were already in the config for this platform.
     """
     config.setdefault("platform_toolsets", {})
-
-    # Drop platform-scoped toolsets that don't apply here.  Prevents the
-    # "Configure all platforms" checklist (or a hand-edited config.toml)
-    # from turning on, say, the `discord` toolset for another platform.
-    enabled_toolset_keys = {
-        ts for ts in enabled_toolset_keys
-        if _toolset_allowed_for_platform(ts, platform)
-    }
 
     # Get the set of all configurable toolset keys (built-in + plugin)
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
@@ -893,12 +816,10 @@ def _prompt_toolset_checklist(
     tool_tokens = _estimate_tool_tokens()
 
     effective_all = _get_effective_configurable_toolsets()
-    # Drop platform-scoped toolsets that don't apply to this platform, and
-    # config-only capabilities that have no per-platform toggle.
+    # Drop config-only capabilities that have no per-platform toggle.
     effective = [
         (k, l, d) for (k, l, d) in effective_all
-        if _toolset_allowed_for_platform(k, platform)
-        and k not in _CONFIG_ONLY_TOOLSETS
+        if k not in _CONFIG_ONLY_TOOLSETS
     ]
 
     labels = []
@@ -1634,8 +1555,6 @@ def _toolset_enabled_for_reconfigure(ts_key: str, config: dict) -> bool:
     finish provider/API-key setup without disabling and re-enabling the toolset.
     """
     for platform in PLATFORMS:
-        if not _toolset_allowed_for_platform(ts_key, platform):
-            continue
         try:
             enabled = _get_platform_tools(
                 config,
@@ -2284,11 +2203,7 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
 
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
-    effective_all = _get_effective_configurable_toolsets()
-    effective = [
-        (k, l, d) for (k, l, d) in effective_all
-        if _toolset_allowed_for_platform(k, platform)
-    ]
+    effective = _get_effective_configurable_toolsets()
     builtin_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
     print(f"Built-in toolsets ({platform}):")
@@ -2324,27 +2239,6 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
                 _print_info(f"{srv_name}  {color('all tools enabled', Colors.DIM)}")
 
 
-def _known_tool_platforms() -> set[str]:
-    """Return built-in plus discovered plugin platform names.
-
-    Plugin platforms are registered at runtime rather than in the static CLI
-    display registry. Tool introspection/configuration must recognize those
-    names too, otherwise an active plugin platform cannot audit its authority.
-    """
-    known = set(PLATFORMS)
-    try:
-        from son_of_anton_cli.plugins import discover_plugins
-        from gateway.platform_registry import platform_registry
-
-        discover_plugins()  # idempotent
-        known.update(platform_registry.registered_names())
-    except Exception:
-        # Plugin discovery is optional. Preserve the built-in CLI path when a
-        # third-party plugin is malformed or its dependencies are unavailable.
-        pass
-    return known
-
-
 def tools_disable_enable_command(args):
     """Enable, disable, or list tools for a platform.
 
@@ -2355,7 +2249,7 @@ def tools_disable_enable_command(args):
     platform = getattr(args, "platform", "cli")
     config = load_config()
 
-    valid_platforms = _known_tool_platforms()
+    valid_platforms = set(PLATFORMS)
     if platform not in valid_platforms:
         _print_error(f"Unknown platform '{platform}'. Valid: {', '.join(sorted(valid_platforms))}")
         return
@@ -2376,20 +2270,6 @@ def tools_disable_enable_command(args):
             _print_error(f"Unknown toolset '{name}'")
         toolset_targets = [t for t in toolset_targets if t in valid_toolsets]
 
-    # Reject platform-scoped toolsets on platforms that don't allow them.
-    restricted_targets = [
-        t for t in toolset_targets
-        if not _toolset_allowed_for_platform(t, platform)
-    ]
-    if restricted_targets:
-        for name in restricted_targets:
-            allowed = sorted(_TOOLSET_PLATFORM_RESTRICTIONS.get(name) or set())
-            _print_error(
-                f"Toolset '{name}' is not available on platform '{platform}' "
-                f"(only: {', '.join(allowed)})"
-            )
-        toolset_targets = [t for t in toolset_targets if t not in restricted_targets]
-
     if toolset_targets:
         _apply_toolset_change(config, platform, toolset_targets, action)
 
@@ -2404,7 +2284,6 @@ def tools_disable_enable_command(args):
     successful = [
         t for t in targets
         if t not in unknown_toolsets
-        and t not in restricted_targets
         and (":" not in t or t.split(":")[0] not in failed_servers)
     ]
     if successful:

@@ -1808,7 +1808,7 @@ def create_job(
         schedule: Schedule string (see parse_schedule)
         name: Optional friendly name
         repeat: How many times to run (None = forever, 1 = once)
-        deliver: Where to deliver output ("origin", "local", "discord", etc.)
+        deliver: Where to deliver output ("origin", "local", "signal", etc.)
         origin: Source info where job was created (for "origin" delivery)
         model: Optional per-job model override
         provider: Optional per-job provider override

@@ -263,8 +263,6 @@ _CONFIG_LOCK = threading.RLock()
 _EXTRA_ENV_KEYS = frozenset({
     "OPENAI_API_KEY", "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
-    "DISCORD_HOME_CHANNEL", "DISCORD_HOME_CHANNEL_NAME",
-    "SLACK_HOME_CHANNEL", "SLACK_HOME_CHANNEL_NAME",
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
     "SIGNAL_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL_NAME",
@@ -701,7 +699,6 @@ from son_of_anton_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS  
 ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
-    5: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
 }
 
@@ -4325,14 +4322,6 @@ def show_config():
                     parts.append(f"model={mdl}")
                 print(f"  {label:12s}  {', '.join(parts)}")
     
-    # Messaging
-    print()
-    print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
-    
-    discord_token = get_env_value('DISCORD_BOT_TOKEN')
-    
-    print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
-
     print()
     print(color("─" * 60, Colors.DIM))
     print(color("  son-of-anton config edit     # Edit config file", Colors.DIM))
@@ -4689,7 +4678,7 @@ _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
 # etc.). For these we validate the FIRST segment but accept anything below.
 _SCHEMA_DEFINED_DICT_KEYS = frozenset({
     # Platform configs — PlatformConfig dataclass + dynamic extras
-    "discord", "slack", "signal",
+    "signal",
     # MCP server template / dynamic auth dicts
     "sessions", "checkpoints",
     # Plugin settings — enable/disable lists plus index_url override
@@ -4755,11 +4744,11 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     at any segment that hits an open-dict container (mcp_servers,
     providers, hooks, etc.) where users define the inner keys themselves.
 
-    Headline case from #34067: ``gateway.discord.gateway_restart_notification``
+    Headline case from #34067: ``gateway.signal.gateway_restart_notification``
     was silently written, even though ``gateway`` only has 4 known sub-keys
     (``strict``, ``media_delivery_allow_dirs``, ``trust_recent_files``,
     ``trust_recent_files_seconds``). The correct path is
-    ``discord.gateway_restart_notification`` (platform configs live at the
+    ``signal.gateway_restart_notification`` (platform configs live at the
     top level, not under a ``platforms`` namespace).
     """
     if not key:
@@ -4807,7 +4796,7 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     #   - An unknown sub-key (return False with a same-level suggestion)
     if top in _OPEN_DICT_TOP_LEVEL_KEYS or top in _DYNAMIC_TOP_LEVEL_KEYS or top in _SCHEMA_DEFINED_DICT_KEYS:
         # Any path below these is accepted — the user defines the inner
-        # shape themselves (mcp_servers.<name>.command, discord.<extras>,
+        # shape themselves (mcp_servers.<name>.command, signal.<extras>,
         # providers.<name>.api_key, etc.).
         return True, None
 
@@ -4963,7 +4952,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Unknown-key notice (#34067): the key is still written (arbitrary keys
     # are supported — top-level scalars are bridged into os.environ for
     # external apps), but a plausible-but-wrong dotted path like
-    # ``gateway.discord.gateway_restart_notification`` previously reported
+    # ``gateway.signal.gateway_restart_notification`` previously reported
     # bare success and left the user debugging behavior that never changed.
     # Warn after the write so the user gets immediate feedback plus a
     # "did you mean" hint, without blocking legitimate unknown keys.
@@ -5479,98 +5468,3 @@ def _inject_profile_env_vars() -> None:
 
 # Eagerly inject so that OPTIONAL_ENV_VARS is fully populated at import time.
 _inject_profile_env_vars()
-
-
-# ── Platform-plugin env var injection ────────────────────────────────────────
-# Bundled platform plugins under ``plugins/platforms/*/plugin.toml`` declare
-# their required env vars via ``requires_env``.  This mirror of
-# ``_inject_profile_env_vars`` surfaces them in ``son-of-anton config`` UI so users
-# can configure plugin platforms without the core repo ever needing
-# to know they exist.
-#
-# Each ``requires_env`` entry may be a bare string (name only) or a dict:
-#
-#   requires_env:
-#     - PLUGIN_TOKEN                          # minimal
-#     - name: PLUGIN_SECRET                   # rich
-#       description: "Plugin bot client secret"
-#       url: "https://portal.example.com/"
-#       password: true
-#       prompt: "Plugin client secret"
-#
-# An optional ``optional_env`` block surfaces non-required vars the same way
-# (e.g. allowlist, home channel).
-
-_platform_plugin_env_vars_injected = False
-
-
-def _inject_platform_plugin_env_vars() -> None:
-    """Populate OPTIONAL_ENV_VARS from bundled platform plugin manifests.
-
-    Called once at module load time. Idempotent — repeated calls are no-ops.
-    Failures are swallowed so a malformed plugin.toml can't break CLI import.
-    """
-    global _platform_plugin_env_vars_injected
-    if _platform_plugin_env_vars_injected:
-        return
-    _platform_plugin_env_vars_injected = True
-    try:
-        # Resolve the bundled plugins dir from this file's location so the
-        # injector works regardless of CWD.
-        repo_root = Path(__file__).resolve().parents[1]
-        platforms_dir = repo_root / "plugins" / "platforms"
-        if not platforms_dir.is_dir():
-            return
-        for child in platforms_dir.iterdir():
-            if not child.is_dir():
-                continue
-            manifest_path = child / "plugin.toml"
-            if not manifest_path.exists():
-                manifest_path = child / "plugin.toml"
-            if not manifest_path.exists():
-                continue
-            try:
-                with open(manifest_path, "r", encoding="utf-8") as f:
-                    manifest = fast_toml_load(f) or {}
-            except Exception:
-                continue
-            label = manifest.get("label") or manifest.get("name") or child.name
-            # Merge required + optional env var declarations.
-            entries = list(manifest.get("requires_env") or [])
-            entries.extend(manifest.get("optional_env") or [])
-            for entry in entries:
-                if isinstance(entry, str):
-                    name = entry
-                    meta: dict = {}
-                elif isinstance(entry, dict) and entry.get("name"):
-                    name = entry["name"]
-                    meta = entry
-                else:
-                    continue
-                if name in OPTIONAL_ENV_VARS:
-                    continue  # hardcoded entry wins (back-compat)
-                # Heuristic: anything named *TOKEN, *SECRET, *KEY, *PASSWORD
-                # is a password field unless explicitly overridden.
-                name_upper = name.upper()
-                is_secret = bool(meta.get("password") or meta.get("secret"))
-                if not is_secret and not meta.get("password") is False:
-                    is_secret = any(
-                        name_upper.endswith(suf)
-                        for suf in ("_TOKEN", "_SECRET", "_KEY", "_PASSWORD", "_JSON")
-                    )
-                OPTIONAL_ENV_VARS[name] = {
-                    "description": (
-                        meta.get("description")
-                        or f"{label} configuration"
-                    ),
-                    "prompt": meta.get("prompt") or name,
-                    "url": meta.get("url") or None,
-                    "password": is_secret,
-                    "category": meta.get("category") or "messaging",
-                }
-    except Exception:
-        pass
-
-
-# Eagerly inject so that platform plugin env vars show up in the setup wizard.
-_inject_platform_plugin_env_vars()

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import inspect
 import logging
 import os
 import re
@@ -95,28 +94,9 @@ def _model_switch_skew_guard() -> Optional[str]:
 
 
 def _home_thread_from_source(source) -> Optional[str]:
-    """The thread id /sethome should persist on the home target, or None.
-
-    Slack thread-per-message session keying stamps a top-level message's own
-    id as ``source.thread_id`` (a session KEY, not a durable location).
-    Persisting it would pin the HOME target itself to the ephemeral thread
-    spawned around the /sethome message — every bare-platform delivery
-    (``deliver="slack"``) would then land in that thread forever. Same
-    recognition as cron origin capture: a Slack thread id equal to the
-    message's own id is synthetic. A /sethome run inside a genuine thread
-    (thread id = the parent's id, not this message's own) keeps that thread
-    as the home target.
-    """
+    """The thread id /sethome should persist on the home target, or None."""
     thread_id = getattr(source, "thread_id", None)
-    if not thread_id:
-        return None
-    if (
-        getattr(source, "platform", None) == Platform.SLACK
-        and getattr(source, "message_id", None)
-        and str(thread_id) == str(source.message_id)
-    ):
-        return None
-    return str(thread_id)
+    return str(thread_id) if thread_id else None
 
 
 class GatewaySlashCommandsMixin:
@@ -1329,12 +1309,6 @@ class GatewaySlashCommandsMixin:
                 "chat_id": event.source.chat_id,
                 "chat_type": event.source.chat_type,
             }
-            if event.source.delivered_via_upstream_relay is True:
-                notify_data["delivered_via_upstream_relay"] = True
-                if event.source.user_id:
-                    notify_data["user_id"] = event.source.user_id
-                if event.source.scope_id:
-                    notify_data["scope_id"] = event.source.scope_id
             if event.source.thread_id:
                 notify_data["thread_id"] = event.source.thread_id
             if event.message_id:
@@ -2537,44 +2511,17 @@ class GatewaySlashCommandsMixin:
         if source.platform is None:
             return t("gateway.set_home.save_failed", error="Missing logical platform")
 
-        via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
-        if via_relay:
-            adapter_for_source = getattr(self, "_adapter_for_source", None)
-            relay_adapter = adapter_for_source(source) if callable(adapter_for_source) else None
-            fronts_platform = getattr(relay_adapter, "fronts_platform", None)
-            if (
-                source.platform in {None, Platform.LOCAL, Platform.RELAY}
-                or not getattr(source, "user_id", None)
-                or not callable(fronts_platform)
-                or not fronts_platform(source.platform)
-            ):
-                return t(
-                    "gateway.set_home.save_failed",
-                    error="Relay does not authenticate this logical home target",
-                )
-
         thread_id = _home_thread_from_source(source)
         home = HomeChannel(
             platform=source.platform,
             chat_id=str(chat_id),
             name=chat_name,
             thread_id=str(thread_id) if thread_id else None,
-            user_id=(
-                str(source.user_id)
-                if getattr(source, "user_id", None)
-                else None
-            ),
-            scope_id=(
-                str(source.scope_id)
-                if getattr(source, "scope_id", None)
-                else None
-            ),
         )
 
-        # config.toml is canonical because it can persist the authenticated
-        # logical-target provenance required by Relay after a restart.
+        # config.toml is canonical.
         try:
-            persist_home_channel(home, enabled_if_new=not via_relay)
+            persist_home_channel(home)
         except Exception as e:
             return t("gateway.set_home.save_failed", error=e)
 
@@ -2592,7 +2539,7 @@ class GatewaySlashCommandsMixin:
         # notification path reads self.config before the process reloads config.
         platform_config = getattr(self, "config").platforms.setdefault(
             source.platform,
-            PlatformConfig(enabled=not via_relay),
+            PlatformConfig(enabled=True),
         )
         platform_config.home_channel = home
 
