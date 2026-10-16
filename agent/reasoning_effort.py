@@ -1,104 +1,28 @@
-"""Canonical reasoning-effort vocabulary and wire clamping.
+"""Reasoning effort on the wire for the custom OpenAI-compatible endpoint.
 
-Son of Anton' internal effort ladder (``son_of_anton_constants.VALID_REASONING_EFFORTS``
-plus the ``none`` disable level) is wider than what any single provider wire
-accepts. Historically every transport and provider profile hand-rolled its own
-translation map, and the class of bugs that produced was constant: a new
-internal level (``ultra``) leaking to a wire that rejects it with HTTP 400
-(#89503, #70058), or an unknown level being dropped to a weak default so the
-strongest ask resolved *weaker* than an explicit ``high`` — a ladder
-inversion (#74295, #87279).
-
-This module is the single source of truth both kinds of code use instead:
-
-- :data:`EFFORT_LADDER` — canonical low→high ordering.
-- :func:`clamp_effort` — the one clamping policy: keep a supported level
-  verbatim, otherwise take the **nearest weaker** supported level (never
-  silently escalate cost above what was asked), and only when nothing weaker
-  exists take the weakest supported level (a provider whose minimum thinking
-  level is ``high`` serves ``high`` for a ``low`` ask — GLM-5.2's shape).
-- Named wire-vocabulary constants for the common OpenAI-compatible surfaces,
-  so call sites declare *data* ("this route accepts these levels") rather
-  than logic.
-
-Rules for call sites:
-
-1. **Wire shape stays local.** Whether a route wants ``extra_body.reasoning``,
-   a top-level ``reasoning_effort`` string, or a ``thinking`` toggle is the
-   caller's business. Only the *vocabulary math* lives here.
-2. **Unset stays unset.** ``clamp_effort`` translates an explicit request; it
-   does not invent one. When the user expressed no effort, prefer omitting
-   the field so the server default applies.
-3. **Never patch a predicate.** When a provider rejects a level, fix its
-   declared supported set (data), never add another vendor-name special case
-   at the call site.
+The internal effort ladder (``son_of_anton_constants.VALID_REASONING_EFFORTS``
+plus ``none``) is wider than what any one endpoint accepts. A route's
+vocabulary comes from ``custom_providers.<name>.models.<model>.reasoning_efforts``
+or, when undeclared, from what the endpoint's ``/models`` lists for the model
+(maitred lists ``reasoning_efforts`` and ``reasoning_effort_aliases``).
+:func:`clamp_effort` maps a requested level onto it: a supported level is kept,
+otherwise the nearest weaker one (never escalate cost), and only when nothing
+weaker exists the weakest supported level.
 """
 
 from __future__ import annotations
 
-import re
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
-from utils import base_url_host_matches
-
-#: K3 slug detector — matches ``k3`` as a delimited token (``k3``,
-#: ``k3-256k``, ``kimi-k3``, ``kimi-k3-cot``) without matching K2-era names
-#: (``kimi-k2.6``). From #76427 by @ruizanthony.
-_KIMI_K3_SLUG_RE = re.compile(r"(?:^|[^a-z0-9])k3(?:[^a-z0-9]|$)")
-
-# Canonical low→high ordering used for nearest-level clamping. Superset of
-# son_of_anton_constants.VALID_REASONING_EFFORTS ("none" included so an explicit
-# disable can be clamped too when a provider publishes it as a level).
+# Canonical low→high ordering used for nearest-level clamping.
 EFFORT_LADDER: tuple[str, ...] = (
     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 )
 
-# ``ultra`` is Son of Anton-internal ladder vocabulary (the Codex product tier); no
-# provider wire accepts it verbatim anywhere. Every declared wire set below
-# therefore stops at ``max`` — ``ultra`` always clamps down.
-
-#: The widest OpenAI-compatible wire vocabulary (OpenRouter, Nous Portal):
-#: exactly max|xhigh|high|medium|low|minimal|none.
+#: The widest OpenAI-compatible wire vocabulary (``ultra`` is internal only).
 OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = (
     "none", "minimal", "low", "medium", "high", "xhigh", "max",
 )
-
-#: Moonshot/Kimi K3: low/high/max (server default high).
-KIMI_K3_EFFORTS: tuple[str, ...] = ("low", "high", "max")
-#: Moonshot/Kimi K2-era models: low/medium/high.
-KIMI_K2_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
-
-#: Tencent TokenHub: low/medium/high.
-TOKENHUB_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
-
-#: Kimi K3's vendor-documented translation quirks (platform.kimi.ai
-#: thinking-model guide): ``high`` is K3's positional middle AND server
-#: default, so ``medium`` rounds to it rather than down to ``low``; ``xhigh``
-#: rounds up to ``max`` (K3's top tier), matching the kimi-coding plugin.
-KIMI_K3_OVERRIDES: dict[str, str] = {"medium": "high", "xhigh": "max"}
-
-
-def kimi_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
-    """Supported effort set for a Moonshot/Kimi model slug.
-
-    K3 is served as the bare slug ``k3``, plan variants like ``k3-256k``,
-    and the ``kimi-k3*`` aliases; its documented set is low/high/max.
-    Everything earlier speaks low/medium/high. Boundary-matched so K2-era
-    names (``kimi-k2.6``) never match (detection regex from #76427 by
-    @ruizanthony).
-    """
-    m = (model or "").strip().lower().split("/")[-1]
-    if _KIMI_K3_SLUG_RE.search(m):
-        return KIMI_K3_EFFORTS
-    return KIMI_K2_EFFORTS
-
-
-#: Hosts whose wire picks the Kimi vocabulary (mirrors the transport branch in
-#: ``agent/transports/chat_completions.py``).
-_KIMI_EFFORT_HOSTS: tuple[str, ...] = ("api.kimi.com", "moonshot.ai", "moonshot.cn")
-
-#: Host whose wire picks the TokenHub vocabulary.
-_TOKENHUB_EFFORT_HOST = "tokenhub.tencentmaas.com"
 
 
 def supported_efforts_for(
@@ -111,19 +35,9 @@ def supported_efforts_for(
 ) -> tuple[str, ...]:
     """Effort levels to offer for the active route, in declared order.
 
-    Mirrors the transport's clamping set so a picker never offers a level the
-    wire would clamp or reject. Precedence:
-
-      1. the route's declared set
-         (``custom_providers.<name>.models.<model>.reasoning_efforts``),
-      2. the set the endpoint's ``/models`` lists for the model
-         (``reasoning_efforts``, as maitred serves it), from the agent's
-         last probe — read from cache, no request is made,
-      3. known wire hosts (Kimi, TokenHub),
-      4. the widest OpenAI-compatible vocabulary.
-
-    ``provider`` is accepted for call-site symmetry; the fork's remaining
-    routes are host- and declaration-driven.
+    The route's declared set wins, then the set the endpoint's ``/models``
+    listed on the agent's last probe (cache only, no request), then the
+    widest OpenAI-compatible vocabulary.
     """
     if model:
         try:
@@ -149,13 +63,6 @@ def supported_efforts_for(
                 efforts = None
             if efforts:
                 return tuple(efforts)
-
-    if base_url:
-        if any(base_url_host_matches(base_url, host) for host in _KIMI_EFFORT_HOSTS):
-            return kimi_supported_efforts(model)
-        if base_url_host_matches(base_url, _TOKENHUB_EFFORT_HOST):
-            return TOKENHUB_EFFORTS
-
     return OPENAI_COMPAT_WIRE_EFFORTS
 
 
@@ -166,22 +73,10 @@ def clamp_effort(
 ) -> Optional[str]:
     """Clamp a requested reasoning effort onto a wire's supported levels.
 
-    ``overrides`` is an optional declared mapping consulted first, for routes
-    whose vendor documents a translation that differs from nearest-weaker
-    (Kimi K3 documents ``medium → high``: high is its positional middle and
-    server default). Overrides are data, not logic — a call site never adds
-    vendor ``if``\\ s around this function.
-
-    Otherwise: returns the requested effort unchanged when it is supported,
-    when the supported set is unknown (``None``/empty), or when the effort
-    isn't a recognized ladder level (custom providers may use bespoke names —
-    pass through rather than guess). Otherwise returns the **nearest weaker**
-    supported level, so a clamp never silently escalates cost; when nothing
-    weaker exists, the weakest supported level is returned (the caller asked
-    for *some* thinking and the provider's floor is the closest honest match).
-
-    The policy is monotonic: a stronger request never resolves to a weaker
-    wire level than a weaker request would.
+    ``overrides`` (the endpoint's listed aliases) is consulted first. A level
+    that is supported, or not a ladder level at all, or a route whose set is
+    unknown passes through unchanged. Otherwise the nearest weaker supported
+    level is returned; when nothing weaker exists, the weakest one.
     """
     requested = str(effort or "").strip().lower()
     if not requested or not supported:
@@ -199,32 +94,78 @@ def clamp_effort(
             return mapped
     if requested not in EFFORT_LADDER:
         return effort
-    # "none" disables reasoning — it is never a *degradation target* for an
-    # enabled ask (clamping "minimal" to "none" would silently switch
-    # thinking off). It still passes through verbatim when requested.
+    # "none" disables reasoning — never a degradation target for an enabled ask.
     candidates = [level for level in supported_norm if level != "none"]
     if not candidates:
         return effort
     requested_idx = EFFORT_LADDER.index(requested)
-    below = [
-        level for level in candidates
-        if EFFORT_LADDER.index(level) < requested_idx
-    ]
+    below = [level for level in candidates if EFFORT_LADDER.index(level) < requested_idx]
     if below:
         return max(below, key=EFFORT_LADDER.index)
     return min(candidates, key=EFFORT_LADDER.index)
 
 
-def requested_effort(reasoning_config: Optional[dict]) -> Optional[str]:
-    """Extract the user's explicit effort from a reasoning config, or None.
+def _route_effort_decl(model: Optional[str], base_url: Optional[str]):
+    """Return ``(supported_tuple, known_set, aliases)`` for this route.
 
-    Returns ``None`` when the config is absent, malformed, carries no effort,
-    or reasoning is explicitly disabled — callers should then omit the wire
-    field entirely so the server default applies (rule 2 above).
+    The vocabulary is the route's declaration, or else what the endpoint's
+    ``/models`` listed for the model on the agent's last probe (cache only).
+    ``aliases`` are the endpoint's listed rewrites (``None`` for a declared
+    set, which is the user's word and carries none).
     """
-    if not isinstance(reasoning_config, dict):
-        return None
-    if reasoning_config.get("enabled") is False:
-        return None
-    effort = str(reasoning_config.get("effort") or "").strip().lower()
-    return effort or None
+    if not model:
+        return None, (), None
+    try:
+        from son_of_anton_cli.config import get_custom_provider_reasoning_decl
+
+        decl = get_custom_provider_reasoning_decl(str(model), base_url) or {}
+    except Exception:
+        decl = {}
+    efforts = decl.get("efforts")
+    if efforts:
+        return tuple(efforts), set(efforts), None
+    if not base_url:
+        return None, (), None
+    try:
+        from agent.model_metadata import get_endpoint_reasoning_decl
+
+        listed = get_endpoint_reasoning_decl(str(model), str(base_url))
+    except Exception:
+        listed = {}
+    efforts = listed.get("efforts")
+    if efforts:
+        return tuple(efforts), set(efforts), listed.get("aliases")
+    return None, (), None
+
+
+def custom_reasoning_extras(
+    reasoning_config: Optional[dict],
+    *,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Wire fields for a reasoning config: ``(extra_body, top_level_kwargs)``.
+
+    - disabled (or ``none``) → top-level ``reasoning_effort: "none"`` (unless
+      the route's declared set lacks ``none``) plus ``think: false`` and
+      ``chat_template_kwargs.enable_thinking: false``, the switches the
+      different servers honour;
+    - an effort → top-level ``reasoning_effort`` clamped onto the route's set;
+    - no effort → nothing, so the endpoint's own default applies.
+    """
+    extra_body: dict[str, Any] = {}
+    top_level: dict[str, Any] = {}
+    if not isinstance(reasoning_config, dict) or not reasoning_config:
+        return extra_body, top_level
+    effort = (reasoning_config.get("effort") or "").strip().lower()
+    supported, decl, aliases = _route_effort_decl(model, base_url)
+    if effort == "none" or reasoning_config.get("enabled", True) is False:
+        if not decl or "none" in decl:
+            top_level["reasoning_effort"] = "none"
+        extra_body["think"] = False
+        extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+    elif effort:
+        top_level["reasoning_effort"] = clamp_effort(
+            effort, supported or OPENAI_COMPAT_WIRE_EFFORTS, aliases
+        )
+    return extra_body, top_level

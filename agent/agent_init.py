@@ -36,11 +36,7 @@ from agent.context_compactor import ContextCompactor
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
 from agent.session_activity import ActivityProvenance
-from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH,
-    is_local_endpoint,
-    query_ollama_num_ctx,
-)
+from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
@@ -237,20 +233,6 @@ def _custom_provider_runtime_ids(value: Any) -> set[str]:
     if not normalized:
         return set()
     return {normalized, f"custom:{normalized}"}
-
-
-def _resolve_compaction_threshold(
-    global_threshold: float,
-    model_cthresh: Optional[float],
-) -> float:
-    """Combine the user's global compaction threshold with a per-model override.
-
-    Per-model overrides (e.g. Arcee Trinity) apply unconditionally; with no
-    override the user's global threshold wins.
-    """
-    if model_cthresh is None:
-        return global_threshold
-    return model_cthresh
 
 
 def _normalized_custom_base_url(value: Any) -> str:
@@ -849,32 +831,13 @@ def init_agent(
             client_kwargs = {"api_key": api_key, "base_url": base_url}
         if _provider_timeout is not None:
             client_kwargs["timeout"] = _provider_timeout
-        if agent.provider == "copilot-acp":
-            client_kwargs["command"] = agent.acp_command
-            client_kwargs["args"] = agent.acp_args
         # OpenCode Zen free tier (*-free slugs, e.g. x-preview-f-free /
         # "Ox Alpha"): the Zen relay serves these ANONYMOUSLY and 401s any
         # unrecognized bearer — including our keyless placeholder. Send an
         # empty Authorization header to override the SDK's "Bearer <key>".
-        try:
-            from son_of_anton_cli.models import (
-                OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER,
-                opencode_zen_free_headers,
-            )
-            if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-                client_kwargs["default_headers"] = opencode_zen_free_headers()
-        except Exception:
-            pass
-        if "default_headers" not in client_kwargs:
-            # Provider profiles may declare their own attribution headers.
-            # No vendor-host special cases: generic OpenAI-compatible only.
-            try:
-                from providers import get_provider_profile as _gpf
-                _ph = _gpf(agent.provider)
-                if _ph and _ph.default_headers:
-                    client_kwargs["default_headers"] = dict(_ph.default_headers)
-            except Exception:
-                pass
+        from agent.transports.chat_completions import user_agent
+
+        client_kwargs["default_headers"] = {"User-Agent": user_agent()}
     else:
         # No explicit creds — use the centralized provider router
         from agent.auxiliary_client import resolve_provider_client
@@ -992,42 +955,6 @@ def init_agent(
             else:
                 headers["x-anthropic-beta"] = _FINE_GRAINED
             client_kwargs["default_headers"] = headers
-
-    # User-configured request headers (model.default_headers in
-    # config.toml) override provider/SDK defaults. Lets custom
-    # OpenAI-compatible endpoints behind a gateway/WAF that rejects the
-    # OpenAI SDK's identifying headers swap in a plain User-Agent. (#40033)
-    # client_kwargs is the same dict object as agent._client_kwargs, so
-    # this mutation is reflected in the client built just below.
-    agent._apply_user_default_headers()
-
-    try:
-        from son_of_anton_cli.config import (
-            apply_custom_provider_extra_headers_to_client_kwargs,
-            apply_custom_provider_tls_to_client_kwargs,
-            get_compatible_custom_providers,
-            load_config,
-        )
-
-        _cp_config = load_config()
-        _cp_entries = get_compatible_custom_providers(_cp_config)
-        _cp_base_url = str(client_kwargs.get("base_url") or agent.base_url or "")
-        apply_custom_provider_tls_to_client_kwargs(
-            client_kwargs,
-            _cp_base_url,
-            _cp_entries,
-        )
-        # Per-provider extra HTTP headers (providers.<name>.extra_headers /
-        # custom_providers[].extra_headers) — proxies, gateways, custom
-        # auth. Applied last so the most specific config level wins.
-        # SECURITY: values may carry credentials — never log them.
-        apply_custom_provider_extra_headers_to_client_kwargs(
-            client_kwargs,
-            _cp_base_url,
-            _cp_entries,
-        )
-    except Exception:
-        logger.debug("custom-provider TLS resolution skipped", exc_info=True)
 
     agent.api_key = client_kwargs.get("api_key", "")
     agent.base_url = client_kwargs.get("base_url", agent.base_url)
@@ -1279,26 +1206,6 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
-
-    # LM Studio can either be explicitly preloaded through LM Studio's
-    # management API (the historical Son of Anton behavior) or left to LM Studio's
-    # just-in-time / Auto-Evict chat-completions path.  Keep the default
-    # explicit for backward compatibility; users with LM Studio Auto-Evict can
-    # opt into JIT via ``model.lmstudio_load_mode: jit``.
-    agent.lmstudio_load_mode = "explicit"
-    try:
-        _model_section = _agent_cfg.get("model", {})
-        if isinstance(_model_section, dict):
-            _load_mode = str(_model_section.get("lmstudio_load_mode", "explicit") or "explicit").strip().lower()
-            if _load_mode in {"explicit", "jit"}:
-                agent.lmstudio_load_mode = _load_mode
-            else:
-                logger.warning(
-                    "Invalid model.lmstudio_load_mode=%r; expected 'explicit' or 'jit'. Using explicit.",
-                    _model_section.get("lmstudio_load_mode"),
-                )
-    except Exception:
-        agent.lmstudio_load_mode = "explicit"
 
     try:
         _mcp_section = _agent_cfg.get("mcp", {})
@@ -1572,17 +1479,6 @@ def init_agent(
     if not isinstance(_compaction_cfg, dict):
         _compaction_cfg = {}
     compaction_threshold = float(_compaction_cfg.get("threshold", 0.50))
-    # Per-model compaction-threshold override (e.g. Arcee Trinity).
-    try:
-        from agent.auxiliary_client import (
-            _compaction_threshold_for_model as _cthresh_fn,
-        )
-        compaction_threshold = _resolve_compaction_threshold(
-            compaction_threshold,
-            _cthresh_fn(agent.model, agent.provider),
-        )
-    except Exception:
-        pass
     compaction_enabled = str(_compaction_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compaction_target_ratio = float(_compaction_cfg.get("target_ratio", 0.20))
     compaction_protect_last = int(_compaction_cfg.get("protect_last_n", 20))
@@ -2058,19 +1954,7 @@ def init_agent(
     # Persist for reuse on switch_model / fallback activation. Must come
     # AFTER the custom_providers branch so per-model overrides aren't lost.
     agent._config_context_length = _config_context_length
-
-    _lmstudio_runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
-        _config_context_length
-    )
-    if agent._lmstudio_load_was_unverified(_lmstudio_runtime_context_length):
-        _ra().logger.warning(
-            "LM Studio model activation was rejected or completed without a "
-            "verifiable active context length; falling back to configured context"
-        )
-    _effective_context_length = agent._effective_lmstudio_context_length(
-        _config_context_length,
-        _lmstudio_runtime_context_length,
-    )
+    _effective_context_length = _config_context_length
 
 
 
@@ -2215,13 +2099,7 @@ def init_agent(
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
     _ctx = getattr(agent.context_compactor, "context_length", 0)
-    _allow_lmstudio_explicit_below_floor = (
-        str(getattr(agent, "provider", "") or "").strip().lower() == "lmstudio"
-        and isinstance(agent._config_context_length, int)
-        and not isinstance(agent._config_context_length, bool)
-        and agent._config_context_length > 0
-    )
-    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and not _allow_lmstudio_explicit_below_floor:
+    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
@@ -2318,55 +2196,6 @@ def init_agent(
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
     
-    # ── Ollama num_ctx injection ──
-    # Ollama defaults to 2048 context regardless of the model's capabilities.
-    # When running against an Ollama server, detect the model's max context
-    # and pass num_ctx on every chat request so the full window is used.
-    # User override: set model.ollama_num_ctx in config.toml to cap VRAM use.
-    # If model.context_length is set, it caps num_ctx so the user's VRAM
-    # budget is respected even when GGUF metadata advertises a larger window.
-    agent._ollama_num_ctx: int | None = None
-    _ollama_num_ctx_override = None
-    if isinstance(_model_cfg, dict):
-        _ollama_num_ctx_override = _model_cfg.get("ollama_num_ctx")
-    if _ollama_num_ctx_override is not None:
-        try:
-            agent._ollama_num_ctx = int(_ollama_num_ctx_override)
-        except (TypeError, ValueError):
-            _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
-    if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
-        try:
-            # ``agent.api_key`` may be a callable (Entra token provider).
-            # Ollama detection makes a manual HTTP request and expects a
-            # string — Azure Foundry isn't a local endpoint so this branch
-            # never fires for Entra, but guard defensively.
-            _key_for_ollama = agent.api_key if isinstance(agent.api_key, str) else ""
-            _detected = query_ollama_num_ctx(agent.model, agent.base_url, api_key=_key_for_ollama or "")
-            if _detected and _detected > 0:
-                agent._ollama_num_ctx = _detected
-        except Exception as exc:
-            _ra().logger.debug("Ollama num_ctx detection failed: %s", exc)
-    # Cap auto-detected ollama_num_ctx to the user's explicit context_length.
-    # Without this, GGUF metadata can advertise 256K+ which Ollama honours
-    # by allocating that much VRAM — blowing up small GPUs even though the
-    # user explicitly set a smaller context_length in config.toml.
-    if (
-        agent._ollama_num_ctx
-        and _config_context_length
-        and _ollama_num_ctx_override is None  # don't override explicit ollama_num_ctx
-        and agent._ollama_num_ctx > _config_context_length
-    ):
-        _ra().logger.info(
-            "Ollama num_ctx capped: %d -> %d (model.context_length override)",
-            agent._ollama_num_ctx, _config_context_length,
-        )
-        agent._ollama_num_ctx = _config_context_length
-    if agent._ollama_num_ctx and not agent.quiet_mode:
-        _ra().logger.info(
-            "Ollama num_ctx: will request %d tokens (model max from /api/show)",
-            agent._ollama_num_ctx,
-        )
-
     if not agent.quiet_mode:
         if compaction_enabled:
             # Report the active engine's own threshold — for a plugin engine

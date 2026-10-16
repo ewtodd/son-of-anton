@@ -737,67 +737,6 @@ class AIAgent:
             except Exception as exc:
                 logger.debug("context engine bind_session_state during reset: %s", exc)
 
-    @staticmethod
-    def _effective_lmstudio_context_length(
-        config_context_length: Optional[int],
-        runtime_context_length: Any,
-    ) -> Optional[int]:
-        """Return a safe context budget from explicit intent and verified runtime."""
-        explicit = (
-            config_context_length
-            if isinstance(config_context_length, int)
-            and not isinstance(config_context_length, bool)
-            and config_context_length > 0
-            else None
-        )
-        runtime_value = getattr(runtime_context_length, "context_length", runtime_context_length)
-        runtime = (
-            runtime_value
-            if isinstance(runtime_value, int)
-            and not isinstance(runtime_value, bool)
-            and runtime_value > 0
-            else None
-        )
-        if bool(getattr(runtime_context_length, "rejected", False)) or (
-            bool(getattr(runtime_context_length, "load_attempted", False))
-            and runtime is None
-        ):
-            return None
-        if runtime is not None and explicit is not None:
-            return min(runtime, explicit)
-        return runtime if runtime is not None else explicit
-
-    @staticmethod
-    def _lmstudio_load_was_unverified(load_result: Any) -> bool:
-        """Return true when a management load was rejected or unverifiable."""
-        return bool(getattr(load_result, "rejected", False)) or (
-            bool(getattr(load_result, "load_attempted", False))
-            and getattr(load_result, "context_length", None) is None
-        )
-
-    def _ensure_lmstudio_runtime_loaded(
-        self,
-        config_context_length: Optional[int] = None,
-    ) -> Any:
-        """Preload LM Studio unless configured to rely on JIT loading."""
-        if (self.provider or "").strip().lower() != "lmstudio":
-            return None
-        if (getattr(self, "lmstudio_load_mode", "explicit") or "explicit").strip().lower() == "jit":
-            logger.debug("LM Studio explicit preload skipped: lmstudio_load_mode=jit")
-            return None
-
-        from son_of_anton_cli.models import ensure_lmstudio_model_loaded
-
-        if config_context_length is None:
-            config_context_length = getattr(self, "_config_context_length", None)
-        return ensure_lmstudio_model_loaded(
-            self.model,
-            self.base_url,
-            getattr(self, "api_key", ""),
-            config_context_length,
-            return_load_result=True,
-        )
-
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
         from agent.agent_runtime_helpers import switch_model
@@ -5067,74 +5006,11 @@ class AIAgent:
         return True
 
 
-    def _apply_client_headers_for_base_url(
-        self,
-        base_url: str,
-        *,
-        apply_user_headers: bool = True,
-    ) -> None:
-        # No vendor-host headers: this fork speaks generic OpenAI-compatible
-        # only. A provider profile may still declare its own default_headers.
-        _ph_headers = None
-        try:
-            from providers import get_provider_profile as _gpf2
-            _ph2 = _gpf2(self.provider)
-            if _ph2 and _ph2.default_headers:
-                _ph_headers = dict(_ph2.default_headers)
-        except Exception:
-            pass
-        if _ph_headers:
-            self._client_kwargs["default_headers"] = _ph_headers
-        else:
-            self._client_kwargs.pop("default_headers", None)
+    def _apply_client_headers_for_base_url(self, base_url: str = "", **_unused) -> None:
+        """Set the client's identifying headers (the endpoint's gateway attributes by User-Agent)."""
+        from agent.transports.chat_completions import user_agent
 
-        # User-configured overrides win over URL/profile defaults for the same
-        # route. A credential swap to another endpoint must not inherit them.
-        if apply_user_headers:
-            self._apply_user_default_headers()
-
-        # Per-provider extra HTTP headers (providers.<name>.extra_headers /
-        # custom_providers[].extra_headers) — applied last so the most
-        # specific config level survives credential swaps and rebuilds too.
-        # SECURITY: values may carry credentials — never log them.
-        try:
-            from son_of_anton_cli.config import (
-                apply_custom_provider_extra_headers_to_client_kwargs,
-            )
-
-            apply_custom_provider_extra_headers_to_client_kwargs(
-                self._client_kwargs, base_url,
-            )
-        except Exception:
-            logger.debug("custom-provider extra_headers skipped", exc_info=True)
-
-    def _apply_user_default_headers(self) -> None:
-        """Merge user-configured request headers onto the OpenAI client.
-
-        Reads ``model.default_headers`` from config.toml and merges it onto
-        ``self._client_kwargs["default_headers"]``, with user values taking
-        precedence over provider- and SDK-supplied defaults.
-
-        This exists for ``custom`` OpenAI-compatible endpoints sitting behind
-        a gateway/WAF that rejects the OpenAI Python SDK's identifying headers
-        (``User-Agent: OpenAI/Python ...``, ``X-Stainless-*``). Setting e.g.
-        ``model.default_headers: {User-Agent: curl/8.7.1}`` lets the request
-        reach such an upstream instead of failing with an opaque 4xx/502 even
-        though the same body works under ``curl``. (#40033)
-
-        Delegates the config read + merge to
-        ``agent.auxiliary_client._apply_user_default_headers`` so the main and
-        auxiliary clients can never drift on precedence or value handling.
-
-        No-op for Anthropic/Bedrock modes, which don't use the OpenAI client,
-        and when no overrides are configured.
-        """
-        from agent.auxiliary_client import (
-            _apply_user_default_headers as _merge_user_headers,
-        )
-        merged = _merge_user_headers(self._client_kwargs.get("default_headers"))
-        if merged:
-            self._client_kwargs["default_headers"] = merged
+        self._client_kwargs["default_headers"] = {"User-Agent": user_agent()}
 
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
@@ -5163,25 +5039,6 @@ class AIAgent:
         credential-pool rotation and the per-turn env refresh so the two
         paths cannot drift.
         """
-        self._client_kwargs.pop("ssl_verify", None)
-        self._client_kwargs.pop("ssl_ca_cert", None)
-        try:
-            from son_of_anton_cli.config import (
-                apply_custom_provider_tls_to_client_kwargs,
-                get_compatible_custom_providers,
-                load_config_readonly,
-            )
-
-            apply_custom_provider_tls_to_client_kwargs(
-                self._client_kwargs,
-                str(self.base_url or ""),
-                get_compatible_custom_providers(load_config_readonly()),
-            )
-        except Exception:
-            logger.debug(
-                "custom-provider TLS resolution skipped on credential rotation",
-                exc_info=True,
-            )
         self._apply_client_headers_for_base_url(
             self.base_url,
             apply_user_headers=not route_changed,
@@ -6020,139 +5877,6 @@ class AIAgent:
         from agent.chat_completion_helpers import build_api_kwargs
         return build_api_kwargs(self, api_messages, tools_for_api=tools_for_api)
 
-    def _supports_reasoning_extra_body(self) -> bool:
-        """Return True when reasoning extra_body is safe to send for this route/model.
-
-        OpenRouter forwards unknown extra_body fields to upstream providers.
-        Some providers/routes reject `reasoning` with 400s, so gate it to
-        known reasoning-capable model families and direct Nous Portal.
-        """
-        if base_url_host_matches(self._base_url_lower, "nousresearch.com"):
-            return True
-        if base_url_host_matches(self._base_url_lower, "ai-gateway.vercel.sh"):
-            return True
-        if (self.provider or "").strip().lower() == "lmstudio":
-            opts = self._lmstudio_reasoning_options_cached()
-            # "off-only" (or absent) means no real reasoning capability.
-            return any(opt and opt != "off" for opt in opts)
-        # Ollama Cloud (and any Ollama-compatible server): the native
-        # /api/show capabilities list is authoritative — emit reasoning_effort
-        # only for models that declare the "thinking" capability. deepseek-v4
-        # has it; gemma3 / qwen3-coder don't. Cached per (model, base_url).
-        if base_url_host_matches(self._base_url_lower, "ollama.com"):
-            return self._ollama_supports_thinking_cached()
-        return False
-
-    def _lmstudio_reasoning_options_cached(self) -> list[str]:
-        """Probe LM Studio's published reasoning ``allowed_options`` once per
-        (model, base_url). The list (e.g. ``["off","on"]`` or
-        ``["off","minimal","low"]``) is needed both for the supports-reasoning
-        gate and for clamping the emitted ``reasoning_effort`` so toggle-style
-        models don't 400 on ``high``. Cache is keyed on (model, base_url) so
-        ``/model`` swaps and base-URL changes don't reuse a stale list.
-        Non-empty results are cached permanently (model capabilities don't
-        change). Empty results (transient probe failure OR genuinely
-        non-reasoning model) are cached with a 60-second TTL to avoid an
-        HTTP round-trip on every turn while still retrying reasonably soon.
-        """
-        import time as _time
-
-        cache = getattr(self, "_lm_reasoning_opts_cache", None)
-        if cache is None:
-            cache = self._lm_reasoning_opts_cache = {}
-        key = (self.model, self.base_url)
-        cached = cache.get(key)
-        if cached is not None:
-            opts, ts = cached
-            # Non-empty → permanent. Empty → 60s TTL.
-            if opts or (_time.monotonic() - ts) < 60:
-                return opts
-        try:
-            from son_of_anton_cli.models import lmstudio_model_reasoning_options
-            opts = lmstudio_model_reasoning_options(
-                self.model, self.base_url, getattr(self, "api_key", ""),
-            )
-        except Exception:
-            opts = []
-        cache[key] = (opts, _time.monotonic())
-        return opts
-
-    def _ollama_supports_thinking_cached(self) -> bool:
-        """Probe Ollama's ``/api/show`` capabilities once per (model, base_url).
-
-        Returns True only when the model declares the ``thinking`` capability.
-        Caching mirrors the LM Studio probe: a True/False result is permanent
-        (capabilities don't change), while a probe failure (None) is cached
-        with a 60-second TTL so a transient outage doesn't suppress reasoning
-        for the rest of the session but also doesn't round-trip every turn.
-        """
-        import time as _time
-
-        cache = getattr(self, "_ollama_thinking_cache", None)
-        if cache is None:
-            cache = self._ollama_thinking_cache = {}
-        key = (self.model, self.base_url)
-        cached = cache.get(key)
-        if cached is not None:
-            supported, ts = cached
-            # Definitive True/False → permanent. Unknown (None) → 60s TTL.
-            if supported is not None or (_time.monotonic() - ts) < 60:
-                return bool(supported)
-        try:
-            from son_of_anton_cli.models import ollama_model_supports_thinking
-            supported = ollama_model_supports_thinking(
-                self.model, self.base_url, getattr(self, "api_key", "")
-            )
-        except Exception:
-            supported = None
-        cache[key] = (supported, _time.monotonic())
-        return bool(supported)
-
-    def _resolve_lmstudio_summary_reasoning_effort(self) -> Optional[str]:
-        """Resolve a safe top-level ``reasoning_effort`` for LM Studio.
-
-        The iteration-limit summary path calls ``chat.completions.create()``
-        directly, bypassing the transport. Share the helper so the two paths
-        can't drift on effort resolution and clamping.
-        """
-        from agent.lmstudio_reasoning import resolve_lmstudio_effort
-        return resolve_lmstudio_effort(
-            self.reasoning_config,
-            self._lmstudio_reasoning_options_cached(),
-        )
-
-    def _github_models_reasoning_extra_body(self) -> dict | None:
-        """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
-        try:
-            from son_of_anton_cli.models import github_model_reasoning_efforts
-        except Exception:
-            return None
-
-        supported_efforts = github_model_reasoning_efforts(self.model)
-        if not supported_efforts:
-            return None
-
-        if self.reasoning_config and isinstance(self.reasoning_config, dict):
-            if self.reasoning_config.get("enabled") is False:
-                return None
-            requested_effort = str(
-                self.reasoning_config.get("effort", "medium")
-            ).strip().lower()
-        else:
-            requested_effort = "medium"
-
-        if requested_effort == "xhigh" and "xhigh" not in supported_efforts and "high" in supported_efforts:
-            requested_effort = "high"
-        elif requested_effort not in supported_efforts:
-            if requested_effort == "minimal" and "low" in supported_efforts:
-                requested_effort = "low"
-            elif "medium" in supported_efforts:
-                requested_effort = "medium"
-            else:
-                requested_effort = supported_efforts[0]
-
-        return {"effort": requested_effort}
-
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Forwarder — see ``agent.chat_completion_helpers.build_assistant_message``."""
         from agent.chat_completion_helpers import build_assistant_message
@@ -6340,32 +6064,12 @@ class AIAgent:
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict, model: "str | None" = None) -> dict:
-        """Strip legacy Responses API fields from tool_calls for strict providers.
-
-        Providers like Mistral, Fireworks, and other strict OpenAI-compatible APIs
-        validate the Chat Completions schema and reject unknown fields (call_id,
-        response_item_id) with 400 or 422 errors. These fields can survive in
-        pre-existing session rows; this method only modifies the outgoing API
-        copy.
-
-        ``extra_content`` (Gemini thought_signature) is also stripped — strict
-        providers reject it with "Extra inputs are not permitted" — UNLESS the
-        outgoing ``model`` is itself Gemini-family, in which case it must be
-        replayed (Gemini 3 thinking models 400 without it). Defaults to
-        stripping when no model is supplied.
-
-        Creates new tool_call dicts rather than mutating in-place, so the
-        internal message list is left untouched.
-
-        Fields stripped: call_id, response_item_id, extra_content (model-gated)
-        """
+        """Strip legacy fields (call_id, response_item_id, extra_content) from
+        tool_calls on the outgoing API copy; strict endpoints reject them."""
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
             return api_msg
-        from agent.transports.chat_completions import _model_consumes_thought_signature
-        _STRIP_KEYS = {"call_id", "response_item_id"}
-        if not _model_consumes_thought_signature(model):
-            _STRIP_KEYS = _STRIP_KEYS | {"extra_content"}
+        _STRIP_KEYS = {"call_id", "response_item_id", "extra_content"}
         api_msg["tool_calls"] = [
             {k: v for k, v in tc.items() if k not in _STRIP_KEYS}
             if isinstance(tc, dict) else tc

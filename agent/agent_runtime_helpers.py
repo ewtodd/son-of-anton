@@ -2558,19 +2558,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     except Exception:
         _destination_context_intent = None
     agent._config_context_length = _destination_context_intent
-    _runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
-        _destination_context_intent
-    )
-    if agent._lmstudio_load_was_unverified(_runtime_context_length):
-        logger.warning(
-            "LM Studio model activation was rejected or completed without a "
-            "verifiable active context length during model switch; continuing "
-            "with configured context"
-        )
-    _effective_context_length = agent._effective_lmstudio_context_length(
-        _destination_context_intent,
-        _runtime_context_length,
-    )
+    _effective_context_length = _destination_context_intent
 
     # ── Re-evaluate prompt caching ──
     # Refresh the custom-provider snapshot from the config just loaded above

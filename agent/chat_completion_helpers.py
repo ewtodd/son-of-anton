@@ -509,24 +509,6 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
     return _chars(api_payload) // 4
 
 
-def _prompt_cache_scope_for_agent(agent) -> "str | None":
-    """Rotation-stable logical cache scope for *agent*, or None.
-
-    Guarded-import wrapper over the never-raising
-    ``agent.prompt_cache_scope.resolve_prompt_cache_scope_safe`` — the
-    transports treat a None/empty value as "fall back to the physical
-    session_id", so any resolution failure degrades to pre-#79017 behavior
-    instead of blocking the request build.
-    """
-    try:
-        from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
-
-        return resolve_prompt_cache_scope_safe(agent)
-    except Exception:
-        logger.debug("prompt-cache scope resolution failed", exc_info=True)
-        return None
-
-
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
@@ -1314,118 +1296,16 @@ def _probe_endpoint_reasoning_decl(agent) -> None:
 
 
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
-    """Build the keyword arguments dict for the active API mode."""
+    """Build the chat.completions.create() keyword arguments for one request."""
     if tools_for_api is None:
         tools_for_api = agent.tools
-
-    # Rotation-stable logical cache scope, shared by every OpenAI-wire branch
-    # below (codex + both chat_completions paths). Memoized on the agent —
-    # cheap after the first call.
-    _cache_scope_id = _prompt_cache_scope_for_agent(agent)
-
-
-    # ── chat_completions (default) ─────────────────────────────────────
-    _ct = agent._get_transport()
-
-    # Provider detection flags
-    _is_gh = (
-        base_url_host_matches(agent._base_url_lower, "models.github.ai")
-        or base_url_host_matches(agent._base_url_lower, "githubcopilot.com")
-    )
-    _is_nvidia = base_url_host_matches(agent._base_url_lower, "integrate.api.nvidia.com")
-    _is_kimi = (
-        base_url_host_matches(agent.base_url, "api.kimi.com")
-        or base_url_host_matches(agent.base_url, "moonshot.ai")
-        or base_url_host_matches(agent.base_url, "moonshot.cn")
-    )
-    _is_tokenhub = base_url_host_matches(agent._base_url_lower, "tokenhub.tencentmaas.com")
-    _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"
-
-    # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
-    # sentinel (temperature omitted entirely), a numeric override, or None.
-    try:
-        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
-        _ft = _fixed_temperature_for_model(agent.model, agent.base_url)
-        _omit_temp = _ft is OMIT_TEMPERATURE
-        _fixed_temp = _ft if not _omit_temp else None
-    except Exception:
-        _omit_temp = False
-        _fixed_temp = None
-
-    # Anthropic-compatible max-output fallback (last resort only — applied in
-    # build_kwargs *after* ephemeral/user/profile max_tokens, never overriding
-    # an explicit value).  Model-gated, not URL-gated: any chat-completions
-    # proxy serving a Claude/MiniMax/Qwen3 model needs max_tokens, because the
-    # Anthropic Messages API treats it as mandatory and proxies that omit it
-    # (AWS Bedrock, NVIDIA, LiteLLM, vLLM, corporate gateways) default as low
-    # as 4096 output tokens — easily exhausted by thinking + large tool calls
-    # like write_file/patch.  OpenRouter/Nous were the only routes covered
-    # before; gating on _ANTHROPIC_OUTPUT_LIMITS membership covers them all.
-    _ant_max = None
-    try:
-        from agent.model_metadata import (
-            _get_anthropic_max_output,
-            _ANTHROPIC_OUTPUT_LIMITS,
-        )
-        _model_norm = (agent.model or "").lower().replace(".", "-")
-        if any(key in _model_norm for key in _ANTHROPIC_OUTPUT_LIMITS):
-            _ant_max = _get_anthropic_max_output(agent.model)
-    except Exception:
-        pass
-
     _probe_endpoint_reasoning_decl(agent)
-
-    # ── Provider profile path (registered providers) ───────────────────
-    # Profiles handle per-provider quirks via hooks. When a profile is
-    # found, delegate fully; otherwise fall through to the legacy flag path.
-    try:
-        from providers import get_provider_profile
-        _profile = get_provider_profile(agent.provider)
-    except Exception:
-        _profile = None
-
-    if _profile:
-        _ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
-        if _ephemeral_out is not None:
-            agent._ephemeral_max_output_tokens = None
-
-        # Strip image parts for non-vision models that have provider profiles
-        # (e.g. DeepSeek, Kimi). The legacy path below already does this, but
-        # registered providers with profiles were bypassing the strip.
-        api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
-
-        return _ct.build_kwargs(
-            model=agent.model,
-            messages=api_messages,
-            tools=tools_for_api,
-            base_url=agent.base_url,
-            timeout=agent._resolved_api_call_timeout(),
-            max_tokens=agent.max_tokens,
-            ephemeral_max_output_tokens=_ephemeral_out,
-            max_tokens_param_fn=agent._max_tokens_param,
-            reasoning_config=agent.reasoning_config,
-            request_overrides=agent.request_overrides,
-            session_id=getattr(agent, "session_id", None),
-            cache_scope_id=_cache_scope_id,
-            provider_profile=_profile,
-            ollama_num_ctx=agent._ollama_num_ctx,
-            anthropic_max_output=_ant_max,
-            supports_reasoning=agent._supports_reasoning_extra_body(),
-        )
-
-    # ── Legacy flag path ────────────────────────────────────────────
-    # Reached only when get_provider_profile() returns None — i.e. a
-    # completely unknown provider not in providers/ registry.
     _ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
     if _ephemeral_out is not None:
         agent._ephemeral_max_output_tokens = None
-
-    # Strip image parts for non-vision models (no-op when vision-capable).
-    _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
-
-    return _ct.build_kwargs(
+    return agent._get_transport().build_kwargs(
         model=agent.model,
-        messages=_msgs_for_chat,
+        messages=agent._prepare_messages_for_non_vision_model(api_messages),
         tools=tools_for_api,
         base_url=agent.base_url,
         timeout=agent._resolved_api_call_timeout(),
@@ -1434,23 +1314,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         max_tokens_param_fn=agent._max_tokens_param,
         reasoning_config=agent.reasoning_config,
         request_overrides=agent.request_overrides,
-        session_id=getattr(agent, "session_id", None),
-        cache_scope_id=_cache_scope_id,
-        model_lower=(agent.model or "").lower(),
-        is_github_models=_is_gh,
-        is_nvidia_nim=_is_nvidia,
-        is_kimi=_is_kimi,
-        is_tokenhub=_is_tokenhub,
-        is_lmstudio=_is_lmstudio,
-        is_custom_provider=agent.provider == "custom",
-        ollama_num_ctx=agent._ollama_num_ctx,
-        fixed_temperature=_fixed_temp,
-        omit_temperature=_omit_temp,
-        supports_reasoning=agent._supports_reasoning_extra_body(),
-        github_reasoning_extra=agent._github_models_reasoning_extra_body() if _is_gh else None,
-        lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
-        anthropic_max_output=_ant_max,
-        provider_name=agent.provider,
     )
 
 
@@ -1989,9 +1852,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             )
         )
 
-        # LM Studio: preload before probing the fallback's context length.
-        agent._ensure_lmstudio_runtime_loaded()
-
         # Update context compactor limits for the fallback model.
         # Without this, compaction decisions use the primary model's
         # context window (e.g. 200K) instead of the fallback's (e.g. 32K),
@@ -2184,115 +2044,21 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                     api_msg.pop(internal_key, None)
 
-        summary_extra_body = {}
-        try:
-            from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE as _OMIT_TEMP
-        except Exception:
-            _fixed_temperature_for_model = None
-            _OMIT_TEMP = None
-        _raw_summary_temp = (
-            _fixed_temperature_for_model(agent.model, agent.base_url)
-            if _fixed_temperature_for_model is not None
-            else None
-        )
-        _omit_summary_temperature = _raw_summary_temp is _OMIT_TEMP
-        _summary_temperature = None if _omit_summary_temperature else _raw_summary_temp
-        # LM Studio uses top-level `reasoning_effort` (not extra_body.reasoning).
-        # Mirror ChatCompletionsTransport.build_kwargs() so the summary path
-        # — which calls chat.completions.create() directly without going
-        # through the transport — sends the same shape the transport does.
-        _is_lmstudio_summary = (
-            (agent.provider or "").strip().lower() == "lmstudio"
-            and agent._supports_reasoning_extra_body()
-        )
-        _lm_reasoning_effort: str | None = (
-            agent._resolve_lmstudio_summary_reasoning_effort()
-            if _is_lmstudio_summary else None
-        )
-        if not _is_lmstudio_summary and agent._supports_reasoning_extra_body():
-            if agent.reasoning_config is not None:
-                summary_extra_body["reasoning"] = agent.reasoning_config
-            else:
-                summary_extra_body["reasoning"] = {
-                    "enabled": True,
-                    "effort": "medium"
-                }
+        from agent.reasoning_effort import custom_reasoning_extras
+
         summary_kwargs = {
             "model": agent.model,
             "messages": api_messages,
         }
-        if _summary_temperature is not None:
-            summary_kwargs["temperature"] = _summary_temperature
         if agent.max_tokens is not None:
             summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
-        if _lm_reasoning_effort is not None:
-            summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
-
-        # Merge the profile's canonical body and reasoning dialect even
-        # when routing is unset: profiles may always emit required
-        # metadata such as Portal tags, and the custom profile's reasoning
-        # control is a top-level reasoning_effort rather than the nested
-        # extra_body.reasoning set above. The summary call bypasses the
-        # transport, so mirror its profile hooks here or a custom route
-        # runs the wrap-up request without the session's reasoning config.
-        profile_extra_body = {}
-        profile_reasoning_extra = {}
-        profile_top_level = {}
-        profile_handles_reasoning = False
-        try:
-            from providers import get_provider_profile
-            from providers.base import ProviderProfile
-
-            provider_profile = get_provider_profile(agent.provider)
-            if provider_profile is not None:
-                profile_extra_body = provider_profile.build_extra_body(
-                    session_id=getattr(agent, "session_id", None),
-                    model=agent.model,
-                    base_url=agent.base_url,
-                    reasoning_config=agent.reasoning_config,
-                ) or {}
-                profile_reasoning_extra, profile_top_level = (
-                    provider_profile.build_api_kwargs_extras(
-                        reasoning_config=agent.reasoning_config,
-                        supports_reasoning=agent.reasoning_config is not None,
-                        model=agent.model,
-                        base_url=agent.base_url,
-                    )
-                )
-                profile_reasoning_extra = profile_reasoning_extra or {}
-                profile_top_level = profile_top_level or {}
-                from agent.auxiliary_client import (
-                    _contains_profile_reasoning_fields,
-                )
-
-                profile_handles_reasoning = (
-                    type(provider_profile).build_api_kwargs_extras
-                    is not ProviderProfile.build_api_kwargs_extras
-                    or _contains_profile_reasoning_fields(profile_extra_body)
-                    or _contains_profile_reasoning_fields(profile_reasoning_extra)
-                    or _contains_profile_reasoning_fields(profile_top_level)
-                )
-        except Exception:
-            pass
-
-        summary_kwargs.update(profile_top_level)
-        if profile_handles_reasoning:
-            # The profile owns the reasoning wire shape; the generic
-            # nested form set above must not ride along.
-            summary_extra_body.pop("reasoning", None)
-        if profile_extra_body:
-            summary_extra_body.update(profile_extra_body)
-        summary_extra_body.update(profile_reasoning_extra)
-
+        summary_extra_body, summary_top_level = custom_reasoning_extras(
+            agent.reasoning_config, model=agent.model, base_url=agent.base_url
+        )
+        summary_kwargs.update(summary_top_level)
         if summary_extra_body:
             summary_kwargs["extra_body"] = summary_extra_body
 
-        # The anthropic_messages branch that used to sit between these two
-        # was removed with the api_mode (801d46d5), leaving this else
-        # dangling on `if summary_extra_body`: a non-empty extra_body
-        # skipped the call entirely and the summary failed with an
-        # UnboundLocalError on final_response. The OpenAI-compatible call
-        # runs on every non-codex turn.
         summary_client = agent._ensure_primary_openai_client(
             reason="iteration_limit_summary"
         )
@@ -2316,21 +2082,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             else:
                 final_response = "I reached the iteration limit and couldn't generate a summary."
         else:
-            # Retry summary generation
-            summary_kwargs = {
-                "model": agent.model,
-                "messages": api_messages,
-            }
-            if _summary_temperature is not None:
-                summary_kwargs["temperature"] = _summary_temperature
-            if agent.max_tokens is not None:
-                summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
-            if _lm_reasoning_effort is not None:
-                summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
-            summary_kwargs.update(profile_top_level)
-            if summary_extra_body:
-                summary_kwargs["extra_body"] = summary_extra_body
-
+            # Retry summary generation with the same request
             summary_client = agent._ensure_primary_openai_client(
                 reason="iteration_limit_summary_retry"
             )
