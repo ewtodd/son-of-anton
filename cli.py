@@ -1405,9 +1405,7 @@ def _maintain_pack_health(repo_root: str) -> None:
         if packs < _PACK_SPRAWL_THRESHOLD:
             return
         logger.info("git pack sprawl (%d packs) — repacking in background", packs)
-        cmd = ["git", "repack", "-a", "-d", "--quiet"]
-        if os.name == "posix":
-            cmd = ["nice", "-n", "19", *cmd]
+        cmd = ["nice", "-n", "19", "git", "repack", "-a", "-d", "--quiet"]
         subprocess.run(
             cmd,
             capture_output=True, text=True, timeout=1800, cwd=repo_root, check=False,
@@ -3168,27 +3166,6 @@ def _strip_markdown_syntax(text: str) -> str:
     return plain.strip("\n")
 
 
-_WINDOWS_PATH_WITH_DOT_SEGMENT_RE = re.compile(
-    r"(?i)(?:\b[a-z]:\\|\\\\)[^\s`]*\\\.[^\s`]*"
-)
-
-
-def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
-    r"""Keep Windows path separators before hidden directories in Markdown.
-
-    CommonMark treats ``\.`` as an escaped literal dot, so Rich Markdown would
-    render ``D:\repo\.ai`` as ``D:\repo.ai``.  Doubling only that separator
-    inside Windows path-looking tokens preserves the path without changing
-    ordinary markdown escapes like ``1\. not a list``.
-    """
-    if "\\." not in text:
-        return text
-    def _protect(match: re.Match[str]) -> str:
-        return re.sub(r"(?<!\\)\\(?=\.)", r"\\\\", match.group(0))
-
-    return _WINDOWS_PATH_WITH_DOT_SEGMENT_RE.sub(_protect, text)
-
-
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
@@ -3222,7 +3199,6 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     # normalise model-emitted under-padded tables so that mid-render fallbacks
     # (narrow panels, etc.) at least see consistent input.
     plain = _rich_text_from_ansi(text or "").plain
-    plain = _preserve_windows_dot_segments_for_markdown(plain)
     plain = realign_markdown_tables(plain, panel_width)
     return Markdown(plain)
 
@@ -3588,26 +3564,6 @@ def _detect_file_drop(user_input: str) -> "dict | None":
 # "<btn;col;rowM" fragments in the buffer. Keep this broad on purpose:
 # these fragments are extremely unlikely to be intentional user input, and
 # stripping them is better than sending corrupted prompts.
-
-
-def _status_bar_visible_from_display_config(display_config: object) -> bool:
-    """Return the initial classic-CLI status-bar visibility from display config.
-
-    ``display.tui_statusbar`` is the persisted user-facing setting toggled by
-    the TUI/statusbar controls. TOML parses bare ``off`` as ``False``, while
-    older config snapshots or hand edits may use strings such as ``"off"`` or
-    ``"hidden"``. Treat those values consistently so a new CLI process does not
-    re-enable a status bar that the user deliberately disabled.
-    """
-    if not isinstance(display_config, dict):
-        display_config = {}
-    statusbar_config = display_config.get(
-        "statusbar",
-        display_config.get("tui_statusbar", "top"),
-    )
-    if isinstance(statusbar_config, str):
-        return statusbar_config.strip().lower() not in {"0", "false", "hidden", "no", "off"}
-    return statusbar_config is not False
 
 
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
@@ -4271,17 +4227,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
         self._model_picker_state = None
-        # Rotating task-oriented composer placeholder (C-09), chosen once per
-        # session so it stays stable while the empty input box is on screen.
-        try:
-            from son_of_anton_cli.composer_placeholders import (
-                get_random_composer_placeholder,
-            )
-
-            self._composer_placeholder = get_random_composer_placeholder()
-        except Exception:
-            self._composer_placeholder = ""
-        self._command_palette_state = None
         # Armed when a bare `/resume` prints the recent-sessions list so the
         # very next bare numeric input (e.g. `3`) resolves to that session.
         # Holds the exact list used for index resolution; one-shot (cleared on
@@ -4301,38 +4246,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._command_status = ""
         self._attached_images: list[Path] = []
         self._image_counter = 0
-        # Ctrl+S prompt stash — park a half-written draft, send something
-        # else, bring the draft back.  Session-scoped and in-memory only:
-        # drafts routinely contain secrets, so nothing is written to disk.
-        from son_of_anton_cli.prompt_stash import PromptStash as _PromptStash
-        self._prompt_stash = _PromptStash()
         self._active_session_lease = None
-
-        # Status bar visibility (toggled via /statusbar)
-        self._status_bar_visible = _status_bar_visible_from_display_config(
-            CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else None
-        )
-        # Battery read-out in the status bar (toggled via /battery, off by
-        # default). Persisted to display.battery so it survives restarts.
-        self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
-        # When True, the input separator rules and the dynamic status bar are
-        # hidden until the next user input. Set by _recover_after_resize() so a
-        # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
-        # the terminal just reflowed into scrollback — the cause of duplicated
-        # bars / "blank line flooding" reports (#19280, #22976).
-        self._status_bar_suppressed_after_resize = False
-        self._resize_recovery_lock = threading.Lock()
-        self._resize_recovery_timer = None
-        self._resize_recovery_pending = False
-        # Debounced timer that clears the post-resize suppression once the
-        # terminal reflow settles, so the status bar returns during idle
-        # without waiting for the next submitted input.
-        self._status_bar_unsuppress_timer = None
-        # Last terminal width seen by the resize handler. Used to distinguish a
-        # width change (column reflow → possible ghost chrome, needs a viewport
-        # clear) from a rows-only change (no reflow). None until the first
-        # resize fires.
-        self._last_resize_width = None
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
@@ -4476,8 +4390,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "active_background_tasks": 0,
             "active_background_processes": 0,
             "active_background_subagents": 0,
-            "battery_label": "",
-            "battery_category": "dim",
             # Focus view badge (/focus). Persistent indicator so the reduced
             # output mode is never invisible. Display-only.
             "focus_label": "",
@@ -4505,23 +4417,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             )
         except Exception:
             pass
-
-        # Battery read-out (first status-bar element when enabled). Reads are
-        # memoised for a few seconds inside agent.battery, so polling it on
-        # every status-bar repaint is cheap.
-        if getattr(self, "_battery_visible", False):
-            try:
-                from agent.battery import (
-                    battery_category,
-                    format_battery,
-                    read_battery,
-                )
-
-                _batt = read_battery()
-                snapshot["battery_label"] = format_battery(_batt)
-                snapshot["battery_category"] = battery_category(_batt)
-            except Exception:
-                pass
 
         # Count live /background tasks. The dict entry is removed in the
         # task thread's finally block, so len() reflects truly-running tasks.
@@ -4644,19 +4539,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._status_bar_title_cache = title
         self._status_bar_title_checked_at = now
         return title
-
-    @staticmethod
-    def _status_bar_display_width(text: str) -> int:
-        """Return terminal cell width for status-bar text.
-
-        len() is not enough for prompt_toolkit layout decisions because some
-        glyphs can render wider than one Python codepoint. Keeping the status
-        bar within the real display width prevents it from wrapping onto a
-        second line and leaving behind duplicate rows.
-        """
-        from rich.cells import cell_len
-
-        return cell_len(text or "")
 
     @staticmethod
     def _scrollback_box_width(width: Optional[int] = None) -> int:
@@ -6879,24 +6761,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 entries.append((cmd, category, desc))
         return entries
 
-    def _open_command_palette(self) -> None:
-        """Open the Ctrl+P fuzzy command palette modal."""
-        if getattr(self, "_command_palette_state", None):
-            return
-        # Don't stack over other modals.
-        if (self._model_picker_state or self._clarify_state or self._approval_state
-                or self._slash_confirm_state or self._sudo_state):
-            return
-        self._capture_modal_input_snapshot()
-        self._command_palette_state = {
-            "entries": self._build_command_palette_entries(),
-            "filter": "",
-            "selected": 0,
-            "_scroll_offset": 0,
-        }
-        self._invalidate(min_interval=0.0)
-
-
     def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
         """Open prompt_toolkit-native /model picker modal."""
         self._capture_modal_input_snapshot()
@@ -7842,8 +7706,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "help":
             _help_parts = cmd_original.split(None, 1)
             self.show_help(_help_parts[1].strip() if len(_help_parts) > 1 else "")
-        elif canonical == "palette":
-            self._open_command_palette()
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":
@@ -8004,10 +7866,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._show_session_status()
         elif canonical == "context":
             self._show_context_breakdown(cmd_original)
-        elif canonical == "statusbar":
-            self._status_bar_visible = not self._status_bar_visible
-            state = "visible" if self._status_bar_visible else "hidden"
-            self._console_print(f"  Status bar {state}")
         elif canonical == "diff":
             self._handle_diff_command(cmd_original)
         elif canonical == "timestamps":
@@ -10916,39 +10774,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print(f"Error: {e}")
             return None
     
-    def _clear_terminal_on_exit(self):
-        """Clear screen + scrollback so nothing is stranded above the exit summary.
-
-        Called from ``_print_exit_summary`` after ``app.run()`` has returned and
-        prompt_toolkit has torn down its renderer + restored terminal modes —
-        so a direct write to the real stdout fd is safe (the StdoutProxy /
-        patch_stdout layer is gone by now).
-
-        Sequence: ``ESC[3J`` (erase scrollback) + ``ESC[2J`` (erase visible
-        screen) + ``ESC[H`` (cursor home). Modern terminals on Linux and macOS
-        all honor these. Best-effort: skip silently when
-        stdout isn't a real console, and fall back to the platform ``clear``
-        command if the escape write fails.
-        """
-        try:
-            stream = sys.stdout
-            if stream is None or not stream.isatty():
-                return
-        except Exception:
-            return
-        try:
-            stream.write("\033[3J\033[2J\033[H")
-            stream.flush()
-            return
-        except Exception:
-            pass
-        # Fallback: shell clear command (rarely needed — escapes work on every
-        # VT-capable terminal, but this covers exotic stdout wrappers).
-        try:
-            os.system("clear")
-        except Exception:
-            pass
-
     def _persist_active_session_before_close(self):
         """Best-effort SQLite/JSON flush before the CLI marks a session closed.
 
@@ -11034,27 +10859,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except (Exception, KeyboardInterrupt) as e:
             logger.debug("Could not persist active CLI session before close: %s", e)
 
-    def _print_exit_summary(self, clear_screen: bool = True):
-        """Print session resume info on exit, similar to Claude Code.
-
-        Args:
-            clear_screen: When True (default), clear the terminal screen and
-                scrollback before printing the summary. This is appropriate for
-                interactive TUI teardown (#38252). Single-query (-q) mode should
-                pass False to preserve the printed answer (#53009).
-        """
-        if clear_screen:
-            # Clear the screen + scrollback before printing the summary so the
-            # live bottom chrome (status bar, input box, separator rules) and the
-            # rest of the session transcript don't get stranded above the exit
-            # summary (#38252). By this point app.run() has returned and
-            # prompt_toolkit has restored terminal modes, so writing raw escapes
-            # to stdout is safe. ESC[3J clears scrollback, ESC[2J clears the
-            # visible screen, ESC[H homes the cursor — so the summary prints at a
-            # clean top-left. Falls back to the platform clear command if stdout
-            # isn't a TTY-capable stream. Honors NO_COLOR/dumb terminals by
-            # skipping silently when there's no real console.
-            self._clear_terminal_on_exit()
+    def _print_exit_summary(self):
+        """Print session resume info on exit, similar to Claude Code."""
         print()
         msg_count = len(self.conversation_history)
         if msg_count > 0:
@@ -11601,7 +11407,7 @@ def main(
                 # banner, doesn't depend on the welcome banner being shown.
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
-                cli._print_exit_summary(clear_screen=False)
+                cli._print_exit_summary()
         finally:
             _finalize_single_query(cli)
         return

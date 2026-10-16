@@ -6,7 +6,7 @@ text-based numbered fallback for terminals without curses support.
 """
 import sys
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence, Set, Tuple, Union
+from typing import List, Optional, Sequence, Tuple, Union
 
 from son_of_anton_cli.colors import Colors, color
 

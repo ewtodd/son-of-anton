@@ -165,8 +165,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("perm", "Set the permission mode: default, ask, lockdown, or yolo", "Configuration",
                args_hint="[default|ask|lockdown|yolo]", busy_policy="reject", busy_handler="perm"),
 
-    CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
-               cli_only=True, aliases=("sb",)),
     CommandDef("timestamps", "Toggle [HH:MM] timestamps on messages and /history", "Configuration",
                cli_only=True, args_hint="[on|off|status]",
                subcommands=("on", "off", "status"), aliases=("ts",)),
@@ -218,8 +216,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                execute="gateway_commands"),
     CommandDef("help", "Show available commands (/help <text> filters)", "Info", busy_policy="dispatch",
                execute="gateway_help", args_hint="[<filter>]"),
-    CommandDef("palette", "Open the fuzzy command palette (also Ctrl+P)", "Info",
-               cli_only=True, busy_policy="dispatch"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True, busy_policy="dispatch"),
     CommandDef("usage", "Show token usage and rate limits for this session", "Info"),
@@ -705,33 +701,6 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         _add(name, description, args_hint or "")
 
     return entries
-
-
-def slack_app_manifest(request_url: str = "https://son-of-anton.local/slack/commands") -> dict[str, Any]:
-    """Generate a Slack app manifest with all gateway commands as slashes.
-
-    ``request_url`` is required by Slack's manifest schema for every slash
-    command, but in Socket Mode (which we use) Slack ignores it and routes
-    the command event through the WebSocket. A placeholder URL is fine.
-
-    The returned dict is the ``features.slash_commands`` portion only —
-    callers compose it into a full manifest (or merge into an existing
-    one). Keeping it narrow avoids coupling us to the rest of the manifest
-    schema (display_information, oauth_config, settings, etc.) which users
-    set up once in the Slack UI and rarely change.
-    """
-    slashes = []
-    for name, desc, usage in slack_native_slashes():
-        entry = {
-            "command": f"/{name}",
-            "description": desc or f"Run /{name}",
-            "should_escape": False,
-            "url": request_url,
-        }
-        if usage:
-            entry["usage_hint"] = usage
-        slashes.append(entry)
-    return {"features": {"slash_commands": slashes}}
 
 
 def slack_subcommand_map() -> dict[str, str]:

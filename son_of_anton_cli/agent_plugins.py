@@ -8,7 +8,6 @@ deliberately performs no schema fetching and imports no plugin Python code.
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -297,8 +296,7 @@ def _translate_stdio(
         for key, value in env.items()
     ):
         raise ValueError("env must map string keys to string values")
-    env_keys = {key.upper() if os.name == "nt" else key for key in env}
-    if "PLUGIN_ROOT" in env_keys or "PLUGIN_DATA" in env_keys:
+    if "PLUGIN_ROOT" in env or "PLUGIN_DATA" in env:
         raise ValueError("PLUGIN_ROOT and PLUGIN_DATA are reserved")
 
     cwd = config.get("cwd")

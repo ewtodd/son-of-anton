@@ -6,7 +6,6 @@ import copy
 import logging
 import os
 import ssl
-import sys
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
@@ -122,20 +121,7 @@ def _resolved_https_context() -> ssl.SSLContext | None:
                 "CA bundle path does not exist: %s — falling back to default certificates",
                 ca_bundle,
             )
-
-    if sys.platform != "darwin":
-        return None
-
-    try:
-        import certifi
-
-        return ssl.create_default_context(cafile=certifi.where())
-    except (ImportError, OSError, ssl.SSLError) as exc:
-        logger.warning(
-            "Could not load certifi for urllib HTTPS verification: %s — falling back to default certificates",
-            exc,
-        )
-        return None
+    return None
 
 
 def _secure_opener_from_installed_policy(original_url: str, *, ssl_context=None):
@@ -144,8 +130,8 @@ def _secure_opener_from_installed_policy(original_url: str, *, ssl_context=None)
     When ``ssl_context`` is provided, the cloned HTTPS handler is replaced with
     one bound to that context so per-provider TLS settings (``ssl_ca_cert`` /
     ``ssl_verify``) apply to this request. When it is None, Son of Anton-owned
-    openers get an explicit CA default via ``_resolved_https_context`` (env
-    bundle first, certifi on macOS); an application-installed opener's TLS
+    openers get an explicit CA default via ``_resolved_https_context`` (the
+    env bundle); an application-installed opener's TLS
     policy is preserved unchanged.
     """
     installed = getattr(urllib.request, "_opener", None)

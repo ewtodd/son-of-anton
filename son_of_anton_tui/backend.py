@@ -295,7 +295,6 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
         self._attached_images = []
         self._image_counter = 0
         self._model_picker_state = getattr(self, "_model_picker_state", None)
-        self._command_palette_state = None
 
         import os
 
@@ -439,7 +438,7 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
         except Exception:
             pass
         try:
-            self._print_exit_summary(clear_screen=False)
+            self._print_exit_summary()
         except Exception:
             pass
         try:

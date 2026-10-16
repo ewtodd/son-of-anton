@@ -190,33 +190,6 @@ def reset_secret_source_cache() -> None:
     _SECRET_SOURCE_VALUES_BY_HOME.clear()
 
 
-def format_secret_source_suffix(env_var: str) -> str:
-    """Return a human-readable suffix like ``" (from Bitwarden)"`` or ``""``.
-
-    Use this when printing a detected credential so the user can see where
-    it came from.  Empty string when the credential came from ``.env`` or
-    the shell — those are the implicit / "default" cases users already
-    understand.
-    """
-    source = get_secret_source(env_var)
-    if not source:
-        return ""
-    if source == "bitwarden":
-        return " (from Bitwarden)"
-    # Ask the registry for the source's human label (e.g. "1Password").
-    # Fall back to the raw source name for labels the registry doesn't
-    # know (stale provenance from an uninstalled plugin, tests).
-    try:
-        from agent.secret_sources.registry import get_source
-
-        registered = get_source(source)
-        if registered is not None and registered.label:
-            return f" (from {registered.label})"
-    except Exception:  # noqa: BLE001 — label lookup must never raise
-        pass
-    return f" (from {source})"
-
-
 def _format_offending_chars(value: str, limit: int = 3) -> str:
     """Return a compact 'U+XXXX ('c'), ...' summary of non-ASCII codepoints."""
     seen: list[str] = []

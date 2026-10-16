@@ -530,15 +530,6 @@ from son_of_anton_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS  
 # Config Migration System
 # =============================================================================
 
-# Track which env vars were introduced in each config version.
-# Migration only mentions vars new since the user's previous version.
-ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
-    3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
-    4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
-    5: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
-    10: ["TAVILY_API_KEY"],
-}
-
 # Tool Gateway env vars are always visible — they're useful for
 # self-hosted / custom gateway setups regardless of subscription state.
 
@@ -937,46 +928,6 @@ def _normalize_custom_provider_entry(
         normalized["ssl_verify"] = ssl_verify.strip()
 
     return normalized
-
-
-def _custom_provider_entry_to_provider_config(
-    entry: Any,
-    *,
-    provider_key: str = "",
-) -> Optional[Dict[str, Any]]:
-    """Translate a legacy custom provider entry to the v12 providers shape."""
-    normalized = _normalize_custom_provider_entry(
-        dict(entry) if isinstance(entry, dict) else entry,
-        provider_key=provider_key,
-    )
-    if normalized is None:
-        return None
-
-    provider_entry: Dict[str, Any] = {"api": normalized["base_url"]}
-
-    for field in (
-        "name",
-        "api_key",
-        "key_env",
-        "models",
-        "models_discovered",
-        "context_length",
-        "rate_limit_delay",
-        "discover_models",
-        "extra_body",
-        "extra_headers",
-        "ssl_ca_cert",
-        "ssl_verify",
-    ):
-        if field in normalized:
-            provider_entry[field] = normalized[field]
-
-    if "model" in normalized:
-        provider_entry["default_model"] = normalized["model"]
-    if "api_mode" in normalized:
-        provider_entry["transport"] = normalized["api_mode"]
-
-    return provider_entry
 
 
 def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, Any]]:

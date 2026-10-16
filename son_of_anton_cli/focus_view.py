@@ -35,11 +35,6 @@ FOCUS_CONFIG_KEY = "display.focus_view"
 #: ``/verbose off`` uses so both features share one suppression path.
 FOCUS_TOOL_PROGRESS_MODE = "off"
 
-#: Modes in which the CLI commits a per-tool scrollback line. Mirrors the gate
-#: in ``SonOfAntonCLI._on_tool_progress``; kept here so the hidden-line counter and
-#: the renderer can never drift apart.
-TOOL_PROGRESS_VISIBLE_MODES = frozenset({"new", "all", "verbose"})
-
 #: Valid tool-progress modes (``log`` is a gateway-only extra step).
 TOOL_PROGRESS_MODES = ("off", "new", "all", "verbose")
 
@@ -89,27 +84,6 @@ def resolve_focus_arg(arg: str, current: bool) -> tuple[str, Optional[bool]]:
     if text in _TOGGLE_WORDS:
         return "set", not bool(current)
     return "usage", None
-
-
-def would_display_tool_line(
-    mode: object,
-    function_name: str,
-    last_tool_name: Optional[str] = None,
-) -> bool:
-    """Would the CLI have committed a scrollback line for this tool call?
-
-    Used to count *honestly*: if the user already had ``/verbose off``, focus
-    view is hiding nothing extra and must not claim otherwise.  ``new`` mode
-    skips consecutive repeats of the same tool, so the counter skips them too.
-    """
-    if not function_name:
-        return False
-    normalized = normalize_tool_progress_mode(mode)
-    if normalized not in TOOL_PROGRESS_VISIBLE_MODES:
-        return False
-    if normalized == "new" and function_name == last_tool_name:
-        return False
-    return True
 
 
 def format_hidden_line(count: int) -> Optional[str]:

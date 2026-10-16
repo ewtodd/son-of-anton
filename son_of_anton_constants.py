@@ -972,30 +972,6 @@ AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 # ─── Venv layout ─────────────────────────────────────────────────────────────
 
-def venv_bin_dir(venv_dir) -> Path:
-    """Path to the bin directory inside *venv_dir* (may not exist)."""
-    return Path(venv_dir) / "bin"
-
-def project_venv_dir(project_root) -> Path | None:
-    """The project's venv directory, ``venv`` or ``.venv``, when one exists.
-
-    ``uv venv`` defaults to ``.venv`` while our installers create ``venv``, so
-    both layouts are in the wild. Call sites that only knew about ``venv``
-    silently no-oped on a ``.venv`` install — that is how the Windows
-    shim-lock preflight skipped itself entirely (#79542). ``venv`` wins when
-    both exist, matching what the installers write.
-    """
-    for name in ("venv", ".venv"):
-        candidate = Path(project_root) / name
-        if candidate.is_dir():
-            return candidate
-    return None
-
-
-def venv_python_path(venv_dir) -> Path:
-    """Path to the Python interpreter inside *venv_dir* (may not exist)."""
-    return venv_bin_dir(venv_dir) / "python"
-
 # Top-level packages and modules that ship with Son of Anton. Used to tell a
 # half-updated tree (our own module missing a name a sibling expects) from a
 # missing third-party dependency, which has different remediation. Exact-set,
