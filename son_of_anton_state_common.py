@@ -311,7 +311,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -515,6 +515,9 @@ CREATE TABLE IF NOT EXISTS async_delegations (
 -- after /handoff, NULL when idle). Keyed by the
 -- session's compaction-lineage root, so a compaction does not unbind it. No
 -- foreign key: a new session is bound before its worker writes its row.
+-- yield_pid: a terminal (/pickup, --pickup) taking the session back from a
+-- headless worker, which stops at its next step boundary; yield_at: when it
+-- asked; yielded_at: when the worker committed to handing over (v30).
 CREATE TABLE IF NOT EXISTS relay_bindings (
     session_id TEXT PRIMARY KEY,
     chat_key TEXT NOT NULL,
@@ -522,7 +525,10 @@ CREATE TABLE IF NOT EXISTS relay_bindings (
     host_pid INTEGER,
     host_heartbeat REAL,
     created_at REAL NOT NULL,
-    updated_at REAL NOT NULL
+    updated_at REAL NOT NULL,
+    yield_pid INTEGER,
+    yield_at REAL,
+    yielded_at REAL
 );
 
 -- Messages for a relayed session that arrived while its worker was busy,

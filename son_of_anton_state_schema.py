@@ -1164,6 +1164,10 @@ class SessionSchemaMixin:
                         cursor.execute(f"ALTER TABLE sessions DROP COLUMN {column}")
                     except sqlite3.OperationalError as exc:
                         logger.debug("v28 drop of sessions.%s skipped: %s", column, exc)
+            # v29 (relay_outbox) and v30 (relay_bindings.yield_pid / yield_at /
+            # yielded_at: a terminal taking a session back from a headless
+            # worker) only add a table and columns — SCHEMA_SQL and
+            # _reconcile_columns() above create them; no rows to transform.
             if (
                 current_version < SCHEMA_VERSION
                 and fts_migrations_complete

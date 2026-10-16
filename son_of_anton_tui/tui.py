@@ -1399,23 +1399,38 @@ if _TEXTUAL_AVAILABLE:
                 rows = []
             finally:
                 self._relay_ticking = False
-            for row in rows or []:
-                self._relay_deliver(row)
+            rows = list(rows or [])
+            for index, row in enumerate(rows):
+                if self._relay_deliver(row) is False:
+                    # Not deliverable yet: it and everything behind it wait,
+                    # in order, for the next tick.
+                    backend.relay_requeue(rows[index:])
+                    break
             if rows:
                 self._update_status()
 
-        def _relay_deliver(self, row: dict) -> None:
+        def _relay_deliver(self, row: dict) -> Optional[bool]:
             """Run one message from the relay chat the way a typed one would run.
 
             An open clarify takes it as the answer. Otherwise: idle, it starts
             a turn; mid-turn it queues like a typed follow-up, unless the chat
             asked for ``now`` — then it steers the live turn (falling back to
             the queue, like /sendnow). ``stop`` interrupts the running turn.
+            ``continue`` (a session taken back from a headless run, /pickup)
+            carries on the turn the run left open, before anything else;
+            False until the app is idle.
             """
             backend = self.backend
             mode = str(row.get("mode") or "queue")
             label = str(row.get("platform") or "the relay chat")
             text = str(row.get("text") or "")
+            if mode == "continue":
+                if self._relay_closing:
+                    return None
+                if self._busy or self._dispatch_chains or self._modal_open:
+                    return False  # the next tick, or _after_dispatch, runs it
+                self._start_dispatch_chain(self._continue_turn())
+                return None
             if mode == "stop":
                 if self._busy == "turn" and backend.interrupt_turn():
                     self._note(f"{label}: stop — interrupting the running turn", muted=True)
@@ -1437,6 +1452,21 @@ if _TEXTUAL_AVAILABLE:
                 self._update_status()
                 return
             self._start_dispatch_chain(self._dispatch(relayed))
+
+        async def _continue_turn(self) -> None:
+            """Carry on the turn a headless relay run handed to this terminal.
+
+            No message is added: the model is called on the transcript as the
+            run left it (its last tool result, or the message it never
+            answered), and the reply streams like any turn's.
+            """
+            backend = self.backend
+            if backend is None:
+                return
+            self._reset_note_block()
+            self._note("↻ continuing the turn the headless run left open", muted=True)
+            await self._run_in_worker("turn", partial(backend.run_turn, None, continue_turn=True))
+            await self._after_dispatch()
 
         def _give_back_relayed(self) -> None:
             """Closing: relayed messages that never ran go back to the inbox.
@@ -2282,6 +2312,12 @@ if _TEXTUAL_AVAILABLE:
             if self._held_for_cancel is not None:
                 # The /cancel picker holds the queue; closing it dispatches.
                 return
+            # /pickup took a session back mid-turn: that turn goes on before
+            # anything typed or relayed meanwhile.
+            take_continue = getattr(self.backend, "relay_take_continue", None)
+            if not self._relay_closing and callable(take_continue) and take_continue():
+                await self._continue_turn()
+                return
             pending = self.backend.drain_pending_input()
             # Follow-ups the user queued while the turn ran go first; backend
             # work (goal continuations, notifications) yields to them.
@@ -2449,6 +2485,13 @@ if _TEXTUAL_AVAILABLE:
         # ---------------- actions ----------------
         def action_interrupt_or_quit(self) -> None:
             now = time.monotonic()
+            # /pickup waiting for a headless worker to yield: stop waiting
+            # (the worker carries on); never quit out from under it.
+            waiting = getattr(self.backend, "relay_waiting", None)
+            if callable(waiting) and waiting():
+                self.backend.relay_stop_waiting()
+                self._note("stopping the wait for the headless worker…", muted=True)
+                return
             if self._busy == "turn" and self.backend is not None:
                 if now - self._last_ctrl_c < 2.0:
                     self.backend.interrupt_turn()

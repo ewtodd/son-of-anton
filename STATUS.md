@@ -67,7 +67,12 @@ All of the following is merged to `main` and deployed on e-desktop:
   columns) is deleted (schema v28). R2 (2026-10-15): TUI `/handoff` keeps the
   open TUI running the session as its host while the chat relays it
   (`relay_outbox`, schema v29); `/pickup` / `son-of-anton --pickup` end it.
-  R3 (yield/takeover of a busy headless worker) is next.
+  R3 (2026-10-15): `/pickup` / `--pickup` while a headless worker is mid-turn
+  takes the turn over — the worker yields at its next step boundary (a running
+  command finishes, a model call is cancelled, nothing persisted for the
+  stop), exits 75, and the TUI continues the same turn without a new message
+  (`run_conversation(continue_turn=True)`), then runs what the chat queued
+  (schema v30). The relay is complete.
 - **RAG (optional).** `memory.rag` embeds journals and
   `notes/<scope>/**/*.md` through an OpenAI-compatible `/v1/embeddings`
   endpoint (Bifrost → bge-m3 on oracle) and injects the closest chunks into
@@ -148,9 +153,11 @@ Ordered by importance. Each item is independently scoped.
    subprocesses: send → headless worker in its own cwd → completion as an
    internal event; a second send queued and run after; clarify answered at
    once; a dangerous command staged as a durable approval, visible in
-   `status`, and `stop` ending the worker and its wait. Still owed: one real
-   Signal request through the whole path, including `/approve` from the
-   phone, before building R2/R3 on top.
+   `status`, and `stop` ending the worker and its wait. R2 (`/handoff`) and
+   R3 (taking a busy worker's turn back with `/pickup`) are E2E-tested the
+   same way with a real TUI process. Still owed: one real Signal request
+   through the whole path, including `/approve` from the phone and a
+   `--pickup` of a running worker.
 3. **One coder per workspace is not enforced.** Nothing keeps two workers
    (or a worker and a TUI on another session) out of the same directory; the
    relay checks per session, not per workspace. Enforce it in code (a

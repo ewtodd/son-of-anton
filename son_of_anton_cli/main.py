@@ -1298,14 +1298,15 @@ def cmd_chat(args):
     _resolve_continue_arg(args)
 
     # --pickup: resume the session most recently handed off or relayed from
-    # the messaging chat; the TUI ends the relaying as it starts.
+    # the messaging chat; the TUI ends the relaying as it starts. A headless
+    # worker mid-turn on it yields first, and the TUI continues its turn.
     if getattr(args, "pickup", False):
         if getattr(args, "query", None) or getattr(args, "query_file", None):
             print("Error: --pickup opens the TUI; it does not take a query.")
             sys.exit(2)
         from son_of_anton_cli.relay_host import resolve_pickup
 
-        _picked = resolve_pickup(interactive=sys.stdin.isatty())
+        _picked = resolve_pickup()
         if not _picked:
             sys.exit(1)
         args.resume = _picked

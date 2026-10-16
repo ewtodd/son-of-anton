@@ -131,9 +131,18 @@ a question answers it — and reports each turn's result. A dangerous command
 asks in the TUI and in the chat at once; the first answer wins. Back at the
 terminal, `/pickup` ends the relaying (the chat is told);
 `son-of-anton --pickup` reopens the session most recently handed off or
-relayed and does the same — if a headless run is still working on it, it
-offers to wait. Quitting the TUI while handed off leaves the chat relaying
-the session through headless runs.
+relayed and does the same. Quitting the TUI while handed off leaves the chat
+relaying the session through headless runs.
+<!---->
+If a headless run is in the middle of a turn when you pick the session up,
+the terminal takes that turn over: the run stops after the step it is in — a
+command that is running finishes; a reply the model is still writing is
+cancelled — and the TUI carries on the same turn from there, then runs
+whatever the chat sent meanwhile. Nothing is added to the conversation for
+the switch. While it waits it shows what is running; Ctrl+C stops waiting
+and leaves the run going. A command waiting for your approval in the chat
+is not run: the session asks you again at the terminal. `stop` from the
+chat remains the way to end a run outright.
 <!---->
 ### The journal
 <!---->

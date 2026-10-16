@@ -613,6 +613,11 @@ def init_agent(
     # the correction. The loop drains this slot at a role-safe boundary.
     agent._pending_redirect: Optional[str] = None
     agent._pending_redirect_lock = threading.Lock()
+    # Yield: hand the turn to another process (a terminal taking a session
+    # back from a headless relay worker, AIAgent.request_yield). Guarded by
+    # the redirect lock; consumed when the loop stops at its next step
+    # boundary with nothing persisted for the stop itself.
+    agent._pending_yield = False
 
     # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
     # runs each tool on its own ThreadPoolExecutor worker — those worker

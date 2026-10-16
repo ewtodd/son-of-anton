@@ -23,7 +23,7 @@ import threading
 import time
 import unicodedata
 import uuid
-from typing import Optional
+from typing import Callable, Optional
 from son_of_anton_cli.config import cfg_get
 
 from tools.interrupt import is_interrupted
@@ -3433,6 +3433,31 @@ def _durable_approvals_enabled() -> bool:
 
 _DURABLE_APPROVAL_POLL_SECONDS = 0.5
 
+# What ends a durable approval wait from outside, besides an answer, expiry or
+# an interrupt: a callable returning a reason (or None to keep waiting). A
+# headless relay worker sets it — the user taking its session back at the
+# terminal ends the wait, since nobody will answer the chat's copy now
+# (son_of_anton_cli/relay_worker.py). Process-wide: such a worker is one turn.
+_durable_wait_release: Optional[Callable[[], Optional[str]]] = None
+
+
+def set_durable_wait_release(release: Optional[Callable[[], Optional[str]]]) -> None:
+    """Install (or clear, with None) the durable-approval release check."""
+    global _durable_wait_release
+    _durable_wait_release = release
+
+
+def _durable_wait_released() -> Optional[str]:
+    release = _durable_wait_release
+    if release is None:
+        return None
+    try:
+        reason = release()
+    except Exception:
+        logger.debug("durable approval release check failed", exc_info=True)
+        return None
+    return str(reason) if reason else None
+
 
 def _await_durable_decision(session_key: str, approval_data: dict) -> dict:
     """Stage a durable approval request and block until it is answered.
@@ -3513,6 +3538,16 @@ def _await_durable_decision(session_key: str, approval_data: dict) -> dict:
             current = wa.get_pending(wa.EXEC, record["id"])
             if current is None:
                 break
+            # Released (the session was taken back at the terminal): settled
+            # as a denial with the release's reason — first decision wins, so
+            # an answer the chat already gave stands — and the command stays
+            # unrun; the request is withdrawn below.
+            released = None if current.get("decision") else _durable_wait_released()
+            if released:
+                logger.info("Durable approval wait released — %s: %s", record["id"], released)
+                current = wa.decide_pending(
+                    wa.EXEC, record["id"], "deny", decided_by="release", reason=released,
+                ) or current
             choice = current.get("decision")
             if choice:
                 decision = {

@@ -30,6 +30,11 @@ chat should hear — the handoff, each turn's reply, a question, the pickup —
 arrives through ``relay_outbox``, which ``relay_event_loop`` here delivers
 into the chat as internal events. A TUI host that goes away (exit, crash, a
 heartbeat gone stale) falls back to headless workers.
+
+``/pickup`` at a terminal while a headless worker is mid-turn takes that turn
+back: the worker yields and exits, and its exit here starts nothing and
+reports nothing — the queue waits for that terminal, which continues the turn
+and tells the chat through the outbox (``relay_finish_run`` → ``yielded``).
 """
 
 from __future__ import annotations
@@ -378,7 +383,9 @@ async def on_worker_exit(runner, watcher: Dict[str, Any]) -> Optional[Dict[str, 
     """The process watcher saw a relay worker exit: queue first, then report.
 
     Returns what to tell the chat, or None when this run no longer owns the
-    session (a stop already handled it).
+    session (a stop already handled it). A run the user took back at the
+    terminal (``/pickup``) reports nothing here — its queue waits for the
+    terminal, and the chat hears the pickup from it (``relay_outbox``).
     """
     _remove_quietly(watcher.get("relay_query_file"))
     root = watcher["relay_session_id"]
@@ -390,6 +397,10 @@ async def on_worker_exit(runner, watcher: Dict[str, Any]) -> Optional[Dict[str, 
         logger.warning("Relay exit handling for %s failed: %s", root, exc, exc_info=True)
         outcome = {"action": "failed", "error": str(exc)}
     if outcome.get("action") == "none":
+        # Gone from the chat altogether: the terminal that took it over got
+        # there first (or the chat detached it after the run died).
+        if await _db(runner).get_relay_binding(root) is None:
+            return {"session": root, "action": "picked_up"}
         return None
     # The completion belongs to the chat, not to the conversation that was
     # current when the worker started: after /new that session has ended,
@@ -411,7 +422,11 @@ def format_completion(evt: Dict[str, Any], relay: Dict[str, Any]) -> str:
 
     Keeps the ``[IMPORTANT: Background process`` opening of every process
     notification: compaction and titling recognize machine-authored rows by it.
+    Empty — nothing is delivered — for a run handed to the terminal: the turn
+    goes on there, and the pickup event tells the chat.
     """
+    if relay.get("action") in ("yielded", "picked_up"):
+        return ""
     exit_code = evt.get("exit_code")
     if evt.get("completion_reason") == "killed":
         how = "was stopped"
@@ -606,14 +621,22 @@ async def sweep_tui_hosts(runner) -> None:
     after a headless run ends (``relay_finish_run`` is fenced on its pid, so
     a TUI that comes back cannot double it); with nothing queued the session
     goes idle and the next send starts a worker.
+
+    The same goes for a headless worker that yielded to a terminal which then
+    died before picking the session up: its exit left the queue for that
+    terminal (``relay_finish_run``), and nobody else would run it.
     """
     db = _db(runner)
     for binding in await db.list_relay_bindings():
-        if binding.get("host") != "tui" or binding.get("live") or not binding.get("host_pid"):
+        if binding.get("live") or not binding.get("host_pid"):
+            continue
+        host = binding.get("host")
+        orphaned = host == "headless" and binding.get("yield_pid") and not binding.get("yielding")
+        if host != "tui" and not orphaned:
             continue
         root = binding["session_id"]
         outcome = await _after_exit(runner, root, int(binding["host_pid"]), cwd_hint=None)
-        logger.info("Relay: the TUI host of %s went away (%s)", root, outcome.get("action"))
+        logger.info("Relay: the %s host of %s went away (%s)", host, root, outcome.get("action"))
 
 
 async def relay_event_loop(runner) -> None:
@@ -662,6 +685,16 @@ async def _send(runner, chat_key: str, args: Dict[str, Any]) -> Dict[str, Any]:
     brief = await _session_brief(db, root)
     if new_in:
         brief["cwd"] = brief.get("cwd") or cwd_hint
+    if decision["action"] == "queued" and decision.get("yielding"):
+        return {
+            "status": "queued",
+            "host": "terminal",
+            "note": (
+                "the user is taking this session back at their terminal; it runs "
+                "there, after the turn in progress"
+            ),
+            **brief,
+        }
     if decision["action"] == "queued" and decision.get("host") == "tui":
         return {
             "status": "sent to the TUI",
@@ -720,14 +753,22 @@ async def _status(runner, chat_key: str, args: Dict[str, Any]) -> Dict[str, Any]
             ]
         recent.append(entry)
     queued = [m for m in await db.list_relay_inbox(root) if m.get("mode") != "stop"]
+    if binding.get("yielding"):
+        state = (
+            "yielding to the terminal: the user is taking it back; the worker "
+            "stops after its current step" if host == "headless" else
+            "yielding to the terminal: the user is picking it up there"
+        )
+    else:
+        state = {
+            "tui": "handed off: the user's open TUI runs it",
+            "headless": "running in a headless worker",
+        }.get(host, "idle")
     return {
         **(await _session_brief(db, root)),
         "bound_to_this_chat": binding.get("chat_key") == chat_key,
         "host": host,
-        "state": {
-            "tui": "handed off: the user's open TUI runs it",
-            "headless": "running in a headless worker",
-        }.get(host, "idle"),
+        "state": state,
         "running_since": _when(binding.get("host_heartbeat")) if host == "headless" else None,
         "recent": recent,
         "queued": [_clip(m["text"], 160) for m in queued],
@@ -782,6 +823,8 @@ async def _detach(runner, chat_key: str, args: Dict[str, Any]) -> Dict[str, Any]
     root = await _target(runner, chat_key, args.get("session"))
     host = _live_host(await db.get_relay_binding(root) or {})
     result = await db.unbind_relay_session(root)
+    if result.get("yielding"):
+        raise RelayError("the user is taking this session back at the terminal")
     if result.get("running"):
         raise RelayError("the session is running; stop it first or wait for it to finish")
     if result.get("unbound") and host == "tui":

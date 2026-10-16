@@ -160,3 +160,31 @@ def test_an_interrupt_ends_the_durable_wait(monkeypatch) -> None:
         set_interrupt(False, waiter.ident)
     assert outcome["decision"]["choice"] == "deny"
     assert wa.list_pending(wa.EXEC) == []
+
+
+def test_a_release_ends_the_wait_as_a_denial_but_an_earlier_answer_stands(monkeypatch) -> None:
+    """A relay worker whose session the terminal takes back stops waiting.
+
+    The release settles the request as a denial with its reason (the command
+    stays unrun, the chat's copy is withdrawn) — unless the chat answered
+    first: the first decision wins.
+    """
+    _durable_env(monkeypatch)
+    monkeypatch.setattr(approval, "_get_approval_timeout", lambda: 0)
+    data = {"command": "rm -rf /tmp/durable-release", "description": "dangerous rm",
+            "pattern_key": "rm -rf", "pattern_keys": ["rm -rf"]}
+    try:
+        approval.set_durable_wait_release(lambda: "taken back at the terminal")
+        decision = approval._await_durable_decision("session-key", data)
+        assert decision == {"resolved": True, "choice": "deny",
+                            "reason": "taken back at the terminal"}
+        assert wa.list_pending(wa.EXEC) == []
+
+        released = threading.Event()
+        approval.set_durable_wait_release(lambda: "late" if released.is_set() else None)
+        worker = _answer_when_staged("once")
+        threading.Timer(0.5, released.set).start()
+        assert approval._await_durable_decision("session-key", data)["choice"] == "once"
+        worker.join(timeout=5)
+    finally:
+        approval.set_durable_wait_release(None)

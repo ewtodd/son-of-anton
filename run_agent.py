@@ -3009,12 +3009,17 @@ class AIAgent:
 
         ``preserve_redirect`` is used only by the conversation loop after it
         intentionally cancels a model request to rebuild that same logical
-        turn. Public hard-stop paths keep the default and clear everything.
+        turn — for a redirect, or for a yield, which then stops the turn at
+        the top of the loop. It returns False (clearing nothing) when neither
+        is pending. Public hard-stop paths keep the default and clear
+        everything except a pending yield, which only the loop consumes.
         """
         _redirect_lock = getattr(self, "_pending_redirect_lock", None)
         if _redirect_lock is not None:
             with _redirect_lock:
-                if preserve_redirect and not self._pending_redirect:
+                if preserve_redirect and not (
+                    self._pending_redirect or getattr(self, "_pending_yield", False)
+                ):
                     return False
                 self._interrupt_requested = False
                 self._interrupt_message = None
@@ -3022,7 +3027,9 @@ class AIAgent:
                 if not preserve_redirect:
                     self._pending_redirect = None
         else:
-            if preserve_redirect and not getattr(self, "_pending_redirect", None):
+            if preserve_redirect and not (
+                getattr(self, "_pending_redirect", None) or getattr(self, "_pending_yield", False)
+            ):
                 return False
             self._interrupt_requested = False
             self._interrupt_message = None
@@ -3185,6 +3192,72 @@ class AIAgent:
             text = self._pending_redirect
             self._pending_redirect = None
         return text
+
+    def request_yield(self) -> None:
+        """Stop the turn at its next step boundary so another process can take it.
+
+        A yield is not an interrupt: a running tool (a terminal command,
+        execute_code, a delegate_task child) finishes and its result is
+        persisted as usual; only a model request in flight is cancelled, and
+        its partial output is discarded. The loop then ends the turn at its
+        top with ``turn_exit_reason == "yielded"`` and persists nothing for the
+        stop itself — no interrupt note, no partial reply — so the transcript
+        ends at the last tool result (or the user message, when no model
+        reply had completed) and ``run_conversation(continue_turn=True)``
+        carries the same turn on elsewhere. Callable from any thread, and
+        before the turn starts: it then stops before the first model call.
+        Used by a headless relay worker when the user takes its session back
+        at the terminal (son_of_anton_cli/relay_worker.py).
+        """
+        cancel_request = False
+        _model_active = getattr(self, "_model_request_active", None)
+        _redirect_lock = getattr(self, "_pending_redirect_lock", None)
+
+        def _arm() -> None:
+            nonlocal cancel_request
+            self._pending_yield = True
+            # Cancel the live request through the same machinery redirect()
+            # uses; the loop's rebuild path discards what it produced.
+            if _model_active is not None and _model_active.is_set() and not self._interrupt_requested:
+                self._interrupt_requested = True
+                self._interrupt_message = None
+                cancel_request = True
+
+        if _redirect_lock is None:
+            _arm()
+        else:
+            with _redirect_lock:
+                _arm()
+        if not cancel_request:
+            return
+        _execution_thread_id = getattr(self, "_execution_thread_id", None)
+        if _execution_thread_id is not None:
+            _set_interrupt(True, _execution_thread_id)
+            self._interrupt_thread_signal_pending = False
+        else:
+            self._interrupt_thread_signal_pending = True
+        _abort_active_request = getattr(self, "_active_request_abort", None)
+        if callable(_abort_active_request):
+            try:
+                _abort_active_request("yield_abort")
+            except Exception:
+                logger.debug("Failed to abort request for yield", exc_info=True)
+
+    def _yield_pending(self) -> bool:
+        """Whether a yield waits for the loop's next step boundary."""
+        return bool(getattr(self, "_pending_yield", False))
+
+    def _take_pending_yield(self) -> bool:
+        """Consume a pending yield at the loop top; True when the turn must stop."""
+        _redirect_lock = getattr(self, "_pending_redirect_lock", None)
+        if _redirect_lock is None:
+            pending = bool(getattr(self, "_pending_yield", False))
+            self._pending_yield = False
+            return pending
+        with _redirect_lock:
+            pending = bool(getattr(self, "_pending_yield", False))
+            self._pending_yield = False
+        return pending
 
     def _drain_pending_steer(self) -> Optional[str]:
         """Return the pending steer text (if any) and clear the slot.
@@ -6770,6 +6843,7 @@ class AIAgent:
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+        continue_turn: bool = False,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.aux_accounting import (
@@ -7148,6 +7222,7 @@ class AIAgent:
                         persist_user_timestamp=persist_user_timestamp,
                         persist_user_display_kind=persist_user_display_kind,
                         persist_user_display_metadata=persist_user_display_metadata,
+                        continue_turn=continue_turn,
                     )
                 finally:
                     # The lease remains held through relay/task finalization, but

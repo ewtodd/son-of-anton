@@ -38,6 +38,7 @@ from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_metadata import append_message
 from agent.turn_context import (
+    NothingToContinue,
     build_turn_context,
     compose_user_api_content,
     reanchor_current_turn_user_idx,
@@ -1583,6 +1584,7 @@ def run_conversation(
     persist_user_timestamp: Optional[float] = None,
     persist_user_display_kind: Optional[str] = None,
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+    continue_turn: bool = False,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -1608,6 +1610,13 @@ def run_conversation(
         persist_user_display_metadata: Optional payload for that event
             (e.g. a delegation's task count).
                 or queuing follow-up prefetch work.
+        continue_turn: Carry on the turn ``conversation_history`` ends in —
+            at a tool result, or a user message with no reply — instead of
+            starting one: ``user_message`` is ignored, nothing is appended,
+            and the model is called on the transcript as it stands (with the
+            session's stored prompt, like any resumed turn). Any other tail
+            returns ``completed=False`` with ``nothing_to_continue`` and no
+            model call. A yielded turn (``request_yield``) is continued so.
 
     Returns:
         Dict: Complete conversation result with final response and message history
@@ -1635,24 +1644,41 @@ def run_conversation(
     # ``build_turn_context``.  It mutates ``agent`` exactly as the inline code
     # did and returns the locals the loop below reads back.  See
     # ``agent/turn_context.py``.
-    _ctx = build_turn_context(
-        agent,
-        user_message,
-        system_message,
-        conversation_history,
-        task_id,
-        stream_callback,
-        persist_user_message,
-        persist_user_timestamp,
-        persist_user_display_kind=persist_user_display_kind,
-        persist_user_display_metadata=persist_user_display_metadata,
-        restore_or_build_system_prompt=_restore_or_build_system_prompt,
-        install_safe_stdio=_install_safe_stdio,
-        sanitize_surrogates=_sanitize_surrogates,
-        summarize_user_message_for_log=_summarize_user_message_for_log,
-        set_session_context=set_session_context,
-        ra=_ra,
-    )
+    try:
+        _ctx = build_turn_context(
+            agent,
+            user_message,
+            system_message,
+            conversation_history,
+            task_id,
+            stream_callback,
+            persist_user_message,
+            persist_user_timestamp,
+            persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
+            continue_turn=continue_turn,
+            restore_or_build_system_prompt=_restore_or_build_system_prompt,
+            install_safe_stdio=_install_safe_stdio,
+            sanitize_surrogates=_sanitize_surrogates,
+            summarize_user_message_for_log=_summarize_user_message_for_log,
+            set_session_context=set_session_context,
+            ra=_ra,
+        )
+    except NothingToContinue as refusal:
+        # Refused before any per-turn state was touched: no model call,
+        # nothing persisted, the transcript as it was.
+        return {
+            "final_response": None,
+            "messages": list(conversation_history or []),
+            "api_calls": 0,
+            "completed": False,
+            "failed": False,
+            "interrupted": False,
+            "yielded": False,
+            "nothing_to_continue": str(refusal),
+            "turn_exit_reason": "nothing_to_continue",
+            "session_id": agent.session_id,
+        }
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
     messages = _ctx.messages
@@ -1740,7 +1766,18 @@ def run_conversation(
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
             break
-        
+
+        # A yield (AIAgent.request_yield) stops here, at a step boundary: the
+        # previous tool batch has finished and its results are in ``messages``,
+        # and no model request is in flight (one that was is cancelled, and its
+        # output discarded, on the way back here). Not an interrupt — nothing is
+        # appended for the stop, so the tail stays a valid point to continue
+        # the same turn from (run_conversation(continue_turn=True)).
+        if agent._take_pending_yield():
+            _turn_exit_reason = "yielded"
+            final_response = None  # the turn has no reply yet; none is invented
+            break
+
         api_call_count += 1
         agent._api_call_count = api_call_count
         agent._touch_activity(f"starting API call #{api_call_count}")
@@ -2471,12 +2508,30 @@ def run_conversation(
 
                 _model_request_active = getattr(agent, "_model_request_active", None)
                 _redirect_lock = getattr(agent, "_pending_redirect_lock", None)
+                # Under the redirect lock, so a yield either lands before this
+                # (no request starts) or sees the request active and cancels it.
+                _yield_before_request = False
                 if _redirect_lock is not None:
                     with _redirect_lock:
-                        if _model_request_active is not None:
+                        if agent._yield_pending():
+                            _yield_before_request = True
+                        elif _model_request_active is not None:
                             _model_request_active.set()
+                elif agent._yield_pending():
+                    _yield_before_request = True
                 elif _model_request_active is not None:
                     _model_request_active.set()
+                if _yield_before_request:
+                    # A yield arrived while this request was being prepared
+                    # (or during a retry backoff): send nothing, go back to
+                    # the loop top, where the turn stops.
+                    if thinking_spinner:
+                        thinking_spinner.stop("")
+                        thinking_spinner = None
+                    if agent.thinking_callback:
+                        agent.thinking_callback("")
+                    _retry.restart_with_redirected_messages = True
+                    break
                 _redirect_crossed_response = False
                 try:
                     response = run_llm_execution_middleware(
@@ -2501,17 +2556,21 @@ def run_conversation(
                             if _model_request_active is not None:
                                 _model_request_active.clear()
                             _redirect_crossed_response = bool(
-                                agent._pending_redirect
+                                agent._pending_redirect or agent._yield_pending()
                             )
                     else:
                         if _model_request_active is not None:
                             _model_request_active.clear()
-                        _redirect_crossed_response = agent._has_pending_redirect()
+                        _redirect_crossed_response = (
+                            agent._has_pending_redirect() or agent._yield_pending()
+                        )
                 if _redirect_crossed_response:
                     # The response and redirect can cross on different threads:
                     # redirect() observed the request as active just before this
                     # call returned. Discard that now-stale response and rebuild
-                    # from the correction rather than silently losing it.
+                    # from the correction rather than silently losing it. A
+                    # yield that crossed it discards it the same way: the
+                    # request was in flight when the yield came.
                     if thinking_spinner:
                         thinking_spinner.stop("")
                         thinking_spinner = None
@@ -2695,7 +2754,7 @@ def run_conversation(
                     sleep_end = time.time() + wait_time
                     _backoff_touch_counter = 0
                     while time.time() < sleep_end:
-                        if agent._interrupt_requested:
+                        if agent._interrupt_requested or agent._yield_pending():
                             # A redirect uses the interrupt machinery to cancel
                             # only the live request. Aborting the retry here
                             # with clear_interrupt() would DESTROY the pending
@@ -3480,12 +3539,14 @@ def run_conversation(
                     thinking_spinner = None
                 if agent.thinking_callback:
                     agent.thinking_callback("")
-                if agent._has_pending_redirect():
+                if agent._has_pending_redirect() or agent._yield_pending():
                     # redirect() deliberately used the interrupt machinery to
                     # cancel only this provider request. Keep its correction
                     # queued, clear the cancellation bit, and let the outer
                     # loop rebuild a clean request tail. Never materialize
-                    # incomplete signed/encrypted reasoning items.
+                    # incomplete signed/encrypted reasoning items. A yield
+                    # cancels the same way and stops at the loop top; the
+                    # partial reply is discarded, never persisted.
                     if agent.clear_interrupt(preserve_redirect=True):
                         _retry.restart_with_redirected_messages = True
                         break
@@ -4055,10 +4116,11 @@ def run_conversation(
                         )
 
                 # Check for interrupt before deciding to retry
-                if agent._interrupt_requested:
+                if agent._interrupt_requested or agent._yield_pending():
                     # Preserve a pending redirect (mid-stream correction): the
                     # user is steering, not stopping. Rebuild the turn from the
                     # correction instead of aborting with a dead-end interrupt.
+                    # A pending yield stops retrying the same way.
                     if agent.clear_interrupt(preserve_redirect=True):
                         _retry.restart_with_redirected_messages = True
                         break
@@ -5300,10 +5362,11 @@ def run_conversation(
                 sleep_end = time.time() + wait_time
                 _backoff_touch_counter = 0
                 while time.time() < sleep_end:
-                    if agent._interrupt_requested:
+                    if agent._interrupt_requested or agent._yield_pending():
                         # Same preserve-redirect rule as the retry-wait above:
                         # a steering correction must survive backoff, not die
-                        # as "Operation interrupted".
+                        # as "Operation interrupted". A yield ends the wait
+                        # the same way and stops the turn at the loop top.
                         if agent.clear_interrupt(preserve_redirect=True):
                             _retry.restart_with_redirected_messages = True
                             break
@@ -6443,6 +6506,8 @@ def run_conversation(
                                     "completed": False,
                                     "interrupted": True,
                                 }
+                            if agent._yield_pending():
+                                break  # the loop top stops the turn
                             time.sleep(0.2)
                             _backoff_touch_counter += 1
                             if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s

@@ -20,12 +20,22 @@ process, prompt, tools and turns; the handoff is plumbing around it:
   clears the host, so the chat's next send starts a headless worker as
   before; a crashed or hung TUI is noticed by its stale heartbeat.
 
+``/pickup`` also takes a session back from a headless worker in the middle of
+its turn: the terminal asks it to yield (``relay_request_yield``), waits while
+the step in progress finishes — a running command completes, a model call is
+cancelled — and, once the worker has exited, picks the session up, reloads
+the transcript the worker wrote, continues that same turn here (no message is
+added) and then runs what the chat sent meanwhile. Ctrl+C while waiting
+withdraws the request and leaves the worker running; ``stop`` from the chat
+remains the hard option.
+
 ``RelayHostMixin`` is mixed into ``son_of_anton_tui.backend.TextualBackend``:
 the TUI is the only interactive host there is.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -40,6 +50,8 @@ RELAY_CHAT_SOURCES = ("signal", "discord", "slack")
 # How often a handed-off TUI refreshes its heartbeat. The gateway treats one
 # older than SessionDB.RELAY_TUI_STALE_S as a TUI that is gone.
 HEARTBEAT_S = 5.0
+# How often a terminal taking a session back checks on the headless worker.
+TAKEOVER_POLL_S = 0.5
 
 _DECISIONS = ("once", "session", "always", "deny")
 
@@ -83,6 +95,97 @@ def _say(text: str) -> None:
     _cli._cprint(text)
 
 
+def running_step(db, session_id: str) -> str:
+    """What a headless worker is doing, read from its transcript's tail.
+
+    The tool calls of a trailing assistant row are running; otherwise no
+    command is, and the worker is at most waiting on the model — a call the
+    yield cancels.
+    """
+    try:
+        tip = db.get_compaction_tip(session_id) or session_id
+        rows = db.get_messages(tip, limit=1, latest=True)
+    except Exception:
+        return ""
+    last = rows[-1] if rows else None
+    if not isinstance(last, dict):
+        return ""
+    calls = last.get("tool_calls") if last.get("role") == "assistant" else None
+    if not isinstance(calls, list) or not calls:
+        return "no command is running; a model call in flight is cancelled"
+    steps = []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        fn = call.get("function") or {}
+        name = fn.get("name") or call.get("name") or "?"
+        detail = ""
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+            if isinstance(args, dict):
+                detail = str(args.get("command") or args.get("goal") or "")
+        except (TypeError, ValueError):
+            pass
+        detail = " ".join(detail.split())
+        if len(detail) > 80:
+            detail = detail[:79] + "…"
+        steps.append(f"{name} ({detail})" if detail else name)
+    return ", ".join(steps)
+
+
+def take_back(
+    db, session_id: str, pid: int, *, say=_say, stop: Optional[threading.Event] = None,
+    poll_s: float = TAKEOVER_POLL_S,
+) -> str:
+    """Take ``session_id`` back from the headless worker running it, if any.
+
+    Asks the worker to yield to this process and waits while the step it is
+    in finishes — bounded only by that step. Returns ``"none"`` (no headless
+    worker runs it: pick it up now), ``"refused"`` (another terminal is
+    taking it back), ``"taken"`` (the worker exited: pick it up and continue
+    its turn) or ``"cancelled"`` (``stop`` was set, or Ctrl+C: the request is
+    withdrawn and the worker carries on — unless it had already committed to
+    yielding, in which case the wait simply goes on to the pickup).
+    """
+    request = db.relay_request_yield(session_id, pid)
+    if not request.get("requested"):
+        if request.get("taker_pid"):
+            say(
+                f"  ✗ Another terminal (pid {request['taker_pid']}) is already "
+                "taking this session back."
+            )
+            return "refused"
+        return "none"
+    stop = stop if stop is not None else threading.Event()
+    worker = request.get("host_pid")
+    say(
+        "  ↙ Taking the session back from its headless relay worker"
+        + (f" (pid {worker})" if worker else "")
+        + ": it stops after the step it is in, and the turn continues here. "
+        "Ctrl+C stops waiting and leaves it running."
+    )
+    shown = None
+    while True:
+        try:
+            binding = db.get_relay_binding(session_id)
+            if binding is None or binding.get("yield_pid") != pid or not binding.get("live"):
+                return "taken"
+            step = running_step(db, session_id)
+            if step and step != shown:
+                say(f"    waiting for the running step to finish: {step}")
+                shown = step
+            stopped = stop.wait(poll_s)
+        except KeyboardInterrupt:
+            stopped = True
+        if not stopped:
+            continue
+        stop.clear()
+        if db.relay_cancel_yield(session_id, pid):
+            say("  Stopped waiting: the worker keeps the session and carries on.")
+            return "cancelled"
+        say("  The worker is already handing over — picking up.")
+
+
 @dataclass
 class RelayHost:
     """This TUI's hosting of one handed-off session."""
@@ -105,6 +208,9 @@ class RelayHostMixin:
         self._relay_local: List[Dict[str, Any]] = []
         self._relay_lock = threading.Lock()
         self._relay_pickup_on_start = False
+        # Set while /pickup waits for a headless worker to yield; setting it
+        # (Ctrl+C) stops the wait.
+        self._relay_wait_stop: Optional[threading.Event] = None
 
     # ------------------------------------------------------------------
     # State the app reads
@@ -170,7 +276,12 @@ class RelayHostMixin:
             _say(f"  ✗ Handoff failed: {exc}")
             return
         if not result.get("bound"):
-            if result.get("host") == "headless":
+            if result.get("yielding"):
+                _say(
+                    f"  ✗ Another terminal (pid {result.get('host_pid')}) is taking "
+                    "this session back from its headless worker."
+                )
+            elif result.get("host") == "headless":
                 _say(
                     f"  ✗ A headless relay worker is running this session (pid "
                     f"{result.get('host_pid')}); hand off once it has finished."
@@ -202,17 +313,32 @@ class RelayHostMixin:
             _say("  ✗ The session database is unavailable.")
             return
         host = self._relay_host
+        target = host.root if host is not None else self.session_id
+        pid = os.getpid()
+        if host is None:
+            # A headless worker mid-turn on it hands the turn over first.
+            self._relay_wait_stop = threading.Event()
+            try:
+                outcome = take_back(db, target, pid, stop=self._relay_wait_stop)
+            except Exception as exc:
+                _say(f"  ✗ Pickup failed: {exc}")
+                return
+            finally:
+                self._relay_wait_stop = None
+            if outcome in ("refused", "cancelled"):
+                return
         try:
-            result = db.relay_pickup(
-                host.root if host is not None else self.session_id,
-                os.getpid(),
-                event=self._relay_session_payload(),
-            )
+            result = db.relay_pickup(target, pid, event=self._relay_session_payload())
         except Exception as exc:
             _say(f"  ✗ Pickup failed: {exc}")
             return
         if not result.get("picked_up"):
-            if result.get("host") == "headless":
+            if result.get("yielding"):
+                _say(
+                    f"  ✗ Another terminal (pid {result.get('host_pid')}) is taking "
+                    "this session back."
+                )
+            elif result.get("host") == "headless":
                 _say(
                     f"  ✗ A headless relay worker is mid-run on this session (pid "
                     f"{result.get('host_pid')}); /pickup once it has finished."
@@ -234,14 +360,90 @@ class RelayHostMixin:
             dict(m, mode="queue", platform=label)
             for m in result.get("messages") or [] if str(m.get("text") or "").strip()
         ]
-        if leftovers:
+        # Taken from a headless run: its transcript moved in that process, and
+        # the turn it was in may still be open — that goes first, here.
+        resume: List[Dict[str, Any]] = []
+        if result.get("took_over"):
+            history = self._relay_reload_transcript(result.get("session_id") or target)
+            if history is not None:
+                from agent.turn_context import continue_turn_tail
+
+                if continue_turn_tail(history)[0] is not None:
+                    resume = [{"mode": "continue", "platform": label}]
+        if resume or leftovers:
             with self._relay_lock:
-                self._relay_local.extend(leftovers)
+                self._relay_local.extend(resume + leftovers)
         _say(
             f"  ↙ Picked up: your {label} chat no longer relays this session and "
             "has been told."
+            + (" The turn it was in continues here." if resume else "")
             + (f" {len(leftovers)} message(s) it sent meanwhile run here next." if leftovers else "")
         )
+
+    def _relay_reload_transcript(self, session_id: str) -> Optional[List[Dict[str, Any]]]:
+        """Load what a headless run wrote to this session; the model history.
+
+        The run was another process: the transcript (and, after a compaction,
+        the session id) moved under this TUI. A compaction continuation is
+        switched to the way /resume does; otherwise the history is reloaded
+        in place — the same stored prompt and tools, so the cache holds.
+        """
+        db = getattr(self, "_session_db", None)
+        if db is None:
+            return None
+        try:
+            tip = db.get_compaction_tip(session_id) or session_id
+            if tip != self.session_id:
+                self._handle_resume_command(f"/resume {tip}")
+                return list(self.conversation_history or [])
+            model_history, _display = db.get_resume_conversations(tip)
+            before = len(self.conversation_history or [])
+            self.conversation_history = [
+                m for m in model_history or [] if m.get("role") != "session_meta"
+            ]
+            self._note_loaded_transcript()
+            try:
+                db.reopen_session(tip)
+            except Exception:
+                pass
+            agent = getattr(self, "agent", None)
+            if agent is not None and hasattr(agent, "_last_flushed_db_idx"):
+                agent._last_flushed_db_idx = len(self.conversation_history)
+            added = len(self.conversation_history) - before
+            if before and added > 0:
+                _say(f"  ↻ Loaded the {added} message(s) the headless run added.")
+            return list(self.conversation_history)
+        except Exception:
+            logger.warning("could not reload the transcript after a takeover", exc_info=True)
+            return None
+
+    def relay_waiting(self) -> bool:
+        """Whether /pickup is waiting for a headless worker to yield."""
+        return getattr(self, "_relay_wait_stop", None) is not None
+
+    def relay_stop_waiting(self) -> bool:
+        """Ctrl+C while /pickup waits: withdraw it; the worker carries on."""
+        stop = getattr(self, "_relay_wait_stop", None)
+        if stop is None:
+            return False
+        stop.set()
+        return True
+
+    def relay_take_continue(self) -> bool:
+        """Claim the turn a takeover left open, if it is next; True once."""
+        with self._relay_lock:
+            local = self._relay_local
+            if local and local[0].get("mode") == "continue":
+                local.pop(0)
+                return True
+        return False
+
+    def relay_requeue(self, rows: List[Dict[str, Any]]) -> None:
+        """Rows the app could not deliver yet go back first, in order."""
+        if not rows:
+            return
+        with self._relay_lock:
+            self._relay_local[:0] = list(rows)
 
     def relay_pickup_at_start(self) -> None:
         """``son-of-anton --pickup``: the resumed session is picked up on launch."""
@@ -487,11 +689,13 @@ def pickup_target(db) -> Optional[Dict[str, Any]]:
     return None
 
 
-def resolve_pickup(*, interactive: bool, poll_s: float = 2.0) -> Optional[str]:
+def resolve_pickup(*, poll_s: float = TAKEOVER_POLL_S) -> Optional[str]:
     """``son-of-anton --pickup``: the session id to resume, or None to stop.
 
-    A headless worker mid-run on it is never killed: the user may wait for it
-    (interactive) or come back later.
+    A headless worker mid-turn on it is asked to yield to this process (the
+    TUI that starts next): it finishes the step it is in, and the TUI picks
+    the session up and continues that turn. Ctrl+C while waiting leaves the
+    worker running; nothing is ever killed.
     """
     from son_of_anton_state import SessionDB
 
@@ -509,28 +713,13 @@ def resolve_pickup(*, interactive: bool, poll_s: float = 2.0) -> Optional[str]:
             )
             return None
         if target.get("live") and target.get("host") == "headless":
-            print(
-                f"Session {name} is mid-run in a headless relay worker "
-                f"(pid {target.get('host_pid')})."
-            )
-            if not interactive:
-                print("Run --pickup again once it has finished.")
-                return None
-            try:
-                answer = input("Wait for it to finish? [Y/n] ").strip().lower()
-            except EOFError:
-                answer = "n"
-            if answer not in ("", "y", "yes"):
-                return None
-            print("Waiting… (Ctrl+C to give up)")
-            try:
-                while True:
-                    binding = db.get_relay_binding(target["session_id"]) or {}
-                    if not (binding.get("live") and binding.get("host") == "headless"):
-                        break
-                    time.sleep(poll_s)
-            except KeyboardInterrupt:
-                print()
+            print(f"Session {name} is mid-turn in a headless relay worker.")
+
+            def _print(text: str) -> None:
+                print(text.strip("\n"), flush=True)
+
+            outcome = take_back(db, target["session_id"], os.getpid(), say=_print, poll_s=poll_s)
+            if outcome in ("refused", "cancelled"):
                 return None
         return db.get_compaction_tip(target["session_id"]) or target["session_id"]
     finally:
@@ -542,9 +731,12 @@ __all__ = [
     "RELAY_CHAT_SOURCES",
     "RelayHost",
     "RelayHostMixin",
+    "TAKEOVER_POLL_S",
     "clamp_decision",
     "pickup_target",
     "platform_of",
     "resolve_pickup",
+    "running_step",
     "single_user_configured",
+    "take_back",
 ]

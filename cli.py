@@ -11494,22 +11494,26 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._restore_modal_input_snapshot()
 
 
-    def chat(self, message, images: list = None) -> Optional[str]:
+    def chat(self, message, images: list = None, *, continue_turn: bool = False) -> Optional[str]:
         """
         Send a message to the agent and get a response.
-        
+
         Handles streaming output, interrupt detection (user typing while agent
         is working), and re-queueing of interrupted messages.
-        
+
         Uses a dedicated _interrupt_queue (separate from _pending_input) to avoid
         race conditions between the process_loop and interrupt monitoring. Messages
         typed while the agent is running go to _interrupt_queue; messages typed while
         idle go to _pending_input.
-        
+
         Args:
             message: The user's message (str or multimodal content list)
             images: Optional list of Path objects for attached images
-            
+            continue_turn: Send nothing: carry on the turn the transcript ends
+                in (a tool result or an unanswered user message) — one a
+                headless relay run handed to this terminal. ``message`` is
+                ignored; see ``run_conversation(continue_turn=True)``.
+
         Returns:
             The agent's response, or None on error
         """
@@ -11518,6 +11522,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # this to True. Early returns (credential refresh failure, etc.)
         # leave it False, which is correct — those aren't user interrupts.
         self._last_turn_interrupted = False
+        if continue_turn:
+            message, images = None, None
 
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
@@ -11662,7 +11668,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)
 
-        if persist_lock is None:
+        if continue_turn:
+            pass  # nothing new to stage: the turn's message is in the transcript
+        elif persist_lock is None:
             _stage_user_message()
         else:
             with persist_lock:
@@ -11714,7 +11722,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # TypeError when an image was attached (agent_message is a list)
                 # and a /model note was queued for the turn.
                 _msn = getattr(self, '_pending_model_switch_note', None)
-                if _msn:
+                if _msn and not continue_turn:  # kept for the next new message
                     agent_message = _prepend_note_to_message(agent_message, _msn)
                     self._pending_model_switch_note = None
                 # Model notes are API-local. Keep
@@ -11730,12 +11738,20 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._pending_one_turn_model_restore = None
                 self._seed_loaded_transcript_mark()
                 try:
-                    result = self.agent.run_conversation(
-                        user_message=agent_message,
-                        conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
-                        task_id=self.session_id,
-                        persist_user_message=_persist_clean_user_message,
-                    )
+                    if continue_turn:
+                        result = self.agent.run_conversation(
+                            user_message=None,
+                            conversation_history=self.conversation_history,
+                            task_id=self.session_id,
+                            continue_turn=True,
+                        )
+                    else:
+                        result = self.agent.run_conversation(
+                            user_message=agent_message,
+                            conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
+                            task_id=self.session_id,
+                            persist_user_message=_persist_clean_user_message,
+                        )
                 except Exception as exc:
                     logging.error("run_conversation raised: %s", exc, exc_info=True)
                     _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
@@ -11914,6 +11930,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             # Get the final response
             response = result.get("final_response", "") if result else ""
+            if result and result.get("nothing_to_continue"):
+                _why = str(result["nothing_to_continue"])
+                _cprint(f"  {_why[:1].upper()}{_why[1:]}.")
 
             # Session titling now runs at TURN START (agent/turn_context.py)
             # from the user's message alone, so it is already done — or in
@@ -12727,18 +12746,34 @@ def main(
                         # Only the callback changes — tools and prompt stay
                         # the TUI's, so the session's prompt cache holds.
                         from son_of_anton_cli.relay_worker import (
+                            YIELDED_EXIT_CODE,
+                            YIELDED_LINE,
                             relay_clarify_callback,
+                            run_relay_turn,
                             take_relay_run_marker,
                         )
 
-                        if take_relay_run_marker():
+                        relay_run = take_relay_run_marker()
+                        if relay_run:
                             cli.agent.clarify_callback = relay_clarify_callback
                         cli._seed_loaded_transcript_mark()
-                        try:
-                            result = cli.agent.run_conversation(
+
+                        def _run_query():
+                            return cli.agent.run_conversation(
                                 user_message=effective_query,
                                 conversation_history=cli.conversation_history,
                             )
+
+                        # A relay run hands its turn over when the user takes
+                        # the session back at a terminal (/pickup).
+                        handed_over = False
+                        try:
+                            if relay_run and cli._session_db is not None:
+                                result, handed_over = run_relay_turn(
+                                    cli.agent, cli._session_db, _run_query,
+                                )
+                            else:
+                                result = _run_query()
                         except KeyboardInterrupt:
                             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
                             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
@@ -12766,6 +12801,8 @@ def main(
                             print(f"Error: {result['error']}", file=sys.stderr)
                         elif response:
                             print(response)
+                        if handed_over:
+                            print(YIELDED_LINE)
 
                         # Session ID goes to stderr so piped stdout is clean.
                         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
@@ -12774,6 +12811,8 @@ def main(
                         _exit_code = 0
                         if isinstance(result, dict) and result.get("failed"):
                             _exit_code = 1
+                        if handed_over:
+                            _exit_code = YIELDED_EXIT_CODE
                         sys.exit(_exit_code)
 
                 # Exit with error code if credentials or agent init fails

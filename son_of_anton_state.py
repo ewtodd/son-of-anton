@@ -11609,11 +11609,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return now - heartbeat < cls.RELAY_HOST_PENDING_GRACE_S
 
     @classmethod
+    def _relay_taker_live(cls, row: Optional[Dict[str, Any]]) -> bool:
+        """A terminal asked to take the session back (/pickup) and still runs.
+
+        Until it picks the session up, nothing else may start a turn on it:
+        the headless worker hands its turn to that terminal.
+        """
+        return bool(row and row.get("yield_pid")) and cls._relay_pid_alive(row.get("yield_pid"))
+
+    @classmethod
     def _relay_row(cls, row, now: float) -> Optional[Dict[str, Any]]:
         if row is None:
             return None
         out = dict(row)
         out["live"] = cls._relay_host_live(out, now)
+        out["yielding"] = cls._relay_taker_live(out)
         return out
 
     def relay_session_root(self, session_id: str) -> str:
@@ -11723,6 +11733,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchone()
             if row is None:
                 return {"unbound": False, "dropped": 0}
+            if self._relay_taker_live(dict(row)):
+                return {"unbound": False, "yielding": True}
             if row["host"] != "tui" and self._relay_host_live(dict(row), now):
                 return {"unbound": False, "running": True}
             dropped = conn.execute(
@@ -11791,6 +11803,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         waits — ``{"action": "queued", "position": n, "host": ...}`` (1 =
         next); a TUI host claims it on its next poll. ``mode='now'`` asks a
         TUI host to steer its running turn with it instead of queueing.
+        While a terminal is taking the session back (``yielding``) the
+        message waits for it too, whether or not the worker has exited yet:
+        it runs at the terminal after the turn is continued there.
         """
         now = time.time()
 
@@ -11810,16 +11825,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             row = dict(conn.execute(
                 "SELECT * FROM relay_bindings WHERE session_id = ?", (root,)
             ).fetchone())
-            if self._relay_host_live(row, now):
+            yielding = self._relay_taker_live(row)
+            if yielding or self._relay_host_live(row, now):
                 position = conn.execute(
                     "SELECT COUNT(*) FROM relay_inbox "
                     "WHERE session_id = ? AND consumed_at IS NULL AND mode != 'stop'",
                     (root,),
                 ).fetchone()[0]
-                return {
+                out = {
                     "action": "queued", "session_id": root, "position": int(position),
                     "host": row["host"],
                 }
+                if yielding:
+                    out["yielding"] = True
+                return out
             conn.execute(
                 "UPDATE relay_bindings SET host = ?, host_pid = NULL, "
                 "host_heartbeat = ?, updated_at = ? WHERE session_id = ?",
@@ -11862,18 +11881,32 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``chat_key`` is the chat the session is bound to now. A TUI host that
         went away (``host_pid`` its pid) ends the same way: what it left
         queued becomes a headless run.
+
+        While a terminal is taking the session back (``yield_pid`` runs):
+        ``{"action": "yielded"}`` and nothing changes — the queue waits for
+        its pickup (``relay_pickup``), which also clears the dead host. A
+        taker that is gone is forgotten and the run ends as above.
         """
         now = time.time()
 
         def _do(conn):
             root = self._session_turn_lease_key_on_conn(conn, session_id)
             row = conn.execute(
-                "SELECT chat_key, host, host_pid FROM relay_bindings WHERE session_id = ?",
+                "SELECT chat_key, host, host_pid, yield_pid FROM relay_bindings "
+                "WHERE session_id = ?",
                 (root,),
             ).fetchone()
             if row is None or not row["host"] or row["host_pid"] != int(host_pid):
                 return {"action": "none", "session_id": root}
             out = {"session_id": root, "chat_key": row["chat_key"]}
+            if row["yield_pid"]:
+                if self._relay_pid_alive(row["yield_pid"]):
+                    return {**out, "action": "yielded"}
+                conn.execute(
+                    "UPDATE relay_bindings SET yield_pid = NULL, yield_at = NULL, "
+                    "yielded_at = NULL WHERE session_id = ?",
+                    (root,),
+                )
             messages = self._relay_claim_on_conn(conn, root, now)
             if messages:
                 conn.execute(
@@ -11984,6 +12017,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if row is not None:
                 current = dict(row)
                 ours = current.get("host") == "tui" and current.get("host_pid") == int(host_pid)
+                taker = current.get("yield_pid")
+                if taker and taker != int(host_pid) and self._relay_taker_live(current):
+                    return {
+                        "bound": False, "session_id": root, "yielding": True,
+                        "host": current.get("host"), "host_pid": taker,
+                    }
                 if not ours and self._relay_host_live(current, now):
                     return {
                         "bound": False, "session_id": root,
@@ -11994,7 +12033,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "host_heartbeat, created_at, updated_at) VALUES (?, ?, 'tui', ?, ?, ?, ?) "
                 "ON CONFLICT(session_id) DO UPDATE SET chat_key = excluded.chat_key, "
                 "host = 'tui', host_pid = excluded.host_pid, "
-                "host_heartbeat = excluded.host_heartbeat, updated_at = excluded.updated_at",
+                "host_heartbeat = excluded.host_heartbeat, updated_at = excluded.updated_at, "
+                "yield_pid = NULL, yield_at = NULL, yielded_at = NULL",
                 (root, chat_key, int(host_pid), now, now, now),
             )
             if event is not None:
@@ -12084,7 +12124,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         the TUI to run — never dropped), unbind, and queue the ``pickup``
         event to the chat it was bound to. ``{"picked_up": False, "host":
         ...}`` while another live host runs it; ``{"picked_up": False}``
-        when it was not relayed at all.
+        when it was not relayed at all. While another terminal is taking it
+        back (``relay_request_yield``) only that one may pick it up.
+
+        ``took_over`` says the session comes from a headless worker — one
+        that yielded to this terminal or that ended without finishing — so
+        its last turn may still be open: the caller continues it when the
+        transcript ends at a tool result or an unanswered user message.
         """
         now = time.time()
 
@@ -12097,6 +12143,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 return {"picked_up": False, "session_id": root}
             current = dict(row)
             ours = current.get("host") == "tui" and current.get("host_pid") == int(host_pid)
+            taker = current.get("yield_pid")
+            if taker and taker != int(host_pid) and self._relay_taker_live(current):
+                return {
+                    "picked_up": False, "session_id": root, "yielding": True,
+                    "host": current.get("host"), "host_pid": taker,
+                }
             if not ours and self._relay_host_live(current, now):
                 return {
                     "picked_up": False, "session_id": root,
@@ -12111,9 +12163,130 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return {
                 "picked_up": True, "session_id": root,
                 "chat_key": current["chat_key"], "messages": messages,
+                "took_over": current.get("host") == "headless" or taker == int(host_pid),
             }
 
         return self._execute_write(_do)
+
+    # ── Relay: a terminal takes a session back from a headless worker ─────
+    #
+    # /pickup (or son-of-anton --pickup) while a headless worker is mid-turn
+    # asks it to yield: the terminal records itself as ``yield_pid``; the
+    # worker polls for that, stops at its next step boundary (a running
+    # command finishes; a model call in flight is cancelled), commits with
+    # ``relay_confirm_yield`` and exits. The terminal then picks the session
+    # up and continues the same turn. While the terminal waits nothing else
+    # may start a turn on the session (sends queue for it, handoffs and other
+    # pickups are refused), and a terminal that gives up can withdraw only
+    # until the worker has committed — the two are one transaction each.
+
+    def relay_request_yield(self, session_id: str, taker_pid: int) -> Dict[str, Any]:
+        """Ask the headless worker running ``session_id`` to hand it to ``taker_pid``.
+
+        ``{"requested": True, "host_pid": worker}``; ``{"requested": False,
+        "taker_pid": ...}`` while another terminal is already taking it; and
+        ``{"requested": False, "live": False}`` when no headless worker is
+        running it (nothing to wait for: an ordinary pickup).
+        """
+        now = time.time()
+
+        def _do(conn):
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT * FROM relay_bindings WHERE session_id = ?", (root,)
+            ).fetchone()
+            if row is None:
+                return {"requested": False, "session_id": root, "live": False}
+            current = dict(row)
+            taker = current.get("yield_pid")
+            if taker and taker != int(taker_pid) and self._relay_taker_live(current):
+                return {"requested": False, "session_id": root, "taker_pid": taker}
+            if current.get("host") != "headless" or not self._relay_host_live(current, now):
+                return {"requested": False, "session_id": root, "live": False}
+            if taker != int(taker_pid):
+                conn.execute(
+                    "UPDATE relay_bindings SET yield_pid = ?, yield_at = ?, yielded_at = NULL "
+                    "WHERE session_id = ?",
+                    (int(taker_pid), now, root),
+                )
+            return {"requested": True, "session_id": root, "host_pid": current.get("host_pid")}
+
+        return self._execute_write(_do)
+
+    def relay_cancel_yield(self, session_id: str, taker_pid: int) -> bool:
+        """The terminal stopped waiting: withdraw its request; the worker carries on.
+
+        False when it can no longer be withdrawn — the worker committed to
+        yielding or has already exited — and the caller should pick the
+        session up after all (or the request is not this terminal's).
+        """
+        now = time.time()
+
+        def _do(conn):
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT * FROM relay_bindings WHERE session_id = ?", (root,)
+            ).fetchone()
+            if row is None or row["yield_pid"] != int(taker_pid):
+                return False
+            if row["yielded_at"] or not self._relay_host_live(dict(row), now):
+                return False
+            return conn.execute(
+                "UPDATE relay_bindings SET yield_pid = NULL, yield_at = NULL "
+                "WHERE session_id = ? AND yield_pid = ? AND yielded_at IS NULL",
+                (root, int(taker_pid)),
+            ).rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    def relay_yield_requested(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """The worker's poll: the live terminal asking for this session, if any.
+
+        ``{"taker_pid", "at"}`` — ``at`` identifies the request, so a worker
+        acts on each one once — or None. One small read.
+        """
+        if not session_id:
+            return None
+        with self._read_ctx() as conn:
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT yield_pid, yield_at FROM relay_bindings WHERE session_id = ?",
+                (root,),
+            ).fetchone()
+        if row is None or not row["yield_pid"] or not self._relay_pid_alive(row["yield_pid"]):
+            return None
+        return {"taker_pid": int(row["yield_pid"]), "at": row["yield_at"]}
+
+    def relay_confirm_yield(self, session_id: str) -> bool:
+        """The worker, ending its turn: hand the session over if a terminal still asks.
+
+        True commits it — the request can no longer be withdrawn, and the
+        worker exits for the terminal to continue. False means no live
+        terminal asks (never did, gave up, or died — a dead one's request is
+        cleared), and the worker carries on with its turn or finishes.
+        """
+        now = time.time()
+
+        def _do(conn):
+            root = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT yield_pid FROM relay_bindings WHERE session_id = ?", (root,)
+            ).fetchone()
+            if row is None or not row["yield_pid"]:
+                return False
+            if not self._relay_pid_alive(row["yield_pid"]):
+                conn.execute(
+                    "UPDATE relay_bindings SET yield_pid = NULL, yield_at = NULL, "
+                    "yielded_at = NULL WHERE session_id = ?",
+                    (root,),
+                )
+                return False
+            conn.execute(
+                "UPDATE relay_bindings SET yielded_at = ? WHERE session_id = ?", (now, root),
+            )
+            return True
+
+        return bool(self._execute_write(_do))
 
     def add_relay_event(
         self, session_id: str, host_pid: int, kind: str, payload: Optional[Dict[str, Any]] = None,

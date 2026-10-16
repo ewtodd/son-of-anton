@@ -460,8 +460,15 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
     # ------------------------------------------------------------------
     # Turn helpers used by the app
     # ------------------------------------------------------------------
-    def run_turn(self, message: Any, images: Optional[list] = None) -> Optional[str]:
-        """Run one chat turn on the calling (worker) thread."""
+    def run_turn(
+        self, message: Any, images: Optional[list] = None, *, continue_turn: bool = False,
+    ) -> Optional[str]:
+        """Run one chat turn on the calling (worker) thread.
+
+        ``continue_turn`` runs no new message: it carries on the turn the
+        transcript ends in — one a headless relay run handed back to this
+        terminal (``/pickup``) — and streams like any turn.
+        """
         self._agent_running = True
         self._interactive_turn = True
         try:
@@ -471,7 +478,10 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
         self.emit("refresh")
         reply: Optional[str] = None
         try:
-            reply = self.chat(message, images=images)
+            if continue_turn:
+                reply = self.chat(None, continue_turn=True)
+            else:
+                reply = self.chat(message, images=images)
             return reply
         finally:
             # A drained delegation result is acknowledged only now, and only

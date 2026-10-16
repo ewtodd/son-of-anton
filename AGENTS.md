@@ -400,6 +400,29 @@ change. `/pickup` and `son-of-anton --pickup` unbind; TUI exit only clears the h
 gone TUI's queue falls back to headless runs (`sweep_tui_hosts`). The relay tool never
 kills a TUI host: `stop` asks it to interrupt its turn.
 
+`/pickup` while a *headless* worker is mid-turn takes the turn over (schema v30:
+`relay_bindings.yield_pid` / `yield_at` / `yielded_at`). The terminal records itself as
+the taker (`relay_request_yield`); while it lives, nothing else starts a turn on the
+session (sends queue for it; handoff, detach and other pickups are refused). The worker
+(`son_of_anton_cli/relay_worker.py:run_relay_turn`) polls for that (~1s) and calls
+`AIAgent.request_yield()`: a **yield is not an interrupt**. Running tools finish and
+their results persist; a model request in flight is cancelled through the redirect
+machinery and its output discarded; the loop stops at its top with
+`turn_exit_reason="yielded"` and the finalizer adds nothing (no interrupt note, no
+partial text, no closing row) — the tail stays a tool result or the unanswered user
+message. A durable approval wait is released as a denial with a reason (the command
+stays unrun, the chat's copy is withdrawn). The worker then commits
+(`relay_confirm_yield`, one transaction against the taker's `relay_cancel_yield`) and
+exits 75 (`[relay: handed the turn to the terminal]`); if the taker gave up or died
+first, the worker continues its own turn. The gateway's exit handling leaves the queue to
+the live taker and reports nothing (`relay_finish_run` → `yielded`); the taker unbinds
+(`relay_pickup` → `took_over`), reloads the transcript and continues the turn with
+`run_conversation(continue_turn=True)` — no user message is appended, nothing is
+injected into the existing one (no plugin/memory/RAG context), so the request replays the
+stored rows, prompt and tools byte for byte — then runs the leftovers in order. Ctrl+C
+while waiting withdraws the request. Compaction in progress is a step like a tool: it
+finishes, then the yield lands.
+
 ---
 
 ## Physics Mode (autophysicist/)

@@ -90,6 +90,12 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
+    # A yield (AIAgent.request_yield) handed the turn to another process at a
+    # step boundary. It is not over and not interrupted: nothing is added to
+    # close it, no reply is invented, and it is not reported as an abnormal
+    # ending — the taker continues it from this transcript.
+    yielded = str(_turn_exit_reason) == "yielded"
+
     budget_exhausted = (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
@@ -378,7 +384,7 @@ def finalize_turn(
         agent.session_id or "none",
     )
 
-    if _last_msg_role == "tool" and not interrupted:
+    if _last_msg_role == "tool" and not interrupted and not yielded:
         # Agent was mid-work — this is the "just stops" case.
         logger.warning(
             "Turn ended with pending tool result (agent may appear stuck). "
@@ -429,7 +435,8 @@ def finalize_turn(
     #     an empty response, the "(empty)" terminal sentinel, or a
     #     suspiciously short partial fragment with no terminating
     #     punctuation (e.g. "The").  A real short answer keeps its text.
-    if not interrupted:
+    #   - A yielded turn is not over: it has no reply yet, by design.
+    if not interrupted and not yielded:
         try:
             if agent._turn_completion_explainer_enabled():
                 _stripped = (final_response or "").strip()
@@ -586,6 +593,7 @@ def finalize_turn(
         "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
+        "yielded": yielded,
         "response_transformed": _response_transformed,
         "pre_transform_response": _pre_transform_response,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
