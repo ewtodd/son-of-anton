@@ -1,7 +1,7 @@
 # nix/nixosModules.nix — the NixOS module for son-of-anton
 #
-# This module shares its options, its renderers for config.toml, .env and
-# documents, and its state setup with the Home Manager module
+# This module shares its options, its renderers for config.toml and .env,
+# and its state setup with the Home Manager module
 # (nix/homeManagerModules.nix). The shared code is in nix/moduleCommon.nix.
 # This file holds only the parts that need root: service users, state
 # directories, and the systemd services.
@@ -30,7 +30,6 @@
     {
       config,
       lib,
-      options,
       pkgs,
       ...
     }:
@@ -46,12 +45,7 @@
 
       # ── One instance's option set ─────────────────────────────────────────
       instanceModule =
-        {
-          name,
-          config,
-          options,
-          ...
-        }:
+        { name, ... }:
         {
           options =
             common.sharedOptions {
@@ -61,8 +55,7 @@
               # default that reads its own submodule's config is an infinite
               # recursion (the config cannot resolve before the options it is
               # defined by). Instances that relocate state set these
-              # explicitly, and keeping the default config-free preserves the
-              # `highestPrio` check workspaceFilesAssertions relies on.
+              # explicitly.
               defaultWorkingDirectory = "/var/lib/son-of-anton-${name}/workspace";
               defaultWorkingDirectoryText = lib.literalExpression ''"/var/lib/son-of-anton-''${name}/workspace"'';
             }
@@ -220,36 +213,8 @@
                     Git credentials for this instance. See `git.github`.
                   '';
                 };
-
-                # Assertions are built inside the submodule because
-                # workspaceFilesAssertions inspects option METADATA
-                # (options.workingDirectory.highestPrio), which has no
-                # addressable path under attrsOf submodule. Lifted to the
-                # top level by the config block below.
-                _assertions = mkOption {
-                  type = types.listOf types.attrs;
-                  internal = true;
-                  default = [ ];
-                };
               }
             );
-
-          config = {
-            settings = lib.mkIf (config.mcpServers != { }) {
-              mcp_servers = common.mcpServersToConfig config.mcpServers;
-            };
-
-            _assertions =
-              common.pluginNameAssertions {
-                cfg = config;
-                optionPath = "services.son-of-anton.instances.${name}";
-              }
-              ++ common.workspaceFilesAssertions {
-                cfg = config;
-                opt = options.workingDirectory;
-                optionPath = "services.son-of-anton.instances.${name}";
-              };
-          };
         };
 
       # ── Per-instance renderers ────────────────────────────────────────────
@@ -275,8 +240,8 @@
         Group = inst.group;
         WorkingDirectory = inst.workingDirectory;
 
-        Restart = inst.restart;
-        RestartSec = inst.restartSec;
+        Restart = "always";
+        RestartSec = 5;
 
         # Shared-state deployments want group-writable files so interactive
         # users in the service group can reach them. A managedAccount is the
@@ -375,9 +340,7 @@
       # infinite recursion. Keying each attribute individually keeps the
       # structure fixed and lets only the VALUES depend on instances.
       config = {
-        assertions =
-          lib.concatMap (inst: inst._assertions) (lib.attrValues enabledInstances)
-          ++ (
+        assertions = (
             let
               users = lib.mapAttrsToList (_: i: i.user) enabledInstances;
               homes = lib.mapAttrsToList (_: i: i.son-of-antonHome) enabledInstances;
@@ -530,19 +493,14 @@
                     cfg = inst;
                     son-of-antonHome = inst.son-of-antonHome;
                     workingDirectory = inst.workingDirectory;
-                    configWorkingDirectory = inst.workingDirectory;
                     owner = "${inst.user}:${inst.group}";
                     stateDirs = common.stateSubdirs;
                     modes = {
                       config = configTomlMode inst;
                       env = envMode inst;
                       managed = "0644";
-                      auth = "0600";
-                      document = envMode inst;
                     };
                   }}
-
-                  chown -h ${inst.user}:${inst.group} ${inst.son-of-antonHome}/plugins/nix-managed-* 2>/dev/null || true
                 ''
             )
           ) enabledInstances

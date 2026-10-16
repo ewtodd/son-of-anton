@@ -346,34 +346,18 @@ def _parse_service_tier_config(raw: str) -> str | None:
 
 def load_cli_config() -> Dict[str, Any]:
     """
-    Load CLI configuration from config files.
-    
-    Config lookup order:
-    1. ~/.son-of-anton/config.toml (user config - preferred)
-    2. ./cli-config.toml (project config - fallback)
-    
+    Load CLI configuration from ~/.son-of-anton/config.toml over built-in defaults.
+
     Environment variables take precedence over config file values.
     Returns default values if no config file exists.
 
     If SON_OF_ANTON_IGNORE_USER_CONFIG=1 is set (via ``son-of-anton chat --ignore-user-config``),
-    the user config at ``~/.son-of-anton/config.toml`` is skipped entirely and only the
-    built-in defaults plus the project-level ``cli-config.toml`` (if any) are used.
+    the user config is skipped entirely and only the built-in defaults are used.
     Credentials in ``.env`` are still loaded — this flag only suppresses
     behavioral/config settings.
     """
-    # Check user config first ({SON_OF_ANTON_HOME}/config.toml)
-    user_config_path = _son_of_anton_home / 'config.toml'
-    project_config_path = Path(__file__).parent / 'cli-config.toml'
-
-    # --ignore-user-config: force-skip the user config.toml (still honor project
-    # config as a fallback so defaults stay sensible).
+    config_path = _son_of_anton_home / 'config.toml'
     ignore_user_config = os.environ.get("SON_OF_ANTON_IGNORE_USER_CONFIG") == "1"
-
-    # Use user config if it exists, otherwise project config
-    if user_config_path.exists() and not ignore_user_config:
-        config_path = user_config_path
-    else:
-        config_path = project_config_path
 
     # Default configuration
     defaults = {
@@ -483,7 +467,7 @@ def load_cli_config() -> Dict[str, Any]:
     _file_has_terminal_config = False
 
     # Load from file if exists
-    if config_path.exists():
+    if config_path.exists() and not ignore_user_config:
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 from son_of_anton_cli.config import _normalize_root_model_keys
@@ -537,7 +521,7 @@ def load_cli_config() -> Dict[str, Any]:
             ):
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
         except Exception as e:
-            logger.warning("Failed to load cli-config.toml: %s", e)
+            logger.warning("Failed to load config.toml: %s", e)
 
     # Expand ${ENV_VAR} references in config values before bridging to env vars.
     from son_of_anton_cli.config import _expand_env_vars
@@ -3745,12 +3729,8 @@ def _get_plugin_cmd_handler_names() -> set:
 
 def save_config_value(key_path: str, value: any) -> bool:
     """
-    Save a value to the active config file at the specified key path.
-    
-    Respects the same lookup order as load_cli_config():
-    1. ~/.son-of-anton/config.toml (user config - preferred, used if it exists)
-    2. ./cli-config.toml (project config - fallback)
-    
+    Save a value to ~/.son-of-anton/config.toml at the specified key path.
+
     Args:
         key_path: Dot-separated path like "agent.system_prompt"
         value: Value to save
@@ -3758,19 +3738,8 @@ def save_config_value(key_path: str, value: any) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    # Runtime persistence ALWAYS targets the user's SON_OF_ANTON_HOME config.toml,
-    # creating it if needed. Resolve SON_OF_ANTON_HOME live (not the import-time
-    # _son_of_anton_home constant) so profile switches and test isolation land right.
-    #
-    # We deliberately do NOT fall back to the repo's project cli-config.toml:
-    # that file is a shipped default/template, and most config readers
-    # (load_config → get_son_of_anton_home()/config.toml, including
-    # load_wake_word_config) never read it. Writing a user setting there means
-    # the reader never sees it. This was the "wake-word ear reverts to disabled
-    # after restart" bug — the toggle's persist wrote to cli-config.toml (which
-    # exists in the checkout) while startup read SON_OF_ANTON_HOME/config.toml, so the
-    # setting silently vanished every restart on any install whose
-    # SON_OF_ANTON_HOME/config.toml didn't exist yet.
+    # Resolve SON_OF_ANTON_HOME live (not the import-time _son_of_anton_home
+    # constant) so test isolation lands right.
     config_path = get_son_of_anton_home() / 'config.toml'
     
     try:

@@ -4,15 +4,13 @@
 # a wrapper that exposes the bundled plugins and locales.
 #
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
-# Users override via:
-#   pkgs.son-of-anton.override { extraPythonPackages = [...]; }
-#   pkgs.son-of-anton.override { extraDependencyGroups = [ "supermemory" ]; }
+# Override the tools on the wrapper's PATH with
+#   pkgs.son-of-anton.override { extraPackages = [...]; }
 {
   lib,
   stdenv,
   makeWrapper,
   callPackage,
-  python312,
   ripgrep,
   git,
   openssh,
@@ -28,9 +26,6 @@
   uv2nix,
   pyproject-nix,
   pyproject-build-systems,
-  # Overridable parameters
-  extraPythonPackages ? [ ],
-  extraDependencyGroups ? [ ],
   # More tools on the wrapper's PATH (and the dev shell's), e.g. the language
   # servers an editor config enables: the agent's LSP uses whatever is here.
   extraPackages ? [ ],
@@ -72,13 +67,12 @@ let
   };
 
   mkSonOfAntonVenv =
-    extraDependencyGroups:
+    dependency-groups:
     callPackage ./python.nix {
-      inherit uv2nix pyproject-nix pyproject-build-systems pythonSrc;
-      dependency-groups = [ "all" ] ++ extraDependencyGroups;
+      inherit uv2nix pyproject-nix pyproject-build-systems pythonSrc dependency-groups;
     };
 
-  sonOfAntonVenv = (mkSonOfAntonVenv extraDependencyGroups).venv;
+  sonOfAntonVenv = (mkSonOfAntonVenv [ "all" ]).venv;
 
   # Import bundled plugins. Keeping them out of the Python site-packages
   # keeps import semantics identical to a dev checkout — the loader reads
@@ -112,15 +106,6 @@ let
   ++ extraPackages;
 
   runtimePath = lib.makeBinPath runtimeDeps;
-
-  sitePackagesPath = python312.sitePackages;
-
-  # Walk propagatedBuildInputs to include transitive Python deps in PYTHONPATH.
-  # Without this, a plugin listing e.g. requests as a dep would fail at runtime
-  # if requests isn't already in the sealed uv2nix venv.
-  allExtraPythonPackages = python312.pkgs.requiredPythonModules extraPythonPackages;
-
-  pythonPath = lib.makeSearchPath sitePackagesPath allExtraPythonPackages;
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "son-of-anton";
@@ -145,18 +130,14 @@ stdenv.mkDerivation (finalAttrs: {
       --set SON_OF_ANTON_BUNDLED_PLUGINS $out/share/son-of-anton/plugins \
       --set SON_OF_ANTON_BUNDLED_LOCALES $out/share/son-of-anton/locales \
       --set-default SON_OF_ANTON_BIN $out/bin/son-of-anton \
-      --set SON_OF_ANTON_PYTHON ${sonOfAntonVenv}/bin/python3 \
-    ${
-      lib.optionalString (extraPythonPackages != [ ])
-      "--suffix PYTHONPATH : \"${pythonPath}\""
-    }
+      --set SON_OF_ANTON_PYTHON ${sonOfAntonVenv}/bin/python3
 
     runHook postInstall
   '';
 
   passthru =
     let
-      devPython = (mkSonOfAntonVenv (extraDependencyGroups ++ [ "dev" ])).editableVenv;
+      devPython = (mkSonOfAntonVenv [ "all" "dev" ]).editableVenv;
     in
     {
       inherit sonOfAntonVenv;
