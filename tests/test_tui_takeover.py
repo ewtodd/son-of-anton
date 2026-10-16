@@ -11,7 +11,6 @@ was running.
 from __future__ import annotations
 
 import asyncio
-import os
 import subprocess
 import sys
 import time

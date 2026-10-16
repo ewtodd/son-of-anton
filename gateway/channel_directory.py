@@ -269,15 +269,6 @@ def load_directory() -> Dict[str, Any]:
         return base
 
 
-def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
-    """Return the channel ``type`` string (e.g. ``"group"``) for *chat_id*, or *None* if unknown."""
-    directory = load_directory()
-    for ch in directory.get("platforms", {}).get(platform_name, []):
-        if ch.get("id") == chat_id:
-            return ch.get("type")
-    return None
-
-
 def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     """
     Resolve a human-friendly channel name to a numeric ID.

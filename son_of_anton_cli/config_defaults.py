@@ -1336,14 +1336,6 @@ DEFAULT_CONFIG = {
         # "subtext" = "-# " lines; override per-platform via
         # display.platforms.<platform>.reasoning_style.
         "reasoning_style": "code",
-        # Auto-delete system-notice replies (e.g. "✨ New session started!",
-        # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
-        # that support message deletion (other platforms ignore and leave the
-        # message in place).  Only affects slash-command
-        # replies wrapped with gateway.platforms.base.EphemeralReply — agent
-        # responses and content messages are never touched.  Default 0
-        # (disabled) preserves prior behavior.
-        "ephemeral_system_ttl": 0,
         # Per-platform display/streaming overrides. Each key is a gateway
         # platform ("signal", …) mapping to a dict of display settings that
         # override the global value for that platform only. A setting left

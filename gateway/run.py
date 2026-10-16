@@ -7037,7 +7037,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     )
                     _adapter = self._adapter_for_source(event.source)
                     if _adapter and _reply:
-                        _text, _eph_ttl = _adapter._unwrap_ephemeral(_reply)
+                        _text = _adapter._unwrap_ephemeral(_reply)
                         if _text:
                             _anchor = self._reply_anchor_for_event(event)
                             await _adapter._send_with_retry(
