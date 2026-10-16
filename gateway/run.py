@@ -9784,12 +9784,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if not systemd_run or not systemctl:
                 return
 
-            try:
-                from son_of_anton_cli.gateway import get_service_name
-
-                service_name = get_service_name()
-            except Exception:
-                service_name = "son-of-anton-gateway"
+            service_name = "son-of-anton-gateway"
 
             current_pid = os.getpid()
 

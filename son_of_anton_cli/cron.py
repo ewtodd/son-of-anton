@@ -52,8 +52,7 @@ def _warn_if_gateway_not_running() -> None:
         return
 
     print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
-    print(color("     Start it with: son-of-anton gateway install", Colors.DIM))
-    print(color("                    sudo son-of-anton gateway install --system  # Linux servers", Colors.DIM))
+    print(color("     Enable the service in the NixOS / Home Manager module, or: son-of-anton gateway run", Colors.DIM))
     print(color("     Check status:  son-of-anton cron status", Colors.DIM))
 
 
