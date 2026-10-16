@@ -759,19 +759,6 @@ def render_notice_line(notice) -> str:
     return str(getattr(notice, "text", "") or "").strip()
 
 
-async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
-    """Route a status message through adapter.send_or_update_status when supported.
-
-    Issue #30045: adapters that implement send_or_update_status edit the
-    previous bubble for the same status_key instead of appending a new
-    one. Adapters without the method fall back to plain send.
-    """
-    sender = getattr(adapter, "send_or_update_status", None)
-    if callable(sender):
-        return await sender(chat_id, status_key, content, metadata=metadata)
-    return await adapter.send(chat_id, content, metadata=metadata)
-
-
 def _approval_send_outcome(future, timeout: float) -> str:
     """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
 
@@ -3704,588 +3691,18 @@ class TurnRunner:
         self._ctx = ctx
 
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
-        """Callback invoked by agent on tool lifecycle events."""
+        """Callback invoked by agent on tool lifecycle events.
+
+        Signal cannot edit messages, so tool progress never reaches the chat;
+        only ``display.tool_progress = "log"`` records tool calls, to
+        tool_calls.log.
+        """
         ctx = self._ctx
-        # "log" mode: append tool.started lines to the log queue and stay
-        # silent in chat. Handled before the progress_queue guard because
-        # log mode runs without a chat progress queue.
         if ctx.log_queue is not None:
             if event_type == "tool.started" and tool_name and tool_name != "_thinking":
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 preview_str = f' "{preview}"' if preview else ""
                 ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
-            if not ctx.progress_queue:
-                return
-        if not ctx.progress_queue or not ctx._run_still_current():
-            return
-
-        # First-touch onboarding: the first time a tool takes longer than
-        # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
-        # (progress_mode == "all"), append a one-time hint suggesting
-        # /verbose.  We only fire when (a) the user hasn't seen the hint
-        # before and (b) /verbose is actually usable on this platform
-        # (gateway gate must be open).  The CLI has its own trigger.
-        if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
-            try:
-                duration = kwargs.get("duration") or 0
-                if duration >= ctx._LONG_TOOL_THRESHOLD_S and ctx.progress_mode == "all":
-                    from agent.onboarding import (
-                        TOOL_PROGRESS_FLAG,
-                        is_seen,
-                        mark_seen,
-                        tool_progress_hint_gateway,
-                    )
-                    _cfg = _load_gateway_config()
-                    gate_on = is_truthy_value(
-                        cfg_get(_cfg, "display", "tool_progress_command"),
-                        default=False,
-                    )
-                    if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
-                        ctx.long_tool_hint_fired[0] = True
-                        ctx.progress_queue.put(tool_progress_hint_gateway())
-                        mark_seen(_son_of_anton_home / "config.toml", TOOL_PROGRESS_FLAG)
-            except Exception as _hint_err:
-                logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
-            return
-
-        # "_thinking" is assistant scratch text between tool calls.  It
-        # is never ordinary tool progress: only relay it when the platform
-        # explicitly opted into thinking_progress.  Handle both legacy
-        # callback shapes: ("_thinking", text) and
-        # ("reasoning.available", "_thinking", text, ...).
-        if event_type == "_thinking" or tool_name == "_thinking":
-            if not ctx._thinking_enabled:
-                return
-            thinking_text = preview if tool_name == "_thinking" else tool_name
-            msg = thinking_text if thinking_text else None
-            if msg:
-                ctx.progress_queue.put(msg)
-            return
-
-        # If tool_progress is off, only _thinking passes through (above).
-        # Regular tool calls are suppressed.
-        if not ctx.tool_progress_enabled:
-            return
-
-        # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
-        if event_type not in {"tool.started",}:
-            return
-
-        # Never render a progress bubble for the clarify tool.  The
-        # adapter's send_clarify IS the user-facing rendering (interactive
-        # buttons or the numbered-text fallback), so a progress bubble is
-        # pure duplication — and in verbose mode it dumps the raw
-        # tool-call args JSON ({"question": ..., "choices": [...]}) into
-        # the chat.  Because the progress queue drains on a background
-        # task, that raw JSON typically lands right underneath the
-        # rendered prompt (#52374).
-        if tool_name == "clarify":
-            return
-
-        # Suppress tool-progress bubbles once the user has sent `stop`.
-        # When the LLM response carries N parallel tool calls, the agent
-        # fires N "tool.started" events back-to-back before checking for
-        # interrupts — without this guard, a late `stop` still renders
-        # all N as 🔍 bubbles, making the interrupt feel ignored.
-        # (agent lives in run_sync's scope; agent_holder[0] is the shared
-        # handle across nested scopes — see line ~9607.)
-        try:
-            _agent_for_interrupt = ctx.agent_holder[0] if ctx.agent_holder else None
-            if _agent_for_interrupt is not None and getattr(
-                _agent_for_interrupt, "is_interrupted", False
-            ):
-                return
-        except Exception:
-            pass
-
-        # "new" mode: only report when tool changes
-        if ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]:
-            return
-        ctx.last_tool[0] = tool_name
-
-        # Build progress message with primary argument preview
-
-        # Markdown-capable platforms render a terminal command as a fenced
-        # code block instead of the compact `terminal: "cmd…"` preview.
-        # Gated on the adapter's ``supports_code_blocks`` capability so
-        # plain-text platforms keep the short line.  No language tag is
-        # emitted — Slack mrkdwn renders the tag as a literal first code
-        # line ("bash"), and a bare fence renders correctly everywhere
-        # that supports blocks.
-        #
-        # Verbose mode shows the FULL command.  Non-verbose ("all"/"new")
-        # modes still wrap in a fence but truncate to a single line capped
-        # at ``tool_preview_length`` (default 40) so a long or multi-line
-        # command doesn't render as a huge block — matching the budget the
-        # non-terminal preview path already applies (#42634).
-        _code_block_full = None
-        _code_block_short = None
-        try:
-            _progress_adapter = self._runner._adapter_for_source(ctx.source)
-        except Exception:
-            _progress_adapter = None
-        if (
-            getattr(_progress_adapter, "supports_code_blocks", False)
-            and tool_name == "terminal"
-            and isinstance(args, dict)
-            and isinstance(args.get("command"), str)
-            and args["command"].strip()
-        ):
-            from agent.display import get_tool_preview_max_len
-            _cmd_full = args["command"].rstrip()
-            # Consecutive terminal calls: drop the repeated
-            # "💻 terminal" header so back-to-back commands render as
-            # adjacent code blocks under a single header.
-            _block_header = (
-                "" if ctx.last_was_terminal_block[0] else f"{tool_name}\n"
-            )
-            _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
-            # Single-line, capped preview for non-verbose modes.
-            _pl = get_tool_preview_max_len()
-            _cap = _pl if _pl > 0 else 40
-            _lines = _cmd_full.splitlines()
-            _cmd_short = _lines[0] if _lines else _cmd_full
-            _multiline = len(_lines) > 1
-            if len(_cmd_short) > _cap:
-                _cmd_short = _cmd_short[:_cap - 3] + "..."
-            elif _multiline:
-                _cmd_short = _cmd_short + " ..."
-            _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
-
-        # Verbose mode: show detailed arguments, respects tool_preview_length
-        if ctx.progress_mode == "verbose":
-            if _code_block_full is not None:
-                ctx.last_was_terminal_block[0] = True
-                ctx.progress_queue.put(_code_block_full)
-                return
-            ctx.last_was_terminal_block[0] = False
-            if args:
-                from agent.display import get_tool_preview_max_len
-                _pl = get_tool_preview_max_len()
-                args_str = json.dumps(args, ensure_ascii=False, default=str)
-                # When tool_preview_length is 0 (default), don't truncate
-                # in verbose mode — the user explicitly asked for full
-                # detail.  Platform message-length limits handle the rest.
-                if _pl > 0 and len(args_str) > _pl:
-                    args_str = args_str[:_pl - 3] + "..."
-                msg = f"{tool_name}({list(args.keys())})\n{args_str}"
-            elif preview:
-                msg = f"{tool_name}: \"{preview}\""
-            else:
-                msg = f"{tool_name}..."
-            ctx.progress_queue.put(msg)
-            return
-
-        # "all" / "new" modes: short preview, respects tool_preview_length
-        # config (defaults to 40 chars when unset to keep gateway messages
-        # compact — unlike CLI spinners, these persist as permanent messages).
-        # Terminal commands on markdown platforms get a single-line capped
-        # fenced block (built above) instead of the truncated preview.
-        if _code_block_short is not None:
-            msg = _code_block_short
-            ctx.last_was_terminal_block[0] = True
-        elif preview:
-            from agent.display import (
-                get_tool_preview_max_len,
-                get_tool_verb,
-                prepare_tool_preview,
-                tool_verb_connector,
-                verb_drops_preview,
-            )
-            _pl = get_tool_preview_max_len()
-            _cap = _pl if _pl > 0 else 40
-            _prepared_preview = prepare_tool_preview(
-                tool_name,
-                args,
-                fallback=preview,
-                max_len=_cap,
-            )
-            if _progress_adapter is not None:
-                preview = _progress_adapter.format_tool_preview(_prepared_preview)
-            else:
-                preview = _prepared_preview.text
-            # Friendly labels: render a human-phrased line for built-in
-            # tools ("🔍 Searching the web for ...") by prefixing the verb
-            # onto the preview the callback already computed (so the
-            # command/url/query is preserved).  Custom/plugin/MCP tools
-            # have no verb and fall back to the raw "tool_name: ..." form.
-            _verb = get_tool_verb(tool_name)
-            if _verb:
-                if verb_drops_preview(tool_name):
-                    msg = _verb
-                else:
-                    msg = f"{_verb}{tool_verb_connector(tool_name)}{preview}"
-            else:
-                msg = f"{tool_name}: \"{preview}\""
-            ctx.last_was_terminal_block[0] = False
-        else:
-            msg = f"{tool_name}..."
-            ctx.last_was_terminal_block[0] = False
-
-        # Dedup: collapse consecutive identical progress messages.
-        # Common with execute_code where models iterate with the same
-        # code (same boilerplate imports → identical previews).
-        if msg == ctx.last_progress_msg[0]:
-            ctx.repeat_count[0] += 1
-            # Update the last line in progress_lines with a counter
-            # via a special "dedup" queue message.
-            ctx.progress_queue.put(("__dedup__", msg, ctx.repeat_count[0]))
-            return
-        ctx.last_progress_msg[0] = msg
-        ctx.repeat_count[0] = 0
-
-        ctx.progress_queue.put(msg)
-
-    async def send_progress_messages(self):
-        ctx = self._ctx
-        if not ctx.progress_queue:
-            return
-
-        adapter = self._runner._adapter_for_source(ctx.source)
-        if not adapter:
-            return
-
-        # Skip tool progress for platforms that don't support message
-        # editing — each progress update
-        # would become a separate message bubble, which is noisy.
-        # getattr, not attribute access: duck-typed adapters (test fakes,
-        # minimal plugin adapters) may not define edit_message at all —
-        # "missing" means the same thing as "base no-op": can't edit.
-        _adapter_edit = getattr(type(adapter), "edit_message", None)
-        if _adapter_edit is None or _adapter_edit is BasePlatformAdapter.edit_message:
-            while not ctx.progress_queue.empty():
-                try:
-                    ctx.progress_queue.get_nowait()
-                except Exception:
-                    break
-            return
-
-        progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
-        progress_msg_id = None   # ID of the current progress message to edit
-        can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
-        _last_edit_ts = 0.0      # Throttle edits to avoid platform flood control
-        _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
-
-        _progress_len_fn = (
-            adapter.message_len_fn
-            if isinstance(adapter, BasePlatformAdapter)
-            else len
-        )
-        try:
-            _raw_progress_limit = int(getattr(adapter, "MAX_MESSAGE_LENGTH", 4000) or 4000)
-        except Exception:
-            _raw_progress_limit = 4000
-        # Per-chat resolution (relay adapter fronting N platforms): the cap
-        # and length unit follow the chat's underlying platform. Native
-        # adapters return their scalar/property unchanged.
-        if isinstance(adapter, BasePlatformAdapter):
-            try:
-                _raw_progress_limit = int(
-                    adapter.max_message_length_for_chat(ctx.source.chat_id) or 4000
-                )
-                _progress_len_fn = adapter.message_len_fn_for_chat(ctx.source.chat_id)
-            except Exception:
-                pass
-        # Leave a little room for platform quirks / formatting.  For tiny
-        # test adapters keep the limit usable instead of clamping to 500+.
-        _PROGRESS_TEXT_LIMIT = max(
-            1,
-            _raw_progress_limit - (64 if _raw_progress_limit > 128 else 0),
-        )
-
-        # Detect whether the adapter's edit_message accepts metadata so
-        # overflow edits preserve topic/thread routing (#27487).
-        _edit_accepts_metadata = False
-        if ctx._progress_metadata:
-            try:
-                _edit_params = inspect.signature(adapter.edit_message).parameters
-                _edit_accepts_metadata = (
-                    "metadata" in _edit_params
-                    or any(
-                        param.kind is inspect.Parameter.VAR_KEYWORD
-                        for param in _edit_params.values()
-                    )
-                )
-            except (TypeError, ValueError):
-                _edit_accepts_metadata = False
-
-        async def _edit_progress_message(message_id: str, content: str):
-            kwargs = {
-                "chat_id": ctx.source.chat_id,
-                "message_id": message_id,
-                "content": content,
-            }
-            if getattr(adapter, "REQUIRES_EDIT_FINALIZE", False):
-                kwargs["finalize"] = True
-            if _edit_accepts_metadata:
-                kwargs["metadata"] = ctx._progress_metadata
-            return await adapter.edit_message(**kwargs)
-
-        def _progress_text(lines: list) -> str:
-            return "\n".join(str(line) for line in lines)
-
-        def _split_progress_groups(lines: list) -> list[list]:
-            """Partition progress lines into platform-sized editable bubbles."""
-            groups: list[list] = []
-            current: list = []
-            for line in lines:
-                candidate = current + [line]
-                if current and _progress_len_fn(_progress_text(candidate)) > _PROGRESS_TEXT_LIMIT:
-                    groups.append(current)
-                    current = [line]
-                else:
-                    current = candidate
-            if current:
-                groups.append(current)
-            return groups
-
-        def _track_progress_result(result) -> None:
-            if (
-                ctx._cleanup_progress
-                and getattr(result, "success", False)
-                and getattr(result, "message_id", None)
-            ):
-                ctx._cleanup_msg_ids.append(str(result.message_id))
-
-        async def _send_progress_text(text: str):
-            result = await adapter.send(
-                chat_id=ctx.source.chat_id,
-                content=text,
-                metadata=ctx._progress_metadata,
-            )
-            _track_progress_result(result)
-            return result
-
-        async def _roll_progress_overflow_if_needed() -> bool:
-            """Start fresh editable progress bubbles before a bubble exceeds limit.
-
-                Returns True when it delivered/split the current buffer, or when
-                a transient edit failure left the buffer and message identity
-                intact for a later retry.  In either case the caller should skip
-                the normal send/edit path for this tick.
-                """
-            nonlocal progress_msg_id, progress_lines, can_edit
-            if not progress_lines or not can_edit:
-                return False
-            groups = _split_progress_groups(progress_lines)
-            if len(groups) <= 1:
-                return False
-
-            first_text = _progress_text(groups[0])
-            if progress_msg_id is not None:
-                result = await _edit_progress_message(progress_msg_id, first_text)
-                if not result.success:
-                    if getattr(result, "retryable", False):
-                        logger.debug(
-                            "[%s] Transient overflow edit failure — keeping can_edit=True",
-                            adapter.name,
-                        )
-                        return True
-                    can_edit = False
-                    # Fall back to the existing non-edit behavior below.
-                    return False
-            else:
-                result = await _send_progress_text(first_text)
-                if result.success and result.message_id:
-                    progress_msg_id = result.message_id
-
-            for group in groups[1:]:
-                result = await _send_progress_text(_progress_text(group))
-                if result.success and result.message_id:
-                    progress_msg_id = result.message_id
-
-            # The newest continuation is now the only mutable bubble.  Keep
-            # just its lines so subsequent edits update it instead of
-            # replaying the full historical transcript into new messages.
-            progress_lines = groups[-1]
-            return True
-
-        while True:
-            try:
-                if not ctx._run_still_current():
-                    while not ctx.progress_queue.empty():
-                        try:
-                            ctx.progress_queue.get_nowait()
-                        except Exception:
-                            break
-                    return
-
-                raw = ctx.progress_queue.get_nowait()
-
-                # Drain silently when interrupted: events queued in the
-                # window between tool parse and interrupt processing
-                # should not render as bubbles.  The "⚡ Interrupting
-                # current task" message is sent separately and is the
-                # last progress-flavored bubble the user should see.
-                try:
-                    _agent_for_interrupt = ctx.agent_holder[0] if ctx.agent_holder else None
-                    if _agent_for_interrupt is not None and getattr(
-                        _agent_for_interrupt, "is_interrupted", False
-                    ):
-                        # Drop this event and continue draining.
-                        await asyncio.sleep(0)
-                        continue
-                except Exception:
-                    pass
-
-                # Handle dedup messages: update last line with repeat counter
-                if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
-                    _, base_msg, count = raw
-                    if progress_lines:
-                        progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                    msg = progress_lines[-1] if progress_lines else base_msg
-                elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
-                    # Content bubble just landed on the platform — close off
-                    # the current tool-progress bubble so the next tool
-                    # starts a fresh bubble below the content. Without this,
-                    # tool lines keep editing the ORIGINAL progress message
-                    # above the new content, making the chat appear out of
-                    # order. Mirrors GatewayStreamConsumer.on_segment_break
-                    # on the content side. (Issue: tool + content
-                    # linearization regression after PR #7885.)
-                    progress_msg_id = None
-                    progress_lines = []
-                    ctx.last_progress_msg[0] = None
-                    ctx.repeat_count[0] = 0
-                    continue
-                else:
-                    msg = raw
-                    progress_lines.append(msg)
-
-                if await _roll_progress_overflow_if_needed():
-                    _last_edit_ts = time.monotonic()
-                    await asyncio.sleep(0.3)
-                    if ctx._run_still_current():
-                        await adapter.send_typing(ctx.source.chat_id, metadata=ctx._progress_metadata)
-                    continue
-
-                # Throttle edits: batch rapid tool updates into fewer
-                # API calls to avoid hitting platform flood control.
-                # (grammY auto-retry pattern: proactively rate-limit
-                # instead of reacting to 429s.)
-                _now = time.monotonic()
-                _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
-                if _remaining > 0:
-                    # Wait out the throttle interval, then loop back to
-                    # drain any additional queued messages before sending
-                    # a single batched edit.
-                    await asyncio.sleep(_remaining)
-                    continue
-
-                if not ctx._run_still_current():
-                    return
-
-                if can_edit and progress_msg_id is not None:
-                    # Try to edit the existing progress message
-                    full_text = "\n".join(progress_lines)
-                    result = await _edit_progress_message(progress_msg_id, full_text)
-                    if not result.success:
-                        _err = (getattr(result, "error", "") or "").lower()
-                        # Transient network errors (ConnectError, timeouts)
-                        # must not permanently disable progress-message
-                        # editing — the next cycle can catch up.  Only
-                        # permanent failures (flood control, message not
-                        # found, permissions) should set can_edit = False.
-                        if getattr(result, "retryable", False):
-                            logger.debug(
-                                "[%s] Transient edit failure — keeping can_edit=True",
-                                adapter.name,
-                            )
-                            continue
-                        if "flood" in _err or "retry after" in _err:
-                            # Flood control hit — backoff but keep editing.
-                            # Only disable edits for non-recoverable errors.
-                            logger.info(
-                                "[%s] Progress edit flood control, backing off",
-                                adapter.name,
-                            )
-                            _last_edit_ts = time.monotonic()
-                        else:
-                            can_edit = False
-                        _flood_result = await adapter.send(
-                            chat_id=ctx.source.chat_id,
-                            content=msg,
-                            metadata=ctx._progress_metadata,
-                        )
-                        if (
-                            ctx._cleanup_progress
-                            and getattr(_flood_result, "success", False)
-                            and getattr(_flood_result, "message_id", None)
-                        ):
-                            ctx._cleanup_msg_ids.append(str(_flood_result.message_id))
-                else:
-                    if can_edit:
-                        # First tool: send all accumulated text as new message
-                        full_text = "\n".join(progress_lines)
-                        result = await adapter.send(
-                            chat_id=ctx.source.chat_id,
-                            content=full_text,
-                            metadata=ctx._progress_metadata,
-                        )
-                    else:
-                        # Editing unsupported: send just this line
-                        result = await adapter.send(
-                            chat_id=ctx.source.chat_id,
-                            content=msg,
-                            metadata=ctx._progress_metadata,
-                        )
-                    if result.success and result.message_id:
-                        progress_msg_id = result.message_id
-                        if ctx._cleanup_progress:
-                            ctx._cleanup_msg_ids.append(str(result.message_id))
-
-                _last_edit_ts = time.monotonic()
-
-                # Restore typing indicator
-                await asyncio.sleep(0.3)
-                if ctx._run_still_current():
-                    await adapter.send_typing(ctx.source.chat_id, metadata=ctx._progress_metadata)
-
-            except queue.Empty:
-                await asyncio.sleep(0.3)
-            except asyncio.CancelledError:
-                # Drain remaining queued messages
-                while not ctx.progress_queue.empty():
-                    try:
-                        raw = ctx.progress_queue.get_nowait()
-                        if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
-                            _, base_msg, count = raw
-                            if progress_lines:
-                                progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                                await _roll_progress_overflow_if_needed()
-                        elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
-                            # Content-bubble marker during drain: close off
-                            # the current progress bubble and start a fresh
-                            # one for any tool lines that arrived after.
-                            await _roll_progress_overflow_if_needed()
-                            if can_edit and progress_lines and progress_msg_id:
-                                _pending_text = _progress_text(progress_lines)
-                                try:
-                                    await _edit_progress_message(progress_msg_id, _pending_text)
-                                except Exception:
-                                    pass
-                            progress_msg_id = None
-                            progress_lines = []
-                            ctx.last_progress_msg[0] = None
-                            ctx.repeat_count[0] = 0
-                        else:
-                            progress_lines.append(raw)
-                            await _roll_progress_overflow_if_needed()
-                    except Exception:
-                        break
-                # Final edit with all remaining tools (only if editing works)
-                if can_edit and progress_lines and progress_msg_id:
-                    await _roll_progress_overflow_if_needed()
-                if can_edit and progress_lines and progress_msg_id:
-                    full_text = _progress_text(progress_lines)
-                    try:
-                        await _edit_progress_message(progress_msg_id, full_text)
-                    except Exception:
-                        pass
-                return
-            except Exception as e:
-                logger.error("Progress message error: %s", e)
-                await asyncio.sleep(1)
 
     def _step_callback_sync(self, iteration: int, prev_tools: list) -> None:
         ctx = self._ctx
@@ -4366,24 +3783,16 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
-        _fut = safe_schedule_threadsafe(
-            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared_message, ctx._status_thread_metadata),
+        safe_schedule_threadsafe(
+            ctx._status_adapter.send(
+                ctx._status_chat_id,
+                prepared_message,
+                metadata=ctx._status_thread_metadata,
+            ),
             ctx._loop_for_step,
             logger=logger,
             log_message=f"status_callback ({event_type}) scheduling error",
         )
-        if _fut is None:
-            return
-        if ctx._cleanup_progress:
-            def _track_status_id(fut) -> None:
-                try:
-                    res = fut.result()
-                except Exception:
-                    return
-                mid = getattr(res, "message_id", None)
-                if getattr(res, "success", False) and mid:
-                    ctx._cleanup_msg_ids.append(str(mid))
-            _fut.add_done_callback(_track_status_id)
 
     def run_sync(self):
         ctx = self._ctx
@@ -4498,11 +3907,6 @@ class TurnRunner:
                         chat_id=ctx.source.chat_id,
                         config=_consumer_cfg,
                         metadata=ctx._status_thread_metadata,
-                        on_new_message=(
-                            (lambda: ctx.progress_queue.put(("__reset__",)))
-                            if ctx.progress_queue is not None
-                            else None
-                        ),
                         on_before_finalize=_pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id,
                         run_still_current=ctx._run_still_current,
@@ -4817,21 +4221,8 @@ class TurnRunner:
 
         # Per-message state — callbacks and reasoning config change every
         # turn and must not be baked into the cached agent constructor.
-        # Gate on needs_progress_queue (tool_progress OR thinking_progress)
-        # rather than tool_progress alone: the progress_callback also relays
-        # _thinking assistant scratch text, which is gated on
-        # thinking_progress and is intentionally independent of tool
-        # progress. With the old `tool_progress_enabled`-only gate, a user
-        # who set thinking_progress:true but kept tool_progress:off got a
-        # None callback — so _thinking scratch bubbles never relayed even
-        # though the progress queue was created for them.
         agent.tool_progress_callback = (
-            ctx.progress_callback
-            if (
-                ctx.needs_progress_queue
-                or ctx.log_mode_enabled
-            )
-            else None
+            ctx.progress_callback if ctx.log_mode_enabled else None
         )
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = _stream_delta_cb
@@ -5706,7 +5097,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     _gateway_started_at: float = 0.0
     _shutdown_watchdog_done: Optional["threading.Event"] = None
     _platform_lock_takeover_on_start: bool = False
-    _reconnect_watcher_task: Optional["asyncio.Task"] = None
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -5913,10 +5303,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
-
-        # Strong refs to detached fatal-error handler tasks (see
-        # _handle_adapter_fatal_error) so the event loop can't GC them mid-run.
-        self._fatal_handler_tasks: set = set()
 
         # Pending /update prompt flags live on
         # SessionState.persistent.update_prompt_pending.
@@ -6646,248 +6032,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 
-    async def _handle_reaction_event(self, ctx: Dict[str, Any]) -> None:
-        """Fan a normalised platform reaction event out to the HookRegistry.
-
-        Adapters call this via ``set_reaction_handler`` for every
-        platform-native reaction event they surface. The adapter-supplied
-        ``event_name`` ("reaction:added" / "reaction:removed") becomes the
-        hook event so user hooks subscribe with the same name scheme as the
-        existing ``agent:*`` family. Errors never block the adapter's event
-        loop — the hook contract is non-blocking.
-        """
-        event_name = str(ctx.get("event_name") or "reaction:added")
-        try:
-            await self.hooks.emit(event_name, ctx)
-        except Exception:
-            logger.debug("[Gateway] reaction hook emit failed", exc_info=True)
-
-    async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
-        """React to an adapter failure after startup.
-
-        If the error is retryable (e.g. network blip, DNS failure), queue the
-        platform for background reconnection instead of giving up permanently.
-
-        The notification arrives on the failing adapter's own polling task,
-        and the disconnect inside the handler can cancel that task mid-flight:
-        disconnect()'s current-task guard misses it because
-        _safe_adapter_disconnect runs the close in a wrapper task. A cancelled
-        handler dies between the fatal log and the reconnect queue, silently
-        stranding the platform (observed 2026-07-21: an adapter popped from
-        adapters but never queued after a travel network outage). Run the real
-        work in a detached task that adapter teardown cannot cancel.
-        """
-        tasks = getattr(self, "_fatal_handler_tasks", None)
-        if tasks is None:
-            tasks = self._fatal_handler_tasks = set()
-        task = asyncio.create_task(self._handle_adapter_fatal_error_detached(adapter))
-        tasks.add(task)
-        task.add_done_callback(tasks.discard)
-        # Await so callers that expect completion still get it — but through
-        # shield(): Task.cancel() on the caller also cancels the future it is
-        # awaiting (_fut_waiter), so a plain `await task` would tunnel the
-        # cancellation straight into the "detached" task. shield() absorbs
-        # it: the caller sees CancelledError, the handler runs to completion.
-        await asyncio.shield(task)
-
-    def _queue_retryable_fatal_platform(self, adapter: BasePlatformAdapter) -> bool:
-        """Queue a retryable fatal adapter for background reconnection.
-
-        Returns True when the platform was newly queued. Idempotent if already
-        queued. Must not await: callers invoke this *before* any disconnect
-        await so a wedged close cannot strand the platform (#80598).
-        """
-        if not adapter.fatal_error_retryable:
-            return False
-        platform_config = self.config.platforms.get(adapter.platform)
-        if not platform_config or adapter.platform in self._failed_platforms:
-            return False
-        self._failed_platforms[adapter.platform] = {
-            "config": platform_config,
-            "attempts": 0,
-            "next_retry": time.monotonic(),
-            "queued_at": time.monotonic(),
-        }
-        logger.info(
-            "%s queued for background reconnection",
-            adapter.platform.value,
-        )
-        # Ensure the reconnect watcher is alive — if it died (e.g. from
-        # exhausting its restart budget), respawn it so queued platforms
-        # are not permanently stranded (#70344).
-        self._ensure_reconnect_watcher_running()
-        return True
-
-    async def _handle_adapter_fatal_error_detached(
-        self, adapter: BasePlatformAdapter
-    ) -> None:
-        """Run the fatal handler; if the platform still ends up stranded
-        (not reconnected, not queued, not intentionally disabled), exit the
-        gateway with failure so the service manager restarts it instead of
-        leaving a silent partial outage."""
-        try:
-            # Outer hard deadline (#80598): even with queue-before-disconnect,
-            # a hang anywhere in the impl (status write side effects, detach
-            # races, etc.) must not leave this task wedged forever — the
-            # stranded check in ``finally`` only runs when we return.
-            timeout = self._adapter_disconnect_timeout_secs()
-            if timeout <= 0:
-                await self._handle_adapter_fatal_error_impl(adapter)
-            else:
-                # Disconnect budget plus a small overhead for queue/status
-                # bookkeeping. Keep the additive proportional so tests that
-                # shrink the disconnect timeout still finish promptly.
-                outer = timeout + min(2.0, max(0.05, timeout))
-                completed = await self._await_adapter_cleanup_with_timeout(
-                    self._handle_adapter_fatal_error_impl(adapter),
-                    outer,
-                )
-                if not completed:
-                    logger.error(
-                        "Fatal-error handling for %s timed out after %.1fs; "
-                        "ensuring reconnect queue is populated",
-                        adapter.platform.value,
-                        outer,
-                    )
-                    self._queue_retryable_fatal_platform(adapter)
-        except asyncio.CancelledError:
-            # Best-effort queue before re-raising: a cancelled fatal handler
-            # must not strand a retryable platform (#80598).
-            try:
-                self._queue_retryable_fatal_platform(adapter)
-            except Exception:
-                logger.debug(
-                    "Failed to queue %s after fatal-handler cancellation",
-                    adapter.platform.value,
-                    exc_info=True,
-                )
-            raise
-        except Exception:
-            logger.exception(
-                "Fatal-error handling for %s raised unexpectedly",
-                adapter.platform.value,
-            )
-            # Best-effort queue so an unexpected raise mid-handler cannot
-            # leave a retryable platform permanently deaf (#80598).
-            try:
-                self._queue_retryable_fatal_platform(adapter)
-            except Exception:
-                logger.debug(
-                    "Failed to queue %s after fatal-handler exception",
-                    adapter.platform.value,
-                    exc_info=True,
-                )
-        finally:
-            platform = adapter.platform
-            shutdown_event = getattr(self, "_shutdown_event", None)
-            stranded = (
-                adapter.fatal_error_retryable
-                and platform not in self.adapters
-                and platform not in getattr(self, "_failed_platforms", {})
-                and not (shutdown_event is not None and shutdown_event.is_set())
-            )
-            if stranded:
-                logger.error(
-                    "%s adapter was lost without entering the reconnection "
-                    "queue; exiting gateway so the service manager restarts it.",
-                    platform.value,
-                )
-                self._exit_reason = (
-                    f"{platform.value} adapter lost without reconnection queue"
-                )
-                self._exit_with_failure = True
-                await self.stop()
-
-    async def _handle_adapter_fatal_error_impl(self, adapter: BasePlatformAdapter) -> None:
-        # Snapshot the current owner of this platform slot before doing
-        # anything else. If it's neither this adapter nor empty, a different
-        # adapter has already taken over (e.g. this is a delayed notification
-        # from a background retry chain that raced with, and lost to, a
-        # reconnect that already succeeded). Acting on a stale notification
-        # would overwrite an already-healthy platform's runtime status and
-        # incorrectly re-queue it for reconnection, so bail out before any of
-        # that happens.
-        existing = self.adapters.get(adapter.platform)
-        if existing is not None and existing is not adapter:
-            logger.debug(
-                "Ignoring stale fatal error from a superseded %s adapter instance: %s",
-                adapter.platform.value,
-                adapter.fatal_error_code or "unknown",
-            )
-            return
-
-        logger.error(
-            "Fatal %s adapter error (%s): %s",
-            adapter.platform.value,
-            adapter.fatal_error_code or "unknown",
-            adapter.fatal_error_message or "unknown error",
-        )
-        # Phase 7 Unit 7d-B: a relay credential revoked by opt-out is not an
-        # error to retry — render it as a clean "disabled" state, not red
-        # "fatal"/"retrying". (The code is set non-retryable, so it also drops
-        # out of the reconnect queue below.)
-        if adapter.fatal_error_code == "relay_disabled":
-            platform_state = "disabled"
-        elif adapter.fatal_error_retryable:
-            platform_state = "retrying"
-        else:
-            platform_state = "fatal"
-        self._update_platform_runtime_status(
-            adapter.platform.value,
-            platform_state=platform_state,
-            error_code=adapter.fatal_error_code,
-            error_message=adapter.fatal_error_message,
-        )
-
-        if existing is adapter:
-            # Claim this adapter for teardown before awaiting disconnect() —
-            # a second fatal-error notification for the same adapter (e.g.
-            # from a concurrent recovery path) would otherwise still see
-            # itself as "existing" during the await below and disconnect()
-            # the same object twice.
-            self.adapters.pop(adapter.platform, None)
-            self.delivery_router.adapters = self.adapters
-
-        # Queue retryable failures BEFORE any disconnect await (#80598).
-        # A half-dead transport can wedge native close() (or swallow
-        # CancelledError inside it) so the previous "disconnect then queue"
-        # order left platforms permanently deaf inside a live process even
-        # after the network recovered. Populate the queue first so the
-        # reconnect watcher always has work; teardown is best-effort after.
-        self._queue_retryable_fatal_platform(adapter)
-
-        if existing is adapter:
-            # A half-closed transport can wedge an adapter's native close()
-            # indefinitely. Reuse the shutdown-path timeout so this runtime
-            # fatal handler always returns to the stay-alive / stranded path.
-            await self._safe_adapter_disconnect(adapter, adapter.platform)
-
-        if not self.adapters and not self._failed_platforms:
-            self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
-            if adapter.fatal_error_retryable:
-                self._exit_with_failure = True
-                logger.error("No connected messaging platforms remain. Shutting down gateway for service restart.")
-            else:
-                logger.error("No connected messaging platforms remain. Shutting down gateway cleanly.")
-            await self.stop()
-        elif not self.adapters and self._failed_platforms:
-            # All platforms are down and queued for background reconnection.
-            # Keep the gateway alive so:
-            #   • cron jobs still run
-            #   • the reconnect watcher can recover platforms when the
-            #     underlying problem clears (proxy comes back, user runs
-            #     `son-of-anton slack`, etc.)
-            # We used to exit-with-failure here to trigger systemd restart,
-            # but that converted a transient outage into a restart loop and
-            # killed in-process state every time. The reconnect watcher
-            # already handles long-running recovery — let it do its job.
-            logger.warning(
-                "No connected messaging platforms remain, but %d platform(s) "
-                "queued for reconnection — gateway staying alive, watcher will "
-                "retry in background.",
-                len(self._failed_platforms),
-            )
-
     def _request_clean_exit(self, reason: str) -> None:
         self._exit_cleanly = True
         self._exit_reason = reason
@@ -6898,11 +6042,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
     def _active_work_count(self) -> int:
         """All agent work the gateway must expose and drain as one total."""
-        return (
-            self._running_agent_count()
-            + self._active_cron_job_count()
-            + self._active_stateless_run_count()
-        )
+        return self._running_agent_count() + self._active_cron_job_count()
 
     def _active_cron_job_count(self) -> int:
         """Count of cron jobs currently executing, from the cron scheduler's
@@ -6923,15 +6063,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return len(get_running_job_ids())
         except Exception:
             return 0
-
-    def _active_stateless_run_count(self) -> int:
-        """Count API-server work that is outside ``_running_agents``.
-
-        The former API-server platform is removed; this always returns 0.
-        Kept as a method so shutdown-drain callers stay unchanged.
-        """
-        return 0
-
 
     def _status_action_label(self) -> str:
         return "restart" if self._restart_requested else "shutdown"
@@ -8062,26 +7193,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         snapshot = self._snapshot_running_agents()
         last_active_count = self._running_agent_count()
         last_cron_count = self._active_cron_job_count()
-        last_api_count = self._active_stateless_run_count()
         last_status_at = 0.0
 
         def _maybe_update_status(force: bool = False) -> None:
-            nonlocal last_active_count, last_cron_count, last_api_count, last_status_at
+            nonlocal last_active_count, last_cron_count, last_status_at
             now = asyncio.get_running_loop().time()
             active_count = self._running_agent_count()
             cron_count = self._active_cron_job_count()
-            api_count = self._active_stateless_run_count()
             if (
                 force
                 or active_count != last_active_count
                 or cron_count != last_cron_count
-                or api_count != last_api_count
                 or (now - last_status_at) >= 1.0
             ):
                 self._update_runtime_status("draining")
                 last_active_count = active_count
                 last_cron_count = cron_count
-                last_api_count = api_count
                 last_status_at = now
 
         # Cron jobs run on the scheduler's own thread pool, outside
@@ -8089,8 +7216,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # same wait/timeout this method already applies to chat sessions,
         # or a cron job's tool work gets killed with zero warning the
         # instant it's the only active thing running (#60432).
-        # API-server / desk sessions have the same structural gap (#63529).
-        if not self._running_agents and last_cron_count == 0 and last_api_count == 0:
+        if not self._running_agents and last_cron_count == 0:
             _maybe_update_status(force=True)
             return snapshot, False
 
@@ -8110,9 +7236,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         def _still_draining() -> bool:
             now = loop.time()
-            if (
-                len(self._running_agents) or self._active_stateless_run_count()
-            ) and now < deadline:
+            if len(self._running_agents) and now < deadline:
                 return True
             return bool(self._active_cron_job_count()) and now < cron_deadline
 
@@ -8126,7 +7250,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         timed_out = (
             bool(len(self._running_agents))
             or bool(self._active_cron_job_count())
-            or bool(self._active_stateless_run_count())
         )
         _maybe_update_status(force=True)
         return snapshot, timed_out
@@ -9707,9 +8830,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     start_time=getattr(self, "_gateway_started_at", 0.0),
                 )
             )
-            # PERMANENT for the process lifetime, same as a
-            # _spawn_supervised watcher.
-            self._loop_heartbeat_task._son_of_anton_supervised_watcher = True  # type: ignore[attr-defined]
             _bg = getattr(self, "_background_tasks", None)
             if _bg is not None:
                 _bg.add(self._loop_heartbeat_task)
@@ -10042,14 +9162,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # secondary profile: authorization and prompt rendering both run
             # before the narrower agent-turn scope is installed.
             adapter.set_message_handler(self._primary_message_handler())
-            adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-            _set_reaction = getattr(adapter, "set_reaction_handler", None)
-            if callable(_set_reaction):
-                _set_reaction(self._handle_reaction_event)
-            adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
-            adapter.set_platform_event_handler(self._primary_platform_event_handler())
             _pending_connects.append((platform, platform_config, adapter))
 
         if await self._abort_startup_if_shutdown_requested():
@@ -10421,26 +9535,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 len(self._failed_platforms),
                 ", ".join(p.value for p in self._failed_platforms),
             )
-        # Track the reconnect watcher task so _ensure_reconnect_watcher_running
-        # can detect if it dies and respawn it (#70344). Spawned via
-        # _spawn_supervised (not a bare asyncio.create_task) so an exception
-        # escaping the watcher's OUTER while-loop -- not just the per-platform
-        # inner try/except -- is caught, logged, and auto-restarted with
-        # backoff instead of silently killing the watcher forever. Without
-        # this, a platform already queued in _failed_platforms when the
-        # watcher dies stays stranded indefinitely: _ensure_reconnect_watcher_running()
-        # only gets called from a NEW fatal-error arrival, so if no other
-        # platform ever fails afterward, nothing ever notices the watcher is
-        # dead (#71758 -- reported as 17.5h of silent downtime for a platform
-        # whose transient upstream outage had long since recovered).
-        # ``on_spawn`` keeps ``_reconnect_watcher_task`` pointed at the CURRENT
-        # live task even when _spawn_supervised's own backoff respawns it — so
-        # _ensure_reconnect_watcher_running never mistakes a superseded handle
-        # for a dead watcher and spawns a duplicate.
-        self._reconnect_watcher_task = self._spawn_supervised(
+        # Spawned via _spawn_supervised (not a bare asyncio.create_task) so an
+        # exception escaping the watcher's OUTER while-loop is caught, logged,
+        # and auto-restarted with backoff instead of silently killing the
+        # watcher forever (#71758).
+        self._spawn_supervised(
             self._platform_reconnect_watcher,
             "platform_reconnect_watcher",
-            on_spawn=lambda t: setattr(self, "_reconnect_watcher_task", t),
         )
 
         # Start background async-delegation watcher — drains completion events
@@ -10497,7 +9598,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     # approval delivery for the rest of the process life).
     _SUPERVISED_HEALTHY_SECS = 300
 
-    def _spawn_supervised(self, coro_factory, name, *, restart=True, _attempt=0, on_spawn=None):
+    def _spawn_supervised(self, coro_factory, name, *, restart=True, _attempt=0):
         """Launch a long-lived background task with task-level supervision.
 
         Complements upstream's per-iteration inner-loop try/except (which only
@@ -10512,14 +9613,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         The counter resets after any run that stayed healthy for at least
         ``_SUPERVISED_HEALTHY_SECS`` — so a long-lived daemon that crashes
         occasionally over days is never permanently abandoned.
-
-        ``on_spawn`` (optional) is invoked with the freshly-created task on
-        every spawn, INCLUDING internal backoff respawns. Callers that also
-        track the live handle elsewhere (e.g. ``self._reconnect_watcher_task``
-        for ``_ensure_reconnect_watcher_running``) MUST pass it — otherwise the
-        supervisor's own respawn creates a new task without updating that
-        external handle, so ``_ensure_...`` later sees the stale/done handle
-        and spawns a SECOND concurrent watcher (double reconnect attempts).
         """
         if getattr(self, "_background_tasks", None) is None:
             self._background_tasks = set()
@@ -10531,23 +9624,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Deliberately do NOT pass name= to create_task — some test doubles mock
         # create_task with a signature that rejects the name kwarg.
         task = asyncio.create_task(coro_factory())
-        # Mark this as a PERMANENT supervised watcher, not transient background
-        # WORK. The scale-to-zero idle check must ignore these: supervised
-        # watchers (session-expiry, reconnect, the scale-to-zero watcher
-        # itself, ...) live for the whole process, so counting them as "live
-        # background work" would make the gateway consider itself busy forever
-        # and never go dormant/suspend. Transient tasks added to
-        # _background_tasks elsewhere (startup-resume events etc.) stay counted.
-        task._son_of_anton_supervised_watcher = True  # type: ignore[attr-defined]
         self._background_tasks.add(task)
-        if on_spawn is not None:
-            # Record the live handle NOW so an external tracker (e.g.
-            # _reconnect_watcher_task) always points at the current task, not a
-            # dead one left behind by a prior supervised respawn.
-            try:
-                on_spawn(task)
-            except Exception:  # pragma: no cover - defensive; a tracker must never kill the spawn
-                logger.debug("on_spawn callback for %s raised", name, exc_info=True)
 
         def _done(t):
             self._background_tasks.discard(t)
@@ -10589,7 +9666,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                             name,
                             restart=restart,
                             _attempt=effective_attempt + 1,
-                            on_spawn=on_spawn,
                         )
 
                 respawn_task = asyncio.create_task(_respawn())
@@ -11110,30 +10186,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     break
                 await asyncio.sleep(1)
 
-    def _ensure_reconnect_watcher_running(self) -> None:
-        """Ensure the platform reconnect watcher background task is alive.
-
-        If the tracked reconnect watcher task has died (e.g. from exhausting
-        its restart budget, or a terminal exception that _spawn_supervised
-        could not recover), respawns it so platforms queued for reconnection
-        are not permanently stranded. Called after queueing a retryable fatal
-        error in _handle_adapter_fatal_error (#70344).
-        """
-        if not getattr(self, "_running", False):
-            return
-        task = getattr(self, "_reconnect_watcher_task", None)
-        if task is not None and not task.done():
-            return  # already alive
-        logger.warning(
-            "Reconnect watcher task is dead (done=%s) — respawning",
-            task.done() if task is not None else "N/A",
-        )
-        self._reconnect_watcher_task = self._spawn_supervised(
-            self._platform_reconnect_watcher,
-            "platform_reconnect_watcher",
-            on_spawn=lambda t: setattr(self, "_reconnect_watcher_task", t),
-        )
-
     async def _platform_reconnect_watcher(self) -> None:
         """Background task that periodically retries connecting failed platforms.
 
@@ -11227,14 +10279,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         continue
 
                     adapter.set_message_handler(self._primary_message_handler())
-                    adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-                    _set_reaction = getattr(adapter, "set_reaction_handler", None)
-                    if callable(_set_reaction):
-                        _set_reaction(self._handle_reaction_event)
-                    adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
-                    adapter.set_platform_event_handler(self._primary_platform_event_handler())
 
                     # Reconnect after an outage: preserve the platform's
                     # server-side update queue so messages sent while the bot
@@ -11491,7 +10537,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     "running": bool(self._running),
                     "active_agents": self._running_agent_count(),
                     "active_cron_jobs": self._active_cron_job_count(),
-                    "active_api_runs": self._active_stateless_run_count(),
                     "restart_drain_timeout": self._restart_drain_timeout,
                     "watchdog_delay_s": resolve_shutdown_watchdog_delay(
                         self._restart_drain_timeout
@@ -11564,7 +10609,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
 
             _cron_at_start = self._active_cron_job_count()
-            _api_at_start = self._active_stateless_run_count()
             # In-flight cron work gets its own floor, clamped to the watchdog
             # leash we're already running under so the extra wait can never
             # cost us the post-drain cleanup window (#82161).
@@ -11598,8 +10642,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             logger.info(
                 "Shutdown phase: drain done at +%.2fs (drain took %.2fs, "
                 "timed_out=%s, active_at_start=%d, active_now=%d, "
-                "cron_at_start=%d, cron_now=%d, "
-                "api_at_start=%d, api_now=%d)",
+                "cron_at_start=%d, cron_now=%d)",
                 _phase_elapsed(),
                 _drain_elapsed,
                 timed_out,
@@ -11607,8 +10650,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 self._running_agent_count(),
                 _cron_at_start,
                 self._active_cron_job_count(),
-                _api_at_start,
-                self._active_stateless_run_count(),
             )
 
             if not timed_out:
@@ -11671,28 +10712,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
                 )
                 interrupt_deadline = asyncio.get_running_loop().time() + 5.0
-                # Wait on API-server work too. The interrupt is cooperative:
-                # without this the settle window closes the instant
-                # _running_agents is empty, and an API turn that was just asked
-                # to stop gets its tool subprocesses killed below before it can
-                # unwind — the exact amputation this interrupt exists to avoid.
                 while (
-                    self._running_agents or self._active_stateless_run_count()
-                ) and asyncio.get_running_loop().time() < interrupt_deadline:
+                    self._running_agents
+                    and asyncio.get_running_loop().time() < interrupt_deadline
+                ):
                     self._update_runtime_status("draining")
                     await asyncio.sleep(0.1)
 
-                # The interrupt above fires exactly once, but work can
-                # materialize AFTER that one shot: a /v1/runs task admitted
-                # before the drain populates _active_run_agents only once
-                # _create_agent returns, and a _running_agents entry claimed
-                # as _AGENT_PENDING_SENTINEL is promoted to a real agent by
-                # track_agent() on its own schedule. Either way the settle
-                # loop waited on work nothing signaled. If any is still live
-                # at settle-loop exit, re-signal so a late-materializing
-                # agent gets a cooperative interrupt instead of going
-                # straight to the tool-subprocess kill.
-                if self._running_agents or self._active_stateless_run_count():
+                # The interrupt above fires exactly once, but a _running_agents
+                # entry claimed as _AGENT_PENDING_SENTINEL is promoted to a
+                # real agent by track_agent() on its own schedule. If any is
+                # still live at settle-loop exit, re-signal so a
+                # late-materializing agent gets a cooperative interrupt
+                # instead of going straight to the tool-subprocess kill.
+                if self._running_agents:
                     self._interrupt_running_agents(
                         _INTERRUPT_REASON_GATEWAY_RESTART
                         if self._restart_requested
@@ -12072,23 +11105,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """Return the message handler for a primary adapter."""
         return self._handle_message
 
-    async def _handle_gateway_platform_event(self, event: dict, source) -> None:
-        """Authorize and publish one normalized adapter event to plugin hooks."""
-        try:
-            from son_of_anton_cli.lifecycle import has_hook, invoke_hook
-
-            if not has_hook("gateway_platform_event"):
-                return
-            if not self._is_user_authorized(source):
-                return
-            invoke_hook("gateway_platform_event", **event)
-        except Exception:
-            # Observer failures must never break the adapter's update loop.
-            logger.debug("gateway_platform_event hook dispatch failed", exc_info=True)
-
-    def _primary_platform_event_handler(self):
-        return self._handle_gateway_platform_event
-
     def _create_adapter(
         self, 
         platform: Platform, 
@@ -12120,45 +11136,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return SignalAdapter(config)
 
         return None
-
-    def _make_adapter_auth_check(
-        self,
-        platform: Platform,
-        profile_name: Optional[str] = None,
-    ) -> Callable[[str, Optional[str], Optional[str]], bool]:
-        """Build a platform-bound auth callback for adapter use.
-
-        Adapters that fetch external context (e.g. Slack
-        ``conversations.replies``) call this through
-        ``BasePlatformAdapter._is_sender_authorized`` to mark non-allowlisted
-        senders as unverified in LLM context, mitigating indirect prompt
-        injection from third parties in shared threads/channels.
-
-        The returned callback delegates to :meth:`_is_user_authorized` so the
-        full auth chain — platform allowlists, group allowlists, pairing
-        store, allow-all flags — stays the single source of truth.
-
-        ``profile_name`` binds the callback to the secondary adapter's own
-        multiplex profile, so its ``SessionSource`` resolves that profile's
-        secret scope instead of falling back to the active profile.
-        """
-        def check(
-            user_id: str,
-            chat_type: Optional[str] = None,
-            chat_id: Optional[str] = None,
-        ) -> bool:
-            if not user_id:
-                return False
-            source = SessionSource(
-                platform=platform,
-                chat_id=chat_id or "",
-                chat_type=chat_type or "group",
-                user_id=user_id,
-                profile=profile_name,
-            )
-            return self._is_user_authorized(source)
-        return check
-
 
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
@@ -17781,19 +16758,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         return _reply_anchor_for_event(event)
 
 
-    # ------------------------------------------------------------------
-    # /approve & /deny — explicit dangerous-command approval
-    # ------------------------------------------------------------------
-
-    _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
-
-
-    # Built-in messaging platforms where the ``/update`` command is allowed.
-    _UPDATE_ALLOWED_PLATFORMS = frozenset({
-        Platform.SIGNAL, Platform.LOCAL,
-    })
-
-
     def _schedule_update_notification_watch(self) -> None:
         """Ensure a background task is watching for update completion."""
         existing_task = getattr(self, "_update_notification_task", None)
@@ -21528,8 +20492,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if _env_tp and not _tool_progress_configured
             else (_resolved_tp or _env_tp or "all")
         )
-        # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
-        progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         _generic_status_recent: List[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
@@ -21559,7 +20521,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             except Exception as _phrase_err:
                 logger.debug("generic status phrase selection failed: %s", _phrase_err)
                 return "still on it" if kind in {"heartbeat", "waiting", "long_running", "status"} else "one sec"
-        tool_progress_enabled = progress_mode not in {"off", "log"}
         # "log" mode: tool calls are written to ~/.son-of-anton/logs/tool_calls.log
         # instead of the chat (#3459 / #3458). Gateway-only by design.
         log_mode_enabled = progress_mode == "log"
@@ -21574,70 +20535,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         interim_assistant_messages_enabled = (
             interim_assistant_messages_mode != "off"
         )
-        # thinking_progress is independent — if enabled, we need the progress
-        # queue even when tool_progress is off (thinking relay uses same infra).
         _thinking_mode = _display_surface_mode(
             "thinking_progress",
             default=False,
         )
         _thinking_enabled = _thinking_mode != "off"
-        needs_progress_queue = tool_progress_enabled or _thinking_enabled
-
-
-        # Queue for progress messages (thread-safe)
-        progress_queue = queue.Queue() if needs_progress_queue else None
-        last_tool = [None]  # Mutable container for tracking in closure
-        last_progress_msg = [None]  # Track last message for dedup
-        repeat_count = [0]  # How many times the same message repeated
-        # True when the previously enqueued progress line was a terminal
-        # fenced code block — consecutive terminal calls then drop the
-        # repeated "💻 terminal" header and render back-to-back blocks.
-        last_was_terminal_block = [False]
-
-        # Auto-cleanup of temporary progress bubbles (any adapter
-        # that implements ``delete_message``). When enabled via
-        # ``display.platforms.<platform>.cleanup_progress: true``, message IDs
-        # from the tool-progress / "⏳ Working — N min" / status-callback bubbles
-        # are collected here and deleted after the final response lands.
-        # Failed runs skip cleanup so the bubbles remain as breadcrumbs.
-        _cleanup_progress = bool(
-            resolve_display_setting(user_config, platform_key, "cleanup_progress")
-        )
-        _cleanup_adapter = self._adapter_for_source(source) if _cleanup_progress else None
-        # getattr, not attribute access — same duck-typed-adapter guard as the
-        # edit_message check in send_progress_messages below: a fake/minimal
-        # adapter without delete_message means "can't delete", not a crash.
-        _cleanup_delete = getattr(type(_cleanup_adapter), "delete_message", None) if _cleanup_adapter is not None else None
-        if _cleanup_adapter is not None and (
-            _cleanup_delete is None
-            or _cleanup_delete is BasePlatformAdapter.delete_message
-        ):
-            # Adapter doesn't support deletion — silently disable.
-            _cleanup_progress = False
-            _cleanup_adapter = None
-        _cleanup_msg_ids: List[str] = []
-        # First-touch onboarding latch: fires at most once per run, even if
-        # several tools exceed the threshold.
-        long_tool_hint_fired = [False]
-        _LONG_TOOL_THRESHOLD_S = 30.0
 
         turn_ctx = TurnContext(
             source=source,
             _run_still_current=_run_still_current,
             _thinking_enabled=_thinking_enabled,
-            progress_mode=progress_mode,
-            progress_grouping=progress_grouping,
-            tool_progress_enabled=tool_progress_enabled,
-            progress_queue=progress_queue,
             log_queue=log_queue,
-            last_progress_msg=last_progress_msg,
-            last_tool=last_tool,
-            last_was_terminal_block=last_was_terminal_block,
-            repeat_count=repeat_count,
-            long_tool_hint_fired=long_tool_hint_fired,
-            _LONG_TOOL_THRESHOLD_S=_LONG_TOOL_THRESHOLD_S,
-            _cleanup_progress=_cleanup_progress,
-            _cleanup_msg_ids=_cleanup_msg_ids,
             message=message,
             AIAgent=AIAgent,
             resolve_display_setting=resolve_display_setting,
@@ -21646,7 +20554,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             disabled_toolsets=disabled_toolsets,
             log_mode_enabled=log_mode_enabled,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
-            needs_progress_queue=needs_progress_queue,
             history=history,
             context_prompt=context_prompt,
             channel_prompt=channel_prompt,
@@ -21664,20 +20571,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # TurnRunner.progress_callback (bound method, same signature).
         turn_ctx.progress_callback = turn_runner.progress_callback
         
-        # Background task to send progress messages
-        # Accumulates tool lines into a single message that gets edited.
         _progress_thread_id = str(source.thread_id) if source.thread_id else None
-        _progress_metadata = (
-            self._thread_metadata_for_source(source, event_message_id)
-            if _progress_thread_id == source.thread_id
-            else self._thread_metadata_for_target(
-                source.platform,
-                source.chat_id,
-                _progress_thread_id,
-                chat_type=getattr(source, "chat_type", None),
-                reply_to_message_id=event_message_id,
-            )
-        ) if _progress_thread_id else None
 
         async def write_tool_log():
             """Drain log_queue and append tool-call lines to tool_calls.log.
@@ -21734,11 +20628,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 except Exception:
                     pass
 
-        # Extracted to TurnRunner.send_progress_messages. The threading
-        # metadata computed above is published onto the shared TurnContext
-        # exactly where the original closure's captured locals were bound.
-        turn_ctx._progress_metadata = _progress_metadata
-        send_progress_messages = turn_runner.send_progress_messages
         
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance
@@ -21792,16 +20681,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # on turn_ctx; `nonlocal message` rebinds became ctx.message writes.
         run_sync = turn_runner.run_sync
         
-        # Start progress message sender if enabled. Gate on needs_progress_queue
-        # (tool_progress OR thinking_progress), not tool_progress alone: the
-        # sender drains BOTH tool-progress lines and _thinking scratch bubbles.
-        # With the old tool_progress-only gate, a thinking_progress:true /
-        # tool_progress:off user had the callback queue _thinking messages that
-        # no task ever drained — so they silently never appeared.
-        progress_task = None
-        if needs_progress_queue:
-            progress_task = asyncio.create_task(send_progress_messages())
-
         # Start the tool-call log writer when tool_progress == "log".
         log_task = None
         if log_mode_enabled:
@@ -21933,12 +20812,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             _notify_adapter = self._adapter_for_source(source)
             if not _notify_adapter:
                 return
-            # Track the heartbeat message id so we can edit-in-place on
-            # platforms that support it (Discord, Slack, etc.)
-            # instead of spamming a new "Still working" bubble every
-            # interval. Falls back to send-new when edit fails or isn't
-            # supported by the adapter.
-            _heartbeat_msg_id: Optional[str] = None
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
                 # Stop heartbeating once this run no longer owns the session
@@ -21991,29 +20864,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     else f"Working — {_elapsed_mins} min{_status_detail}"
                 )
                 try:
-                    _notify_res = None
-                    if _heartbeat_msg_id:
-                        try:
-                            _notify_res = await _notify_adapter.edit_message(
-                                source.chat_id,
-                                _heartbeat_msg_id,
-                                _heartbeat_text,
-                            )
-                        except Exception as _ee:
-                            logger.debug("Heartbeat edit failed: %s", _ee)
-                            _notify_res = None
-                    if not (_notify_res and getattr(_notify_res, "success", False)):
-                        _notify_res = await _notify_adapter.send(
-                            source.chat_id,
-                            _heartbeat_text,
-                            metadata=_status_thread_metadata,
-                        )
-                        if getattr(_notify_res, "success", False) and getattr(
-                            _notify_res, "message_id", None
-                        ):
-                            _heartbeat_msg_id = str(_notify_res.message_id)
-                            if _cleanup_progress:
-                                _cleanup_msg_ids.append(_heartbeat_msg_id)
+                    await _notify_adapter.send(
+                        source.chat_id,
+                        _heartbeat_text,
+                        metadata=_status_thread_metadata,
+                    )
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
@@ -22672,9 +21527,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
-            # Stop progress sender, interrupt monitor, and notification task
-            if progress_task:
-                progress_task.cancel()
+            # Stop the tool-log writer, interrupt monitor, and notification task
             if log_task:
                 log_task.cancel()
             interrupt_monitor.cancel()
@@ -22723,7 +21576,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 self._update_runtime_status("draining")
             
             # Wait for cancelled tasks
-            for task in [progress_task, log_task, interrupt_monitor, tracking_task, _notify_task]:
+            for task in [log_task, interrupt_monitor, tracking_task, _notify_task]:
                 if task:
                     try:
                         await task
@@ -22883,52 +21736,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                             "Failed to edit streamed message for session %s: %s",
                             session_key or "?", _edit_err,
                         )
-
-        # Schedule deletion of tracked temporary progress bubbles after the
-        # final response lands. Failed runs skip this so bubbles remain as
-        # breadcrumbs for the user to see what work happened. Only fires on
-        # adapters that support ``delete_message`` (see init above); failures
-        # are swallowed — deletion is best-effort.
-        if (
-            _cleanup_progress
-            and _cleanup_adapter is not None
-            and _cleanup_msg_ids
-            and session_key
-            and isinstance(response, dict)
-            and not response.get("failed")
-            and hasattr(_cleanup_adapter, "register_post_delivery_callback")
-        ):
-            _ids_snapshot = list(_cleanup_msg_ids)
-            _chat_id_snapshot = source.chat_id
-            _adapter_snapshot = _cleanup_adapter
-            _loop_snapshot = asyncio.get_running_loop()
-
-            def _cleanup_temp_bubbles() -> None:
-                async def _delete_all() -> None:
-                    for _mid in _ids_snapshot:
-                        try:
-                            await _adapter_snapshot.delete_message(
-                                _chat_id_snapshot, _mid
-                            )
-                        except Exception:
-                            pass
-                try:
-                    safe_schedule_threadsafe(
-                        _delete_all(), _loop_snapshot,
-                        logger=logger,
-                        log_message="Temp bubble cleanup scheduling error",
-                    )
-                except Exception:
-                    pass
-
-            try:
-                _cleanup_adapter.register_post_delivery_callback(
-                    session_key,
-                    _cleanup_temp_bubbles,
-                    generation=run_generation,
-                )
-            except Exception as _rpe:
-                logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
 
         return response
 
