@@ -26,7 +26,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 import httpx
 
@@ -46,6 +46,12 @@ from gateway.platforms.helpers import redact_phone
 from gateway.platforms.media_cache import mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
 from gateway.platforms.signal_format import markdown_to_signal
+from gateway.platforms.signal_attachments import (
+    SIGNAL_MAX_INLINE_ATTACHMENT_SIZE,
+    inline_attachment_uri,
+    inline_batches,
+    is_unreadable_attachment_error,
+)
 from gateway.platforms.signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD,
     SIGNAL_MAX_ATTACHMENTS_PER_MSG,
@@ -64,12 +70,6 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 SIGNAL_MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024  # 100 MB
-# Cap for the inline (data: URI) attachment fallback, used when signal-cli runs
-# on another host and cannot open our paths. Deliberately far below the 100 MB
-# attachment ceiling: inlining base64-encodes the file (+33%) and carries it in
-# a single JSON body, so the process holds several copies at once. Documents —
-# the thing this fallback exists for — are orders of magnitude smaller.
-SIGNAL_MAX_INLINE_ATTACHMENT_SIZE = 16 * 1024 * 1024  # 16 MB
 MAX_MESSAGE_LENGTH = 8000  # Signal message size limit
 SSE_RETRY_DELAY_INITIAL = 2.0
 SSE_RETRY_DELAY_MAX = 60.0
@@ -1238,6 +1238,11 @@ class SignalAdapter(BasePlatformAdapter):
         file, oversize) are skipped with a warning so one bad URL
         doesn't lose the rest of the batch. ``human_delay`` is ignored:
         the rate-limit scheduler handles inter-batch pacing.
+
+        When signal-cli cannot open our paths, the rest of the batch goes
+        inline (see ``signal_attachments``). Any image that does not arrive
+        is named in one notice to the chat, so a failed delivery is never
+        silent.
         """
         if not images:
             return
@@ -1252,6 +1257,7 @@ class SignalAdapter(BasePlatformAdapter):
         await self._stop_typing_indicator(chat_id)
 
         attachments: List[str] = []
+        undelivered: List[str] = []
         skipped_download = 0
         skipped_missing = 0
         skipped_oversize = 0
@@ -1264,11 +1270,13 @@ class SignalAdapter(BasePlatformAdapter):
                 except Exception as e:
                     logger.warning("Signal: failed to download image %s: %s", image_url, e)
                     skipped_download += 1
+                    undelivered.append(image_url)
                     continue
 
             if not file_path or not Path(file_path).exists():
                 logger.warning("Signal: image file not found for %s", image_url)
                 skipped_missing += 1
+                undelivered.append(file_path or image_url)
                 continue
 
             file_size = Path(file_path).stat().st_size
@@ -1277,6 +1285,7 @@ class SignalAdapter(BasePlatformAdapter):
                     "Signal: image too large (%d bytes), skipping %s", file_size, image_url
                 )
                 skipped_oversize += 1
+                undelivered.append(file_path)
                 continue
 
             attachments.append(file_path)
@@ -1287,6 +1296,7 @@ class SignalAdapter(BasePlatformAdapter):
                 "(download=%d missing=%d oversize=%d)",
                 len(images), skipped_download, skipped_missing, skipped_oversize,
             )
+            await self._notify_images_undelivered(chat_id, undelivered)
             return
 
         logger.info(
@@ -1308,94 +1318,156 @@ class SignalAdapter(BasePlatformAdapter):
             for i in range(0, len(attachments), SIGNAL_MAX_ATTACHMENTS_PER_MSG)
         ]
 
-        for idx, att_batch in enumerate(att_batches):
-            n = len(att_batch)
-            estimated = scheduler.estimate_wait(n)
-            logger.debug(
-                "Signal batch %d/%d: %d attachments, estimated wait=%.1fs",
-                idx + 1, len(att_batches), n, estimated,
+        inline = False
+        idx = 0
+        while idx < len(att_batches):
+            att_batch = att_batches[idx]
+            outcome = await self._send_image_batch(
+                chat_id, base_params, att_batch, idx + 1, len(att_batches), inline=inline,
             )
-            if estimated >= SIGNAL_BATCH_PACING_NOTICE_THRESHOLD:
-                await self._notify_batch_pacing(
-                    chat_id, idx + 1, len(att_batches), estimated
-                )
-
-            params = dict(base_params, attachments=att_batch)
-            send_timeout = _signal_send_timeout(n)
-
-            for attempt in range(1, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS + 1):
-                await scheduler.acquire(n)
-                try:
-                    _rpc_t0 = time.monotonic()
-                    result = await self._rpc(
-                        "send", params, raise_on_rate_limit=True, timeout=send_timeout,
-                    )
-                    _rpc_duration = time.monotonic() - _rpc_t0
-                    if result is not None:
-                        success, err_msg = self._validate_send_result(result)
-                        if success:
-                            self._track_sent_timestamp(result)
-                            await scheduler.report_rpc_duration(_rpc_duration, n)
-                            logger.info(
-                                "Signal batch %d/%d: %d attachments sent in %.1fs "
-                                "(attempt %d/%d)",
-                                idx + 1, len(att_batches), n, _rpc_duration,
-                                attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
-                            )
-                        else:
-                            logger.error(
-                                "Signal: RPC send failed for batch %d/%d (%d attachments, "
-                                "attempt %d/%d, rpc_duration=%.1fs): %s",
-                                idx + 1, len(att_batches), n,
-                                attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
-                                _rpc_duration, err_msg,
-                            )
-                            # Retry transient (non-rate-limit) failures once
-                            if attempt < SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
-                                backoff = 2.0 ** attempt
-                                logger.info(
-                                    "Signal: retrying batch %d/%d after %.1fs backoff",
-                                    idx + 1, len(att_batches), backoff,
-                                )
-                                await asyncio.sleep(backoff)
-                                continue
-                    else:
-                        # Assume the server didn't accept the batch, don't deduce tokens
-                        logger.error(
-                            "Signal: RPC send failed for batch %d/%d (%d attachments, "
-                            "attempt %d/%d, rpc_duration=%.1fs)",
-                            idx + 1, len(att_batches), n,
-                            attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
-                            _rpc_duration,
-                        )
-                        # Retry transient (non-rate-limit) failures once
-                        if attempt < SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
-                            backoff = 2.0 ** attempt
-                            logger.info(
-                                "Signal: retrying batch %d/%d after %.1fs backoff",
-                                idx + 1, len(att_batches), backoff,
-                            )
-                            await asyncio.sleep(backoff)
-                            continue
-                    break
-                except SignalRateLimitError as e:
-                    scheduler.feedback(e.retry_after, n)
-                    if attempt >= SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
-                        logger.error(
-                            "Signal: rate-limit retries exhausted on batch %d/%d "
-                            "(%d attachments lost, server retry_after=%s)",
-                            idx + 1, len(att_batches), n,
-                            f"{e.retry_after:.0f}s" if e.retry_after else "unknown",
-                        )
-                        break
+            if outcome == "unreadable" and not inline:
+                # The daemon cannot open our paths, and nothing went out (it
+                # rejects the send before sending). This batch and the rest
+                # go inline, re-split to the inline size cap.
+                inline = True
+                rest = [path for batch in att_batches[idx:] for path in batch]
+                batches, too_large = inline_batches(rest)
+                for path in too_large:
                     logger.warning(
-                        "Signal: rate-limited on batch %d/%d "
-                        "(attempt %d/%d, server retry_after=%s); "
-                        "scheduler will pace the retry",
-                        idx + 1, len(att_batches),
+                        "Signal: signal-cli cannot read %s and it is over the %d-byte "
+                        "inline cap; not sent",
+                        path, SIGNAL_MAX_INLINE_ATTACHMENT_SIZE,
+                    )
+                undelivered.extend(too_large)
+                att_batches = att_batches[:idx] + batches
+                continue
+            if outcome != "sent":
+                undelivered.extend(att_batch)
+            idx += 1
+
+        await self._notify_images_undelivered(chat_id, undelivered)
+
+    async def _send_image_batch(
+        self,
+        chat_id: str,
+        base_params: Dict[str, Any],
+        att_batch: List[str],
+        number: int,
+        total: int,
+        *,
+        inline: bool,
+    ) -> str:
+        """Send one batch of image files: ``"sent"``, ``"unreadable"`` or ``"failed"``.
+
+        ``"unreadable"`` means signal-cli could not open one of the paths and
+        sent nothing; the caller resends inline. With ``inline`` the files go
+        as data URIs.
+        """
+        scheduler = get_scheduler()
+        n = len(att_batch)
+        estimated = scheduler.estimate_wait(n)
+        logger.debug(
+            "Signal batch %d/%d: %d attachments, estimated wait=%.1fs",
+            number, total, n, estimated,
+        )
+        if estimated >= SIGNAL_BATCH_PACING_NOTICE_THRESHOLD:
+            await self._notify_batch_pacing(chat_id, number, total, estimated)
+
+        if inline:
+            uris = [inline_attachment_uri(path) for path in att_batch]
+            if any(uri is None for uri in uris):
+                return "failed"
+            logger.info(
+                "Signal: daemon cannot read our paths; sending batch %d/%d inline", number, total,
+            )
+            params = dict(base_params, attachments=uris)
+        else:
+            params = dict(base_params, attachments=list(att_batch))
+        send_timeout = _signal_send_timeout(n)
+
+        for attempt in range(1, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS + 1):
+            await scheduler.acquire(n)
+            rpc_error: Dict[str, Any] = {}
+            try:
+                _rpc_t0 = time.monotonic()
+                result = await self._rpc(
+                    "send", params, raise_on_rate_limit=True, timeout=send_timeout,
+                    error_out=rpc_error,
+                )
+                _rpc_duration = time.monotonic() - _rpc_t0
+                if result is not None:
+                    success, err_msg = self._validate_send_result(result)
+                    if success:
+                        self._track_sent_timestamp(result)
+                        await scheduler.report_rpc_duration(_rpc_duration, n)
+                        logger.info(
+                            "Signal batch %d/%d: %d attachments sent in %.1fs "
+                            "(attempt %d/%d)",
+                            number, total, n, _rpc_duration,
+                            attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                        )
+                        return "sent"
+                    logger.error(
+                        "Signal: RPC send failed for batch %d/%d (%d attachments, "
+                        "attempt %d/%d, rpc_duration=%.1fs): %s",
+                        number, total, n,
                         attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                        _rpc_duration, err_msg,
+                    )
+                else:
+                    if not inline and is_unreadable_attachment_error(rpc_error.get("error")):
+                        return "unreadable"
+                    # Assume the server didn't accept the batch, don't deduce tokens
+                    logger.error(
+                        "Signal: RPC send failed for batch %d/%d (%d attachments, "
+                        "attempt %d/%d, rpc_duration=%.1fs)",
+                        number, total, n,
+                        attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                        _rpc_duration,
+                    )
+                # Retry transient (non-rate-limit) failures once
+                if attempt < SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
+                    backoff = 2.0 ** attempt
+                    logger.info(
+                        "Signal: retrying batch %d/%d after %.1fs backoff",
+                        number, total, backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    continue
+                return "failed"
+            except SignalRateLimitError as e:
+                scheduler.feedback(e.retry_after, n)
+                if attempt >= SIGNAL_RATE_LIMIT_MAX_ATTEMPTS:
+                    logger.error(
+                        "Signal: rate-limit retries exhausted on batch %d/%d "
+                        "(%d attachments lost, server retry_after=%s)",
+                        number, total, n,
                         f"{e.retry_after:.0f}s" if e.retry_after else "unknown",
                     )
+                    return "failed"
+                logger.warning(
+                    "Signal: rate-limited on batch %d/%d "
+                    "(attempt %d/%d, server retry_after=%s); "
+                    "scheduler will pace the retry",
+                    number, total,
+                    attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
+                    f"{e.retry_after:.0f}s" if e.retry_after else "unknown",
+                )
+        return "failed"
+
+    async def _notify_images_undelivered(self, chat_id: str, undelivered: List[str]) -> None:
+        """Tell the chat which images did not arrive. Best-effort."""
+        if not undelivered:
+            return
+        names = [Path(urlsplit(item).path).name or item for item in undelivered]
+        if len(names) == 1:
+            text = f"⚠️ Couldn't deliver the image attachment ({names[0]})."
+        else:
+            text = f"⚠️ Couldn't deliver {len(names)} image attachments ({', '.join(names)})."
+        try:
+            await self.send(chat_id, text)
+        except Exception as e:
+            logger.warning("Signal: failed to send image-delivery notice: %s", e)
 
     async def _notify_batch_pacing(
         self,
@@ -1439,66 +1511,7 @@ class SignalAdapter(BasePlatformAdapter):
         if not file_path or not Path(file_path).exists():
             return SendResult(success=False, error="Image file not found")
 
-        # Validate size
-        file_size = Path(file_path).stat().st_size
-        if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
-            return SendResult(success=False, error=f"Image too large ({file_size} bytes)")
-
-        params: Dict[str, Any] = {
-            "account": self.account,
-            "message": caption or "",
-            "attachments": [file_path],
-        }
-
-        if chat_id.startswith("group:"):
-            params["groupId"] = chat_id[6:]
-        else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
-
-        result = await self._rpc("send", params)
-        if result is not None:
-            success, err_msg = self._validate_send_result(result)
-            if not success:
-                return SendResult(success=False, error=err_msg, raw_response=result)
-            self._track_sent_timestamp(result)
-            return SendResult(success=True)
-        return SendResult(success=False, error="RPC send with attachment failed")
-
-    @staticmethod
-    def _is_unreadable_attachment_error(err: Any) -> bool:
-        """Whether signal-cli rejected an attachment it could not open.
-
-        Distinguishing this from any other send failure is what makes the
-        inline retry safe: a transient failure (timeout, network) must NOT be
-        retried, because the first send may actually have gone through and the
-        user would get the file twice.
-        """
-        if not err:
-            return False
-        message = err.get("message", "") if isinstance(err, dict) else str(err)
-        message = str(message)
-        return "AttachmentInvalidException" in message or "No such file" in message
-
-    def _inline_attachment_uri(self, file_path: str) -> Optional[str]:
-        """Encode a file as an RFC 2397 data URI for signal-cli.
-
-        Format per signal-cli's own ``--attachment`` help:
-        ``data:<MIME-TYPE>;filename=<FILENAME>;base64,<DATA>``. The filename is
-        what Signal shows the recipient; without it the attachment arrives
-        unnamed.
-        """
-        import mimetypes
-
-        path = Path(file_path)
-        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        try:
-            payload = base64.b64encode(path.read_bytes()).decode("ascii")
-        except OSError as exc:
-            logger.warning("Signal: could not read %s for inline send: %s", file_path, exc)
-            return None
-        # quote() the filename: it lands in a ';'-delimited URI field, so a
-        # name containing ';' or ',' would otherwise truncate the payload.
-        return f"data:{mime};filename={quote(path.name)};base64,{payload}"
+        return await self._send_attachment(chat_id, file_path, "Image", caption)
 
     async def _send_attachment(
         self,
@@ -1509,8 +1522,9 @@ class SignalAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send any file as a Signal attachment via RPC.
 
-        Shared implementation for send_document, send_image_file, send_voice,
-        and send_video — avoids duplicating the validation/routing/RPC logic.
+        Shared implementation for send_image, send_document, send_image_file,
+        send_voice, and send_video — avoids duplicating the
+        validation/routing/RPC logic.
         """
         await self._stop_typing_indicator(chat_id)
 
@@ -1536,29 +1550,22 @@ class SignalAdapter(BasePlatformAdapter):
         rpc_error: Dict[str, Any] = {}
         result = await self._rpc("send", params, error_out=rpc_error)
 
-        # signal-cli opens the attachment path on ITS OWN filesystem. When the
-        # daemon runs on another host (SIGNAL_HTTP_URL pointing off-box) every
-        # path we hand it is unreadable, even though we just stat()ed the file
-        # successfully above — so "file exists here, missing there" is exactly
-        # the remote-daemon case. Retry the same send with the bytes inline as
-        # an RFC 2397 data URI, which signal-cli accepts in place of a path.
-        #
-        # Gated on that specific error: a transient failure must not be
-        # retried, because the first send may have gone through and the
-        # recipient would get the file twice.
-        if result is None and self._is_unreadable_attachment_error(rpc_error.get("error")):
+        # signal-cli opens the path itself, and may not be able to (another
+        # host, or another user without read access): resend the bytes inline.
+        # Gated on that error alone — see signal_attachments.
+        if result is None and is_unreadable_attachment_error(rpc_error.get("error")):
             if file_size > SIGNAL_MAX_INLINE_ATTACHMENT_SIZE:
                 return SendResult(
                     success=False,
                     error=(
-                        f"{media_label} is on this host but signal-cli cannot read "
-                        f"{file_path}, and at {file_size} bytes it is too large to "
-                        f"send inline (limit {SIGNAL_MAX_INLINE_ATTACHMENT_SIZE}). "
-                        f"Put the file on the signal-cli host, or point "
-                        f"SIGNAL_HTTP_URL at a local daemon."
+                        f"signal-cli cannot read {file_path}, and at {file_size} bytes "
+                        f"the {media_label.lower()} is too large to send inline (limit "
+                        f"{SIGNAL_MAX_INLINE_ATTACHMENT_SIZE}). Give the signal-cli user "
+                        f"read access to it, or, if SIGNAL_HTTP_URL points at another "
+                        f"host, put the file there."
                     ),
                 )
-            data_uri = self._inline_attachment_uri(file_path)
+            data_uri = inline_attachment_uri(file_path)
             if data_uri:
                 logger.info(
                     "Signal: %s not readable by the daemon, resending inline (%d bytes)",

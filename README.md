@@ -586,10 +586,12 @@ Direct messages are dropped by default (`SIGNAL_DM_MODE=ignore`). A DM has no
 group id, so there is no way to tell which service should answer it. Leave it
 on and one DM gets you one reply from every running service.
 <!---->
-If your signal-cli runs on a different machine, note that it opens attachment
-paths on **its own** filesystem, so a file the gateway just wrote is not there.
-The gateway retries those sends with the file inlined as a data URI, which is
-capped at 16 MB.
+signal-cli opens attachment paths itself, as its own user and on its own
+machine. A file the gateway can read may be out of its reach: on another
+machine, or in a home directory the `signal-cli` user can't enter. When that
+happens the gateway resends the files inlined as data URIs, up to 16 MB per
+message. An attachment that still doesn't arrive is named in a warning in the
+chat.
 <!---->
 ### A group with other people in it
 <!---->

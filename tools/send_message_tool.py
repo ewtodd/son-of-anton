@@ -1038,6 +1038,8 @@ async def _send_signal(extra, chat_id, message, media_files=None):
     SIGNAL_MAX_ATTACHMENTS_PER_MSG and metered by the process-wide
     SignalAttachmentScheduler — same bucket the gateway adapter uses, so
     sends from this tool and inbound-driven replies share rate-limit state.
+    When signal-cli cannot open our paths, the rest go inline, as the
+    adapter's do (gateway/platforms/signal_attachments.py).
     """
     try:
         import httpx
@@ -1055,6 +1057,11 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         get_scheduler,
     )
     from gateway.platforms.signal_format import markdown_to_signal
+    from gateway.platforms.signal_attachments import (
+        inline_attachment_uri,
+        inline_batches,
+        is_unreadable_attachment_error,
+    )
 
     try:
         http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
@@ -1136,7 +1143,11 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             scheduler.state(), len(attachment_paths), len(att_batches),
         )
         failed_batches: list[int] = []
-        for idx, att_batch in enumerate(att_batches):
+        too_large: list[str] = []
+        inline = False
+        idx = 0
+        while idx < len(att_batches):
+            att_batch = att_batches[idx]
             n = len(att_batch)
             if n > 0:
                 estimated = scheduler.estimate_wait(n)
@@ -1147,18 +1158,31 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                     )
 
             batch_message = plain_text if idx == 0 else ""
+            if inline:
+                send_attachments = [inline_attachment_uri(path) for path in att_batch]
+                if any(uri is None for uri in send_attachments):
+                    return _error(f"Signal: could not read the attachments of batch {idx + 1}")
+            else:
+                send_attachments = att_batch
 
+            resend_inline = False
             for attempt in range(1, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS + 1):
                 try:
                     await scheduler.acquire(n)
                     _rpc_t0 = time.monotonic()
-                    data = await _post(att_batch, batch_message)
+                    data = await _post(send_attachments, batch_message)
                     _rpc_duration = time.monotonic() - _rpc_t0
                     if "error" not in data:
                         await scheduler.report_rpc_duration(_rpc_duration, n)
                         break
 
                     err = data["error"]
+
+                    if not inline and is_unreadable_attachment_error(err):
+                        # signal-cli cannot open our paths and sent nothing:
+                        # this batch and the rest go inline.
+                        resend_inline = True
+                        break
 
                     if not _is_signal_rate_limit_error(err):
                         return _error(f"Signal RPC error on batch {idx + 1}/{len(att_batches)}: {err}")
@@ -1196,9 +1220,24 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                         idx + 1, len(att_batches), attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS, str(e)
                     )
 
+            if resend_inline:
+                inline = True
+                rest = [path for batch in att_batches[idx:] for path in batch]
+                batches, too_large = inline_batches(rest)
+                att_batches = att_batches[:idx] + batches
+                if not att_batches:
+                    att_batches = [[]]  # the text still goes
+                continue
+            idx += 1
+
         warnings = []
         if len(attachment_paths) < len(valid_media):
             warnings.append("Some media files were skipped (not found on disk)")
+        if too_large:
+            warnings.append(
+                "signal-cli cannot read these and they are too large to send inline: "
+                + ", ".join(os.path.basename(path) for path in too_large)
+            )
         if failed_batches:
             warnings.append(
                 f"Signal rate-limited {len(failed_batches)} batch(es) "

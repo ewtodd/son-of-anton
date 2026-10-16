@@ -18349,21 +18349,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        media_result = await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        media_result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        media_result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
+                            metadata=_thread_meta,
+                        )
+                    # As on the non-streaming path: a failed upload is never silent.
+                    if not getattr(media_result, "success", True):
+                        logger.warning(
+                            "[%s] Post-stream media delivery failed (%s): %s",
+                            adapter.name, ext, getattr(media_result, "error", ""),
+                        )
+                        await adapter._notify_media_delivery_failure(
+                            event.source.chat_id,
+                            media_path,
+                            is_voice=is_voice,
                             metadata=_thread_meta,
                         )
                 except Exception as e:
