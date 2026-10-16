@@ -878,20 +878,6 @@ def build_turn_context(
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
 
-    # Cosmetic side-signal: detect an affection "reaction" (ily / <3 / good bot)
-    # and notify the host so it can play hearts. Token-free, never touches the
-    # conversation, and never fatal — a purely optional UI beat.
-    reaction_callback = getattr(agent, "reaction_callback", None)
-    if reaction_callback is not None and not continue_turn:
-        try:
-            from agent.reactions import detect_reaction
-
-            kind = detect_reaction(original_user_message)
-            if kind:
-                reaction_callback(kind)
-        except Exception:
-            pass
-
     if not agent.quiet_mode and continue_turn:
         agent._safe_print("↻ Continuing the turn from the transcript")
     elif not agent.quiet_mode:

@@ -174,21 +174,13 @@ def _resolve_data_url(s: str) -> tuple[bytes, str]:
 def _http_block_reason(url: str) -> Optional[str]:
     """Return a human-readable block reason, or None when the URL is allowed.
 
-    Pre-flight short-circuit: policy-blocked URLs are refused BEFORE any
-    network I/O. ``_download_image`` re-checks policy internally (per attempt
-    and against the final redirect target) — that second evaluation is
-    intentional, not redundant: this one guarantees no bytes move for a
-    blocked URL; the inner one covers redirects and non-resolver callers.
-    Preserves the specific website-policy message so the agent sees *why*.
+    Pre-flight short-circuit: unsafe URLs are refused BEFORE any network I/O;
+    ``_download_image`` guards redirects itself.
     """
     from tools.url_safety import is_safe_url
-    from tools.website_policy import check_website_access
 
     if not is_safe_url(url):
         return "blocked: unsafe or private URL"
-    blocked = check_website_access(url)
-    if blocked:
-        return blocked.get("message") or "blocked by website policy"
     return None
 
 
@@ -200,10 +192,10 @@ async def _download_to_bytes(url: str) -> bytes:
     with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as tf:
         tmp = Path(tf.name)
     try:
-        # Enforces the 50MB stream cap, redirect SSRF guard, and website policy.
+        # Enforces the 50MB stream cap and redirect SSRF guard.
         await _download_image(url, tmp)
         return await asyncio.to_thread(tmp.read_bytes)
-    except PermissionError as exc:  # website policy block
+    except PermissionError as exc:
         raise SourceUnsafe(str(exc), src=url, origin="http")
     finally:
         tmp.unlink(missing_ok=True)

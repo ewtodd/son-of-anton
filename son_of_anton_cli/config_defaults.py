@@ -205,9 +205,6 @@ DEFAULT_CONFIG = {
         # (ssh — it has its own probe).  Set False to
         # disable entirely.
         "environment_probe": True,
-        # Bot Mode teammate-messaging protocol section (silent unless a
-        # profile is managed by the desktop's Bot Mode).
-        "bot_mode_protocol": True,
         # Embedder-supplied environment description appended to the system
         # prompt's environment-hints block. Lets a host that wraps Son of Anton
         # (sandbox runner, managed platform) explain the runtime environment
@@ -1262,9 +1259,6 @@ DEFAULT_CONFIG = {
         # failure isn't silent from the UI's perspective.  Set false to suppress.
         "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
-        # Show a color-coded battery read-out as the first status-bar element in
-        # the CLI/TUI (off by default). No-op on machines without a battery.
-        "battery": False,
         # Focus view (/focus): display-only reduced-output mode. When true the
         # CLI/TUI pins tool_progress to "off" (reusing the existing suppression
         # path), reports a per-turn hidden-line count with a recovery hint, and
@@ -1274,11 +1268,6 @@ DEFAULT_CONFIG = {
         "focus_view": False,
         "focus_saved_tool_progress": "all",
         "skin": "default",
-        # UI language for static user-facing messages (approval prompts, a
-        # handful of gateway slash-command replies).  Does NOT affect agent
-        # responses, log lines, tool outputs, or slash-command descriptions.
-        # Supported: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
-        "language": "en",
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
@@ -1815,11 +1804,6 @@ DEFAULT_CONFIG = {
         "tirith_path": "tirith",
         "tirith_timeout": 5,
         "tirith_fail_open": True,
-        "website_blocklist": {
-            "enabled": False,
-            "domains": [],
-            "shared_files": [],
-        },
         # Acknowledged supply-chain security advisories. Each entry is the
         # ID of an advisory the user has read and acted on (uninstalled the
         # compromised package, rotated credentials). Acked advisories no

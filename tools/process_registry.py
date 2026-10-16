@@ -485,15 +485,6 @@ class ProcessRegistry:
         self._global_watch_window_hits: int = 0
         self._global_watch_tripped_until: float = 0.0
         self._global_watch_suppressed_during_trip: int = 0
-        # Live-output sink set by a driver (e.g. the desktop gateway): called from
-        # reader threads with (session, chunk) to stream output to a UI in
-        # real time, instead of polling the output tail.
-        self.on_output = None
-        # Close-view sink set by a driver (desktop gateway): called with
-        # (session_or_none, process_id) when the agent asks to close a read-only
-        # terminal tab. Distinct from kill — the process keeps running; only the
-        # UI view is dropped (the user can reopen it from the status stack).
-        self.on_close = None
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
@@ -502,17 +493,6 @@ class ProcessRegistry:
         while lines and any(noise in lines[0] for noise in ProcessRegistry._SHELL_NOISE_SUBSTRINGS):
             lines.pop(0)
         return "\n".join(lines)
-
-    def _emit_output(self, session: ProcessSession, chunk: str) -> None:
-        """Forward a freshly-read chunk to the live-output sink, if one is set.
-        Called from reader threads; never raise into the read loop."""
-        sink = self.on_output
-        if sink is None or not chunk:
-            return
-        try:
-            sink(session, chunk)
-        except Exception:
-            pass
 
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
         """Scan new output for watch patterns and queue notifications.
@@ -1318,7 +1298,6 @@ class ProcessRegistry:
                 if len(session.output_buffer) > session.max_output_chars:
                     session.output_buffer = session.output_buffer[-session.max_output_chars:]
             self._check_watch_patterns(session, chunk)
-            self._emit_output(session, chunk)
 
         try:
             proc = session.process
@@ -1431,7 +1410,6 @@ class ProcessRegistry:
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
                     if delta:
                         self._check_watch_patterns(session, delta)
-                        self._emit_output(session, delta)
 
                 # Check if process is still running
                 check = env.execute(
@@ -1479,7 +1457,6 @@ class ProcessRegistry:
                 if len(session.output_buffer) > session.max_output_chars:
                     session.output_buffer = session.output_buffer[-session.max_output_chars:]
             self._check_watch_patterns(session, text)
-            self._emit_output(session, text)
 
         try:
             while pty.isalive():
@@ -2190,37 +2167,6 @@ class ProcessRegistry:
         """
         line_ending = "\n"
         return self.write_stdin(session_id, data + line_ending)
-
-    def request_close_terminal(self, session_id: str) -> dict:
-        """Ask the desktop GUI to close the read-only terminal tab mirroring this
-        background process.
-
-        This does NOT kill the process — it only drops the view. Output keeps
-        streaming into the (capped) buffer and the user can reopen the tab from
-        the status stack. Desktop-only: returns an error if no UI close sink is
-        wired (e.g. CLI / messaging)."""
-        sink = self.on_close
-        if sink is None:
-            return {
-                "status": "error",
-                "error": "close_terminal is only available in the Son of Anton desktop app.",
-            }
-        # The session may already be finished (or pruned) — the tab can still
-        # linger and be closed, so a missing session is not an error here.
-        session = self.get(session_id)
-        try:
-            sink(session, session_id)
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-        return {
-            "status": "ok",
-            "closed": session_id,
-            "note": (
-                "Closed the read-only terminal tab. The process was not killed; "
-                "its output remains available and the user can reopen the tab "
-                "from the status stack."
-            ),
-        }
 
     def close_stdin(self, session_id: str) -> dict:
         """Close a running process's stdin / send EOF without killing the process."""

@@ -402,7 +402,6 @@ def init_agent(
     notice_callback: callable = None,
     notice_clear_callback: callable = None,
     event_callback: Optional[Callable[[str, dict], None]] = None,
-    reaction_callback: Optional[Callable[[str], None]] = None,
     max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None,
     service_tier: str = None,
@@ -575,7 +574,6 @@ def init_agent(
     agent.notice_callback = notice_callback
     agent.notice_clear_callback = notice_clear_callback
     agent.event_callback = event_callback
-    agent.reaction_callback = reaction_callback
     agent.tool_gen_callback = tool_gen_callback
 
     
@@ -1530,13 +1528,6 @@ def init_agent(
         except Exception:
             pass
 
-    # Bot Mode teammate protocol section (tools/bot_mode_probe.py) — pure
-    # filesystem reads, no warm needed. Silent on non-Bot-Mode installs.
-    agent._bot_mode_protocol = bool(_agent_section.get("bot_mode_protocol", True))
-    # Session-title hint for the "Bot Chat" gate: hosts that defer the DB
-    # title write past the first prompt build (tui_gateway pending_title)
-    # set this so the gate doesn't depend on write ordering.
-    agent._session_title_hint = None
 
     # Per-platform prompt-hint overrides (config.toml → platform_hints).
     # Lets an enterprise admin append to or replace Son of Anton' built-in

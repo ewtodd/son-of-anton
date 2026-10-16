@@ -4447,9 +4447,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._status_bar_visible = _status_bar_visible_from_display_config(
             CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else None
         )
-        # Battery read-out in the status bar (toggled via /battery, off by
-        # default). Persisted to display.battery so it survives restarts.
-        self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
@@ -4589,17 +4586,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 
     @staticmethod
-    def _battery_status_style(category: str) -> str:
-        """Map a battery colour category to a status-bar style class."""
-        return {
-            "good": "class:status-bar-good",
-            "warn": "class:status-bar-warn",
-            "bad": "class:status-bar-bad",
-            "critical": "class:status-bar-critical",
-        }.get(category, "class:status-bar-dim")
-
-
-    @staticmethod
     def _compaction_count_style(count: int) -> str:
         """Return a style class reflecting context compaction pressure."""
         if count >= 10:
@@ -4708,8 +4694,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "active_background_tasks": 0,
             "active_background_processes": 0,
             "active_background_subagents": 0,
-            "battery_label": "",
-            "battery_category": "dim",
             # Focus view badge (/focus). Persistent indicator so the reduced
             # output mode is never invisible. Display-only.
             "focus_label": "",
@@ -4737,23 +4721,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             )
         except Exception:
             pass
-
-        # Battery read-out (first status-bar element when enabled). Reads are
-        # memoised for a few seconds inside agent.battery, so polling it on
-        # every status-bar repaint is cheap.
-        if getattr(self, "_battery_visible", False):
-            try:
-                from agent.battery import (
-                    battery_category,
-                    format_battery,
-                    read_battery,
-                )
-
-                _batt = read_battery()
-                snapshot["battery_label"] = format_battery(_batt)
-                snapshot["battery_category"] = battery_category(_batt)
-            except Exception:
-                pass
 
         # Count live /background tasks. The dict entry is removed in the
         # task thread's finally block, so len() reflects truly-running tasks.
@@ -5117,14 +5084,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _cprint(f"  {_DIM}{line}{_RST}")
         except Exception:
             logger.debug("Turn summary render failed", exc_info=True)
-
-    def _on_reaction(self, kind: str) -> None:
-        """Affection callback (ily / <3 / good bot) from the reaction core.
-
-        The base CLI has no reaction UI — the TUI emits hearts events for the
-        same signal — so this hook only keeps the interactive-host wiring intact.
-        """
-        return None
 
     @staticmethod
     def _status_bar_goal_segment(snapshot: Dict[str, Any]) -> str:

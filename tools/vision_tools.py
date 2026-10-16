@@ -63,7 +63,6 @@ def _load_auxiliary_client() -> None:
 
 from son_of_anton_constants import get_son_of_anton_dir
 from tools.debug_helpers import DebugSession
-from tools.website_policy import check_website_access
 import sys
 
 logger = logging.getLogger(__name__)
@@ -374,7 +373,7 @@ def _is_retryable_download_error(error: Exception) -> bool:
     Non-retryable (fail-fast):
       - httpx.HTTPStatusError with a 4xx status other than 429 (404/403/410/...):
         the resource is missing or forbidden; retrying can't change that.
-      - PermissionError: blocked by website policy / SSRF guard.
+      - PermissionError: blocked by the SSRF guard.
       - ValueError: image too large or blocked redirect — deterministic.
 
     Retryable (transient):
@@ -429,11 +428,6 @@ async def _stream_download_to_file(
                 raise ValueError(
                     f"{media_label} too large ({declared_size} bytes, max {max_bytes})"
                 )
-
-        final_url = str(response.url)
-        blocked = check_website_access(final_url)
-        if blocked:
-            raise PermissionError(blocked["message"])
 
         tmp_destination = destination.with_name(
             f".{destination.name}.{uuid.uuid4().hex}.tmp"
@@ -501,10 +495,6 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
     last_error = None
     for attempt in range(max_retries):
         try:
-            blocked = check_website_access(image_url)
-            if blocked:
-                raise PermissionError(blocked["message"])
-
             from tools.url_safety import create_ssrf_safe_async_client
 
             # Download the image with appropriate headers using async httpx.
@@ -1843,10 +1833,6 @@ async def _download_video(video_url: str, destination: Path, max_retries: int = 
     last_error = None
     for attempt in range(max_retries):
         try:
-            blocked = check_website_access(video_url)
-            if blocked:
-                raise PermissionError(blocked["message"])
-
             from tools.url_safety import create_ssrf_safe_async_client
 
             async with create_ssrf_safe_async_client(
@@ -1936,9 +1922,6 @@ async def video_analyze_tool(
             temp_video_path = local_path
             should_cleanup = False
         elif await _validate_image_url_async(video_url):
-            blocked = check_website_access(video_url)
-            if blocked:
-                raise PermissionError(blocked["message"])
             temp_dir = get_son_of_anton_dir("cache/video", "temp_video_files")
             temp_video_path = temp_dir / f"temp_video_{uuid.uuid4()}.mp4"
             await _download_video(video_url, temp_video_path)
