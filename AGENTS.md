@@ -534,9 +534,8 @@ When adding a dependency to `pyproject.toml`: pin `>=current,<next_major` (post-
 ## Adding Configuration
 
 ### config.toml options:
-1. Add to `DEFAULT_CONFIG` in `son_of_anton_cli/config_defaults.py`.
-2. Bump `_config_version` ONLY for migrations that transform existing user config.
-   Adding a new key to an existing section is handled by the deep-merge — no bump needed.
+Add to `DEFAULT_CONFIG` in `son_of_anton_cli/config_defaults.py`; the deep-merge
+handles new keys. There are no config migrations: Nix writes config.toml.
 
 ### .env variables (SECRETS ONLY — API keys, tokens, passwords):
 1. Add to `OPTIONAL_ENV_VARS` in `son_of_anton_cli/config_defaults.py` with metadata

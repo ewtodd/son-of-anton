@@ -1,9 +1,8 @@
 """
 Unified self-relaunch for Son of Anton CLI.
 
-Preserves critical flags (--profile, --model, etc.) across
-process replacement so that ``son-of-anton sessions browse`` or post-setup relaunch
-doesn't silently drop the user's UI mode or other preferences.
+Preserves critical flags (--model, --yolo, etc.) across process replacement
+so that ``son-of-anton sessions browse`` doesn't silently drop them.
 
 Also works when ``son-of-anton`` is not on PATH (e.g. ``nix run`` or ``python -m``).
 """
@@ -13,10 +12,7 @@ import shutil
 import sys
 from typing import Optional, Sequence
 
-from son_of_anton_cli._parser import (
-    PRE_ARGPARSE_INHERITED_FLAGS,
-    build_top_level_parser,
-)
+from son_of_anton_cli._parser import build_top_level_parser
 
 
 def _build_inherited_flag_table() -> list[tuple[str, bool]]:
@@ -43,8 +39,6 @@ def _build_inherited_flag_table() -> list[tuple[str, bool]]:
                 if key not in seen:
                     seen.add(key)
                     table.append(key)
-
-    table.extend(PRE_ARGPARSE_INHERITED_FLAGS)
     return table
 
 

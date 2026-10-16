@@ -20,15 +20,6 @@ Usage:
     response = agent.run_conversation("Tell me about the latest Python updates")
 """
 
-# IMPORTANT: son_of_anton_bootstrap must be the very first import — UTF-8 stdio
-# on Windows.  No-op on POSIX.  See son_of_anton_bootstrap.py for full rationale.
-try:
-    import son_of_anton_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    # Graceful fallback when son_of_anton_bootstrap isn't registered in an
-    # editable dev venv built before it existed; POSIX is unaffected.
-    pass
-
 import asyncio
 import base64
 import copy

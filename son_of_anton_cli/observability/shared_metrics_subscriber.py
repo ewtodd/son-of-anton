@@ -8,7 +8,6 @@ import threading
 from typing import Any
 
 from agent.relay_runtime import RUNTIME_INSTANCE_KEY
-from son_of_anton_cli.config import detect_install_method
 
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_contract import (
@@ -41,7 +40,7 @@ class SharedMetricsSubscriber:
             son_of_anton_version,
             os_name=platform.system(),
             architecture=platform.machine(),
-            install_method=detect_install_method(),
+            install_method="nix",
         )
         self._runtime_id = runtime_id
         self._active = True

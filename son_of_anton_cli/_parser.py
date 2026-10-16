@@ -13,20 +13,9 @@ because its dispatch is tightly coupled to module-level ``cmd_*`` functions.
 import argparse
 
 
-# `--profile` / `-p` is consumed by ``main._apply_profile_override`` before
-# argparse runs (it sets ``SON_OF_ANTON_HOME`` and strips itself from ``sys.argv``),
-# so it isn't on the parser. Listed here so all "carry over on relaunch"
-# metadata lives in one file.
-PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [
-    ("--profile", True),
-    ("-p", True),
-]
-
-
 def _inherited_flag(parser, *args, **kwargs):
     """Register a flag that ``son_of_anton_cli.relaunch`` should carry over when
-    the CLI re-execs itself (e.g. after ``sessions browse`` picks a session,
-    or after the setup wizard launches chat).
+    the CLI re-execs itself (after ``sessions browse`` picks a session).
 
     Equivalent to ``parser.add_argument(...)`` plus tagging the resulting
     Action with ``inherit_on_relaunch = True`` so the relaunch table builder
@@ -46,9 +35,7 @@ Examples:
     son-of-anton --resume <session_id>  Resume a specific session by ID
     son-of-anton --in ./dir             Run in a specific directory
     son-of-anton -w                     Start in isolated git worktree
-    son-of-anton model                  Select the default model
     son-of-anton config                 View configuration
-    son-of-anton config edit            Edit config in $EDITOR
     son-of-anton sessions list          List past sessions
     son-of-anton sessions browse        Interactive session picker
     son-of-anton cron list              List scheduled jobs
@@ -58,7 +45,6 @@ Examples:
     son-of-anton pause                  Engage the global emergency stop
     son-of-anton resume                 Clear the emergency stop
     son-of-anton problem create         Build a physics problem spec from a dataset
-    son-of-anton completion bash        Print a shell completion script
 
 For more help on a command:
     son-of-anton <command> --help

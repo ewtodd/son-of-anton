@@ -4911,17 +4911,7 @@ def run_job(
             from son_of_anton_cli.config import read_user_config_raw
             _cfg_path = str(_get_son_of_anton_home() / "config.toml")
             if os.path.exists(_cfg_path):
-                _cfg = read_user_config_raw(Path(_cfg_path))
-                # Managed scope: a scheduled job must honor administrator-pinned
-                # model / reasoning / toolsets too. This loader
-                # builds its own dict, so overlay managed values via the shared
-                # helper (fail-open, no-op when no managed scope).
-                try:
-                    from son_of_anton_cli import managed_scope
-                    _cfg = managed_scope.apply_managed_overlay(_cfg)
-                except Exception:
-                    pass
-                _cfg = _expand_env_vars(_cfg)
+                _cfg = _expand_env_vars(read_user_config_raw(Path(_cfg_path)))
                 # Coerce null/missing to {} so a falsy default never
                 # clobbers an already-resolved env value with ``None``.
                 _model_cfg = _cfg.get("model") or {}

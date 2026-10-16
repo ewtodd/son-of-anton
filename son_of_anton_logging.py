@@ -690,13 +690,6 @@ def _read_logging_config():
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = fast_toml_load(f) or {}
         if cfg:
-            # Managed scope: an administrator can pin logging.* too. Overlay via
-            # the shared helper (fail-open) since this reads config.toml directly.
-            try:
-                from son_of_anton_cli import managed_scope
-                cfg = managed_scope.apply_managed_overlay(cfg)
-            except Exception:
-                pass
             log_cfg = cfg.get("logging", {})
             if isinstance(log_cfg, dict):
                 return (

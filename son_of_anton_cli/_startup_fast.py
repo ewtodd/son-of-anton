@@ -27,7 +27,6 @@ __all__ = [
     "ensure_project_root_on_path",
     "is_global_fast_version_argv",
     "read_openai_version",
-    "read_install_method",
     "print_fast_version_info",
     "try_fast_version",
 ]
@@ -55,13 +54,6 @@ def is_global_fast_version_argv(argv: list[str]) -> bool:
     return argv in (["--version"], ["-V"])
 
 
-def _resolved_home() -> str:
-    son_of_anton_home = os.environ.get("SON_OF_ANTON_HOME", "").strip()
-    if son_of_anton_home:
-        return son_of_anton_home
-    return os.path.join(os.path.expanduser("~"), ".son-of-anton")
-
-
 def read_openai_version() -> str | None:
     """Read OpenAI SDK version without importing ``importlib.metadata``."""
     for base in sys.path:
@@ -82,97 +74,21 @@ def read_openai_version() -> str | None:
     return None
 
 
-def read_install_method() -> str | None:
-    """Read the installer's ``.install_method`` stamp, if present.
+def print_fast_version_info() -> None:
+    """THE canonical ``son-of-anton --version`` output (also used by /version)."""
+    from son_of_anton_cli.banner import format_banner_version_label
 
-    Only the stamp (step 1 of ``config.detect_install_method``'s resolution
-    order) — the managed/git/pip fallbacks need heavier imports and stay on
-    the slow path.
-    """
-    stamp = os.path.join(_resolved_home(), ".install_method")
-    try:
-        with open(stamp, encoding="utf-8") as handle:
-            method = handle.read().strip().lower()
-        return method or None
-    except OSError:
-        return None
-
-
-def print_fast_version_info(*, check_updates: bool = True) -> None:
-    """THE canonical ``son-of-anton --version`` output (also used by /version).
-
-    The static lines print instantly from stdlib-only probes; everything
-    heavier (upstream SHA in the version line, authoritative install-method
-    detection, the update-status check) is lazy-imported AFTER the first
-    line is already on screen, so perceived latency stays instant while the
-    output carries the full information that used to require the (removed)
-    ``son-of-anton version`` subcommand. Every lazy block degrades gracefully —
-    a broken/heavy import can never take the basic version output down.
-    """
-    # Line 1: registry-owned banner label (includes "· upstream <sha>" for
-    # git installs). banner.py keeps rich/prompt_toolkit lazy, so this
-    # import is light; fall back to the plain label if anything fails.
-    try:
-        from son_of_anton_cli.banner import format_banner_version_label
-
-        print(format_banner_version_label())
-    except Exception:
-        from son_of_anton_cli import __release_date__, __version__
-
-        print(f"Son of Anton Agent v{__version__} ({__release_date__})")
-
+    print(format_banner_version_label())
     print(f"Install directory: {project_root_str()}")
-
-    # Install method: authoritative resolver first (code-scoped stamp →
-    # managed → nix → git → pip; also self-heals poisoned shared-home
-    # 'docker' stamps). Fall back to the cheap stdlib stamp probe only if
-    # the resolver import/run fails.
-    try:
-        from pathlib import Path
-
-        from son_of_anton_cli.config import detect_install_method
-
-        install_method = detect_install_method(Path(project_root_str()))
-    except Exception:
-        install_method = read_install_method()
-    if install_method:
-        print(f"Install method: {install_method}")
-
     print(f"Python: {sys.version.split()[0]}")
-
     openai_version = read_openai_version()
     print(f"OpenAI SDK: {openai_version}" if openai_version else "OpenAI SDK: Not installed")
-
-    if not check_updates:
-        return
-
-    # Update status (synchronous — acceptable since the user asked for
-    # version info). Bounded by check_for_updates' own subprocess/network
-    # timeouts and its 6-hour cache; any failure prints nothing.
-    try:
-        from son_of_anton_cli.banner import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
-        from son_of_anton_cli.config import recommended_update_command
-
-        behind = check_for_updates()
-        if behind == UPDATE_AVAILABLE_NO_COUNT:
-            print(f"Update available — run '{recommended_update_command()}'")
-        elif behind and behind > 0:
-            commits_word = "commit" if behind == 1 else "commits"
-            print(
-                f"Update available: {behind} {commits_word} behind — "
-                f"run '{recommended_update_command()}'"
-            )
-        elif behind == 0:
-            print("Up to date")
-    except Exception:
-        pass
 
 
 def try_fast_version(argv: list[str] | None = None) -> bool:
     """Handle ``son-of-anton --version`` before the heavy import wall.
 
-    Only ``--version``/``-V`` (the ``version`` subcommand was removed —
-    ``--version`` now carries the full output incl. update status).
+    Only ``--version``/``-V`` (the ``version`` subcommand was removed).
     """
     if argv is None:
         argv = sys.argv[1:]

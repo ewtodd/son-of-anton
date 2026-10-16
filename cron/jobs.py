@@ -1624,13 +1624,7 @@ def _resolve_default_model_snapshot() -> Optional[str]:
         cfg_path = get_son_of_anton_home() / "config.toml"
         if not cfg_path.exists():
             return None
-        cfg = read_user_config_raw(cfg_path)
-        try:
-            from son_of_anton_cli import managed_scope
-            cfg = managed_scope.apply_managed_overlay(cfg)
-        except Exception:
-            pass
-        cfg = _expand_env_vars(cfg)
+        cfg = _expand_env_vars(read_user_config_raw(cfg_path))
         # Mirror run_job's precedence: the explicit cron-fleet default
         # (cron.model) beats the global chat model for unpinned cron jobs.
         cron_cfg = cfg.get("cron") or {}

@@ -476,7 +476,6 @@ def load_son_of_anton_dotenv(
         loaded.append(project_env_path)
 
     _apply_external_secret_sources(home_path)
-    _apply_managed_env()
 
     # config.toml is the documented source of truth for terminal.* settings,
     # but the dotenv loads above run with override=True — so a stale
@@ -487,9 +486,7 @@ def load_son_of_anton_dotenv(
     # cron standalone runs) call load_son_of_anton_dotenv() repeatedly and used to
     # flip the effective backend back to the stale .env value mid-session
     # (#29186, #67323). Re-apply config.toml's explicit terminal keys last so
-    # the documented config path always wins. Runs after _apply_managed_env()
-    # so the merged config (which already carries the managed overlay) is
-    # what lands in the env.
+    # the documented config path always wins.
     _reapply_terminal_config_bridge(home_path)
 
     return loaded
@@ -501,8 +498,8 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
     Delegates to ``son_of_anton_cli.config.apply_terminal_config_to_env`` — the
     single shared bridge (same one terminal_tool's fallback and the TUI/
     dashboard launchers use) — so key coverage, explicit-keys-only override
-    semantics, cwd placeholder handling, and the managed-scope overlay can't
-    drift from the other bridge sites. Only keys the user actually wrote in
+    semantics, and cwd placeholder handling can't drift from the other bridge
+    sites. Only keys the user actually wrote in
     config.toml's ``terminal`` section override env values; a config.toml
     without a terminal section leaves .env/shell selections untouched.
 
@@ -520,38 +517,6 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
         apply_terminal_config_to_env(env=None)
     except Exception:  # noqa: BLE001 — early bootstrap / malformed config
         pass
-
-
-def _apply_managed_env() -> None:
-    """Apply the managed-scope .env last, with override, so it beats user/shell.
-
-    Managed scope is machine-global (independent of SON_OF_ANTON_HOME / profile). v1
-    enforcement is "applied last with override=True" — at the end of startup load
-    ``os.environ`` holds the managed value for every managed key, beating both the
-    user ``.env`` and any pre-existing shell export. This deliberately inverts the
-    usual env-over-config precedence for the pinned keys (see
-    ``docs/design/managed-scope.md`` §4.1).
-
-    This does NOT prevent the agent from later mutating ``os.environ`` in-process
-    or ``export``-ing in a subprocess shell; that hard boundary is a documented
-    v2 item (design §8.1). v1 relies on filesystem permissions only.
-
-    Fail-open: a missing managed dir or .env is the common case and a no-op; any
-    error here is swallowed so managed scope can never block startup.
-    """
-    try:
-        from son_of_anton_cli import managed_scope
-
-        managed_dir = managed_scope.get_managed_dir()
-    except Exception:  # noqa: BLE001 — managed scope must never block startup
-        return
-    if managed_dir is None:
-        return
-    managed_env = managed_dir / ".env"
-    if not _env_file_exists(managed_env):
-        return
-    _sanitize_env_file_if_needed(managed_env)
-    _load_dotenv_with_fallback(managed_env, override=True)
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:

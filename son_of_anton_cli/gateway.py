@@ -5,16 +5,11 @@ Handles: son-of-anton gateway [run|start|stop|restart|status|install|uninstall|s
 """
 
 import asyncio
-from son_of_anton_cli.cli_output import line_input
-import json
 import logging
 import os
-import shlex
 import shutil
-import signal
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,33 +25,24 @@ if os.name == "posix":
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from gateway.config import coerce_systemd_watchdog_seconds, load_gateway_config
-from gateway.status import terminate_pid
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     is_gateway_supervisor_process,
-    parse_restart_after_turn_timeout,
     parse_restart_drain_timeout,
 )
 from son_of_anton_cli.config import (
-    get_env_value,
     get_son_of_anton_home,
     read_raw_config,
-    save_env_value,
 )
 
 from son_of_anton_cli.cli_output import (
-    print_header,
     print_info,
-    print_success,
     print_warning,
     print_error,
-    prompt,
-    prompt_yes_no,
 )
-from son_of_anton_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 

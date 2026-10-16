@@ -1365,25 +1365,7 @@ def _apply_delete_for_wal_reset_bug(
 
 
 def _wal_reset_repair_hint() -> str:
-    """Return a context-appropriate hint for repairing the SQLite runtime.
-
-    Uses the codebase's install-type detection so the hint matches what
-    ``son-of-anton update`` can actually do for this install (#75153).
-    """
-    try:
-        from son_of_anton_cli.config import (
-            detect_install_method,
-            recommended_update_command_for_method,
-            get_project_root,
-        )
-        method = detect_install_method(get_project_root())
-        cmd = recommended_update_command_for_method(method)
-        if method in {"git", "unknown"}:
-            return f"Son of Anton-managed installs can repair the embedded runtime with `{cmd}`"
-        # nix/nixos
-        return cmd
-    except Exception:
-        pass
+    """Return a hint for repairing the SQLite runtime."""
     return (
         "install a Python build bundled with SQLite 3.51.3+ "
         "(or backports 3.50.7 / 3.44.6) and restart Son of Anton"
@@ -2694,16 +2676,7 @@ def is_zeroed_state_db(
     here) once a connection is live. Pass ``force=True`` only for offline
     files -- quarantined copies, snapshots, archives.
 
-    Prefer ``son_of_anton_cli.backup.is_zeroed_sqlite_file`` when available; this
-    local copy keeps SessionDB openable without importing the CLI package
-    in constrained embed paths.
     """
-    try:
-        from son_of_anton_cli.backup import is_zeroed_sqlite_file
-
-        return is_zeroed_sqlite_file(path, probe_bytes=probe_bytes, force=force)
-    except Exception:
-        pass
     try:
         size = path.stat().st_size
     except OSError:

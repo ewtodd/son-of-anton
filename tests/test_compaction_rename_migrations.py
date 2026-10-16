@@ -1,54 +1,12 @@
-"""The compress → compact rename must carry persisted state with it.
+"""The compress → compact rename must carry the sessions table with it.
 
-Two things outlive a code rename: the user's config.toml (``compression`` /
-``auxiliary.compression`` sections, ``context.engine: compressor``) and the
-sessions table (``end_reason = 'compression'`` boundary markers and
-``agent.compression*`` provenance stamps). Both migrate exactly once, and a
-value already present under the new key wins.
+``end_reason = 'compression'`` boundary markers and ``agent.compression*``
+provenance stamps in an existing state.db migrate exactly once on open.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from types import SimpleNamespace
-
-
-def test_config_migration_folds_old_sections_into_new_ones(monkeypatch) -> None:
-    from son_of_anton_cli import config_migrations as cm
-
-    on_disk = {
-        "compression": {"threshold": 0.85, "enabled": True},
-        "compaction": {"threshold": 0.6},  # already-present new key wins
-        "auxiliary": {"compression": {"model": "flash", "timeout": 300}},
-        "context": {"engine": "compressor"},
-    }
-    persisted = {}
-    fake = SimpleNamespace(
-        read_raw_config=lambda: on_disk,
-        _persist_migration=lambda cfg: persisted.update(cfg),
-    )
-    monkeypatch.setattr(cm, "_cfg", lambda: fake)
-    cm._migrate_to_39({"warnings": []}, quiet=True)
-
-    assert "compression" not in persisted
-    assert persisted["compaction"] == {"threshold": 0.6, "enabled": True}
-    assert "compression" not in persisted["auxiliary"]
-    assert persisted["auxiliary"]["compaction"] == {"model": "flash", "timeout": 300}
-    assert persisted["context"]["engine"] == "compactor"
-    assert (39, cm._migrate_to_39) in cm.MIGRATIONS
-
-
-def test_config_migration_is_a_no_op_without_old_keys(monkeypatch) -> None:
-    from son_of_anton_cli import config_migrations as cm
-
-    calls = []
-    fake = SimpleNamespace(
-        read_raw_config=lambda: {"compaction": {"threshold": 0.5}},
-        _persist_migration=lambda cfg: calls.append(cfg),
-    )
-    monkeypatch.setattr(cm, "_cfg", lambda: fake)
-    cm._migrate_to_39({"warnings": []}, quiet=True)
-    assert calls == [], "nothing to fold, nothing written"
 
 
 def test_db_migration_rewrites_persisted_compaction_markers(tmp_path) -> None:

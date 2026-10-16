@@ -5,7 +5,6 @@ Son of Anton CLI - Main entry point.
 Usage:
     son-of-anton                     # Interactive chat (default)
     son-of-anton chat                # Interactive chat
-    son-of-anton model               # Select the default model
     son-of-anton config              # View configuration
     son-of-anton sessions list       # List past sessions
     son-of-anton cron list           # List cron jobs
@@ -15,7 +14,6 @@ Usage:
     son-of-anton status              # Show status of all components
     son-of-anton pause / resume      # Engage / clear the global emergency stop
     son-of-anton problem create      # Build a physics problem spec from a dataset
-    son-of-anton completion bash     # Print a shell completion script
     son-of-anton --version           # Show version
 
 The fork ships no imperative installation surface. There is no `setup`,
@@ -25,20 +23,6 @@ the service, and `settings` in that module owns config.toml. Commands that
 mutated an install were carried over from upstream, already refused under
 managed mode, and are gone.
 """
-
-# IMPORTANT: son_of_anton_bootstrap must be the very first import.  No-op on
-# POSIX.
-#
-# Guarded against ModuleNotFoundError because ``son_of_anton_bootstrap`` is a
-# top-level module registered via pyproject.toml's ``py-modules`` list; an
-# editable dev venv built before it existed still points its ``.pth`` file at
-# the old set of top-level modules.
-try:
-    import son_of_anton_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    pass
-
-from son_of_anton_cli.cli_output import line_input
 
 import os
 import sys
@@ -179,43 +163,15 @@ def _set_process_title() -> None:
     """Set the process title to 'son-of-anton' so tools like 'ps', 'top', and
     'htop' show the app name instead of 'python3.xx'.
 
-    Purely cosmetic — non-fatal on any platform.
-
-    Strategy (try in order):
-      1. ``setproctitle`` (used when the build includes it).
-      2. ctypes ``prctl(PR_SET_NAME)`` (Linux only, 15-char limit).
-      3. ctypes ``pthread_setname_np`` (macOS only, kernel thread name —
-         changes lldb/top but not ``ps aux``).
+    Purely cosmetic and non-fatal: ``prctl(PR_SET_NAME)``, 15-char limit.
     """
-    # Strategy 1: setproctitle (best — works on macOS, Linux, BSD)
-    try:
-        import setproctitle  # type: ignore[import-untyped]
-
-        setproctitle.setproctitle("son-of-anton")
-        return
-    except ImportError:
-        pass
-
-    # Strategy 2/3: platform-specific ctypes fallback
     import ctypes
-    import platform
 
     try:
-        system = platform.system()
-        if system == "Linux":
-            libc = ctypes.CDLL("libc.so.6", use_errno=True)
-            libc.prctl(15, b"son-of-anton", 0, 0, 0)  # PR_SET_NAME = 15
-        elif system == "Darwin":
-            libc = ctypes.CDLL("libc.dylib", use_errno=True)
-            libc.pthread_setname_np(b"son-of-anton")
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.prctl(15, b"son-of-anton", 0, 0, 0)  # PR_SET_NAME = 15
     except Exception:
         pass
-
-
-# The classic prompt_toolkit CLI is the default. The Ink TUI was removed
-# (2026-08-25) and replaced by a Textual front-end: `--tui` now launches the
-# Textual app (son_of_anton_tui), which supersedes the prompt_toolkit interface
-# once the agent loop is threaded into it.
 
 
 def _try_ultrafast_version() -> bool:
@@ -228,17 +184,12 @@ _ensure_project_root_on_path_fast()
 if _try_ultrafast_version():
     raise SystemExit(0)
 
-import re
-import shlex
-import shutil
-import subprocess
 from pathlib import Path
 from typing import Optional
 
 
 from son_of_anton_cli.subcommands.cron import build_cron_parser
 from son_of_anton_cli.subcommands.gateway import build_gateway_parser
-from son_of_anton_cli.subcommands.model import build_model_parser
 
 from son_of_anton_cli.subcommands.status import build_status_parser
 from son_of_anton_cli.subcommands.pause import build_pause_parser
@@ -246,25 +197,7 @@ from son_of_anton_cli.subcommands.config import build_config_parser
 from son_of_anton_cli.subcommands.rag import build_rag_parser
 from son_of_anton_cli.subcommands.mcp import build_mcp_parser
 from son_of_anton_cli.subcommands.problem import build_problem_parser
-from son_of_anton_cli.subcommands.completion import build_completion_parser
 from son_of_anton_cli.subcommands.nuke import build_nuke_parser
-
-
-def _require_tty(command_name: str) -> None:
-    """Exit with a clear error if stdin is not a terminal.
-
-    Interactive TUI commands (son-of-anton tools, son-of-anton setup, son-of-anton model) use
-    curses or input() prompts that spin at 100% CPU when stdin is a pipe.
-    This guard prevents accidental non-interactive invocation.
-    """
-    if not sys.stdin.isatty():
-        print(
-            f"Error: 'son-of-anton {command_name}' requires an interactive terminal.\n"
-            f"It cannot be run through a pipe or non-interactive subprocess.\n"
-            f"Run it directly in your terminal instead.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
 
 # Add project root to path
@@ -284,11 +217,6 @@ load_son_of_anton_dotenv(project_env=PROJECT_ROOT / ".env")
 # module-import time). Without this, config.toml's toggle is ignored because
 # the setup_logging() call below imports agent.redact, which reads the env var
 # exactly once. Env var in .env still wins — this is config.toml fallback only.
-#
-# We also read network.force_ipv4 from the same yaml load to avoid two
-# separate config.toml reads (saves ~17ms on every CLI startup — the second
-# `load_config()` was doing a full deep-merge for one boolean lookup).
-_FORCE_IPV4_EARLY = False
 try:
     # Reuse read_raw_config()'s (mtime, size)-keyed cache instead of a bespoke
     # TOML parse — the SAME parse then serves son_of_anton_logging's
@@ -299,25 +227,12 @@ try:
     _cfg_path = get_son_of_anton_home() / "config.toml"
     if _cfg_path.exists():
         _early_cfg_raw = _read_raw_early() or {}
-        # Managed scope: overlay administrator-pinned values so a managed
-        # security.redact_secrets / network.force_ipv4 wins here too. This early
-        # bridge reads config.toml directly (before load_config is usable), so
-        # without the overlay a managed redact_secrets toggle would be ignored.
-        # Fail-open via the shared helper.
-        try:
-            from son_of_anton_cli import managed_scope
-            _early_cfg_raw = managed_scope.apply_managed_overlay(_early_cfg_raw)
-        except Exception:
-            pass
         if "SON_OF_ANTON_REDACT_SECRETS" not in os.environ:
             _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
                 _early_redact = _early_sec_cfg.get("redact_secrets")
                 if _early_redact is not None:
                     os.environ["SON_OF_ANTON_REDACT_SECRETS"] = str(_early_redact).lower()
-        _early_net_cfg = _early_cfg_raw.get("network", {})
-        if isinstance(_early_net_cfg, dict) and _early_net_cfg.get("force_ipv4"):
-            _FORCE_IPV4_EARLY = True
         del _early_cfg_raw
     del _cfg_path
 except Exception:
@@ -332,95 +247,10 @@ try:
 except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
-# Apply IPv4 preference early, before any HTTP clients are created.
-# We already determined whether to force IPv4 from the raw yaml read above —
-# this just calls the toggle without a redundant load_config() round trip.
-if _FORCE_IPV4_EARLY:
-    try:
-        from son_of_anton_constants import apply_ipv4_preference as _apply_ipv4
-
-        _apply_ipv4(force=True)
-    except Exception:
-        pass  # best-effort — don't crash if son_of_anton_constants not importable yet
-
 import logging
-import time as _time
 from datetime import datetime
 
-
-# Provider model-selection wizard flows extracted to son_of_anton_cli/model_setup_flows.py
-# (god-file decomposition Phase 2). Re-imported here so select_provider_and_model
-# keeps a single dispatch site.
-from son_of_anton_cli.model_setup_flows import (
-    _model_flow_custom,
-    _model_flow_named_custom,
-    _model_flow_api_key_provider,
-)
 logger = logging.getLogger(__name__)
-
-
-def _read_packed_ref(common_dir: Path, ref: str) -> str | None:
-    """Look up a ref in .git/packed-refs without spawning git.
-
-    packed-refs lines look like ``<sha> <ref>`` with optional ``^<sha>``
-    peel lines and ``#``-prefixed comments / ``# pack-refs with:`` header.
-    """
-    try:
-        text = (common_dir / "packed-refs").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    for line in text.splitlines():
-        if not line or line.startswith("#") or line.startswith("^"):
-            continue
-        parts = line.split(" ", 1)
-        if len(parts) == 2 and parts[1].strip() == ref:
-            return parts[0].strip()
-    return None
-
-
-def _read_git_revision_fingerprint(repo_root: Path) -> str | None:
-    """Return a cheap checkout fingerprint without spawning git."""
-    git_dir = repo_root / ".git"
-    try:
-        if git_dir.is_file():
-            for line in git_dir.read_text(encoding="utf-8", errors="replace").splitlines():
-                key, _, value = line.partition(":")
-                if key.strip() == "gitdir" and value.strip():
-                    git_dir = (repo_root / value.strip()).resolve()
-                    break
-        # Worktrees point HEAD at a per-worktree gitdir but pack their refs
-        # in the main repo's gitdir (referenced via ``commondir``). Resolve
-        # that up front so packed-refs lookups hit the right file.
-        common_dir = git_dir
-        commondir_file = git_dir / "commondir"
-        if commondir_file.exists():
-            try:
-                rel = commondir_file.read_text(encoding="utf-8", errors="replace").strip()
-                if rel:
-                    common_dir = (git_dir / rel).resolve()
-            except OSError:
-                pass
-        head_file = git_dir / "HEAD"
-        head = head_file.read_text(encoding="utf-8", errors="replace").strip()
-        if head.startswith("ref:"):
-            ref = head.split(":", 1)[1].strip()
-            # Loose refs may live in the worktree gitdir OR the common dir
-            # (branches created via `git worktree add` typically live in the
-            # common dir's refs/heads/).
-            for candidate in (git_dir, common_dir):
-                ref_file = candidate / ref
-                if ref_file.exists():
-                    return f"git:{ref}:{ref_file.read_text(encoding='utf-8', errors='replace').strip()}"
-            packed_sha = _read_packed_ref(common_dir, ref)
-            if packed_sha:
-                return f"git:{ref}:{packed_sha}"
-            # Ref name is known but unresolved — still stable across launches,
-            # and the version/release fallback in the caller will invalidate
-            # after `son-of-anton update`.
-            return f"git:{ref}:unresolved"
-        return f"git:HEAD:{head}"
-    except OSError:
-        return None
 
 
 def _relative_time(ts) -> str:
@@ -436,111 +266,18 @@ def _relative_time(ts) -> str:
 
 
 def _has_any_provider_configured() -> bool:
-    """Check if at least one inference provider is usable."""
-    from son_of_anton_cli.config import get_env_path, get_son_of_anton_home, load_config
-    from son_of_anton_cli.auth import get_auth_status
+    """True when config.toml (or the environment) names an endpoint to talk to."""
+    from son_of_anton_cli.config import load_config
 
-    # Determine whether Son of Anton itself has been explicitly configured (model
-    # in config that isn't the hardcoded default). Used below to gate external
-    # tool credentials (Claude Code, Codex CLI) that shouldn't silently skip
-    # the setup wizard on a fresh install.
-    from son_of_anton_cli.config import DEFAULT_CONFIG
-
-    _DEFAULT_MODEL = DEFAULT_CONFIG.get("model", "")
+    if os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_KEY"):
+        return True
     cfg = load_config()
     model_cfg = cfg.get("model")
-    if isinstance(model_cfg, dict):
-        _default = model_cfg.get("default")
-        if isinstance(_default, dict):
-            from son_of_anton_cli.config import split_model_config_default
-            _model_name, _ = split_model_config_default(_default)
-        else:
-            _model_name = (_default or "")
-        _model_name = (str(_model_name) if not isinstance(_model_name, str) else _model_name).strip()
-    elif isinstance(model_cfg, str):
-        _model_name = model_cfg.strip()
-    else:
-        _model_name = ""
-    _has_son_of_anton_config = _model_name and _model_name != _DEFAULT_MODEL
-
-    # Check env vars (may be set by .env or shell).
-    # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
-    # often don't require an API key.
-    from son_of_anton_cli.auth import PROVIDER_REGISTRY
-
-    # Collect all provider env vars
-    provider_env_vars = {
-        "OPENROUTER_API_KEY",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_TOKEN",
-        "OPENAI_BASE_URL",
-    }
-    for pconfig in PROVIDER_REGISTRY.values():
-        if pconfig.auth_type == "api_key":
-            provider_env_vars.update(pconfig.api_key_env_vars)
-    if any(os.getenv(v) for v in provider_env_vars):
+    if isinstance(model_cfg, dict) and any(
+        str(model_cfg.get(key) or "").strip() for key in ("provider", "base_url", "api_key")
+    ):
         return True
-
-    # Check .env file for keys
-    env_file = get_env_path()
-    if env_file.exists():
-        try:
-            for line in env_file.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line.startswith("#") or "=" not in line:
-                    continue
-                if line.startswith("export "):
-                    line = line[7:]
-                key, _, val = line.partition("=")
-                val = val.strip().strip("'\"")
-                if key.strip() in provider_env_vars and val:
-                    return True
-        except Exception:
-            pass
-
-    # Cheap local checks first: auth.json and config.toml are on-disk lookups,
-    # while the PROVIDER_REGISTRY sweep below spawns subprocesses (gh) and can
-    # take 15-20s — long enough that desktop setup.status calls time out.
-
-    # Check for stored OAuth credentials
-    auth_file = get_son_of_anton_home() / "auth.json"
-    if auth_file.exists():
-        try:
-            import json
-
-            auth = json.loads(auth_file.read_text(encoding="utf-8-sig"))
-            active = auth.get("active_provider")
-            if active:
-                status = get_auth_status(active)
-                if status.get("logged_in"):
-                    return True
-        except Exception:
-            pass
-
-    # Check config.toml — if model is a dict with an explicit provider set,
-    # the user has gone through setup (fresh installs have model as a plain
-    # string).  Also covers custom endpoints that store api_key/base_url in
-    # config rather than .env.
-    if isinstance(model_cfg, dict):
-        cfg_provider = (model_cfg.get("provider") or "").strip()
-        cfg_base_url = (model_cfg.get("base_url") or "").strip()
-        cfg_api_key = (model_cfg.get("api_key") or "").strip()
-        if cfg_provider or cfg_base_url or cfg_api_key:
-            return True
-
-    # Check provider-specific auth fallbacks (for example, Copilot via gh auth).
-    try:
-        for provider_id, pconfig in PROVIDER_REGISTRY.items():
-            if pconfig.auth_type != "api_key":
-                continue
-            status = get_auth_status(provider_id)
-            if status.get("logged_in"):
-                return True
-    except Exception:
-        pass
-
-    return False
+    return bool(cfg.get("custom_providers"))
 
 
 def _confirm_startup_expensive_model_override(args) -> None:
@@ -1391,17 +1128,6 @@ def cmd_chat(args):
         print()
         sys.exit(1)
 
-    # Start update check in background (runs while other init happens).
-    try:
-        from son_of_anton_cli.banner import prefetch_banner_data, prefetch_update_check
-
-        prefetch_update_check()
-        # Warm git banner state off-thread too — its subprocess waits
-        # overlap the CPU-bound cli import.
-        prefetch_banner_data()
-    except Exception:
-        pass
-
     # --yolo: bypass all dangerous command approvals.
     # Also set in main() before _prepare_agent_startup() — that is the
     # authoritative site because it runs before tool imports freeze
@@ -1496,462 +1222,6 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
-def cmd_model(args):
-    """Select default model — starts with provider selection, then model picker."""
-    _require_tty("model")
-    if getattr(args, "refresh", False):
-        try:
-            from son_of_anton_cli.models import clear_provider_models_cache
-            clear_provider_models_cache()
-            print("  Cleared model picker cache.")
-        except Exception:
-            pass
-    select_provider_and_model(args=args)
-
-
-def _is_profile_api_key_provider(provider_id: str) -> bool:
-    """Return True when provider_id maps to a profile with auth_type='api_key'.
-
-    Used as a catch-all in select_provider_and_model() so that new providers
-    declared in plugins/model-providers/<name>/ automatically dispatch to _model_flow_api_key_provider
-    without requiring an explicit elif branch here.
-    """
-    try:
-        from providers import get_provider_profile
-        _p = get_provider_profile(provider_id)
-        return _p is not None and _p.auth_type == "api_key"
-    except Exception:
-        return False
-
-
-def select_provider_and_model(args=None):
-    """Core provider selection + model picking logic.
-
-    Shared by ``cmd_model`` (``son-of-anton model``) and the setup wizard
-    (``setup_model_provider`` in setup.py).  Handles the full flow:
-    provider picker, credential prompting, model selection, and config
-    persistence.
-    """
-    from son_of_anton_cli.auth import (
-        resolve_provider,
-        AuthError,
-        format_auth_error,
-    )
-    from son_of_anton_cli.config import (
-        get_compatible_custom_providers,
-        load_config,
-    )
-    from son_of_anton_cli.providers import (
-        custom_provider_aliases,
-        custom_provider_slug,
-        resolve_provider_full,
-    )
-
-    config = load_config()
-    current_model = config.get("model")
-    if isinstance(current_model, dict):
-        current_model = current_model.get("default", "")
-    current_model = current_model or "(not set)"
-
-    # Read effective provider the same way the CLI does at startup:
-    # config.toml model.provider > env var > auto-detect
-    config_provider = None
-    model_cfg = config.get("model")
-    if isinstance(model_cfg, dict):
-        config_provider = model_cfg.get("provider")
-
-    effective_provider = (
-        config_provider or os.getenv("SON_OF_ANTON_INFERENCE_PROVIDER") or "auto"
-    )
-    compatible_custom_providers = get_compatible_custom_providers(config)
-    def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
-        from son_of_anton_cli.config import read_raw_config
-
-        # Build lookups of raw (un-expanded) templates keyed by a
-        # stable identity. We intentionally bypass
-        # ``get_compatible_custom_providers(read_raw_config())`` here because
-        # its ``_normalize_custom_provider_entry`` step calls ``urlparse()``
-        # on ``base_url`` and drops any entry whose ``base_url`` is itself an
-        # env-ref template (e.g. ``${NEURALWATT_API_BASE}``). Dropping those
-        # entries is exactly how env-ref preservation fails for the user
-        # config that motivated this fix.
-        raw_api_key_refs: dict[tuple, str] = {}
-        raw_base_url_refs: dict[tuple, str] = {}
-        raw_cfg = read_raw_config()
-
-        def _record_raw(
-            name: str,
-            provider_key: str,
-            model: str,
-            api_key: str,
-            base_url: str,
-        ) -> None:
-            template = str(api_key or "").strip()
-            base_template = str(base_url or "").strip()
-            name = str(name or "").strip()
-            provider_key = str(provider_key or "").strip()
-            model = str(model or "").strip()
-            # Index by every plausible identity the loaded (expanded) config
-            # might present: (name), (name, model), (provider_key), and
-            # (provider_key, model). Case-insensitive on name/provider_key so
-            # the loaded entry matches regardless of display casing.
-            identities = []
-            if name:
-                identities.extend(((name.lower(),), (name.lower(), model)))
-            if provider_key:
-                identities.extend(
-                    ((provider_key.lower(),), (provider_key.lower(), model))
-                )
-            if "${" in template:
-                for identity in identities:
-                    raw_api_key_refs.setdefault(identity, template)
-            if "${" in base_template:
-                for identity in identities:
-                    raw_base_url_refs.setdefault(identity, base_template)
-
-        raw_list = raw_cfg.get("custom_providers")
-        if isinstance(raw_list, list):
-            for raw_entry in raw_list:
-                if not isinstance(raw_entry, dict):
-                    continue
-                _record_raw(
-                    raw_entry.get("name", ""),
-                    "",
-                    raw_entry.get("model", "") or raw_entry.get("default_model", ""),
-                    raw_entry.get("api_key", ""),
-                    raw_entry.get("base_url", "")
-                    or raw_entry.get("url", "")
-                    or raw_entry.get("api", ""),
-                )
-        raw_providers = raw_cfg.get("providers")
-        if isinstance(raw_providers, dict):
-            for raw_key, raw_entry in raw_providers.items():
-                if not isinstance(raw_entry, dict):
-                    continue
-                _record_raw(
-                    raw_entry.get("name", "") or raw_key,
-                    raw_key,
-                    raw_entry.get("model", "") or raw_entry.get("default_model", ""),
-                    raw_entry.get("api_key", ""),
-                    raw_entry.get("base_url", "")
-                    or raw_entry.get("url", "")
-                    or raw_entry.get("api", ""),
-                )
-
-        def _lookup_ref(
-            refs: dict[tuple, str],
-            name: str,
-            provider_key: str,
-            model: str,
-        ) -> str:
-            name_lc = str(name or "").strip().lower()
-            pkey_lc = str(provider_key or "").strip().lower()
-            model = str(model or "").strip()
-            for identity in (
-                (pkey_lc, model),
-                (pkey_lc,),
-                (name_lc, model),
-                (name_lc,),
-            ):
-                if identity[0] and identity in refs:
-                    return refs[identity]
-            return ""
-
-        custom_provider_map = {}
-        for entry in get_compatible_custom_providers(cfg):
-            if not isinstance(entry, dict):
-                continue
-            name = (entry.get("name") or "").strip()
-            base_url = (entry.get("base_url") or "").strip()
-            if not name or not base_url:
-                continue
-            provider_key = (entry.get("provider_key") or "").strip()
-            key = custom_provider_slug(name, provider_key)
-            custom_provider_map[key] = {
-                "name": name,
-                "base_url": base_url,
-                "api_key": entry.get("api_key", ""),
-                "key_env": entry.get("key_env") or entry.get("api_key_env", ""),
-                "model": entry.get("model", ""),
-                "models": entry.get("models", {}),
-                "models_discovered": entry.get("models_discovered", False),
-                "extra_headers": entry.get("extra_headers", {}),
-                "discover_models": entry.get("discover_models", True),
-                "api_mode": entry.get("api_mode", ""),
-                "provider_key": provider_key,
-                "api_key_ref": _lookup_ref(
-                    raw_api_key_refs, name, provider_key, entry.get("model", "")
-                ),
-                "base_url_ref": _lookup_ref(
-                    raw_base_url_refs, name, provider_key, entry.get("model", "")
-                ),
-            }
-        return custom_provider_map
-
-    def _norm_base_url(url: str) -> str:
-        return str(url or "").strip().rstrip("/").lower()
-
-    # Add user-defined custom providers from config.toml
-    _custom_provider_map = _named_custom_provider_map(
-        config
-    )  # key → {name, base_url, api_key}
-
-    def _canonical_named_custom_key(provider_id: str) -> str:
-        requested = str(provider_id or "").strip().lower()
-        for key, provider_info in _custom_provider_map.items():
-            if requested in custom_provider_aliases(
-                provider_info.get("name", ""),
-                provider_info.get("provider_key", ""),
-            ):
-                return key
-        return provider_id
-
-    def _active_custom_key_from_base_url() -> str:
-        if effective_provider != "custom" or not isinstance(model_cfg, dict):
-            return ""
-        current_base = _norm_base_url(model_cfg.get("base_url", ""))
-        if not current_base:
-            return ""
-        for key, provider_info in _custom_provider_map.items():
-            if _norm_base_url(provider_info.get("base_url", "")) == current_base:
-                return key
-        return ""
-
-    active = _active_custom_key_from_base_url()
-    if active is None:
-        active = ""
-    if not active and effective_provider != "auto":
-        active_def = resolve_provider_full(
-            effective_provider,
-            config.get("providers"),
-            compatible_custom_providers,
-        )
-        if active_def is not None:
-            active = active_def.id
-            if active_def.source == "user-config":
-                active = _canonical_named_custom_key(active)
-        else:
-            warning = (
-                f"Unknown provider '{effective_provider}'. Check 'son-of-anton model' for "
-                "available providers, or run 'son-of-anton doctor' to diagnose config "
-                "issues."
-            )
-            print(f"Warning: {warning} Falling back to auto provider detection.")
-    if not active:
-        try:
-            active = resolve_provider("auto")
-        except AuthError as exc:
-            if effective_provider == "auto":
-                warning = format_auth_error(exc)
-                print(f"Warning: {warning} Falling back to auto provider detection.")
-            active = None  # no provider yet; default to first in list
-
-    # Detect custom endpoint
-    from son_of_anton_cli.models import (
-        CANONICAL_PROVIDERS,
-        _PROVIDER_LABELS,
-        _PROVIDER_ALIASES,
-        group_providers,
-        provider_group_for_slug,
-    )
-
-    provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list
-    if active and active in _custom_provider_map:
-        active_label = _custom_provider_map[active]["name"]
-    else:
-        active_label = provider_labels.get(active, active) if active else "none"
-
-    print()
-    print(f"  Current model:    {current_model}")
-    print(f"  Active provider:  {active_label}")
-    print()
-
-    # Step 1: Provider selection.
-    #
-    # Canonical providers are folded into top-level groups (display only — see
-    # PROVIDER_GROUPS in son_of_anton_cli/models.py). A multi-member group shows one
-    # row ("Kimi / Moonshot ▸"); picking it opens a member sub-picker that
-    # resolves back to a concrete slug, so the dispatch chain below is
-    # unchanged. Custom providers and the trailing actions stay flat.
-    canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
-    # Honor ``model_catalog.excluded_providers`` so the CLI ``son-of-anton model``
-    # picker hides the same providers the gateway/TUI pickers do. A canonical
-    # provider is hidden if its slug OR any of its aliases appears in the
-    # exclusion list (case-insensitive), matching list_authenticated_providers'
-    # matching against son_of_anton_id / alias / canonical slug.
-    _cli_excluded = {
-        str(p).strip().lower()
-        for p in (config.get("model_catalog", {}) or {}).get("excluded_providers") or []
-        if p
-    }
-    if _cli_excluded:
-        _alias_to_canon = _PROVIDER_ALIASES
-        _names_for: dict[str, set[str]] = {}
-        for _p in CANONICAL_PROVIDERS:
-            _names_for[_p.slug] = {_p.slug.lower()}
-        for _alias, _canon in _alias_to_canon.items():
-            _names_for.setdefault(_canon, {_canon.lower()}).add(_alias.lower())
-        _visible_slugs = [
-            p.slug for p in CANONICAL_PROVIDERS
-            if not _names_for.get(p.slug, {p.slug.lower()}) & _cli_excluded
-        ]
-    else:
-        _visible_slugs = [p.slug for p in CANONICAL_PROVIDERS]
-    grouped_rows = group_providers(_visible_slugs)
-
-    # The group/slug that should be pre-selected: the active provider's group
-    # if it's grouped, otherwise the active slug itself.
-    active_group = provider_group_for_slug(active) if active else ""
-
-    # ordered entries: (key, label, members)
-    #   members == [] → leaf row, key is a provider slug / action
-    #   members != [] → group row, key is "group:<gid>"
-    ordered: list[tuple[str, str, list[str]]] = []
-    default_idx = 0
-    for row in grouped_rows:
-        if row["kind"] == "group":
-            gid = row["group_id"]
-            group_desc = row.get("description", "")
-            label = f"{row['label']} ▸ ({group_desc})" if group_desc else f"{row['label']} ▸"
-            key = f"group:{gid}"
-            is_active = bool(active_group) and gid == active_group
-            members = row["members"]
-        else:
-            slug = row["slug"]
-            label = canonical_descs.get(slug, provider_labels.get(slug, slug))
-            key = slug
-            is_active = bool(active) and slug == active
-            members = []
-        if is_active:
-            ordered.append((key, f"{label}  ← currently active", members))
-            default_idx = len(ordered) - 1
-        else:
-            ordered.append((key, label, members))
-
-    for key, provider_info in _custom_provider_map.items():
-        name = provider_info["name"]
-        base_url = provider_info["base_url"]
-        short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
-        saved_model = provider_info.get("model", "")
-        model_hint = f" — {saved_model}" if saved_model else ""
-        label = f"{name} ({short_url}){model_hint}"
-        if active and key == active:
-            ordered.append((key, f"{label}  ← currently active", []))
-            default_idx = len(ordered) - 1
-        else:
-            ordered.append((key, label, []))
-
-    ordered.append(("custom", "Custom endpoint (enter URL manually)", []))
-    _has_saved_custom_list = isinstance(config.get("custom_providers"), list) and bool(
-        config.get("custom_providers")
-    )
-    if _has_saved_custom_list:
-        ordered.append(("remove-custom", "Remove a saved custom provider", []))
-    ordered.append(("aux-config", "Configure auxiliary models...", []))
-    ordered.append(("cancel", "Leave unchanged", []))
-
-    provider_idx = _prompt_provider_choice(
-        [label for _, label, _ in ordered],
-        default=default_idx,
-    )
-    if provider_idx is None or ordered[provider_idx][0] == "cancel":
-        print("No change.")
-        return
-
-    selected_key = ordered[provider_idx][0]
-    selected_members = ordered[provider_idx][2]
-
-    # Group row → drill into a member sub-picker. Default to the active member
-    # if the active provider lives in this group. The descriptive text lives on
-    # the group row itself, so member rows show only their short label here.
-    if selected_members:
-        member_default = 0
-        if active in selected_members:
-            member_default = selected_members.index(active)
-        member_labels = [
-            provider_labels.get(m, m) for m in selected_members
-        ]
-        group_label = ordered[provider_idx][1].split(" ▸", 1)[0]
-        member_idx = _prompt_provider_choice(
-            member_labels,
-            default=member_default,
-            title=f"Select {group_label} provider:",
-        )
-        if member_idx is None:
-            print("No change.")
-            return
-        selected_provider = selected_members[member_idx]
-    else:
-        selected_provider = selected_key
-
-    if selected_provider == "aux-config":
-        _aux_config_menu()
-        return
-
-    # Step 2: Provider-specific setup + model selection
-    if selected_provider == "custom":
-        _model_flow_custom(config)
-    elif (
-        selected_provider.startswith("custom:")
-        or selected_provider in _custom_provider_map
-    ):
-        provider_info = _named_custom_provider_map(load_config()).get(selected_provider)
-        if provider_info is None:
-            print(
-                "Warning: the selected saved custom provider is no longer available. "
-                "It may have been removed from config.toml. No change."
-            )
-            return
-        _model_flow_named_custom(config, provider_info)
-    elif selected_provider == "remove-custom":
-        _remove_custom_provider(config)
-    elif selected_provider == "openai-api" or _is_profile_api_key_provider(
-        selected_provider
-    ):
-        _model_flow_api_key_provider(config, selected_provider, current_model)
-
-    # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
-    # When the user switches to a named provider (anything except "custom"),
-    # a leftover OPENAI_BASE_URL in ~/.son-of-anton/.env can poison auxiliary
-    # clients that use provider:auto. Clear it proactively.  (#5161)
-    if selected_provider not in {
-        "custom",
-        "cancel",
-        "remove-custom",
-    } and not selected_provider.startswith("custom:"):
-        _clear_stale_openai_base_url()
-
-
-def _clear_stale_openai_base_url():
-    """Remove OPENAI_BASE_URL from ~/.son-of-anton/.env if the active provider is not 'custom'.
-
-    After a provider switch, a leftover OPENAI_BASE_URL causes auxiliary
-    clients (compaction, vision, delegation) with provider:auto to route
-    requests to the old custom endpoint instead of the newly selected
-    provider.  See issue #5161.
-    """
-    from son_of_anton_cli.config import get_env_value, save_env_value, load_config
-
-    cfg = load_config()
-    model_cfg = cfg.get("model", {})
-    if isinstance(model_cfg, dict):
-        provider = (model_cfg.get("provider") or "").strip().lower()
-    else:
-        provider = ""
-
-    if provider == "custom" or not provider:
-        return  # custom provider legitimately uses OPENAI_BASE_URL
-
-    stale_url = get_env_value("OPENAI_BASE_URL")
-    if stale_url:
-        save_env_value("OPENAI_BASE_URL", "")
-        print(
-            f"Cleared stale OPENAI_BASE_URL from .env (was: {stale_url[:40]}...)"
-            if len(stale_url) > 40
-            else f"Cleared stale OPENAI_BASE_URL from .env (was: {stale_url})"
-        )
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Auxiliary model configuration
 #
@@ -1975,725 +1245,6 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("title_generation", "Title generation", "session titles"),
     ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
 ]
-
-# Special non-auxiliary task surfaced in the same picker: subagent delegation.
-# Routing lives under top-level `delegation.*` in config.toml (NOT
-# `auxiliary.delegation`) because delegate_task spawns full child agents via
-# tools/delegate_tool.py::_resolve_delegation_credentials(), which reads the
-# delegation section directly. "auto" here means "inherit the parent agent's
-# provider/model/credentials" and is stored as empty strings — never persist
-# the literal "auto", or it would be resolved as a provider name.
-_DELEGATION_TASK_KEY = "delegation"
-_DELEGATION_TASK_NAME = "Delegation"
-_DELEGATION_TASK_DESC = "subagent model (delegate_task)"
-
-
-def _all_aux_tasks() -> list[tuple[str, str, str]]:
-    """Return built-in + plugin-registered auxiliary tasks for picker/menu use.
-
-    Built-in tasks come first (preserving order), followed by plugin tasks
-    sorted by key. Used by ``_aux_config_menu``, ``_reset_aux_to_auto``, and
-    display-name lookups so plugin-registered tasks (registered via
-    :meth:`son_of_anton_cli.plugins.PluginContext.register_auxiliary_task`) appear
-    in the same surfaces as built-in ones without core knowing about them.
-    """
-    tasks = list(_AUX_TASKS)
-    try:
-        from son_of_anton_cli.plugins import get_plugin_auxiliary_tasks
-        for entry in get_plugin_auxiliary_tasks():
-            tasks.append((entry["key"], entry["display_name"], entry["description"]))
-    except Exception:
-        # Plugin discovery failure must not break the aux config UI.
-        # Built-in tasks remain available.
-        pass
-    return tasks
-
-
-def _format_aux_current(task_cfg: dict) -> str:
-    """Render the current aux config for display in the task menu."""
-    if not isinstance(task_cfg, dict):
-        return "auto"
-    base_url = str(task_cfg.get("base_url") or "").strip()
-    provider = str(task_cfg.get("provider") or "auto").strip() or "auto"
-    model = str(task_cfg.get("model") or "").strip()
-    if base_url:
-        short = base_url.replace("https://", "").replace("http://", "").rstrip("/")
-        return f"custom ({short})" + (f" · {model}" if model else "")
-    if provider == "auto":
-        return "auto" + (f" · {model}" if model else "")
-    if model:
-        return f"{provider} · {model}"
-    return provider
-
-
-def _delegation_cfg_as_task(cfg: dict) -> dict:
-    """Project the top-level ``delegation`` section into aux-task shape.
-
-    Returns a dict with provider/model/base_url/api_key keys so the shared
-    rendering (``_format_aux_current``) and picker code can treat delegation
-    like any other task. Empty provider means "inherit parent" which renders
-    as "auto".
-    """
-    d = cfg.get("delegation")
-    if not isinstance(d, dict):
-        d = {}
-    return {
-        "provider": str(d.get("provider") or "").strip(),
-        "model": str(d.get("model") or "").strip(),
-        "base_url": str(d.get("base_url") or "").strip(),
-        "api_key": str(d.get("api_key") or "").strip(),
-    }
-
-
-def _aux_task_display_name(task: str) -> str:
-    """Display name for a task key, covering the special delegation entry."""
-    if task == _DELEGATION_TASK_KEY:
-        return _DELEGATION_TASK_NAME
-    return next((name for key, name, _ in _all_aux_tasks() if key == task), task)
-
-
-def _save_aux_choice(
-    task: str,
-    *,
-    provider: str,
-    model: str = "",
-    base_url: str = "",
-    api_key: str = "",
-) -> None:
-    """Persist an auxiliary task's provider/model to config.toml.
-
-    Only writes the four routing fields — timeout, download_timeout, and any
-    other task-specific settings are preserved untouched. The main model
-    config (``model.default``/``model.provider``) is never modified.
-
-    The special ``delegation`` task writes to the top-level ``delegation``
-    section (consumed by ``tools/delegate_tool.py``), not ``auxiliary.*``.
-    There, "auto" (inherit the parent agent) is stored as an empty provider —
-    the literal string "auto" would be resolved as a provider name.
-    """
-    from son_of_anton_cli.config import load_config, save_config
-
-    cfg = load_config()
-
-    if task == _DELEGATION_TASK_KEY:
-        entry = cfg.setdefault("delegation", {})
-        if not isinstance(entry, dict):
-            entry = {}
-            cfg["delegation"] = entry
-        entry["provider"] = "" if provider == "auto" else provider
-        entry["model"] = model or ""
-        entry["base_url"] = base_url or ""
-        entry["api_key"] = api_key or ""
-        save_config(cfg)
-        return
-
-    aux = cfg.setdefault("auxiliary", {})
-    if not isinstance(aux, dict):
-        aux = {}
-        cfg["auxiliary"] = aux
-    entry = aux.setdefault(task, {})
-    if not isinstance(entry, dict):
-        entry = {}
-        aux[task] = entry
-    entry["provider"] = provider
-    entry["model"] = model or ""
-    entry["base_url"] = base_url or ""
-    entry["api_key"] = api_key or ""
-    save_config(cfg)
-
-
-def _reset_aux_to_auto() -> int:
-    """Reset every known aux task back to auto/empty. Returns number reset.
-
-    Includes plugin-registered tasks (via ``_all_aux_tasks``) so a plugin
-    that contributed an auxiliary task gets reset alongside built-ins.
-    """
-    from son_of_anton_cli.config import load_config, save_config
-
-    cfg = load_config()
-    aux = cfg.setdefault("auxiliary", {})
-    if not isinstance(aux, dict):
-        aux = {}
-        cfg["auxiliary"] = aux
-    count = 0
-    for task, _name, _desc in _all_aux_tasks():
-        entry = aux.setdefault(task, {})
-        if not isinstance(entry, dict):
-            entry = {}
-            aux[task] = entry
-        changed = False
-        if entry.get("provider") not in {None, "", "auto"}:
-            entry["provider"] = "auto"
-            changed = True
-        for field in ("model", "base_url", "api_key"):
-            if entry.get(field):
-                entry[field] = ""
-                changed = True
-        # Preserve timeout/download_timeout — those are user-tuned, not routing
-        if changed:
-            count += 1
-    # Delegation (top-level section) — clear only the routing fields; other
-    # delegation settings (max_concurrent_children, max_spawn_depth, etc.)
-    # are not routing and must be preserved.
-    dele = cfg.get("delegation")
-    if isinstance(dele, dict):
-        changed = False
-        for field in ("provider", "model", "base_url", "api_key"):
-            if dele.get(field):
-                dele[field] = ""
-                changed = True
-        if changed:
-            count += 1
-    save_config(cfg)
-    return count
-
-
-def _aux_config_menu() -> None:
-    """Top-level auxiliary-model picker — choose a task to configure.
-
-    Loops until the user picks "Back" so multiple tasks can be configured
-    without returning to the main provider menu.
-    """
-    from son_of_anton_cli.config import load_config
-
-    while True:
-        cfg = load_config()
-        aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
-
-        print()
-        print("  Auxiliary models — side-task routing")
-        print()
-        print("  Side tasks (vision, compaction, web extraction, etc.) default")
-        print('  to your main chat model.  "auto" means "use my main model".')
-        print("  Override a task below if you want it pinned to a specific")
-        print("  provider/model.")
-        print()
-
-        # Build the task menu with current settings inline
-        all_tasks = _all_aux_tasks()
-        menu_tasks = all_tasks + [
-            (_DELEGATION_TASK_KEY, _DELEGATION_TASK_NAME, _DELEGATION_TASK_DESC)
-        ]
-        name_col = max(len(name) for _, name, _ in menu_tasks) + 2
-        desc_col = max(len(desc) for _, _, desc in menu_tasks) + 4
-        entries: list[tuple[str, str]] = []
-        for task_key, name, desc in menu_tasks:
-            if task_key == _DELEGATION_TASK_KEY:
-                task_cfg = _delegation_cfg_as_task(cfg)
-            else:
-                task_cfg = (
-                    aux.get(task_key, {}) if isinstance(aux.get(task_key), dict) else {}
-                )
-            current = _format_aux_current(task_cfg)
-            label = (
-                f"{name.ljust(name_col)}{('(' + desc + ')').ljust(desc_col)}{current}"
-            )
-            entries.append((task_key, label))
-        entries.append(("__reset__", "Reset all to auto"))
-        entries.append(("__back__", "Back"))
-
-        idx = _prompt_provider_choice(
-            [label for _, label in entries],
-            default=0,
-        )
-        if idx is None:
-            return
-        key = entries[idx][0]
-        if key == "__back__":
-            return
-        if key == "__reset__":
-            n = _reset_aux_to_auto()
-            if n:
-                print(f"Reset {n} auxiliary task(s) to auto.")
-            else:
-                print("All auxiliary tasks were already set to auto.")
-            print()
-            continue
-        # Otherwise configure the specific task
-        _aux_select_for_task(key)
-
-
-def _aux_select_for_task(task: str) -> None:
-    """Pick a provider + model for a single auxiliary task and persist it.
-
-    Provider rows come from ``build_aux_picker_rows()`` — the shared aux-picker
-    substrate — so this surface shows exactly what every other aux picker
-    shows: authenticated built-ins, the user's own ``providers:`` /
-    ``custom_providers:`` endpoints, and providers whose credential pool is
-    temporarily exhausted. Only already-configured providers appear; users set
-    up new ones through the normal ``son-of-anton model`` flow, then route aux tasks
-    to them here.
-    """
-    from son_of_anton_cli.config import load_config
-    from son_of_anton_cli.inventory import build_aux_picker_rows, format_aux_picker_entries
-
-    cfg = load_config()
-    if task == _DELEGATION_TASK_KEY:
-        task_cfg = _delegation_cfg_as_task(cfg)
-    else:
-        aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
-        task_cfg = aux.get(task, {}) if isinstance(aux.get(task), dict) else {}
-    current_provider = str(task_cfg.get("provider") or "auto").strip() or "auto"
-    current_model = str(task_cfg.get("model") or "").strip()
-    current_base_url = str(task_cfg.get("base_url") or "").strip()
-
-    display_name = _aux_task_display_name(task)
-
-    # Gather authenticated providers (has credentials + curated model list)
-    try:
-        providers = build_aux_picker_rows(
-            current_provider=current_provider,
-            current_model=current_model,
-            current_base_url=current_base_url,
-        )
-    except Exception as exc:
-        print(f"Could not detect authenticated providers: {exc}")
-        providers = []
-
-    entries: list[tuple[str, str, list[str]]] = []  # (slug, label, models)
-    # "auto" always first
-    auto_marker = (
-        "  ← current" if current_provider == "auto" and not current_base_url else ""
-    )
-    auto_label = (
-        "auto (inherit main agent)"
-        if task == _DELEGATION_TASK_KEY
-        else "auto (recommended)"
-    )
-    entries.append(("__auto__", f"{auto_label}{auto_marker}", []))
-
-    entries.extend(
-        format_aux_picker_entries(
-            providers,
-            current_provider=current_provider,
-            current_base_url=current_base_url,
-        )
-    )
-
-    # Custom endpoint (raw base_url)
-    custom_marker = "  ← current" if current_base_url else ""
-    entries.append(("__custom__", f"Custom endpoint (direct URL){custom_marker}", []))
-    entries.append(("__back__", "Back", []))
-
-    print()
-    print(f"  Configure {display_name} — current: {_format_aux_current(task_cfg)}")
-    print()
-
-    idx = _prompt_provider_choice([label for _, label, _ in entries], default=0)
-    if idx is None:
-        return
-    slug, _label, models = entries[idx]
-
-    if slug == "__back__":
-        return
-
-    if slug == "__auto__":
-        _save_aux_choice(task, provider="auto", model="", base_url="", api_key="")
-        print(f"{display_name}: reset to auto.")
-        return
-
-    if slug == "__custom__":
-        _aux_flow_custom_endpoint(task, task_cfg)
-        return
-
-    # Regular provider — pick a model from its curated list
-    _aux_flow_provider_model(task, slug, models, current_model)
-
-
-def _aux_flow_provider_model(
-    task: str,
-    provider_slug: str,
-    curated_models: list,
-    current_model: str = "",
-) -> None:
-    """Prompt for a model under an already-authenticated provider, save to aux."""
-    from son_of_anton_cli.auth import _prompt_model_selection
-    from son_of_anton_cli.models import get_pricing_for_provider
-
-    display_name = _aux_task_display_name(task)
-
-    # Fetch live pricing for this provider (non-blocking)
-    pricing: dict = {}
-    try:
-        pricing = get_pricing_for_provider(provider_slug) or {}
-    except Exception:
-        pricing = {}
-
-    model_list = list(curated_models)
-
-    # Let the user pick a model. _prompt_model_selection supports "Enter custom
-    # model name" and cancel.  When there's no curated list (rare), fall back
-    # to a raw input prompt.
-    if not model_list:
-        print(f"No curated model list for {provider_slug}.")
-        print("Enter a model slug manually (blank = use provider default):")
-        try:
-            val = line_input("Model: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return
-        selected = val or ""
-    else:
-        selected = _prompt_model_selection(
-            model_list,
-            current_model=current_model,
-            pricing=pricing,
-            confirm_provider=provider_slug,
-        )
-        if selected is None:
-            print("No change.")
-            return
-
-    _save_aux_choice(
-        task, provider=provider_slug, model=selected or "", base_url="", api_key=""
-    )
-    if selected:
-        print(f"{display_name}: {provider_slug} · {selected}")
-    else:
-        print(f"{display_name}: {provider_slug} (provider default model)")
-
-
-def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
-    """Prompt for a direct OpenAI-compatible base_url + optional api_key/model."""
-    from son_of_anton_cli.secret_prompt import masked_secret_prompt
-
-    display_name = _aux_task_display_name(task)
-    current_base_url = str(task_cfg.get("base_url") or "").strip()
-    current_model = str(task_cfg.get("model") or "").strip()
-
-    print()
-    print(f"  Custom endpoint for {display_name}")
-    print("  Provide an OpenAI-compatible base URL (e.g. http://localhost:11434/v1)")
-    print()
-    try:
-        url_prompt = (
-            f"Base URL [{current_base_url}]: " if current_base_url else "Base URL: "
-        )
-        url = line_input(url_prompt).strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        return
-    url = url or current_base_url
-    if not url:
-        print("No URL provided. No change.")
-        return
-    try:
-        model_prompt = (
-            f"Model slug (optional) [{current_model}]: "
-            if current_model
-            else "Model slug (optional): "
-        )
-        model = line_input(model_prompt).strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        return
-    model = model or current_model
-    try:
-        api_key = masked_secret_prompt(
-            "API key (optional, blank = use OPENAI_API_KEY): "
-        ).strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        return
-
-    _save_aux_choice(
-        task,
-        provider="custom",
-        model=model,
-        base_url=url,
-        api_key=api_key,
-    )
-    short_url = url.replace("https://", "").replace("http://", "").rstrip("/")
-    print(f"{display_name}: custom ({short_url})" + (f" · {model}" if model else ""))
-
-
-def _prompt_provider_choice(choices, *, default=0, title="Select provider:"):
-    """Show provider selection menu with curses arrow-key navigation.
-
-    Falls back to a numbered list when curses is unavailable (e.g. piped
-    stdin, non-TTY environments).  Returns the selected index, or None
-    if the user cancels.
-    """
-    try:
-        from son_of_anton_cli.cli_output import _curses_prompt_choice
-
-        idx = _curses_prompt_choice(title, choices, default)
-        if idx >= 0:
-            print()
-            return idx
-    except Exception:
-        pass
-
-    # Fallback: numbered list
-    print(title)
-    for i, c in enumerate(choices, 1):
-        marker = "→" if i - 1 == default else " "
-        print(f"  {marker} {i}. {c}")
-    print()
-    while True:
-        try:
-            val = input(f"Choice [1-{len(choices)}] ({default + 1}): ").strip()
-            if not val:
-                return default
-            idx = int(val) - 1
-            if 0 <= idx < len(choices):
-                return idx
-            print(f"Please enter 1-{len(choices)}")
-        except ValueError:
-            print("Please enter a number")
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return None
-
-
-def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "") -> Optional[str]:
-    """Prompt for a custom provider API mode.
-
-    Returns an explicit mode string, or None to keep auto-detect behavior.
-    """
-    from son_of_anton_cli.runtime_provider import _detect_api_mode_for_url
-
-    detected_mode = _detect_api_mode_for_url(base_url)
-    normalized_current = str(current_api_mode or "").strip().lower()
-    default_mode = normalized_current or detected_mode or ""
-
-    mode_options = [
-        (
-            "",
-            "Auto-detect",
-            "Use Son of Anton URL heuristics; best for standard OpenAI-compatible endpoints.",
-        ),
-        (
-            "chat_completions",
-            "Chat Completions",
-            "Use /chat/completions for standard OpenAI-compatible servers.",
-        ),
-        (
-            "Anthropic Messages",
-            "Use /v1/messages for Anthropic-compatible endpoints.",
-        ),
-    ]
-
-    print()
-    print("Select API compatibility mode:")
-    for idx, (value, label, description) in enumerate(mode_options, 1):
-        markers = []
-        if value == detected_mode:
-            markers.append("detected")
-        if value == default_mode:
-            markers.append("current")
-        suffix = f" [{' / '.join(markers)}]" if markers else ""
-        print(f"  {idx}. {label}{suffix}")
-        print(f"     {description}")
-
-    try:
-        raw = input(
-            "Choice [1-4, Enter to keep current/detected]: "
-        ).strip().lower()
-    except (KeyboardInterrupt, EOFError):
-        print("\nCancelled.")
-        raise
-
-    if not raw:
-        return default_mode or None
-
-    if raw in {"1", "auto", "detect", "auto-detect"}:
-        return None
-    if raw in {"2", "chat", "chat_completions", "completions"}:
-        return "chat_completions"
-    print(f"Invalid API mode choice: {raw}. Falling back to auto-detect.")
-    return None
-
-
-def _auto_provider_name(base_url: str) -> str:
-    """Generate a display name from a custom endpoint URL.
-
-    Returns a human-friendly label like "Local (localhost:11434)" or
-    "RunPod (xyz.runpod.io)".  Used as the default when prompting the
-    user for a display name during custom endpoint setup.
-    """
-
-    clean = base_url.replace("https://", "").replace("http://", "").rstrip("/")
-    clean = re.sub(r"/v1/?$", "", clean)
-    name = clean.split("/")[0]
-    if "localhost" in name or "127.0.0.1" in name:
-        name = f"Local ({name})"
-    elif "runpod" in name.lower():
-        name = f"RunPod ({name})"
-    else:
-        name = name.capitalize()
-    return name
-
-
-def _custom_provider_api_key_config_value(provider_info, resolved_api_key=""):
-    """Return the value that should be persisted for a custom provider key."""
-    api_key_ref = str(provider_info.get("api_key_ref", "") or "").strip()
-    if api_key_ref:
-        return api_key_ref
-
-    key_env = str(provider_info.get("key_env", "") or "").strip()
-    if key_env and not str(provider_info.get("api_key", "") or "").strip():
-        return f"${{{key_env}}}"
-
-    return str(resolved_api_key or "").strip()
-
-
-def _custom_provider_base_url_config_value(provider_info, resolved_base_url=""):
-    """Return the value that should be persisted for a custom provider URL."""
-    base_url_ref = str(provider_info.get("base_url_ref", "") or "").strip()
-    if base_url_ref:
-        return base_url_ref
-    return str(resolved_base_url or "").strip()
-
-
-def _save_custom_provider(
-    base_url, api_key="", model="", context_length=None, name=None, api_mode=None,
-    key_env=""
-):
-    """Save a custom endpoint to custom_providers in config.toml.
-
-    Deduplicates by base_url — if the URL already exists, updates the
-    model name, context_length, and api_mode but doesn't add a duplicate entry.
-    Uses *name* when provided, otherwise auto-generates from the URL.
-
-    When *key_env* is set the caller has already written the key to ``.env``,
-    so the entry references it instead of inlining the secret (#69449).
-    """
-    from son_of_anton_cli.config import load_config, save_config
-
-    cfg = load_config()
-    providers = cfg.get("custom_providers") or []
-    if not isinstance(providers, list):
-        providers = []
-
-    # Check if this URL is already saved — update model/context_length if so
-    for entry in providers:
-        if isinstance(entry, dict) and entry.get("base_url", "").rstrip(
-            "/"
-        ) == base_url.rstrip("/"):
-            changed = False
-            if model and entry.get("model") != model:
-                entry["model"] = model
-                changed = True
-            if model and context_length:
-                models_cfg = entry.get("models", {})
-                if not isinstance(models_cfg, dict):
-                    models_cfg = {}
-                models_cfg[model] = {"context_length": context_length}
-                entry["models"] = models_cfg
-                changed = True
-            # Wizard-saved metadata is not a catalog pin: keep the picker
-            # probing the endpoint's full /v1/models list (see
-            # ``_entry_catalog_pinned``).
-            if entry.get("discover_models") is not True:
-                entry["discover_models"] = True
-                changed = True
-            if api_mode:
-                if entry.get("api_mode") != api_mode:
-                    entry["api_mode"] = api_mode
-                    changed = True
-            elif "api_mode" in entry:
-                entry.pop("api_mode", None)
-                changed = True
-            if key_env and (entry.get("key_env") != key_env or entry.get("api_key")):
-                entry["key_env"] = key_env
-                entry.pop("api_key", None)
-                changed = True
-            if changed:
-                cfg["custom_providers"] = providers
-                save_config(cfg)
-            return  # already saved, updated if needed
-
-    # Use provided name or auto-generate from URL
-    if not name:
-        name = _auto_provider_name(base_url)
-
-    entry = {"name": name, "base_url": base_url, "discover_models": True}
-    if key_env:
-        entry["key_env"] = key_env
-    elif api_key:
-        entry["api_key"] = api_key
-    if model:
-        entry["model"] = model
-    if api_mode:
-        entry["api_mode"] = api_mode
-    if model and context_length:
-        entry["models"] = {model: {"context_length": context_length}}
-
-    providers.append(entry)
-    cfg["custom_providers"] = providers
-    save_config(cfg)
-    print(f'  💾 Saved to custom providers as "{name}" (edit in config.toml)')
-
-
-def _remove_custom_provider(config):
-    """Let the user remove a saved custom provider from config.toml."""
-    from son_of_anton_cli.config import load_config, save_config
-
-    cfg = load_config()
-    providers = cfg.get("custom_providers") or []
-    if not isinstance(providers, list) or not providers:
-        print("No custom providers configured.")
-        return
-
-    print("Remove a custom provider:\n")
-
-    choices = []
-    for entry in providers:
-        if isinstance(entry, dict):
-            name = entry.get("name", "unnamed")
-            url = entry.get("base_url", "")
-            short_url = url.replace("https://", "").replace("http://", "").rstrip("/")
-            choices.append(f"{name} ({short_url})")
-        else:
-            choices.append(str(entry))
-    choices.append("Cancel")
-
-    try:
-        from son_of_anton_cli.curses_ui import curses_radiolist
-
-        idx = curses_radiolist(
-            "Select provider to remove:",
-            list(choices),
-            selected=0,
-            cancel_returns=-1,
-        )
-        print()
-        if idx < 0:
-            idx = None
-    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
-        for i, c in enumerate(choices, 1):
-            print(f"  {i}. {c}")
-        print()
-        try:
-            val = input(f"Choice [1-{len(choices)}]: ").strip()
-            idx = int(val) - 1 if val else None
-        except (ValueError, KeyboardInterrupt, EOFError):
-            idx = None
-
-    if idx is None or idx >= len(providers):
-        print("No change.")
-        return
-
-    removed = providers.pop(idx)
-    cfg["custom_providers"] = providers
-    save_config(cfg)
-    removed_name = (
-        removed.get("name", "unnamed") if isinstance(removed, dict) else str(removed)
-    )
-    print(f'✅ Removed "{removed_name}" from custom providers.')
-
-
-# Lazy-export the model catalog at module level. Tests and a handful of
-# downstream call sites read `son_of_anton_cli.main._PROVIDER_MODELS` directly,
-# so the symbol needs to be reachable as a module attribute. But importing
-# the catalog eagerly costs ~55ms on every `son-of-anton` invocation — including
-# fast paths like `son-of-anton --version` and slash-command dispatch that never
-# touch the catalog. PEP 562 module-level __getattr__ defers the import
-# until first attribute access, so the cost is only paid by callers that
-# actually look up the catalog.
-_LAZY_MODEL_EXPORTS = ("_PROVIDER_MODELS",)
-
 
 # The main.py decomposition moved the sessions/update command implementations
 # into their own modules, but main.py still re-exports their surface so
@@ -2731,12 +1282,7 @@ def _self():
 
 
 def __getattr__(name):
-    """Defer the model-catalog and command-module imports until first read."""
-    if name in _LAZY_MODEL_EXPORTS:
-        from son_of_anton_cli.models import _PROVIDER_MODELS
-        # Cache on the module so subsequent accesses skip the import machinery.
-        globals()[name] = _PROVIDER_MODELS
-        return _PROVIDER_MODELS
+    """Defer the command-module imports until first read."""
     module = _LAZY_COMMAND_ATTR_TO_MODULE.get(name)
     if module is not None:
         import importlib
@@ -2745,109 +1291,6 @@ def __getattr__(name):
         globals()[name] = value
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def _current_reasoning_effort(config) -> str:
-    agent_cfg = config.get("agent")
-    if isinstance(agent_cfg, dict):
-        return str(agent_cfg.get("reasoning_effort") or "").strip().lower()
-    return ""
-
-
-def _set_reasoning_effort(config, effort: str) -> None:
-    agent_cfg = config.get("agent")
-    if not isinstance(agent_cfg, dict):
-        agent_cfg = {}
-        config["agent"] = agent_cfg
-    agent_cfg["reasoning_effort"] = effort
-
-
-def _prompt_api_key(
-    pconfig,
-    existing_key: str,
-    provider_id: str = "",
-    existing_source: str = "",
-) -> tuple:
-    """Shared API-key entry point for ``son-of-anton setup`` / ``son-of-anton model``.
-
-    Handles both first-time entry and the already-configured case.  When a key
-    is already present, offers [K]eep / [R]eplace / [C]lear so the user can
-    recover from a malformed paste without editing ``~/.son-of-anton/.env`` by hand.
-
-    Returns ``(resolved_key, abort)``.  ``abort=True`` means the caller should
-    ``return`` immediately — the user cancelled entry, declined to replace, or
-    cleared the key and is now unconfigured.
-    """
-    from son_of_anton_cli.config import save_env_value
-    from son_of_anton_cli.secret_prompt import masked_secret_prompt
-
-    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
-
-    def _prompt_new_key() -> str:
-        prompt = f"{key_env} (or Enter to cancel): "
-        try:
-            entered = masked_secret_prompt(prompt).strip()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return ""
-        return entered
-
-    # First-time entry ────────────────────────────────────────────────────
-    if not existing_key:
-        print(f"No {pconfig.name} API key configured.")
-        if not key_env:
-            return "", True
-        new_key = _prompt_new_key()
-        if not new_key:
-            print("Cancelled.")
-            return "", True
-        save_env_value(key_env, new_key)
-        print("API key saved.")
-        print()
-        return new_key, False
-
-    # Already configured — offer K / R / C ────────────────────────────────
-    from son_of_anton_cli.env_loader import format_secret_source_suffix
-
-    source_suffix = format_secret_source_suffix(key_env) if key_env else ""
-    print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓{source_suffix}")
-    if not key_env:
-        # Nothing we can rewrite; just acknowledge and move on.
-        print()
-        return existing_key, False
-    pool_backed = existing_source.startswith("credential_pool:")
-    menu = (
-        "  [K]eep / [R]eplace (default K): "
-        if pool_backed
-        else "  [K]eep / [R]eplace / [C]lear (default K): "
-    )
-    try:
-        choice = input(menu).strip().lower()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        choice = "k"
-
-    if choice.startswith("r"):
-        new_key = _prompt_new_key()
-        if not new_key:
-            print("  No change.")
-            print()
-            return existing_key, False
-        save_env_value(key_env, new_key)
-        print("  API key updated.")
-        print()
-        return new_key, False
-
-    if choice.startswith("c") and not pool_backed:
-        save_env_value(key_env, "")
-        print(
-            f"  API key cleared.  Run `son-of-anton model` to configure {pconfig.name} again."
-        )
-        return "", True
-
-    # Keep (default, or any other input)
-    print()
-    return existing_key, False
 
 
 def cmd_status(args):
@@ -2869,116 +1312,6 @@ def cmd_config(args):
     from son_of_anton_cli.config import config_command
 
     config_command(args)
-
-
-def _print_version_info(*, check_updates: bool = True) -> None:
-    # Single source of truth for version output — shared with the
-    # `son-of-anton --version` pre-import fast path (the `version` subcommand
-    # was consolidated into `--version`).
-    _startup_fast.print_fast_version_info(check_updates=check_updates)
-
-
-def cmd_version(args):
-    """Show version (--version/-V flag)."""
-    _print_version_info(check_updates=True)
-
-
-def _clear_bytecode_cache(root: Path) -> int:
-    """Remove all __pycache__ directories under *root*.
-
-    Stale .pyc files can cause ImportError after code updates when Python
-    loads a cached bytecode file that references names that no longer exist
-    (or don't yet exist) in the updated source.  Clearing them forces Python
-    to recompile from the .py source on next import.
-
-    Returns the number of directories removed.
-    """
-    removed = 0
-    for dirpath, dirnames, _ in os.walk(root):
-        # Skip venv / node_modules / .git entirely
-        dirnames[:] = [
-            d
-            for d in dirnames
-            if d not in {"venv", ".venv", "node_modules", ".git", ".worktrees"}
-        ]
-        if os.path.basename(dirpath) == "__pycache__":
-            try:
-                shutil.rmtree(dirpath)
-                removed += 1
-            except OSError:
-                pass
-            dirnames.clear()  # nothing left to recurse into
-    return removed
-
-
-# Stamp file recording the checkout fingerprint the bytecode cache was last
-# validated against. Lives next to the checkout (NOT in SON_OF_ANTON_HOME) because
-# __pycache__ is per-checkout state shared by every profile.
-_BYTECODE_FINGERPRINT_FILE = ".bytecode-fingerprint"
-
-
-def _record_bytecode_fingerprint() -> None:
-    """Persist the current checkout fingerprint after a bytecode sweep.
-
-    Never raises. A failed write just means the next launch re-sweeps —
-    safe, merely redundant.
-    """
-    try:
-        fingerprint = _read_git_revision_fingerprint(PROJECT_ROOT)
-        if not fingerprint:
-            return
-        stamp_path = PROJECT_ROOT / _BYTECODE_FINGERPRINT_FILE
-        tmp_path = stamp_path.with_name(stamp_path.name + ".tmp")
-        tmp_path.write_text(fingerprint, encoding="utf-8")
-        tmp_path.replace(stamp_path)
-    except OSError as exc:
-        logger.debug("Could not record bytecode fingerprint: %s", exc)
-
-
-def _sweep_stale_bytecode_if_checkout_changed() -> None:
-    """Clear ``__pycache__`` at launch when the checkout changed underneath us.
-
-    The stale-bytecode bug class (issues #6207, #60242
-    ``cannot import name 'parse_model_flags_detailed'`` report) has one
-    shared shape: the checkout's ``.py`` files change (git pull inside
-    ``son-of-anton update``, a manual ``git pull``, a ZIP update, a file-sync
-    restore) while ``__pycache__`` retains bytecode from the previous
-    revision, and a later process trusts the stale ``.pyc`` instead of the
-    fresh source.
-
-    Update-time clears alone can never close this class: ``son-of-anton update``
-    always executes the PRE-pull updater code, so any hardening added to it
-    only takes effect one update late, and manual ``git pull`` never runs
-    the updater at all. This launch-time guard closes the loop: every
-    ``son-of-anton`` entry point compares the checkout fingerprint (cheap file
-    reads, no git subprocess) against the last-validated stamp and sweeps
-    the bytecode cache once when they diverge.
-
-    Never raises — a failure here must not block launch.
-    """
-    try:
-        fingerprint = _read_git_revision_fingerprint(PROJECT_ROOT)
-        if not fingerprint:
-            return  # non-git install — the ZIP update path clears explicitly
-        stamp_path = PROJECT_ROOT / _BYTECODE_FINGERPRINT_FILE
-        try:
-            recorded = stamp_path.read_text(encoding="utf-8").strip()
-        except OSError:
-            recorded = ""
-        if recorded == fingerprint:
-            return
-        removed = _clear_bytecode_cache(PROJECT_ROOT)
-        if removed:
-            logger.info(
-                "Checkout changed since last launch (%s -> %s): cleared %d stale __pycache__ director%s",
-                recorded or "unknown",
-                fingerprint,
-                removed,
-                "y" if removed == 1 else "ies",
-            )
-        _record_bytecode_fingerprint()
-    except Exception as exc:
-        logger.debug("Stale-bytecode launch sweep failed: %s", exc)
 
 
 def _size_delta_label(saved_mb: float) -> str:
@@ -3011,12 +1344,10 @@ def _coalesce_session_name_args(argv: list) -> list:
     # on. This list carried eleven commands the fork does not have.
     _SUBCOMMANDS = {
         "chat",
-        "completion",
         "config",
         "cron",
         "gateway",
         "mcp",
-        "model",
         "nuke",
         "pause",
         "problem",
@@ -3081,19 +1412,6 @@ def cmd_problem(args, parser=None):
     return 2
 
 
-def cmd_completion(args, parser=None):
-    """Print shell completion script."""
-    from son_of_anton_cli.completion import generate_bash, generate_zsh, generate_fish
-
-    shell = getattr(args, "shell", "bash")
-    if shell == "zsh":
-        print(generate_zsh(parser))
-    elif shell == "fish":
-        print(generate_fish(parser))
-    else:
-        print(generate_bash(parser))
-
-
 # Top-level subcommands that argparse knows about WITHOUT running plugin
 # discovery.  Used to short-circuit eager plugin imports (which can take
 # 500ms+ pulling in google.cloud.pubsub_v1, aiohttp, grpc, etc.) when the
@@ -3105,7 +1423,7 @@ def cmd_completion(args, parser=None):
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "chat", "completion", "config", "cron", "gateway", "mcp", "model",
+        "chat", "config", "cron", "gateway", "mcp",
         "nuke", "pause", "problem", "resume", "sessions", "status",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -3225,37 +1543,7 @@ def _plugin_cli_discovery_needed() -> bool:
     return True
 
 
-def _resolve_deferred_platform_cli_command(command_name: str | None) -> None:
-    """Materialize the deferred platform whose top-level CLI command matches.
-
-    Bundled platform plugins are cheap-registered as *deferred* entries to
-    avoid importing every gateway SDK during normal startup. A platform that
-    registers a top-level ``son-of-anton <name>`` command
-    (``ctx.register_cli_command(name=..., ...)``) only runs that side
-    effect when its module is imported. On the unknown-top-level-command slow
-    path, ``discover_plugins()`` records the deferred loader but does not
-    import it, so the CLI registration never happens and the CLI command is
-    unavailable.
-    fails with argparse ``invalid choice`` (issue #54678).
-
-    Resolving only the platform whose name matches the first positional token
-    keeps normal startup cheap while making the targeted command available.
-    """
-    if not command_name:
-        return
-    try:
-        from gateway.platform_registry import platform_registry
-
-        platform_registry.get(command_name)
-    except Exception as exc:
-        logging.getLogger(__name__).debug(
-            "Deferred platform CLI resolution failed for %s: %s",
-            command_name,
-            exc,
-        )
-
-
-_AGENT_COMMANDS = {None, "chat", "rl"}
+_AGENT_COMMANDS = {None, "chat"}
 _AGENT_SUBCOMMANDS = {
     "cron": ("cron_command", {"run", "tick"}),
     "gateway": ("gateway_command", {"run"}),
@@ -3272,7 +1560,7 @@ def _command_has_dedicated_mcp_startup(args) -> bool:
 
 
 def _should_background_mcp_startup(args) -> bool:
-    return args.command in {None, "chat", "rl"}
+    return args.command in {None, "chat"}
 
 
 def _prepare_agent_startup(args) -> None:
@@ -3498,46 +1786,6 @@ def _advertise_agent_env() -> None:
     os.environ.setdefault("SON_OF_ANTON_AGENT", "true")
 
 
-class _CwdEnvTrace(dict):
-    """Debug wrapper that logs every TERMINAL_* os.environ write with a stack."""
-
-    def __setitem__(self, key, value):
-        if isinstance(key, str) and key.startswith("TERMINAL_"):
-            old = dict.get(self, key)
-            if old != value:
-                import logging
-                import traceback
-                logging.getLogger("son_of_anton_cwd_debug").info(
-                    "ENV WRITE %s: %r -> %r @ %s",
-                    key, old, value,
-                    " | ".join(
-                        line.strip()
-                        for line in traceback.format_stack(limit=9)[:-1]
-                    ),
-                )
-        return dict.__setitem__(self, key, value)
-
-    def __delitem__(self, key):
-        if isinstance(key, str) and key.startswith("TERMINAL_"):
-            import logging
-            import traceback
-            logging.getLogger("son_of_anton_cwd_debug").info(
-                "ENV DELETE %s: %r @ %s",
-                key, dict.get(self, key),
-                " | ".join(
-                    line.strip()
-                    for line in traceback.format_stack(limit=9)[:-1]
-                ),
-            )
-        return dict.__delitem__(self, key)
-
-
-def _install_cwd_env_tracer() -> None:
-    """Replace os.environ with a write-tracing proxy (DEBUG_CWD gate only)."""
-    import os as _os
-    _os.environ = _CwdEnvTrace(_os.environ)
-
-
 def _guard_son_of_anton_home_access() -> None:
     """Fail fast with a clear message when SON_OF_ANTON_HOME is unusable.
 
@@ -3576,8 +1824,6 @@ def _guard_son_of_anton_home_access() -> None:
 def main():
     """Main entry point for son-of-anton CLI."""
     _guard_son_of_anton_home_access()
-    if os.environ.get("SON_OF_ANTON_DEBUG_CWD"):
-        _install_cwd_env_tracer()
 
     # Cosmetic: make the process show up as 'son-of-anton' instead of 'python3.11'
     # in ps/top/htop.  Non-fatal — just a nicer UX.
@@ -3587,12 +1833,6 @@ def main():
     # under an AI agent harness.
     _advertise_agent_env()
 
-    # If the checkout changed since the last launch (son-of-anton update, manual
-    # git pull, old-updater update that predates newer clears), sweep stale
-    # __pycache__ once so no process — this one's lazy imports included —
-    # resolves fresh source against old bytecode. Never raises.
-    _sweep_stale_bytecode_if_checkout_changed()
-
     if _try_fast_chat_launch():
         return
 
@@ -3601,10 +1841,6 @@ def main():
     parser, subparsers, chat_parser = build_top_level_parser()
     chat_parser.set_defaults(func=cmd_chat)
 
-    # =========================================================================
-    # model command  (parser built in son_of_anton_cli/subcommands/model.py)
-    # =========================================================================
-    build_model_parser(subparsers, cmd_model=cmd_model)
     # =========================================================================
     # gateway + proxy commands  (parsers built in son_of_anton_cli/subcommands/gateway.py)
     # =========================================================================
@@ -3670,11 +1906,6 @@ def main():
                 seen_plugin_commands.add(cmd_info["name"])
 
             discover_plugins()
-            # A bundled platform whose top-level CLI command is the one being
-            # invoked is still only a deferred entry at this point; import it
-            # so its register_cli_command side effect runs before we read
-            # _cli_commands (issue #54678).
-            _resolve_deferred_platform_cli_command(_first_positional_argv())
             for cmd_info in get_plugin_manager()._cli_commands.values():
                 if cmd_info["name"] in seen_plugin_commands:
                     continue
@@ -3695,7 +1926,6 @@ def main():
     # =========================================================================
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
     build_problem_parser(subparsers, cmd_problem=cmd_problem)
-    build_completion_parser(subparsers, parser, cmd_completion=cmd_completion)
 
     # =========================================================================
     # sessions command
@@ -4358,7 +2588,7 @@ def main():
 
     # Handle --version flag
     if args.version:
-        cmd_version(args)
+        _startup_fast.print_fast_version_info()
         return
 
     # --yolo: set SON_OF_ANTON_YOLO_MODE *before* plugin discovery.  The call to

@@ -1,96 +1,29 @@
-"""Two CLI surfaces that existed but could not be reached.
+"""The CLI surface that exists: the problem subcommand, the help text, the gateway verbs.
 
-`son_of_anton_cli/completion.py` generated bash/zsh/fish scripts by walking the
-live argparse tree, and `cmd_completion` was there to print them — but nothing
-registered a `completion` subparser, so the command answered
-``invalid choice: 'completion'`` and the whole feature was dead. The spec
-builder had the mirror-image problem: it worked, but it lived in `scripts/`,
-which the sealed wheel does not ship and which is on nobody's PATH.
-
-These tests assert both are reachable through the real parser, and that the
-generated scripts track the command tree rather than a hardcoded list.
+The spec builder once lived in `scripts/`, which the sealed wheel does not ship
+and which is on nobody's PATH; these tests assert it is reachable through the
+real parser, and that `--help` only names commands that exist.
 """
 
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 import sys
 
 import pytest
 
-from son_of_anton_cli.completion import generate_bash, generate_fish, generate_zsh
-from son_of_anton_cli.subcommands.completion import SHELLS
-
 
 @pytest.fixture(scope="module")
 def parser():
-    """The real top-level parser, with every subcommand attached."""
+    """The real top-level parser, with the problem subcommand attached."""
     from son_of_anton_cli._parser import build_top_level_parser
-    from son_of_anton_cli.main import cmd_completion, cmd_problem
-    from son_of_anton_cli.subcommands.completion import build_completion_parser
+    from son_of_anton_cli.main import cmd_problem
     from son_of_anton_cli.subcommands.problem import build_problem_parser
 
     root, subparsers, _chat = build_top_level_parser()
     build_problem_parser(subparsers, cmd_problem=cmd_problem)
-    build_completion_parser(subparsers, root, cmd_completion=cmd_completion)
     return root
-
-
-def test_completion_is_a_real_subcommand(parser) -> None:
-    args = parser.parse_args(["completion", "zsh"])
-    assert args.command == "completion"
-    assert args.shell == "zsh"
-    assert callable(args.func)
-
-
-def test_completion_defaults_to_bash(parser) -> None:
-    assert parser.parse_args(["completion"]).shell == "bash"
-
-
-def test_completion_rejects_an_unknown_shell(parser) -> None:
-    with pytest.raises(SystemExit):
-        parser.parse_args(["completion", "powershell"])
-
-
-@pytest.mark.parametrize("shell", SHELLS)
-def test_every_shell_generates_a_non_empty_script(parser, shell) -> None:
-    script = {"bash": generate_bash, "zsh": generate_zsh, "fish": generate_fish}[
-        shell
-    ](parser)
-    assert script.strip(), f"{shell} completion generated nothing"
-    assert "son-of-anton" in script
-
-
-def test_the_generated_script_tracks_the_live_command_tree(parser) -> None:
-    """A hardcoded list goes stale the first time a subcommand is added.
-
-    Asserted against the parser's own subcommand table rather than a list
-    written here, which would be the very thing this is guarding against.
-    """
-    import argparse
-
-    script = generate_bash(parser)
-    commands = [
-        choice
-        for action in parser._actions
-        if isinstance(action, argparse._SubParsersAction)
-        for choice in action.choices
-    ]
-    assert commands, "the fixture attached no subcommands"
-    for command in commands:
-        assert command in script, f"{command} missing from the completion script"
-
-
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not installed")
-def test_the_bash_script_is_valid_bash(parser, tmp_path) -> None:
-    path = tmp_path / "son-of-anton"
-    path.write_text(generate_bash(parser), encoding="utf-8")
-    result = subprocess.run(
-        ["bash", "-n", str(path)], capture_output=True, text=True, check=False
-    )
-    assert result.returncode == 0, result.stderr
 
 
 # --- the problem subcommand ------------------------------------------------

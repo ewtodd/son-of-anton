@@ -2656,9 +2656,6 @@ DEFAULT_CONFIG = {
         "extra_allowed_hosts": [],
     },
 
-
-    # Config schema version - bump this when adding new required fields
-    "_config_version": 39,
 }
 
 # Optional environment variables that enhance functionality
