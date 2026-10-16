@@ -84,7 +84,7 @@ Each rung adds more permanent surface than the one above. Choose the highest
    exists. Zero new surface.
 2. **CLI command** — manages config/state/infra expressible as shell commands.
    Zero model-tool footprint. Default choice for subscriptions, scheduled tasks, service
-   setup. Examples: `son-of-anton cron`, `son-of-anton tools`.
+   setup. Examples: `son-of-anton cron`, `son-of-anton problem`.
 3. **Service-gated tool (`check_fn`)** — needs structured params/returns AND only appears
    when a prerequisite is configured. Zero footprint otherwise.
 4. **Plugin** — user/niche capability that doesn't ship in core. Lives in
@@ -157,7 +157,7 @@ son-of-anton/
 ├── son_of_anton_constants.py   # get_son_of_anton_home(), display_son_of_anton_home()
 ├── son_of_anton_logging.py     # setup_logging() — agent.log / errors.log / gateway.log
 ├── agent/                # Agent internals (providers, memory, caching, compaction, ...)
-├── son_of_anton_cli/           # CLI subcommands, setup wizard, plugins loader, skin engine
+├── son_of_anton_cli/           # CLI subcommands, plugins loader, skin engine
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
 │   └── environments/     # Terminal backends (local, ssh)
 ├── gateway/              # Messaging gateway — run.py + session.py + platforms/
@@ -178,8 +178,7 @@ son-of-anton/
 
 **User config:** `~/.son-of-anton/config.toml` (settings), `~/.son-of-anton/.env` (secrets only).
 **Logs:** `~/.son-of-anton/logs/` — `agent.log` (INFO+), `errors.log` (WARNING+),
-`gateway.log` when running the gateway. Profile-aware via `get_son_of_anton_home()`.
-Browse with `son-of-anton logs [--follow] [--level ...] [--session ...]`.
+`gateway.log` when running the gateway. Home-aware via `get_son_of_anton_home()`.
 
 ### File Dependency Chain
 
@@ -279,9 +278,9 @@ subclasses `SonOfAntonCLI`), so every CLI option applies to it unchanged.
 - `main()` (bottom of `cli.py`) parses flags, builds the `TextualBackend`,
   then either runs a single query (no front-end) or hands the backend to
   `son_of_anton_tui.tui.run_app()`.
-- **Rich** is still used for the single-query path: `ChatConsole`,
-  `_build_compact_banner()`, and `show_banner()` print through it. The
-  interactive TUI renders through Textual widgets, not Rich.
+- **Rich** is still used for the single-query path: `ChatConsole` and
+  `show_banner()` (what `/clear` prints) render through it. The interactive
+  TUI renders through Textual widgets, not Rich.
 - **KawaiiSpinner** (`agent/display.py`) — animated thinking/waiting faces
   used by the agent loop (`agent/conversation_loop.py`,
   `agent/tool_executor.py`) while streaming; the TUI shows the same
@@ -550,7 +549,7 @@ config.toml in code.
 | Loader | Used by | Location |
 |--------|---------|----------|
 | `load_cli_config()` | CLI mode | `cli.py` — merges CLI-specific defaults + user TOML |
-| `load_config()` | `son-of-anton tools`, `son-of-anton setup`, most subcommands | `son_of_anton_cli/config.py` — merges `DEFAULT_CONFIG` + user TOML |
+| `load_config()` | most subcommands and runtime readers | `son_of_anton_cli/config.py` — merges `DEFAULT_CONFIG` + user TOML |
 | Direct TOML load | Gateway runtime | `gateway/run.py` + `gateway/config.py` — reads user TOML raw |
 
 If a new key is visible in the CLI but not the gateway (or vice versa), you're on the
@@ -635,7 +634,7 @@ platforms inherit from: web_search/web_extract, terminal/process, file ops (read
 write_file, patch, search_files), vision_analyze, todo, memory, session_search, clarify,
 execute_code, delegate_task, cronjob.
 
-Enable/disable per platform via `son-of-anton tools` (the curses UI) or the
+Enable/disable per platform via `/tools enable|disable` or the
 `tools.<platform>.enabled` / `tools.<platform>.disabled` lists in `config.toml`.
 
 ## Delegation (`delegate_task`)
@@ -717,10 +716,6 @@ Rules that still hold for home-safe code:
 ### DO NOT hardcode `~/.son-of-anton` paths
 Use `get_son_of_anton_home()` for code paths, `display_son_of_anton_home()` for
 user-facing output. Hardcoding ignores a configured `SON_OF_ANTON_HOME`.
-
-### All CLI menu-pickers MUST use curses.
-Interactive menus must use `son_of_anton_cli/curses_ui.py`. See
-`son_of_anton_cli/tools_config.py` for an example.
 
 ### DO NOT use `\033[K` (ANSI erase-to-EOL) in spinner/display code
 Leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-padding.

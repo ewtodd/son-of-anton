@@ -222,7 +222,6 @@ def test_restart_watcher_sheds_both_markers() -> None:
 @pytest.mark.parametrize(
     "launcher, anchor",
     [
-        ("cli.py", "from gateway.run import start_gateway"),
         ("son_of_anton_cli/gateway.py", "from gateway.run import start_gateway"),
     ],
 )

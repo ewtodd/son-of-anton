@@ -1,14 +1,8 @@
-#!/usr/bin/env python3
 """
-Son of Anton Agent CLI - Interactive Terminal Interface
+Son of Anton Agent CLI — SonOfAntonCLI, the session/agent half behind the
+Textual TUI (son_of_anton_tui.backend.TextualBackend) and single-query mode.
 
-A beautiful command-line interface for the Son of Anton Agent, inspired by Claude Code.
-Features ASCII art branding, interactive REPL, toolset selection, and rich formatting.
-
-Usage:
-    python cli.py                          # Start interactive mode with all tools
-    python cli.py --toolsets web,terminal  # Start with specific toolsets
-    python cli.py --list-tools             # List available tools and exit
+Entered through ``son-of-anton`` (son_of_anton_cli.main), never directly.
 """
 
 import logging
@@ -5870,7 +5864,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print("  (*) = currently enabled")
         print()
         print("  Tip: Use 'all' or '*' to enable all toolsets")
-        print("  Example: python cli.py --toolsets web,terminal")
+        print("  Example: son-of-anton --toolsets web,terminal")
         print()
     
 
@@ -10917,168 +10911,112 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 def main(
     query: str = None,
-    q: str = None,
     image: str = None,
     toolsets: str = None,
     model: str = None,
     provider: str = None,
     reasoning: str = None,
-    api_key: str = None,
-    base_url: str = None,
     max_turns: int = None,
     run_budget: float = None,
     verbose: Optional[bool] = None,
     quiet: bool = False,
     compact: bool = False,
-    list_tools: bool = False,
-    list_toolsets: bool = False,
-    gateway: bool = False,
     resume: str = None,
     worktree: bool = False,
-    w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
     pickup: bool = False,
 ):
-    """
-    Son of Anton Agent CLI - Interactive AI Assistant
-    
-    Args:
-        query: Single query to execute (then exit). Alias: -q
-        q: Shorthand for --query
-        image: Optional local image path to attach to a single query
-        toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
-        model: Model to use (default: anthropic/claude-opus-4-20250514)
-        provider: Inference provider ("auto" by default; e.g. "openai",
-                  "custom", or a provider from config.toml)
-        reasoning: Reasoning effort for this run (none|minimal|low|medium|high|xhigh|max|ultra). Overrides agent.reasoning_effort.
-        api_key: API key for authentication
-        base_url: Base URL for the API
-        max_turns: Maximum tool-calling iterations (default: 60)
-        verbose: Enable verbose logging
-        compact: Use compact display mode
-        list_tools: List available tools and exit
-        list_toolsets: List available toolsets and exit
-        resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
-        worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
-        w: Shorthand for --worktree
-        pickup: With ``resume``: end the relaying of that session (as /pickup)
-                once the TUI starts (``son-of-anton --pickup``).
-    
-    Examples:
-        python cli.py                            # Start interactive mode
-        python cli.py --toolsets web,terminal    # Use specific toolsets
-        python cli.py -q "What is Python?"       # Single query mode
-        python cli.py -q "Describe this" --image ~/storage/shared/Pictures/cat.png
-        python cli.py --list-tools               # List tools and exit
-        python cli.py --resume 20260225_143052_a1b2c3  # Resume session
-        python cli.py -w                         # Start in isolated git worktree
-        python cli.py -w -q "Fix issue #123"     # Single query in worktree
+    """Run the TUI, or one query (``query``/``image``) without a front-end.
+
+    Called by ``son-of-anton chat`` (son_of_anton_cli.main.cmd_chat), which
+    maps its flags onto these keyword arguments.
+    ``pickup`` with ``resume``: end the relaying of that session (as /pickup)
+    once the TUI starts (``son-of-anton --pickup``).
     """
     global _active_worktree
 
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
     os.environ["SON_OF_ANTON_INTERACTIVE"] = "1"
-    
-    # Handle gateway mode (messaging + cron)
-    if gateway:
-        import asyncio
-        # Mark this process as a real gateway BEFORE importing gateway.run.
-        # gateway.run's config->env bridge (terminal.cwd -> TERMINAL_CWD) is
-        # gated on this marker, because the module sets _SON_OF_ANTON_GATEWAY
-        # on import and so cannot distinguish a genuine gateway from an
-        # incidental import.
-        os.environ["_SON_OF_ANTON_GATEWAY_PROC"] = "1"
-        from gateway.run import start_gateway
-        print("Starting Son of Anton Gateway (messaging platforms)...")
-        asyncio.run(start_gateway())
-        return
 
-    # Skip worktree for list commands (they exit immediately)
-    if not list_tools and not list_toolsets:
-        # ── Git worktree isolation (#652) ──
-        # Create an isolated worktree so this agent instance doesn't collide
-        # with other agents working on the same repo.
-        use_worktree = worktree or w or CLI_CONFIG.get("worktree", False)
-        wt_info = None
-        if use_worktree:
-            # Overlap tool discovery with the network/subprocess-bound
-            # worktree setup (base fetch + parallel `git worktree add`
-            # release the GIL for most of their wall time). show_banner()
-            # then hits the warm cache instead of paying ~0.4s serially.
-            # Only done on the -w path: on plain `son-of-anton` there is no I/O
-            # wait to hide and the extra thread just contends for CPU.
-            def _prewarm_tools() -> None:
-                try:
-                    import model_tools as _mt
-                    _mt.get_tool_definitions(quiet_mode=True)
-                except Exception:
-                    logger.debug("tool prewarm failed", exc_info=True)
+    # ── Git worktree isolation (#652) ──
+    # Create an isolated worktree so this agent instance doesn't collide
+    # with other agents working on the same repo.
+    use_worktree = worktree or CLI_CONFIG.get("worktree", False)
+    wt_info = None
+    if use_worktree:
+        # Overlap tool discovery with the network/subprocess-bound
+        # worktree setup (base fetch + parallel `git worktree add`
+        # release the GIL for most of their wall time). show_banner()
+        # then hits the warm cache instead of paying ~0.4s serially.
+        # Only done on the -w path: on plain `son-of-anton` there is no I/O
+        # wait to hide and the extra thread just contends for CPU.
+        def _prewarm_tools() -> None:
+            try:
+                import model_tools as _mt
+                _mt.get_tool_definitions(quiet_mode=True)
+            except Exception:
+                logger.debug("tool prewarm failed", exc_info=True)
 
-            threading.Thread(
-                target=_prewarm_tools, name="tool-prewarm", daemon=True
-            ).start()
-            # Worktree creation itself (~0.2-0.6s of git subprocess wall
-            # time) runs concurrently with the rest of startup; join right
-            # after SonOfAntonCLI construction, before anything consumes
-            # TERMINAL_CWD / wt_info. Failure semantics preserved: setup
-            # failure still aborts the session (checked at join).
-            _sync_base = CLI_CONFIG.get("worktree_sync", True)
-            _wt_result: dict = {}
+        threading.Thread(
+            target=_prewarm_tools, name="tool-prewarm", daemon=True
+        ).start()
+        # Worktree creation itself (~0.2-0.6s of git subprocess wall
+        # time) runs concurrently with the rest of startup; join right
+        # after SonOfAntonCLI construction, before anything consumes
+        # TERMINAL_CWD / wt_info. Failure semantics preserved: setup
+        # failure still aborts the session (checked at join).
+        _sync_base = CLI_CONFIG.get("worktree_sync", True)
+        _wt_result: dict = {}
 
-            def _create_worktree() -> None:
-                try:
-                    _wt_result["info"] = _setup_worktree(sync_base=_sync_base)
-                except Exception:
-                    logger.debug("worktree setup failed", exc_info=True)
-                    _wt_result["info"] = None
+        def _create_worktree() -> None:
+            try:
+                _wt_result["info"] = _setup_worktree(sync_base=_sync_base)
+            except Exception:
+                logger.debug("worktree setup failed", exc_info=True)
+                _wt_result["info"] = None
 
-            _wt_thread = threading.Thread(
-                target=_create_worktree, name="worktree-setup", daemon=True
-            )
-            _wt_thread.start()
+        _wt_thread = threading.Thread(
+            target=_create_worktree, name="worktree-setup", daemon=True
+        )
+        _wt_thread.start()
 
-            def _join_worktree() -> Optional[Dict[str, str]]:
-                _wt_thread.join(timeout=120)
-                info = _wt_result.get("info")
-                if info:
-                    global _active_worktree
-                    _active_worktree = info
-                    os.environ["TERMINAL_CWD"] = info["path"]
-                    atexit.register(_cleanup_worktree, info)
-                    # Prune stale worktrees from crashed/killed sessions in
-                    # the background — pure GC, nothing downstream depends
-                    # on it. Ordered AFTER _setup_worktree so the two never
-                    # race on git's worktrees metadata; the new tree itself
-                    # is immune to reaping (<24h age gate + live pid lock).
-                    _repo = _git_repo_root()
-                    if _repo:
-                        def _worktree_maintenance(repo: str) -> None:
-                            _prune_stale_worktrees(repo)
-                            # Same pass: repack when packs sprawl, so object
-                            # lookups (and the next `worktree add`) stay fast
-                            # on multi-agent boxes. After the pruner so the
-                            # repack sees final refs.
-                            _maintain_pack_health(repo)
+        def _join_worktree() -> Optional[Dict[str, str]]:
+            _wt_thread.join(timeout=120)
+            info = _wt_result.get("info")
+            if info:
+                global _active_worktree
+                _active_worktree = info
+                os.environ["TERMINAL_CWD"] = info["path"]
+                atexit.register(_cleanup_worktree, info)
+                # Prune stale worktrees from crashed/killed sessions in
+                # the background — pure GC, nothing downstream depends
+                # on it. Ordered AFTER _setup_worktree so the two never
+                # race on git's worktrees metadata; the new tree itself
+                # is immune to reaping (<24h age gate + live pid lock).
+                _repo = _git_repo_root()
+                if _repo:
+                    def _worktree_maintenance(repo: str) -> None:
+                        _prune_stale_worktrees(repo)
+                        # Same pass: repack when packs sprawl, so object
+                        # lookups (and the next `worktree add`) stay fast
+                        # on multi-agent boxes. After the pruner so the
+                        # repack sees final refs.
+                        _maintain_pack_health(repo)
 
-                        threading.Thread(
-                            target=_worktree_maintenance,
-                            args=(_repo,),
-                            name="worktree-prune",
-                            daemon=True,
-                        ).start()
-                return info
-        else:
-            _join_worktree = None
+                    threading.Thread(
+                        target=_worktree_maintenance,
+                        args=(_repo,),
+                        name="worktree-prune",
+                        daemon=True,
+                    ).start()
+            return info
     else:
         _join_worktree = None
     wt_info = None
-    
-    # Handle query shorthand
-    query = query or q
     
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to son-of-anton-cli toolset which includes cronjob management tools
@@ -11121,8 +11059,6 @@ def main(
         toolsets=toolsets_list,
         provider=provider,
         reasoning=reasoning,
-        api_key=api_key,
-        base_url=base_url,
         max_turns=max_turns,
         run_budget=run_budget,
         verbose=verbose,
@@ -11155,17 +11091,6 @@ def main(
             f"The original repo is at {wt_info['repo_root']}.]"
         )
         cli.system_prompt = (cli.system_prompt or "") + wt_note
-    
-    # Handle list commands (don't init agent for these)
-    if list_tools:
-        cli.show_banner()
-        cli.show_tools()
-        sys.exit(0)
-    
-    if list_toolsets:
-        cli.show_banner()
-        cli.show_toolsets()
-        sys.exit(0)
     
     # Register cleanup for single-query mode (interactive mode registers in run())
     atexit.register(_run_cleanup)
@@ -11417,8 +11342,3 @@ def main(
 
     _run_textual_app(cli)
 
-
-if __name__ == "__main__":
-    import fire
-
-    fire.Fire(main)
