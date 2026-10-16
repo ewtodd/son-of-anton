@@ -19,8 +19,8 @@ modes: the normal agent loop, and a physics research loop.
 <!---->
 ## What it does
 <!---->
-All chat runs one loop — the hermes loop: terminal, files, web, memory,
-delegation, cron.
+All chat runs one agent loop, with terminal, files, web, memory, delegation
+and cron as its tools.
 <!---->
 Physics is a separate thing, and it is explicit. The Autophysicist — one
 research manager with append-only memory, a windowed scratchpad, a token
@@ -777,9 +777,10 @@ CPython using the old `.pyc`, because invalidation is on mtime plus size. Clear
 <!---->
 Son of Anton is a hard fork of
 [Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
-v0.20.5 (upstream commit `fcbd1076a9`), stripped to an always-on daemon.
-Memory, session search and cron are upstream's; upstream's skills system was
-removed (2026-10-15).
+v0.20.5 (upstream commit `fcbd1076a9`), stripped to an always-on daemon. The
+agent loop, memory, session search and cron started as upstream's and have been
+reworked since. Upstream's skills system, background review, profiles, Ink
+interface and most of its provider surface are gone.
 <!---->
 The Autophysicist mode began as a port of
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern)

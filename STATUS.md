@@ -7,7 +7,7 @@ state, known future work, and the operational facts a fresh session needs._
 
 A hard fork of Nous Research's hermes-agent v0.20.5, stripped to an always-on
 daemon, with the Autophysicist physics mode ported from
-huggingface/physics-intern. One chat loop (`standard`); physics runs only via
+huggingface/physics-intern. One chat loop; physics runs only via
 `son-of-anton problem create/run`. Textual TUI plus the messaging gateway. MIT.
 
 ## Current state

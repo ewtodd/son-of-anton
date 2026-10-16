@@ -14,8 +14,8 @@ surface, and extended with the physics mode from
 [temple](https://github.com/ewtodd/temple) harness — the daemon design and
 permission modes carry over from it.
 
-One agent loop for all chat — `standard`, the hermes loop (terminal, files,
-web, memory, delegation, cron). Physics — the Autophysicist: a single
+One agent loop for all chat (terminal, files, web, memory, delegation,
+cron). Physics — the Autophysicist: a single
 research manager with permanent memory + scratchpad, token budget,
 `submit_final_answer`, git workspace, per-iteration critic — runs only on
 **explicit** invocation via `son-of-anton problem create/run`; a chat message
