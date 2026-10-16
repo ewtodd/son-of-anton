@@ -637,7 +637,6 @@ _KNOWN_MANIFEST_FIELDS: Set[str] = {
     "name", "version", "description", "author", "requires_env",
     "provides_tools", "provides_hooks", "kind", "hooks", "label",
     "optional_env", "platforms", "external_dependencies", "pip_dependencies",
-    "provides_web_providers",
     # v2 (#64165)
     "manifest_version", "api_version", "requires_plugins",
     "python_dependencies", "config_schema", "license", "homepage", "tags",
@@ -2158,51 +2157,6 @@ class PluginContext:
             tool_name, args, scope=self._manager.scope_key, **kwargs
         )
 
-    # -- context engine registration -----------------------------------------
-
-    @_serialized_replacement
-    def register_context_engine(self, engine) -> Optional[PluginRegistration]:
-        """Register a context engine to replace the built-in ContextCompactor.
-
-        Only one context engine plugin is allowed. If a second plugin tries
-        to register one, it is rejected with a warning.
-
-        The engine must be an instance of ``agent.context_engine.ContextEngine``.
-        """
-        if self._manager._context_engine is not None:
-            logger.warning(
-                "Plugin '%s' tried to register a context engine, but one is "
-                "already registered. Only one context engine plugin is allowed.",
-                self.manifest.name,
-            )
-            return
-        # Defer the import to avoid circular deps at module level
-        from agent.context_engine import ContextEngine
-        if not isinstance(engine, ContextEngine):
-            logger.warning(
-                "Plugin '%s' tried to register a context engine that does not "
-                "inherit from ContextEngine. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        previous = self._manager._context_engine
-        self._manager._context_engine = engine
-        handle = self._track_replacement(
-            "context_engine",
-            engine.name,
-            slot=("manager_value", id(self._manager), "_context_engine"),
-            current=engine,
-            previous=previous,
-            restore=lambda replacement: self._manager._restore_value(
-                "_context_engine", engine, replacement
-            ),
-        )
-        logger.info(
-            "Plugin '%s' registered context engine: %s",
-            self.manifest.name, engine.name,
-        )
-        return handle
-
     # -- context reference registration -------------------------------------
 
     def register_context_reference(self, provider) -> None:
@@ -2238,186 +2192,6 @@ class PluginContext:
             "Plugin '%s' registered context reference: @%s:",
             self.manifest.name, provider.prefix,
         )
-
-    # -- memory provider registration ---------------------------------------
-
-    def register_memory_provider(self, provider) -> None:
-        """Register a memory provider.
-
-        Memory providers are activated exclusively, by name, through
-        ``memory.provider`` in config.toml, and ``plugins/memory/__init__.py``
-        owns that path with its own collector. A provider reaching *this*
-        implementation is therefore one the general PluginManager loaded — it
-        was not classified ``exclusive`` — so the call is recorded and
-        otherwise inert. Without it, such a plugin's ``register()`` dies on a
-        missing attribute and the plugin fails to load at all.
-
-        Memory was the only provider category with no ``register_*`` here,
-        which is what made that failure mode possible. The provider must be an
-        instance of ``agent.memory_provider.MemoryProvider``.
-        """
-        from agent.memory_provider import MemoryProvider
-
-        if not isinstance(provider, MemoryProvider):
-            logger.warning(
-                "Plugin '%s' tried to register a memory provider that does not "
-                "inherit from MemoryProvider. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        self._memory_provider = provider
-        logger.debug(
-            "Plugin '%s' registered memory provider: %s",
-            self.manifest.name, getattr(provider, "name", "?"),
-        )
-
-    # -- image gen provider registration ------------------------------------
-
-    @_serialized_replacement
-    def register_image_gen_provider(self, provider) -> Optional[PluginRegistration]:
-        """Register an image generation backend.
-
-        ``provider`` must be an instance of
-        :class:`agent.image_gen_provider.ImageGenProvider`. The
-        ``provider.name`` attribute is what ``image_gen.provider`` in
-        ``config.toml`` matches against when routing ``image_generate``
-        tool calls.
-        """
-        from agent.image_gen_provider import ImageGenProvider
-        from agent.image_gen_registry import (
-            register_provider,
-            restore_registration,
-            snapshot_registration,
-        )
-
-        if not isinstance(provider, ImageGenProvider):
-            logger.warning(
-                "Plugin '%s' tried to register an image_gen provider that does "
-                "not inherit from ImageGenProvider. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        registry_name = provider.name.strip()
-        scope = self._manager.scope_key
-        previous = snapshot_registration(registry_name, scope=scope)
-        register_provider(provider, scope=scope)
-        registered = snapshot_registration(registry_name, scope=scope)
-        if registered is not provider:
-            return None
-        handle = self._track_replacement(
-            "image_gen_provider",
-            registry_name,
-            slot=("image_gen_provider", scope, registry_name),
-            current=provider,
-            previous=previous,
-            restore=lambda replacement: restore_registration(
-                registry_name, provider, replacement, scope=scope
-            ),
-        )
-        logger.info(
-            "Plugin '%s' registered image_gen provider: %s",
-            self.manifest.name, registry_name,
-        )
-        return handle
-
-    # -- video gen provider registration -------------------------------------
-
-    @_serialized_replacement
-    def register_video_gen_provider(self, provider) -> Optional[PluginRegistration]:
-        """Register a video generation backend.
-
-        ``provider`` must be an instance of
-        :class:`agent.video_gen_provider.VideoGenProvider`. The
-        ``provider.name`` attribute is what ``video_gen.provider`` in
-        ``config.toml`` matches against when routing ``video_generate``
-        tool calls.
-        """
-        from agent.video_gen_provider import VideoGenProvider
-        from agent.video_gen_registry import (
-            register_provider as _register_video_provider,
-            restore_registration,
-            snapshot_registration,
-        )
-
-        if not isinstance(provider, VideoGenProvider):
-            logger.warning(
-                "Plugin '%s' tried to register a video_gen provider that does "
-                "not inherit from VideoGenProvider. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        registry_name = provider.name.strip()
-        scope = self._manager.scope_key
-        previous = snapshot_registration(registry_name, scope=scope)
-        _register_video_provider(provider, scope=scope)
-        registered = snapshot_registration(registry_name, scope=scope)
-        if registered is not provider:
-            return None
-        handle = self._track_replacement(
-            "video_gen_provider",
-            registry_name,
-            slot=("video_gen_provider", scope, registry_name),
-            current=provider,
-            previous=previous,
-            restore=lambda replacement: restore_registration(
-                registry_name, provider, replacement, scope=scope
-            ),
-        )
-        logger.info(
-            "Plugin '%s' registered video_gen provider: %s",
-            self.manifest.name, registry_name,
-        )
-        return handle
-
-    # -- web search/extract provider registration ----------------------------
-
-    @_serialized_replacement
-    def register_web_search_provider(self, provider) -> Optional[PluginRegistration]:
-        """Register a web search/extract backend.
-
-        ``provider`` must be an instance of
-        :class:`agent.web_search_provider.WebSearchProvider`. The
-        ``provider.name`` attribute is what ``web.search_backend`` /
-        ``web.extract_backend`` / ``web.backend`` in ``config.toml``
-        matches against when routing ``web_search`` / ``web_extract``
-        tool calls.
-        """
-        from agent.web_search_provider import WebSearchProvider
-        from agent.web_search_registry import (
-            register_provider as _register_web_provider,
-            restore_registration,
-            snapshot_registration,
-        )
-
-        if not isinstance(provider, WebSearchProvider):
-            logger.warning(
-                "Plugin '%s' tried to register a web provider that does "
-                "not inherit from WebSearchProvider. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        registry_name = provider.name.strip()
-        scope = self._manager.scope_key
-        previous = snapshot_registration(registry_name, scope=scope)
-        _register_web_provider(provider, scope=scope)
-        registered = snapshot_registration(registry_name, scope=scope)
-        if registered is not provider:
-            return None
-        handle = self._track_replacement(
-            "web_search_provider",
-            registry_name,
-            slot=("web_search_provider", scope, registry_name),
-            current=provider,
-            previous=previous,
-            restore=lambda replacement: restore_registration(
-                registry_name, provider, replacement, scope=scope
-            ),
-        )
-        logger.info(
-            "Plugin '%s' registered web provider: %s",
-            self.manifest.name, registry_name,
-        )
-        return handle
 
     # -- secret source registration -------------------------------------------
 
@@ -3048,7 +2822,6 @@ class PluginManager:
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
-        self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._system_prompt_sections: Dict[str, PluginSystemPromptSection] = {}
         self._discovered: bool = False
@@ -3170,18 +2943,6 @@ class PluginManager:
             mapping.pop(key, None)
         else:
             mapping[key] = previous
-        return True
-
-    def _restore_value(
-        self,
-        attribute: str,
-        current: Any,
-        previous: Any,
-    ) -> bool:
-        """Restore a manager-local value only when *current* is still active."""
-        if getattr(self, attribute) is not current:
-            return False
-        setattr(self, attribute, previous)
         return True
 
     def _remove_tool_name_if_unowned(self, name: str) -> None:
@@ -3371,7 +3132,6 @@ class PluginManager:
             self._slack_action_handlers.clear()
             self._predeclared_modules.clear()
             self._predeclared_tools.clear()
-            self._context_engine = None
             self._discovered = False
         else:
             for key in target_keys:
@@ -5860,11 +5620,6 @@ def _ensure_plugins_discovered(force: bool = False) -> PluginManager:
     manager = get_plugin_manager()
     manager.discover_and_load(force=force)
     return manager
-
-
-def get_plugin_context_engine():
-    """Return the plugin-registered context engine, or None."""
-    return _ensure_plugins_discovered()._context_engine
 
 
 def get_plugin_command_handler(name: str) -> Optional[Callable]:

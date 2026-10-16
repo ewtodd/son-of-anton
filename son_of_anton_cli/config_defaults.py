@@ -609,33 +609,6 @@ DEFAULT_CONFIG = {
         "persistent_shell": True,
     },
 
-    "web": {
-        "backend": "",           # shared fallback — applies to both search and extract
-        "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
-        "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
-        "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
-        # Keyless free-tier ring: with NO web backend configured or keyed,
-        # web_search/web_extract rotate round-robin across five vendors'
-        # public free tiers (exa, parallel, tavily, firecrawl, keenable),
-        # failing over to the next ring vendor on rate limits. Never
-        # pre-empts a configured or keyed backend. Set false to disable.
-        "keyless_fallback": True,
-        # One-shot keyless rescue: when the chosen/keyed backend fails a
-        # web_search/web_extract call, THAT call retries once on the keyless
-        # free-tier ring — the next call attempts the chosen backend again
-        # (no sticky failover). Off when keyless_fallback is false.
-        "keyless_rescue": True,
-        # Per-provider tier selection for ring vendors with both a keyless
-        # free endpoint and a keyed paid path (exa, parallel, tavily,
-        # firecrawl, keenable). Set by the `son-of-anton tools` picker's
-        # "Free (keyless)" / "Paid (API key)" rows.
-        #   free  — always use the anonymous free endpoint (even with a key)
-        #   paid  — always use the keyed path (missing key = error; vendor
-        #           is also excluded from the keyless ring)
-        #   unset — auto: keyed when the API key is present, else the ring
-        "provider_tier": {},
-    },
-
     # Filesystem checkpoints — automatic snapshots before destructive file ops.
     # When enabled, the agent takes a snapshot of the working directory once
     # per conversation turn (on first write_file/patch call).  Use /rollback
@@ -1385,14 +1358,7 @@ DEFAULT_CONFIG = {
         "max_ms": 2500,
     },
     
-    # Context engine -- controls how the context window is managed when
-    # approaching the model's token limit.
-    # "compactor" = built-in lossy summarization (default).
-    # Set to a plugin name to activate an alternative engine (e.g. "lcm"
-    # for Lossless Context Management).  The engine must be installed as
-    # a plugin in plugins/context_engine/<name>/ or ~/.son-of-anton/plugins/.
     "context": {
-        "engine": "compactor",
         # Return freed glibc allocator pages after long-running agent/TUI
         # cleanup boundaries. Unsupported platforms are safe no-ops.
         "memory_trim": {
@@ -1431,11 +1397,6 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
-        # External memory provider plugin (empty = built-in only).
-        # Set to a provider name to activate: "openviking", "mem0",
-        # "hindsight", "holographic", "retaindb", "byterover".
-        # Only ONE external provider is allowed at a time.
-        "provider": "",
         # Retrieval-augmented recall (optional). Indexes session journals and
         # configured note files with an OpenAI-compatible embeddings endpoint
         # and injects the closest chunks into each turn's API copy. The system
@@ -2663,8 +2624,7 @@ DEFAULT_CONFIG = {
 
 # Optional environment variables that enhance functionality
 # Optional environment variables that enhance functionality
-# (fork surface: deepseek/openai inference, web tools, memory providers,
-#  discord+slack messaging, observability)
+# (fork surface: deepseek/openai inference, web search, discord+slack messaging)
 OPTIONAL_ENV_VARS = {
     "DEEPSEEK_API_KEY": {
         "description": 'DeepSeek API key for direct DeepSeek access',
@@ -2680,53 +2640,6 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": 'provider',
     },
-    "EXA_API_KEY": {
-        "description": 'Exa API key for AI-native web search and contents',
-        "prompt": 'Exa API key',
-        "url": 'https://exa.ai/',
-        "tools": ['web_search', 'web_extract'],
-        "password": True,
-        "category": 'tool',
-    },
-    "PARALLEL_API_KEY": {
-        "description": 'Parallel API key for AI-native web search and extract',
-        "prompt": 'Parallel API key',
-        "url": 'https://parallel.ai/',
-        "tools": ['web_search', 'web_extract'],
-        "password": True,
-        "category": 'tool',
-    },
-    "FIRECRAWL_API_KEY": {
-        "description": 'Firecrawl API key for web search and scraping',
-        "prompt": 'Firecrawl API key',
-        "url": 'https://firecrawl.dev/',
-        "tools": ['web_search', 'web_extract'],
-        "password": True,
-        "category": 'tool',
-    },
-    "FIRECRAWL_API_URL": {
-        "description": 'Firecrawl API URL for self-hosted instances (optional)',
-        "prompt": 'Firecrawl API URL (leave empty for cloud)',
-        "url": None,
-        "password": False,
-        "category": 'tool',
-        "advanced": True,
-    },
-    "FIRECRAWL_GATEWAY_URL": {
-        "description": 'Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)',
-        "prompt": 'Firecrawl gateway URL (leave empty to derive from domain)',
-        "url": None,
-        "password": False,
-        "category": 'tool',
-        "advanced": True,
-    },
-    "TAVILY_API_KEY": {
-        "description": "Picovoice access key for the Porcupine 'Hey Son of Anton' wake word engine (optional; openWakeWord is the free default)",
-        "prompt": 'Picovoice access key',
-        "url": 'https://console.picovoice.ai/',
-        "password": True,
-        "category": 'tool',
-    },
     "SEARXNG_URL": {
         "description": 'URL of your SearXNG instance for free self-hosted web search',
         "prompt": 'SearXNG URL (e.g. http://localhost:8080)',
@@ -2735,120 +2648,12 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": 'tool',
     },
-    "BRAVE_SEARCH_API_KEY": {
-        "description": 'Brave Search API subscription token (free tier: 2,000 queries/mo)',
-        "prompt": 'Brave Search subscription token',
-        "url": 'https://brave.com/search/api/',
-        "tools": ['web_search'],
-        "password": True,
-        "category": 'tool',
-    },
     "GITHUB_TOKEN": {
         "description": 'GitHub token (authenticates GitHub release downloads; higher API rate limits)',
         "prompt": 'GitHub Token',
         "url": 'https://github.com/settings/tokens',
         "password": True,
         "category": 'tool',
-    },
-    "HONCHO_API_KEY": {
-        "description": 'Honcho API key for AI-native persistent memory',
-        "prompt": 'Honcho API key',
-        "url": 'https://app.honcho.dev',
-        "tools": ['honcho_context'],
-        "password": True,
-        "category": 'tool',
-    },
-    "HONCHO_BASE_URL": {
-        "description": 'Base URL for self-hosted Honcho instances (no API key needed)',
-        "prompt": 'Honcho base URL (e.g. http://localhost:8000)',
-        "category": 'tool',
-    },
-    "HINDSIGHT_API_KEY": {
-        "description": 'Hindsight API key for graph-aware persistent memory',
-        "prompt": 'Hindsight API key',
-        "url": 'https://hindsight.vectorize.io',
-        "tools": ['hindsight_recall'],
-        "password": True,
-        "category": 'tool',
-    },
-    "HINDSIGHT_API_URL": {
-        "description": 'Base URL for the Hindsight API (default: https://api.hindsight.vectorize.io)',
-        "prompt": 'Hindsight API URL',
-        "category": 'tool',
-        "advanced": True,
-    },
-    "SUPERMEMORY_API_KEY": {
-        "description": 'Supermemory API key for conversation-scoped persistent memory',
-        "prompt": 'Supermemory API key',
-        "url": 'https://supermemory.ai',
-        "tools": ['supermemory_search'],
-        "password": True,
-        "category": 'tool',
-    },
-    "MEM0_API_KEY": {
-        "description": 'Mem0 Platform API key for semantic persistent memory',
-        "prompt": 'Mem0 API key',
-        "url": 'https://app.mem0.ai',
-        "tools": ['mem0_search'],
-        "password": True,
-        "category": 'tool',
-    },
-    "RETAINDB_API_KEY": {
-        "description": 'RetainDB API key for persistent memory',
-        "prompt": 'RetainDB API key',
-        "url": 'https://retaindb.com',
-        "tools": ['retaindb_search'],
-        "password": True,
-        "category": 'tool',
-    },
-    "RETAINDB_BASE_URL": {
-        "description": 'Base URL for self-hosted RetainDB instances (default: https://api.retaindb.com)',
-        "prompt": 'RetainDB base URL',
-        "category": 'tool',
-        "advanced": True,
-    },
-    "BRV_API_KEY": {
-        "description": 'ByteRover API key (optional, for cloud sync — local-first by default)',
-        "prompt": 'ByteRover API key',
-        "url": 'https://app.byterover.dev',
-        "tools": ['brv_query'],
-        "password": True,
-        "category": 'tool',
-    },
-    "OPENVIKING_API_KEY": {
-        "description": 'OpenViking API key (leave blank for local dev mode)',
-        "prompt": 'OpenViking API key',
-        "tools": ['viking_search'],
-        "password": True,
-        "category": 'tool',
-    },
-    "OPENVIKING_ENDPOINT": {
-        "description": 'OpenViking server URL (default: http://127.0.0.1:1933)',
-        "prompt": 'OpenViking endpoint',
-        "category": 'tool',
-        "advanced": True,
-    },
-    "SON_OF_ANTON_LANGFUSE_PUBLIC_KEY": {
-        "description": 'Langfuse project public key (pk-lf-...)',
-        "prompt": 'Langfuse public key',
-        "url": 'https://cloud.langfuse.com',
-        "password": False,
-        "category": 'tool',
-    },
-    "SON_OF_ANTON_LANGFUSE_SECRET_KEY": {
-        "description": 'Langfuse project secret key (sk-lf-...)',
-        "prompt": 'Langfuse secret key',
-        "url": 'https://cloud.langfuse.com',
-        "password": True,
-        "category": 'tool',
-    },
-    "SON_OF_ANTON_LANGFUSE_BASE_URL": {
-        "description": 'Langfuse server URL (default: https://cloud.langfuse.com)',
-        "prompt": 'Langfuse server URL (leave empty for cloud.langfuse.com)',
-        "url": None,
-        "password": False,
-        "category": 'tool',
-        "advanced": True,
     },
     "DISCORD_BOT_TOKEN": {
         "description": 'Discord bot token from Developer Portal',

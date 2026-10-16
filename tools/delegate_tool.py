@@ -3394,25 +3394,6 @@ def _finalize_child_results(
         _apply_summary_budget(results, parent_agent)
         child_by_index = {index: child for index, _task, child in children}
 
-        if parent_agent and getattr(parent_agent, "_memory_manager", None):
-            for entry in results:
-                try:
-                    task_index = entry.get("task_index", -1)
-                    task_goal = (
-                        task_list[task_index]["goal"]
-                        if isinstance(task_index, int)
-                        and 0 <= task_index < len(task_list)
-                        else ""
-                    )
-                    child = child_by_index.get(task_index)
-                    parent_agent._memory_manager.on_delegation(
-                        task=task_goal,
-                        result=entry.get("summary", "") or "",
-                        child_session_id=getattr(child, "session_id", ""),
-                    )
-                except Exception:
-                    pass
-
         parent_session_id = getattr(parent_agent, "session_id", None)
         try:
             from son_of_anton_cli.plugins import invoke_hook as invoke_hook

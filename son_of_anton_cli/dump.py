@@ -20,10 +20,3 @@ def _redact(value: str) -> str:
     return mask_secret(value)
 
 
-def _memory_provider(config: dict) -> str:
-    """Return the active memory provider name."""
-    mem = config.get("memory", {})
-    provider = mem.get("provider", "")
-    return provider if provider else "built-in"
-
-

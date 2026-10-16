@@ -6488,11 +6488,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         import itertools as _itertools
         self._slash_confirm_counter = _itertools.count(1)
 
-        # Persistent Honcho managers keyed by gateway session key.
-        # This preserves write_frequency="session" semantics across short-lived
-        # per-message AIAgent instances.
-
-
         # Ensure tirith security scanner is available (downloads if needed)
         try:
             from tools.tirith_security import ensure_installed
@@ -9601,27 +9596,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return
         try:
             if hasattr(agent, "shutdown_memory_provider"):
-                # Drain queued memory writes BEFORE tearing the provider down.
-                # The memory manager persists per-turn sync and end-of-session
-                # extraction on a single serialized background worker.
-                # shutdown_memory_provider() -> shutdown_all() only gives that
-                # worker a ~5s bounded drain and abandons (cancels) anything
-                # still queued past it, so a /reset — or any gateway session
-                # rotation that reaches this cleanup path — could silently drop
-                # writes the session had already handed off. The next session
-                # then loads stale memory (#73297). Give pending work a bounded
-                # head start through the manager's own barrier first, mirroring
-                # the CLI exit path (cli.py). Best-effort: a flush failure must
-                # never block teardown.
-                _mm = getattr(agent, "_memory_manager", None)
-                if _mm is not None and hasattr(_mm, "flush_pending"):
-                    try:
-                        _mm.flush_pending(timeout=10)
-                    except Exception:
-                        pass
-                # Pass the agent's own conversation transcript so memory
-                # providers' ``on_session_end`` hooks see the real messages
-                # instead of the empty default (#15165). ``_session_messages``
+                # Pass the agent's own conversation transcript to the
+                # ``on_session_end`` hooks (#15165). ``_session_messages``
                 # is set on ``AIAgent`` (run_agent.py:1518) and refreshed at
                 # the end of every ``run_conversation`` turn via
                 # ``_persist_session``; on an agent built through
@@ -20162,7 +20138,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             The enriched message string with vision descriptions prepended.
         """
         from tools.vision_tools import vision_analyze_tool
-        from agent.memory_manager import sanitize_context
 
         analysis_prompt = (
             "Concisely describe this image in 2-4 sentences "
@@ -20183,7 +20158,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 result = json.loads(result_json)
                 if result.get("success"):
                     description = result.get("analysis", "")
-                    description = sanitize_context(description)
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
@@ -21439,55 +21413,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         ("compaction", "proactive_prune_min_reclaim_tokens"),
         ("compaction", "min_tail_user_messages"),
         ("agent", "disabled_toolsets"),
-        ("memory", "provider"),
         ("checkpoints", "enabled"),
         ("checkpoints", "max_snapshots"),
         ("checkpoints", "max_total_size_mb"),
         ("checkpoints", "max_file_size_mb"),
     )
-
-    _HONCHO_CACHE_BUSTING_KEYS = (
-        "honcho.peer_name",
-        "honcho.ai_peer",
-        "honcho.pin_peer_name",
-        "honcho.runtime_peer_prefix",
-        "honcho.user_peer_aliases",
-    )
-    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
-
-    @classmethod
-    def _empty_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        return {key: None for key in cls._HONCHO_CACHE_BUSTING_KEYS}
-
-    @classmethod
-    def _extract_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        """Extract Honcho identity keys, memoized by honcho.json mtime."""
-        try:
-            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-
-            path = resolve_config_path()
-            try:
-                mtime_ns = path.stat().st_mtime_ns
-            except OSError:
-                mtime_ns = None
-            memo_key = (str(path), mtime_ns)
-            cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
-            if cached is not None:
-                return dict(cached)
-
-            hcfg = HonchoClientConfig.from_global_config(config_path=path)
-            aliases = hcfg.user_peer_aliases or {}
-            values = {
-                "honcho.peer_name": hcfg.peer_name,
-                "honcho.ai_peer": hcfg.ai_peer,
-                "honcho.pin_peer_name": bool(hcfg.pin_peer_name),
-                "honcho.runtime_peer_prefix": hcfg.runtime_peer_prefix or "",
-                "honcho.user_peer_aliases": sorted(aliases.items()) if isinstance(aliases, dict) else [],
-            }
-            cls._HONCHO_CACHE_BUSTING_MEMO = {memo_key: values}
-            return dict(values)
-        except Exception:
-            return cls._empty_honcho_cache_busting_config()
 
     @classmethod
     def _custom_provider_context_windows(cls, config: dict) -> list:
@@ -21584,14 +21514,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception:
             out["tools.registry_fingerprint"] = None
 
-        # Honcho identity-mapping keys live in honcho.json, not user_config.
-        # Only read that file when Honcho is the active memory provider.
-        provider = cfg_get(cfg, "memory", "provider")
-        if isinstance(provider, str) and provider.lower() == "honcho":
-            out.update(cls._extract_honcho_cache_busting_config())
-        else:
-            out.update(cls._empty_honcho_cache_busting_config())
-
         # Per-model custom-provider windows are nested, so they cannot ride in
         # _CACHE_BUSTING_CONFIG_KEYS; flatten them into the same flat dict.
         out["custom_providers.context_windows"] = (
@@ -21627,17 +21549,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         ``user_id`` and ``user_id_alt`` are the runtime user identities
         carried by the current message's gateway source.  They participate
-        in the cache key because the Honcho memory provider freezes them
-        into ``HonchoSessionManager`` at first-message init (see
-        ``plugins/memory/honcho/__init__.py::_do_session_init``).  Without
-        them in the signature, a shared-thread session_key (one in which
-        ``build_session_key`` intentionally omits the participant ID,
-        e.g. ``thread_sessions_per_user=False``) would reuse the cached
-        AIAgent across distinct users, causing the second user's messages
-        to be attributed to the first user's resolved Honcho peer.  This
-        broke #27371's per-user-peer contract in multi-user gateways.
-        Per-user agent rebuilds in shared threads trade prompt-cache
-        warmth for correct memory attribution.
+        in the cache key because the agent freezes them at construction
+        (RAG recall's chat identity reads them).  Without them in the
+        signature, a shared-thread session_key (one in which
+        ``build_session_key`` intentionally omits the participant ID) would
+        reuse the cached AIAgent across distinct users (#27371).
         """
         import hashlib, json as _j
 
@@ -22584,70 +22500,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
 
-    def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:
-        """Fire on_session_end extraction before soft-evicting a live agent.
-
-        Soft eviction (``_release_evicted_agent_soft``) deliberately keeps the
-        session resumable and does NOT fire ``on_session_end`` — that hook is
-        reserved for the true session boundary, tear-down done by
-        ``_session_expiry_watcher`` when the session finally expires.
-
-        But the watcher tears down whatever agent it finds in ``_agent_cache``
-        at expiry time.  If cache pressure (the LRU cap) soft-evicts a
-        finalizable session's agent BEFORE it expires, the watcher later finds
-        no cached agent and ``on_session_end`` is silently skipped — memory
-        providers never see the transcript (#11205, LRU-cap variant).
-
-        We hold the live, fully-scoped agent right now, so commit its
-        end-of-session memory extraction here using the agent's own memory
-        manager (correct per-user/chat scoping, no reconstruction).  This uses
-        ``commit_memory_session`` — extraction WITHOUT provider teardown — so
-        the eviction stays soft and a resumed turn keeps working.
-
-        Only fires for sessions the expiry watcher will eventually finalize
-        (finite reset policy).  For ``mode == "none"`` sessions the watcher
-        never runs, so there is no missed-boundary to compensate for and we
-        skip the commit (the agent is simply released).  Best-effort: any
-        failure is swallowed so eviction still proceeds.
-        """
-        if agent is None or not hasattr(agent, "commit_memory_session"):
-            return
-        if getattr(agent, "_memory_manager", None) is None:
-            return  # no external memory provider — nothing to commit
-        try:
-            _store = getattr(self, "session_store", None)
-            if _store is None:
-                return
-            _store._ensure_loaded()
-            entry = _store._entries.get(key)
-            if entry is None:
-                return
-            # Only compensate when the watcher would otherwise expect to find
-            # this agent at expiry (finite policy, not yet expired). Expired
-            # sessions are torn down by the watcher directly; mode="none"
-            # sessions are never finalized.
-            if not _store.is_session_finalizable(entry):
-                return
-            if _store._is_session_expired(entry):
-                return
-            messages = getattr(agent, "_session_messages", None)
-            agent.commit_memory_session(messages if isinstance(messages, list) else None)
-            logger.debug(
-                "Committed on_session_end extraction before soft-evicting "
-                "finalizable session=%s (cache pressure, pre-expiry)", key,
-            )
-        except Exception as _e:
-            logger.debug("Pre-evict memory commit failed for %s: %s", key, _e)
-
     def _commit_then_release_soft(self, agent: Any, key: str) -> None:
-        """Commit end-of-session memory (if warranted), then soft-release.
-
-        Runs on the daemon eviction thread so the memory-provider call and the
-        client teardown never block the caller's held cache lock. Order matters:
-        commit uses the live agent's memory manager before ``release_clients``
-        drops the message buffer.
-        """
-        self._commit_memory_before_soft_evict(agent, key)
+        """Soft-release on the daemon eviction thread so the client teardown
+        never blocks the caller's held cache lock."""
         self._release_evicted_agent_soft(agent)
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:

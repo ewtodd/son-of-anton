@@ -35,7 +35,6 @@ from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 
-from agent.memory_manager import sanitize_context
 from agent.session_activity import ActivityProvenance
 from agent.message_sanitization import _sanitize_surrogates
 from son_of_anton_constants import get_son_of_anton_home
@@ -9818,7 +9817,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         for row in rows:
             content = self._decode_content(row["content"])
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
-                content = sanitize_context(content).strip()
+                content = content.strip()
             msg = {"role": row["role"], "content": content}
             # Durable per-message identity for surfaces that need to address a
             # specific row later (desktop reactions). OPT-IN: only the gateway
@@ -9830,7 +9829,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 msg["_row_id"] = row["id"]
             # api_content is the byte-fidelity sidecar: the exact string sent
             # to the API when it differed from the clean content. Returned
-            # VERBATIM — no sanitize_context, no strip — because the replay
+            # VERBATIM — no strip — because the replay
             # path substitutes it for content to keep the provider prompt
             # cache prefix byte-stable across turns. Cleaning it here would
             # re-introduce the divergence it exists to remove.
@@ -9903,9 +9902,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # to keep emitting the marker. No-op for unaffected sessions.
         messages = _strip_stale_tool_call_markers(messages)
         if repair_alternation and messages:
-            # Lazy import: son_of_anton_state already depends on agent.* (see
-            # sanitize_context above), but keep this optional path from
-            # widening the import surface at module load.
+            # Lazy import: keep this optional path from widening the import
+            # surface at module load.
             from agent.agent_runtime_helpers import repair_message_sequence
 
             repaired = repair_message_sequence(None, messages)

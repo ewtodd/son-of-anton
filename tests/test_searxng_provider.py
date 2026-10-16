@@ -6,7 +6,7 @@ endpoint path; both forms must produce exactly one ``/search`` segment.
 
 from __future__ import annotations
 
-from plugins.web.searxng.provider import _searxng_search_url
+from tools.web_tools import _searxng_search_url
 
 
 def test_search_url_appends_missing_endpoint() -> None:

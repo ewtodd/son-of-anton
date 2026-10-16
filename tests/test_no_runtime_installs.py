@@ -79,19 +79,3 @@ def test_platforms_cannot_register_an_installer() -> None:
             check_fn=lambda: False,
             ensure_deps_fn=lambda: True,
         )
-
-
-def test_missing_optional_sdk_names_the_nix_group(monkeypatch) -> None:
-    """A provider whose SDK is not in the build says how to add it, not pip."""
-    import tools.web_tools as web_tools
-    from plugins.web.exa.provider import _get_exa_client
-
-    monkeypatch.setenv("EXA_API_KEY", "test-key")
-    monkeypatch.setattr(web_tools, "_exa_client", None, raising=False)
-    monkeypatch.setitem(sys.modules, "exa_py", None)
-
-    with pytest.raises(ImportError) as excinfo:
-        _get_exa_client()
-    message = str(excinfo.value)
-    assert "extraDependencyGroups" in message and '"exa"' in message
-    assert "pip" not in message

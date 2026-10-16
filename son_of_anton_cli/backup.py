@@ -53,12 +53,6 @@ logger = logging.getLogger(__name__)
 
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
 
-# Reserved archive subtree for provider state that lives OUTSIDE SON_OF_ANTON_HOME
-# (e.g. ~/.honcho, ~/.hindsight). The active memory provider declares these via
-# MemoryProvider.backup_paths(); they're stored under this prefix encoded
-# relative to the user's home directory, and restored to their original
-# home-relative location on import. Anything not under home is skipped.
-
 
 # ---------------------------------------------------------------------------
 # SQLite safe copy

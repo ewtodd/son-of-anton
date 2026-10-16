@@ -34,7 +34,6 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compactor import ContextCompactor
 from agent.iteration_budget import IterationBudget
-from agent.memory_manager import StreamingContextScrubber
 from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -60,40 +59,6 @@ from utils import base_url_host_matches, is_truthy_value
 # ``logger = logging.getLogger(__name__)``, which resolves to "run_agent"
 # from inside that module.)
 logger = logging.getLogger("run_agent")
-
-
-# Memory providers we've already warned are unavailable. Deduped because the
-# gateway builds a fresh AIAgent per message, so an un-deduped warning would
-# fire on every turn.
-_warned_unavailable_providers: set[str] = set()
-
-
-def _warn_memory_provider_unavailable(name: str, reason: str = "") -> None:
-    """Warn (once per provider) when a configured memory provider is unavailable.
-
-    ``is_available()`` is a fast, side-effect-free hot-path check, so it can't
-    log for itself. Without this warning a provider whose credentials/config are
-    missing is silently dropped — the user has ``memory.provider`` set but gets
-    no memory and no diagnostic. A common trigger is systemd/gateway services
-    not inheriting ``~/.son-of-anton/.env``. See ewtodd/son-of-anton#2765.
-
-    ``reason`` is the provider's ``unavailable_reason()`` — a provider-specific,
-    actionable hint (e.g. which package to install). Because an unavailable
-    provider is never initialized, this is the only place such a hint can reach
-    the user, so it is appended to the warning when present (#7718).
-    """
-    if name in _warned_unavailable_providers:
-        return
-    _warned_unavailable_providers.add(name)
-    logger.warning(
-        "Memory provider %r is selected but reports unavailable — external memory "
-        "is disabled for this session (built-in memory still works). Check the "
-        "provider's credentials/config with 'son-of-anton memory status'. Note: "
-        "systemd/gateway services do not inherit ~/.son-of-anton/.env automatically; set "
-        "any required variables in the service environment.%s",
-        name,
-        f" {reason}" if reason else "",
-    )
 
 
 def _ra():
@@ -770,10 +735,6 @@ def init_agent(
     # Deferred paragraph break flag — set after tool iterations so a
     # single "\n\n" is prepended to the next real text delta.
     agent._stream_needs_break = False
-    # Stateful scrubber for <memory-context> spans split across stream
-    # deltas (#5719).  sanitize_context() alone can't survive chunk
-    # boundaries because the block regex needs both tags in one string.
-    agent._stream_context_scrubber = StreamingContextScrubber()
     # Stateful scrubber for reasoning/thinking tags in streamed deltas
     # (#17924).  Replaces the per-delta _strip_think_blocks regex that
     # destroyed downstream state (e.g. MiniMax-M2.7 streaming
@@ -1197,8 +1158,6 @@ def init_agent(
     
     # Track conversation messages for session logging
     agent._session_messages: List[Dict[str, Any]] = []
-    agent._memory_write_origin = "assistant_tool"
-    agent._memory_write_context = "foreground"
     
     # Cached system prompt -- built once per session, only rebuilt on compaction
     agent._cached_system_prompt: Optional[str] = None
@@ -1371,86 +1330,6 @@ def init_agent(
     
 
 
-    # Memory provider plugin (external — one at a time, alongside built-in)
-    # Reads memory.provider from config to select which plugin to activate.
-    agent._memory_manager = None
-    if not skip_memory:
-        try:
-            _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
-
-            if _mem_provider_name and _mem_provider_name.strip():
-                from agent.memory_manager import MemoryManager as _MemoryManager
-                from plugins.memory import load_memory_provider as _load_mem
-                agent._memory_manager = _MemoryManager()
-                _mp = _load_mem(_mem_provider_name)
-                if _mp and _mp.is_available():
-                    agent._memory_manager.add_provider(_mp)
-                elif _mp is not None:
-                    # Skip the (potentially expensive) unavailable_reason() call
-                    # if we've already warned for this provider — the gateway
-                    # builds a fresh AIAgent per message, so without this guard
-                    # unavailable_reason() (which reads config from disk and may
-                    # probe importlib) runs on every turn.
-                    if _mem_provider_name not in _warned_unavailable_providers:
-                        try:
-                            _unavailable_reason = _mp.unavailable_reason()
-                        except Exception:
-                            _unavailable_reason = ""
-                        _warn_memory_provider_unavailable(_mem_provider_name, _unavailable_reason)
-                if agent._memory_manager.providers:
-                    _init_kwargs = {
-                        "session_id": agent.session_id,
-                        "platform": platform or "cli",
-                        "son_of_anton_home": str(get_son_of_anton_home()),
-                        "agent_context": "primary",
-                    }
-                    if _init_kwargs["platform"] == "cli":
-                        _init_kwargs["warning_callback"] = agent._emit_warning
-                        _init_kwargs["status_callback"] = agent._emit_status
-                    # Thread session title for memory provider scoping
-                    # (e.g. honcho uses this to derive chat-scoped session keys)
-                    if agent._session_db:
-                        try:
-                            _st = agent._session_db.get_session_title(agent.session_id)
-                            if _st:
-                                _init_kwargs["session_title"] = _st
-                        except Exception:
-                            pass
-                    # Thread gateway user identity for per-user memory scoping
-                    if agent._user_id:
-                        _init_kwargs["user_id"] = agent._user_id
-                    if agent._user_id_alt:
-                        _init_kwargs["user_id_alt"] = agent._user_id_alt
-                    if agent._user_name:
-                        _init_kwargs["user_name"] = agent._user_name
-                    if agent._chat_id:
-                        _init_kwargs["chat_id"] = agent._chat_id
-                    if agent._chat_name:
-                        _init_kwargs["chat_name"] = agent._chat_name
-                    if agent._chat_type:
-                        _init_kwargs["chat_type"] = agent._chat_type
-                    if agent._thread_id:
-                        _init_kwargs["thread_id"] = agent._thread_id
-                    # Thread gateway session key for stable per-chat Honcho session isolation
-                    if agent._gateway_session_key:
-                        _init_kwargs["gateway_session_key"] = agent._gateway_session_key
-                    _init_kwargs["agent_identity"] = "default"
-                    _init_kwargs["agent_workspace"] = "son-of-anton"
-                    # NOTE: status_callback (for the deterministic retain
-                    # indicator) is wired above, CLI-only — gateway status is
-                    # delivered on a different path (see the platform=="cli"
-                    # block), and the indicator no-ops when it's absent.
-                    agent._memory_manager.initialize_all(**_init_kwargs)
-                    _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
-                else:
-                    _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
-                    agent._memory_manager = None
-        except Exception as _mpe:
-            _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
-            agent._memory_manager = None
-
-    from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
-    _inject_memory_provider_tools(agent)
 
     # Tool-use enforcement config: "auto" (default — matches hardcoded
     # model list), true (always), false (never), or list of substrings.
@@ -2074,121 +1953,29 @@ def init_agent(
 
 
 
-    # Select context engine: config-driven (like memory providers).
-    # 1. Check config.toml context.engine setting
-    # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
-    # 3. Check general plugin system (user-installed plugins)
-    # 4. Fall back to built-in ContextCompactor
-    _selected_engine = None
-    _copy_failed = False
-    _engine_name = "compactor"  # default
-    try:
-        _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
-        _engine_name = _ctx_cfg.get("engine", "compactor") or "compactor"
-    except Exception:
-        pass
-
-    if _engine_name != "compactor":
-        # Try loading from plugins/context_engine/<name>/
-        try:
-            from plugins.context_engine import load_context_engine
-            _selected_engine = load_context_engine(_engine_name)
-        except Exception as _ce_load_err:
-            _ra().logger.debug("Context engine load from plugins/context_engine/: %s", _ce_load_err)
-
-        # Try general plugin system as fallback
-        if _selected_engine is None:
-            _candidate = None
-            try:
-                from son_of_anton_cli.plugins import get_plugin_context_engine
-                _candidate = get_plugin_context_engine()
-            except Exception:
-                _candidate = None
-            if _candidate is not None and _candidate.name == _engine_name:
-                # Deep-copy the shared plugin singleton so a child agent's
-                # update_model() can't mutate the parent's compactor (#42449).
-                # Copy can fail for engines holding uncopyable state (locks, DB
-                # connections, clients); in that case fall back to the built-in
-                # compactor with an ACCURATE message rather than silently
-                # mislabelling it "not found".
-                import copy
-                try:
-                    _selected_engine = copy.deepcopy(_candidate)
-                except Exception as _copy_err:
-                    _copy_failed = True
-                    _ra().logger.warning(
-                        "Context engine '%s' could not be safely copied for this "
-                        "agent (%s) — falling back to built-in compactor. Plugin "
-                        "engines that hold uncopyable state (locks, DB connections) "
-                        "should implement __deepcopy__ to copy only mutable budget "
-                        "state.",
-                        _engine_name, _copy_err,
-                    )
-                    _selected_engine = None
-
-        if _selected_engine is None and not _copy_failed:
-            _ra().logger.warning(
-                "Context engine '%s' not found — falling back to built-in compactor",
-                _engine_name,
-            )
-    # else: config says "compactor" — use built-in, don't auto-activate plugins
-
-    if _selected_engine is not None:
-        agent.context_compactor = _selected_engine
-        # Resolve context_length for plugin engines — mirrors switch_model() path
-        from agent.model_metadata import get_model_context_length
-        _plugin_ctx_len = get_model_context_length(
-            agent.model,
-            base_url=agent.base_url,
-            api_key=getattr(agent, "api_key", ""),
-            config_context_length=_effective_context_length,
-            provider=agent.provider,
-            custom_providers=_custom_providers,
-        )
-        # Per-model threshold overrides are part of the explicit
-        # context-engine contract: assign them BEFORE the initial
-        # update_model() call so the first resolution (which derives
-        # threshold_percent/threshold_tokens for the initial model) already
-        # sees the overrides. Assigning after update_model() left the initial
-        # model on the engine's global threshold until the first /model
-        # switch. Engines that override update_model() own their own policy
-        # and may ignore the attribute.
-        if compaction_model_thresholds:
-            agent.context_compactor.model_thresholds = compaction_model_thresholds
-        agent.context_compactor.update_model(
-            model=agent.model,
-            context_length=_plugin_ctx_len,
-            base_url=agent.base_url,
-            api_key=getattr(agent, "api_key", ""),
-            provider=agent.provider,
-            api_mode=agent.api_mode,
-        )
-        if not agent.quiet_mode:
-            _ra().logger.info("Using context engine: %s", _selected_engine.name)
-    else:
-        agent.context_compactor = ContextCompactor(
-            model=agent.model,
-            threshold_percent=compaction_threshold,
-            protect_first_n=compaction_protect_first,
-            protect_last_n=compaction_protect_last,
-            summary_target_ratio=compaction_target_ratio,
-            summary_model_override=None,
-            quiet_mode=agent.quiet_mode,
-            base_url=agent.base_url,
-            api_key=getattr(agent, "api_key", ""),
-            config_context_length=_effective_context_length,
-            provider=agent.provider,
-            api_mode=agent.api_mode,
-            abort_on_summary_failure=compaction_abort_on_summary_failure,
-            max_tokens=agent.max_tokens,
-            model_thresholds=compaction_model_thresholds,
-            threshold_tokens_cap=compaction_threshold_tokens,
-            proactive_prune_tokens=compaction_proactive_prune_tokens,
-            proactive_prune_min_result_chars=compaction_proactive_prune_min_chars,
-            proactive_prune_min_reclaim_tokens=compaction_proactive_prune_min_reclaim,
-            min_tail_user_messages=compaction_min_tail_users,
-            tail_mode=compaction_tail_mode,
-        )
+    agent.context_compactor = ContextCompactor(
+        model=agent.model,
+        threshold_percent=compaction_threshold,
+        protect_first_n=compaction_protect_first,
+        protect_last_n=compaction_protect_last,
+        summary_target_ratio=compaction_target_ratio,
+        summary_model_override=None,
+        quiet_mode=agent.quiet_mode,
+        base_url=agent.base_url,
+        api_key=getattr(agent, "api_key", ""),
+        config_context_length=_effective_context_length,
+        provider=agent.provider,
+        api_mode=agent.api_mode,
+        abort_on_summary_failure=compaction_abort_on_summary_failure,
+        max_tokens=agent.max_tokens,
+        model_thresholds=compaction_model_thresholds,
+        threshold_tokens_cap=compaction_threshold_tokens,
+        proactive_prune_tokens=compaction_proactive_prune_tokens,
+        proactive_prune_min_result_chars=compaction_proactive_prune_min_chars,
+        proactive_prune_min_reclaim_tokens=compaction_proactive_prune_min_reclaim,
+        min_tail_user_messages=compaction_min_tail_users,
+        tail_mode=compaction_tail_mode,
+    )
     _bind_session_state = getattr(agent.context_compactor, "bind_session_state", None)
     if callable(_bind_session_state):
         try:
@@ -2232,57 +2019,6 @@ def init_agent(
             f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
         )
 
-    # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).
-    # Skip names that are already present — the _ra().get_tool_definitions()
-    # quiet_mode cache returned a shared list pre-#17335, so a stray
-    # mutation here would poison subsequent agent inits in the same
-    # Gateway process and trip provider-side 'duplicate tool name'
-    # errors. Even with the cache fix, dedup is the right defense
-    # against plugin paths that may register the same schemas via
-    # ctx.register_tool(). Mirrors the memory tools dedup above.
-    #
-    # Respect the platform's enabled_toolsets configuration (#5544):
-    # context engine tools follow the same gating pattern as memory
-    # provider tools — without the gate, `platform_toolsets: telegram: []`
-    # would still leak lcm_* tools into the tool surface and incur the
-    # same local-model latency penalty.
-    agent._context_engine_tool_names: set = set()
-    if (
-        hasattr(agent, "context_compactor")
-        and agent.context_compactor
-        and agent.tools is not None
-        and (
-            agent.enabled_toolsets is None
-            or "context_engine" in agent.enabled_toolsets
-        )
-    ):
-        _existing_tool_names = {
-            t.get("function", {}).get("name")
-            for t in agent.tools
-            if isinstance(t, dict)
-        }
-        from agent.memory_manager import normalize_tool_schema as _normalize_tool_schema
-        for _raw_schema in agent.context_compactor.get_tool_schemas():
-            _schema = _normalize_tool_schema(_raw_schema)
-            if _schema is None:
-                # A schema with no resolvable name (e.g. an already-wrapped
-                # entry) would append a nameless tool that strict providers
-                # 400 on, disabling the whole toolset (#47707). Skip it.
-                _ra().logger.warning(
-                    "Context engine returned a tool schema with no resolvable "
-                    "name; skipping to avoid poisoning the request (%r)",
-                    _raw_schema,
-                )
-                continue
-            _tname = _schema["name"]
-            if _tname in _existing_tool_names:
-                continue  # already registered via plugin/cache path
-            _wrapped = {"type": "function", "function": _schema}
-            agent.tools.append(_wrapped)
-            agent.valid_tool_names.add(_tname)
-            agent._context_engine_tool_names.add(_tname)
-            _existing_tool_names.add(_tname)
-
     # Notify context engine of session start
     if hasattr(agent, "context_compactor") and agent.context_compactor:
         try:
@@ -2300,7 +2036,6 @@ def init_agent(
     agent._subdirectory_hints = SubdirectoryHintTracker(
         working_dir=os.getenv("TERMINAL_CWD") or None,
     )
-    agent._user_turn_count = 0
     # Copilot x-initiator flag: first API call of a user turn sends "user" (#3040).
     agent._is_user_initiated_turn = False
 

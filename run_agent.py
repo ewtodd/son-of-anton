@@ -144,8 +144,6 @@ from tools.interrupt import set_interrupt as _set_interrupt
 
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import sanitize_context
-from agent.memory_provider import is_trivial_prompt
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.message_content import flatten_message_text
@@ -183,7 +181,6 @@ from agent.message_sanitization import (  # noqa: F401
     coalesce_tool_call_id as _sanitize_coalesce_tool_call_id,
     uniquify_tool_call_ids as _sanitize_uniquify_tool_call_ids,
 )
-from agent.message_sanitization import summarize_message_for_log as _summarize_user_message_for_log
 from agent.tool_guardrails import (
     ToolGuardrailDecision,
     append_toolguard_guidance,
@@ -698,8 +695,6 @@ class AIAgent:
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
         
-        # Turn counter (added after reset_session_state was first written — #2635)
-        self._user_turn_count = 0
 
         # MCP opening-turns refresh window restarts with the new session
         # (/new, /resume, /branch); see agent.turn_context.
@@ -1546,32 +1541,6 @@ class AIAgent:
         from agent.chat_completion_helpers import cleanup_task_resources
         return cleanup_task_resources(self, task_id)
 
-    def _build_memory_write_metadata(
-        self,
-        *,
-        write_origin: Optional[str] = None,
-        execution_context: Optional[str] = None,
-        task_id: Optional[str] = None,
-        tool_call_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Build provenance metadata for external memory-provider mirrors."""
-        metadata: Dict[str, Any] = {
-            "write_origin": write_origin or getattr(self, "_memory_write_origin", "assistant_tool"),
-            "execution_context": (
-                execution_context
-                or getattr(self, "_memory_write_context", "foreground")
-            ),
-            "session_id": self.session_id or "",
-            "parent_session_id": self._parent_session_id or "",
-            "platform": self.platform or os.environ.get("SON_OF_ANTON_SESSION_SOURCE", "cli"),
-            "tool_name": "memory",
-        }
-        if task_id:
-            metadata["task_id"] = task_id
-        if tool_call_id:
-            metadata["tool_call_id"] = tool_call_id
-        return {k: v for k, v in metadata.items() if v not in {None, ""}}
-
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
 
@@ -1908,25 +1877,6 @@ class AIAgent:
                 # Store the sidecar only when it actually differs.
                 if _row_api_content == content:
                     _row_api_content = None
-                # Load-time sanitize divergence: get_messages_as_conversation
-                # replays user/assistant rows through
-                # ``sanitize_context(content).strip()``, so content that
-                # sanitize would rewrite (echoed/pasted <memory-context>
-                # fences or system notes) replays different bytes after a
-                # session reload even though THIS turn sent it verbatim.
-                # Capture the sent bytes in the sidecar so a reloaded session
-                # replays what was actually on the wire. Compared in wire form
-                # (both sides .strip()-ed — the api_messages build strips
-                # every outgoing content string) so plain surrounding
-                # whitespace doesn't grow redundant sidecars.
-                if (
-                    _row_api_content is None
-                    and role in ("user", "assistant")
-                    and isinstance(content, str)
-                    and content
-                    and sanitize_context(content).strip() != content.strip()
-                ):
-                    _row_api_content = content
                 # Persist multimodal tool results as their text summary only —
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
@@ -3827,7 +3777,7 @@ class AIAgent:
         )
 
     def shutdown_memory_provider(self, messages: list = None) -> None:
-        """Shut down the memory provider and context engine at session end.
+        """Notify the context compactor of session end.
 
         Idempotent: gateway cleanup and AIAgent.close() may share this
         ownership boundary.
@@ -3835,16 +3785,6 @@ class AIAgent:
         if getattr(self, "_memory_provider_shutdown", False):
             return
         self._memory_provider_shutdown = True
-        if self._memory_manager:
-            try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception as e:
-                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
-            try:
-                self._memory_manager.shutdown_all()
-            except Exception:
-                pass
-        # Notify context engine of session end (flush DAG, close DBs, etc.)
         if hasattr(self, "context_compactor") and self.context_compactor:
             try:
                 self.context_compactor.on_session_end(
@@ -3855,21 +3795,9 @@ class AIAgent:
                 pass
 
     def commit_memory_session(self, messages: list = None) -> None:
-        """Trigger end-of-session extraction without tearing providers down.
-        Called when session_id rotates (e.g. /new, context compaction);
-        providers keep their state and continue running under the old
-        session_id — they just flush pending extraction now."""
-        if self._memory_manager:
-            try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception:
-                pass
-        # Notify context engine of session end too — same lifecycle moment as
-        # the memory manager's on_session_end. Without this, engines that
-        # accumulate per-session state (DAGs, summaries) leak that state from
-        # the rotated-out session into whatever comes next under the same
-        # compactor instance. Mirrors the call in shutdown_memory_provider().
-        # See issue #22394.
+        """Notify the context compactor that session_id rotated (/new,
+        compaction), so per-session compaction state does not leak into
+        whatever comes next under the same compactor instance (#22394)."""
         if hasattr(self, "context_compactor") and self.context_compactor:
             try:
                 self.context_compactor.on_session_end(
@@ -3878,72 +3806,6 @@ class AIAgent:
                 )
             except Exception:
                 pass
-
-    def _sync_external_memory_for_turn(
-        self,
-        *,
-        original_user_message: Any,
-        final_response: Any,
-        interrupted: bool,
-        messages: list | None = None,
-    ) -> None:
-        """Mirror a completed turn into external memory providers.
-
-        Called at the end of ``run_conversation`` with the cleaned user
-        message (``original_user_message``) and the finalised assistant
-        response.  The external memory backend gets both ``sync_all`` (to
-        persist the exchange) and ``queue_prefetch_all`` (to start
-        warming context for the next turn) in one shot.
-
-        Uses ``original_user_message`` rather than ``user_message``
-        because the latter may carry injected API-only content that bloats
-        or breaks provider queries.
-
-        Interrupted turns are skipped entirely (#15218).  A partial
-        assistant output, an aborted tool chain, or a mid-stream reset
-        is not durable conversational truth — mirroring it into an
-        external memory backend pollutes future recall with state the
-        user never saw completed.  The prefetch is gated on the same
-        flag: the user's next message is almost certainly a retry of
-        the same intent, and a prefetch keyed on the interrupted turn
-        would fire against stale context.
-
-        Normal completed turns still sync as before.  The whole body is
-        wrapped in ``try/except Exception`` because external memory
-        providers are strictly best-effort — a misconfigured or offline
-        backend must not block the user from seeing their response.
-        """
-        if interrupted:
-            return
-        if not (self._memory_manager and final_response and original_user_message):
-            return
-        # Multimodal turns carry content as a list of typed parts; providers
-        # expect plain strings, so flatten to text first (newline-joined for
-        # memory, vs the default space-join used for log/trajectory previews).
-        user_text = _summarize_user_message_for_log(original_user_message, sep="\n")
-        response_text = _summarize_user_message_for_log(final_response, sep="\n")
-        if not (user_text and response_text):
-            return
-        try:
-            sync_kwargs = {"session_id": self.session_id or ""}
-            if messages is not None:
-                sync_kwargs["messages"] = messages
-            self._memory_manager.sync_all(
-                user_text,
-                response_text,
-                **sync_kwargs,
-            )
-            # Sibling of the build_turn_context() prefetch gate: warming the
-            # next turn's recall with a trivial prompt ("hi", "thanks") keys
-            # provider searches on zero-signal text — skip it. The sync above
-            # still runs so the turn itself is persisted.
-            if not is_trivial_prompt(user_text):
-                self._memory_manager.queue_prefetch_all(
-                    user_text,
-                    session_id=self.session_id or "",
-                )
-        except Exception:
-            pass
 
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
@@ -5211,42 +5073,19 @@ class AIAgent:
     def _reset_stream_delivery_tracking(self) -> None:
         """Reset tracking for text delivered during the current model response."""
         # Flush any benign partial-tag tail held by the think scrubber
-        # first (#17924): an innocent '<' at the end of the stream that
-        # turned out not to be a tag prefix should reach the UI.  Then
-        # flush the context scrubber.  Order matters — the think
-        # scrubber's output feeds into the context scrubber's state.
+        # (#17924): an innocent '<' at the end of the stream that
+        # turned out not to be a tag prefix should reach the UI.
         think_scrubber = getattr(self, "_stream_think_scrubber", None)
         if think_scrubber is not None:
             think_tail = think_scrubber.flush()
             if think_tail:
-                # Route the tail through the context scrubber too so a
-                # memory-context span straddling the final boundary is
-                # still caught.
-                ctx_scrubber = getattr(self, "_stream_context_scrubber", None)
-                if ctx_scrubber is not None:
-                    think_tail = ctx_scrubber.feed(think_tail)
-                if think_tail:
-                    callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
-                    for cb in callbacks:
-                        try:
-                            cb(think_tail)
-                        except Exception:
-                            pass
-                    self._record_streamed_assistant_text(think_tail)
-        # Flush any benign partial-tag tail held by the context scrubber so it
-        # reaches the UI before we clear state for the next model call.  If
-        # the scrubber is mid-span, flush() drops the orphaned content.
-        scrubber = getattr(self, "_stream_context_scrubber", None)
-        if scrubber is not None:
-            tail = scrubber.flush()
-            if tail:
                 callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
                 for cb in callbacks:
                     try:
-                        cb(tail)
+                        cb(think_tail)
                     except Exception:
                         pass
-                self._record_streamed_assistant_text(tail)
+                self._record_streamed_assistant_text(think_tail)
         self._current_streamed_assistant_text = ""
 
     def _record_streamed_assistant_text(self, text: str) -> None:
@@ -5499,14 +5338,6 @@ class AIAgent:
             else:
                 # Defensive: legacy callers without the scrubber attribute.
                 text = self._strip_think_blocks(text or "")
-            # Then feed through the stateful context scrubber so memory-context
-            # spans split across chunks cannot leak to the UI (#5719).
-            scrubber = getattr(self, "_stream_context_scrubber", None)
-            if scrubber is not None:
-                text = scrubber.feed(text)
-            else:
-                # Defensive: legacy callers without the scrubber attribute.
-                text = sanitize_context(text)
             # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             if not prepended_break and not getattr(
                 self, "_current_streamed_assistant_text", ""

@@ -2112,18 +2112,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     scope=next_args.get("scope"),
                     store=agent._memory_store,
                 )
-                # Mirror successful built-in memory writes to external
-                # providers. All gating/op-expansion lives behind the manager
-                # interface (MemoryManager.notify_memory_tool_write).
-                if agent._memory_manager:
-                    agent._memory_manager.notify_memory_tool_write(
-                        result,
-                        next_args,
-                        build_metadata=lambda: agent._build_memory_write_metadata(
-                            task_id=effective_task_id,
-                            tool_call_id=getattr(tool_call, "id", None),
-                        ),
-                    )
                 return result
             function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                 agent,
@@ -2251,77 +2239,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._delegate_spinner = None
                 tool_duration = time.time() - tool_start_time
                 cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
-                if spinner:
-                    spinner.stop(cute_msg)
-                elif agent._should_emit_quiet_tool_messages():
-                    agent._vprint(f"  {cute_msg}")
-        elif agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
-            # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
-            spinner = None
-            if agent._should_emit_quiet_tool_messages():
-                face = random.choice(KawaiiSpinner.get_waiting_faces())
-                emoji = _get_tool_emoji(function_name)
-                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-                preview = _build_tool_label(function_name, display_args) or function_name
-                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
-                spinner.start()
-            _ce_result = None
-            try:
-                def _execute(next_args: dict) -> Any:
-                    return agent.context_compactor.handle_tool_call(function_name, next_args, messages=messages)
-                function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
-                    agent,
-                    function_name=function_name,
-                    function_args=function_args,
-                    effective_task_id=effective_task_id,
-                    tool_call_id=getattr(tool_call, "id", "") or "",
-                    execute=_execute,
-                    scope_block=_ts_scope_block,
-                    display_index=i,
-                ))
-                _ce_result = function_result
-            except Exception as tool_error:
-                function_result = json.dumps({"error": f"Context engine tool '{function_name}' failed: {tool_error}"})
-                logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
-            finally:
-                tool_duration = time.time() - tool_start_time
-                cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_ce_result)
-                if spinner:
-                    spinner.stop(cute_msg)
-                elif agent._should_emit_quiet_tool_messages():
-                    agent._vprint(f"  {cute_msg}")
-        elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
-            # Memory provider tools (hindsight_retain, honcho_search, etc.)
-            # These are not in the tool registry — route through MemoryManager.
-            spinner = None
-            if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
-                face = random.choice(KawaiiSpinner.get_waiting_faces())
-                emoji = _get_tool_emoji(function_name)
-                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-                preview = _build_tool_label(function_name, display_args) or function_name
-                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
-                spinner.start()
-            _mem_result = None
-            try:
-                def _execute(next_args: dict) -> Any:
-                    return agent._memory_manager.handle_tool_call(function_name, next_args)
-                function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
-                    agent,
-                    function_name=function_name,
-                    function_args=function_args,
-                    effective_task_id=effective_task_id,
-                    tool_call_id=getattr(tool_call, "id", "") or "",
-                    execute=_execute,
-                    scope_block=_ts_scope_block,
-                    display_index=i,
-                ))
-                _mem_result = function_result
-            except Exception as tool_error:
-                function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
-                logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
-            finally:
-                tool_duration = time.time() - tool_start_time
-                cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
                 if spinner:
                     spinner.stop(cute_msg)
                 elif agent._should_emit_quiet_tool_messages():

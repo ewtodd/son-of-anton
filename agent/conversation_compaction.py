@@ -25,15 +25,14 @@ Three concerns live here:
 (``self._compact_context(...)``) keep working.  Tests that exercise
 these paths see no behavioural change.
 
-Thread-safety contract for extension points (#76354 review)
-------------------------------------------------------------
+Thread-safety contract (#76354 review)
+--------------------------------------
 
 When the host-level progress-aware timeout is enabled (the default:
 ``compaction.context_timeout_seconds > 0``), the WHOLE compaction pass —
-including plugin/legacy **context engines** (``compact()`` /
-``on_session_start`` / boundary callbacks) and **memory providers**
-(``on_pre_compact`` / ``on_session_switch``) — runs on a pooled daemon
-thread, not the conversation thread. Extension authors must assume:
+including the context engine's ``compact()`` / ``on_session_start`` /
+boundary callbacks — runs on a pooled daemon thread, not the conversation
+thread. Therefore:
 
 * Calls may arrive on an arbitrary pooled thread; do not rely on
   thread-affinity or ``threading.local`` state shared with the caller.
@@ -67,10 +66,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
-from agent.context_engine import (
-    automatic_compaction_status_message,
-    sanitize_memory_context,
-)
+from agent.context_engine import automatic_compaction_status_message
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
@@ -1320,16 +1316,6 @@ def _adopt_live_compaction_child(
                 bind_state(session_db=session_db, session_id=child_session_id)
             except Exception:
                 pass
-    try:
-        if agent._memory_manager:
-            agent._memory_manager.on_session_switch(
-                child_session_id,
-                parent_session_id=parent_session_id,
-                reset=False,
-                reason="compaction",
-            )
-    except Exception as exc:
-        logger.debug("memory manager compaction-child adoption failed: %s", exc)
 
     return recovered
 
@@ -1406,45 +1392,6 @@ def _compaction_lock_holder(agent: Any) -> str:
         f":agent={id(agent):x}"
         f":nonce={uuid.uuid4().hex[:8]}"
     )
-
-
-def _supported_compaction_kwargs(
-    compact_fn: Any,
-    *,
-    current_tokens: Optional[int],
-    focus_topic: Optional[str],
-    force: bool,
-    memory_context: str,
-) -> dict:
-    """Return only compaction kwargs accepted by an engine callable.
-
-    Context-engine plugins can outlive additions to the optional host contract.
-    Inspecting the callable before invoking it keeps those older signatures
-    compatible without catching an internal ``TypeError`` and executing a
-    stateful compactor twice.
-    """
-    candidates = {
-        "current_tokens": current_tokens,
-        "focus_topic": focus_topic,
-        "force": force,
-    }
-    if memory_context:
-        candidates["memory_context"] = memory_context
-    try:
-        parameters = inspect.signature(compact_fn).parameters
-    except (TypeError, ValueError):
-        # ``current_tokens`` has been part of the ContextEngine ABC since its
-        # introduction. Keep the oldest documented call shape when a C-backed
-        # or otherwise opaque callable has no inspectable signature.
-        return {"current_tokens": current_tokens}
-
-    accepts_kwargs = any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
-    )
-    if accepts_kwargs:
-        return candidates
-    return {name: value for name, value in candidates.items() if name in parameters}
 
 
 class _CompactionActivityHeartbeat:
@@ -2872,43 +2819,12 @@ def compact_context(
                         # re-appending the concurrent rows and the live tail.
                         agent._persist_user_message_idx = len(messages)
 
-        # Notify external memory provider before compaction discards context.
-        # The provider's on_pre_compact() may return a string of insights it
-        # wants surfaced inside the compaction summary; capture and forward it
-        # instead of silently discarding the provider's return value.
-        memory_context = ""
-        if agent._memory_manager:
-            try:
-                _maybe_ctx = agent._memory_manager.on_pre_compact(messages)
-                if isinstance(_maybe_ctx, str):
-                    memory_context = sanitize_memory_context(_maybe_ctx)
-            except Exception:
-                pass
-
         compact_fn = agent.context_compactor.compact
-        compact_kwargs = _supported_compaction_kwargs(
-            compact_fn,
-            current_tokens=approx_tokens,
-            focus_topic=focus_topic,
-            force=force,
-            memory_context=memory_context,
-        )
-        if memory_context.strip() and "memory_context" not in compact_kwargs:
-            engine_name = getattr(
-                agent.context_compactor,
-                "name",
-                type(agent.context_compactor).__name__,
-            )
-            if (
-                getattr(agent, "_last_memory_context_unsupported_engine", None)
-                != engine_name
-            ):
-                agent._last_memory_context_unsupported_engine = engine_name
-                logger.warning(
-                    "context engine %s does not accept memory_context; continuing "
-                    "without provider-supplied summary context",
-                    engine_name,
-                )
+        compact_kwargs = {
+            "current_tokens": approx_tokens,
+            "focus_topic": focus_topic,
+            "force": force,
+        }
 
         messages_before_compaction = copy.deepcopy(messages)
         _activity_heartbeat = _CompactionActivityHeartbeat(
@@ -3266,11 +3182,9 @@ def compact_context(
         # (not before/after snapshot equality) is required: fresh-agent
         # surfaces restore the cached prompt from the session DB, where it
         # can predate mid-session memory writes the in-memory snapshot has
-        # already absorbed. External providers can change their own prompt
-        # block during on_pre_compact(), so they retain the rebuild path.
+        # already absorbed.
         if (
             cached_system_prompt is not None
-            and getattr(agent, "_memory_manager", None) is None
             and _cached_prompt_reflects_builtin_memory(agent, cached_system_prompt)
         ):
             new_system_prompt = cached_system_prompt
@@ -3298,10 +3212,8 @@ def compact_context(
         if agent._session_db:
             split_status = "pending"
             try:
-                # Trigger memory extraction on the current session before the
-                # transcript is rewritten (runs in BOTH modes — the logical
-                # conversation's pre-compaction turns are about to be summarized
-                # away regardless of whether the id rotates).
+                # Close the compactor's per-session state before the
+                # transcript is rewritten (runs in BOTH modes).
                 agent.commit_memory_session(messages)
 
                 # Anti-growth guard at the COMMIT SITE: never persist a
@@ -3717,7 +3629,6 @@ def compact_context(
         # is the id the boundary notifications attribute the prior state to: the old
         # id on rotation, the (unchanged) current id in-place.
         _old_sid = locals().get("old_session_id")
-        _is_boundary = bool(_old_sid) or in_place
         _context_engine_boundary_committed = _session_commit_succeeded and (
             bool(_old_sid) or compacted_in_place
         )
@@ -3767,23 +3678,6 @@ def compact_context(
                     new_session_id=agent.session_id or "",
                     old_session_id=_boundary_parent,
                 )
-
-        # Notify memory providers of the compaction boundary so provider-cached
-        # per-session state (Hindsight's _document_id, accumulated turn buffers,
-        # counters) refreshes. reset=False because the logical conversation
-        # continues. See #6672. Fires in BOTH modes: in-place uses the same id as
-        # parent (the conversation didn't fork, but the buffer must still be told
-        # the transcript was compacted so it doesn't double-count dropped turns).
-        try:
-            if _is_boundary and agent._memory_manager:
-                agent._memory_manager.on_session_switch(
-                    agent.session_id or "",
-                    parent_session_id=_boundary_parent,
-                    reset=False,
-                    reason="compaction",
-                )
-        except Exception as _me_err:
-            logger.debug("memory manager on_session_switch (compaction): %s", _me_err)
 
         # Warn on repeated compactions (quality degrades with each pass).
         # Route through _emit_status (like the other compaction warnings above)

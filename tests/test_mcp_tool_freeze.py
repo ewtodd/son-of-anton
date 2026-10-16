@@ -92,7 +92,6 @@ def _agent(*, refresh_turns: int = 3, tools: list | None = None):
         enabled_toolsets=[TOOLSET],
         disabled_toolsets=None,
         _tool_snapshot_generation=0,
-        _context_engine_tool_names=set(),
         _mcp_refresh_turns=refresh_turns,
         notices=[],
     )
