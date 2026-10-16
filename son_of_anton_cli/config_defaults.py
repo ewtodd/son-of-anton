@@ -1316,12 +1316,6 @@ DEFAULT_CONFIG = {
         # timer ("⚡ Reading file  ( 2.3s · ↓ 1.2k tok)"). Updates as each API
         # call in the turn reports usage.
         "spinner_token_flow": True,
-        # How gateway tool-progress is grouped on platforms that support message
-        # editing: "accumulate" (default) edits one bubble in place; "separate"
-        # sends one message per tool (the pre-v0.9 behavior, noisier). Only
-        # applies where tool_progress is already enabled. Per-platform override
-        # via display.platforms.<platform>.tool_progress_grouping.
-        "tool_progress_grouping": "accumulate",
         # Optional custom phrases for generic long-running status messages.
         # Built-in defaults live in gateway/assets/status_phrases.toml. Users
         # can set `path`/`paths` to SON_OF_ANTON_HOME-relative TOML files/directories

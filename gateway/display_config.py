@@ -32,13 +32,11 @@ from typing import Any
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
-    "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
     "show_reasoning": False,
     # How a reasoning/thinking summary is rendered when show_reasoning is on.
     #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
     #   "blockquote"-> each line prefixed with "> "
-    #   "subtext"   -> each line prefixed with "-# " (Discord small grey subtext)
-    # Discord defaults to "subtext"; everywhere else defaults to "code".
+    #   "subtext"   -> each line prefixed with "-# "
     "reasoning_style": "code",
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
@@ -47,51 +45,12 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "interim_assistant_messages": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
-    # When true, delete tool-progress / "⏳ Working — N min" / status bubbles
-    # after the final response lands on platforms that support message
-    # deletion. Off by default — progress is still shown
-    # live, just cleaned up after success so the chat doesn't fill up with
-    # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
-    "cleanup_progress": False,
-    # Live working-state status on platforms whose typing indicator renders
-    # text (Slack's assistant status line). Values:
-    #   "full" / true  -> verb + argument preview ("is running pytest…")
-    #   "verb"         -> verb only ("is running…") — keeps file paths and
-    #                     commands out of shared channels
-    #   "off" / false  -> static text (typing_status_text or "is thinking...")
-    # Independent of tool_progress: works even when progress bubbles are off
-    # (Slack's default), and costs no extra API calls — the existing typing
-    # refresh cadence just renders different text.
-    "live_status": "full",
 }
 
 # ---------------------------------------------------------------------------
 # Sensible per-platform defaults — tiered by platform capability
 # ---------------------------------------------------------------------------
-# Tier 1 (high): Supports message editing, typically personal/team use
-# Tier 2 (medium): Supports editing but often workspace/customer-facing
-# Tier 3 (low): No edit support — each progress msg is permanent
-# Tier 4 (minimal): Batch/non-interactive delivery
-
-_TIER_HIGH = {
-    "tool_progress": "all",
-    "show_reasoning": False,
-    "tool_preview_length": 40,
-    "streaming": None,  # follow global
-    "interim_assistant_messages": True,
-    "long_running_notifications": True,
-    "busy_ack_detail": True,
-}
-
-_TIER_MEDIUM = {
-    "tool_progress": "new",
-    "show_reasoning": False,
-    "tool_preview_length": 40,
-    "streaming": None,
-    "interim_assistant_messages": True,
-    "long_running_notifications": True,
-    "busy_ack_detail": True,
-}
+# Low tier: no edit support — each progress msg is permanent.
 
 _TIER_LOW = {
     "tool_progress": "off",
@@ -105,23 +64,7 @@ _TIER_LOW = {
 
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
-    # Tier 1 — full edit support, personal/team use
-    # Discord has a native "subtext" primitive (-# small grey text) that reads
-    # as metadata rather than content, so reasoning summaries default to it
-    # here instead of the fenced code block used elsewhere.
-    "discord":     {**_TIER_HIGH, "reasoning_style": "subtext"},
-
-    # Tier 2 — edit support, often customer/workspace channels
-    # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
-    # "new"/"all" spam permanent lines in channels (son-of-anton#14663).
-    "slack":           {
-        **_TIER_MEDIUM,
-        "tool_progress": "off",
-        "long_running_notifications": False,
-        "busy_ack_detail": False,
-    },
-
-    # Tier 3 — no edit support, progress messages are permanent
+    # No edit support — progress messages would be permanent
     "signal":          _TIER_LOW,
 }
 
@@ -224,25 +167,6 @@ def _normalise(setting: str, value: Any) -> Any:
                 return "generic"
             return val in {"true", "1", "yes", "on", "raw", "verbose"}
         return bool(value)
-    if setting == "cleanup_progress":
-        if isinstance(value, str):
-            return value.lower() in {"true", "1", "yes", "on"}
-        return bool(value)
-    if setting == "live_status":
-        # Tri-state: "full" (verb + preview), "verb" (verb only), "off".
-        if value is True:
-            return "full"
-        if value is False:
-            return "off"
-        val = str(value).strip().lower()
-        if val in {"true", "1", "yes", "on", "all"}:
-            return "full"
-        if val in {"false", "0", "no"}:
-            return "off"
-        return val if val in {"full", "verb", "off"} else "full"
-    if setting == "tool_progress_grouping":
-        val = str(value).lower()
-        return val if val in ("accumulate", "separate") else "accumulate"
     if setting == "reasoning_style":
         val = str(value).lower()
         return val if val in ("code", "blockquote", "subtext") else "code"
