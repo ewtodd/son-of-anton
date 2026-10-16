@@ -11,10 +11,6 @@ text, thinking, tool calls, tool results, and lifecycle markers. The paths
 are returned from ``delegate_task`` so the parent agent (or the user) can
 watch a child work instead of waiting blind for the consolidated summary.
 
-Placement under ``cache/delegation`` is deliberate: that directory is
-mounted read-only into remote terminal backends (Docker/Modal/SSH) via
-``credential_files._CACHE_DIRS``, so the logs are readable from any backend.
-
 Design constraints:
 
 * **Never raise into the agent loop.** Every write is wrapped; the first
@@ -314,7 +310,6 @@ def create_live_transcripts(
     context: Optional[str] = None,
     delegation_id: Optional[str] = None,
     model: Optional[str] = None,
-    provider: Optional[str] = None,
 ) -> tuple[Optional[str], List[Optional[LiveTranscriptWriter]], List[str]]:
     """Create one pre-headered writer per task + a manifest.json.
 
@@ -341,7 +336,7 @@ def create_live_transcripts(
                 paths.append(str(w.path))
         if not paths:
             return None, [None] * n, []
-        _write_manifest(deleg_id, task_list, paths, model=model, provider=provider)
+        _write_manifest(deleg_id, task_list, paths, model=model)
         return deleg_id, writers, paths
     except Exception as exc:
         logger.debug("Live transcript creation failed: %s", exc)
@@ -353,15 +348,13 @@ def _manifest_path(delegation_id: str) -> Path:
 
 
 def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
-                    paths: List[str], model: Optional[str] = None,
-                    provider: Optional[str] = None) -> None:
+                    paths: List[str], model: Optional[str] = None) -> None:
     try:
         manifest = {
             "delegation_id": delegation_id,
             "started": time.strftime("%Y-%m-%d %H:%M:%S"),
             "task_count": len(task_list),
             "model": model,
-            "provider": provider,
             "tasks": [
                 {
                     "index": i,

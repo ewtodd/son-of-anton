@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from typing import Callable
 
-from son_of_anton_cli.subcommands._shared import add_accept_hooks_flag
-
 
 def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     """Attach the ``cron`` subcommand (and its sub-actions) to ``subparsers``."""
@@ -233,7 +231,6 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "run", help="Run a job on the next scheduler tick"
     )
     cron_run.add_argument("job_id", help="Job ID to trigger")
-    add_accept_hooks_flag(cron_run)
 
     cron_remove = cron_subparsers.add_parser(
         "remove", aliases=["rm", "delete"], help="Remove a scheduled job"
@@ -267,7 +264,5 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_notepad.add_argument("value", nargs="?", help="Value to store (set)")
 
     # cron tick (mostly for debugging)
-    cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
-    add_accept_hooks_flag(cron_tick)
-    add_accept_hooks_flag(cron_parser)
+    cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     cron_parser.set_defaults(func=cmd_cron)

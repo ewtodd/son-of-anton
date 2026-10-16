@@ -163,16 +163,6 @@ DEFAULT_CONFIG = {
         # qwen/glm/minimax/mimo/mistral models), true/false (force on/off for
         # all models), or a list of model-name substrings to match.
         "execution_guidance": "auto",
-        # Intent-ack continuation: when the model opens a turn by narrating an
-        # action it will take ("I'll go check the logs...") but emits no tool
-        # call, intercept the turn-end, inject a "continue now, execute the
-        # tools" nudge, and loop instead of ending the turn (capped at 2 nudges
-        # per turn). This is the corrective sibling of tool_use_enforcement (the
-        # preventive prompt-side guard). Values: "auto" (default — resolves to
-        # off), true (all api_modes — fixes the Gemini/Claude "stops after
-        # stating intent" case), false (never), or a list of model-name
-        # substrings to match.
-        "intent_ack_continuation": "auto",
         # Runtime anti-stall guards. When True (default), two conservative
         # guards run: (1) an identical-call loop breaker that appends a short
         # notice to the tool result when the same tool is called 3+ consecutive
@@ -205,13 +195,6 @@ DEFAULT_CONFIG = {
         # (ssh — it has its own probe).  Set False to
         # disable entirely.
         "environment_probe": True,
-        # Embedder-supplied environment description appended to the system
-        # prompt's environment-hints block. Lets a host that wraps Son of Anton
-        # (sandbox runner, managed platform) explain the runtime environment
-        # — proxy, credential handling, mount layout — without editing the
-        # identity slot (SOUL.md). Empty by default. The SON_OF_ANTON_ENVIRONMENT_HINT
-        # env var overrides this (build-time/container mechanism).
-        "environment_hint": "",
         # Coding posture — on interactive coding surfaces (CLI, TUI, desktop
         # app, ACP) in a code workspace, Son of Anton adds a coding operating brief
         # + a live git/workspace snapshot to the system prompt. See
@@ -220,39 +203,9 @@ DEFAULT_CONFIG = {
         #                      interactive AND cwd is a code workspace.
         #                      Toolsets are never touched; messaging platforms
         #                      unaffected.
-        #   "focus"          — auto + collapse the toolset to the lean coding
-        #                      set (+ enabled MCP servers). Explicit opt-in.
         #   "on"             — force the prompt posture everywhere.
         #   "off"            — disable entirely.
         "coding_context": "auto",
-        # Standing operator instructions for the coding posture. A string (or
-        # list of strings) appended to the coding brief as an extra stable
-        # system block — pin project-wide workflow rules here instead of editing
-        # the shipped brief, e.g. "For UI work, don't run tsc/lint until I
-        # approve. Clean the diff before you commit and push." Cache-safe:
-        # takes effect next session. Empty by default.
-        "coding_instructions": "",
-        # When verify-on-stop finds edited code without fresh verification
-        # evidence, append guidance for creative UI work (avoid broad
-        # tsc/lint/test before visual approval) and clean-diff expectations.
-        # Set false to keep the evidence nudge terse.
-        "verify_guidance": True,
-        # Upper bound on consecutive `pre_verify` "continue" nudges in a single
-        # turn, so a user/plugin hook can never trap the loop.
-        "max_verify_nudges": 3,
-        # Verification closure: after the agent edits files in a code workspace,
-        # do not accept a final answer until fresh verification evidence exists
-        # or the agent explains why it cannot run checks. The loop is bounded
-        # and uses the passive verification ledger. Default is False (opt-in):
-        # the v31/v32 config migrations already switch existing installs off
-        # because the verification narrative proved more noise than signal,
-        # and the docs tell users to treat off as the effective default — a
-        # fresh install must not be the one population that still gets the
-        # nudges. Set true to force on everywhere, or "auto" for the legacy
-        # surface-aware behavior (on for interactive coding surfaces — CLI,
-        # TUI, desktop — and programmatic callers, off for conversational
-        # messaging surfaces). Doc/markdown-only edits never fire it.
-        "verify_on_stop": False,
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
@@ -539,21 +492,7 @@ DEFAULT_CONFIG = {
 
     "terminal": {
         "backend": "local",
-        # Remote-backend graceful degradation: when a connection-class
-        # infrastructure failure occurs (SSH host unreachable), "warn"
-        # (default) returns a structured degraded tool result
-        # with a reason + retry hint so the model can act on it; "fail"
-        # preserves the historical error + traceback behavior.
-        "degraded_mode": "warn",
         "cwd": ".",  # Use current directory
-        # Terminal font family for the desktop app's embedded xterm.js terminal.
-        # When set (e.g. "'CaskaydiaCoveNerdFont', 'JetBrains Mono', monospace"),
-        # the desktop terminal uses this as the CSS font-family value, with the
-        # built-in default ("'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo,
-        # Consolas, monospace") as fallback when the field is empty or unset.
-        # This lets users install a Nerd Font (or any custom font) and configure
-        # it here without patching the built desktop app.
-        "font_family": "",
         "timeout": 180,
         # Bounded grace period (seconds) between SIGTERM and an escalated
         # SIGKILL when terminating a host process tree (browser daemons, etc.).
@@ -599,11 +538,6 @@ DEFAULT_CONFIG = {
         # this off if your rc files misbehave when sourced
         # non-interactively (e.g. one that hard-exits on TTY checks).
         "auto_source_bashrc": True,
-        # Persistent shell — keep a long-lived bash shell across execute() calls
-        # so cwd/env vars/shell variables survive between commands.
-        # Enabled by default for non-local backends (SSH); local is always opt-in
-        # via TERMINAL_LOCAL_PERSISTENT env var.
-        "persistent_shell": True,
     },
 
     "web": {
@@ -633,16 +567,6 @@ DEFAULT_CONFIG = {
         "provider_tier": {},
     },
 
-    # Filesystem checkpoints — automatic snapshots before destructive file ops.
-    # When enabled, the agent takes a snapshot of the working directory once
-    # per conversation turn (on first write_file/patch call).  Use /rollback
-    # to restore.
-    #
-    # Defaults changed in v2 (single shared shadow store, real pruning):
-    #   - enabled: True -> False   (opt-in; most users never use /rollback)
-    #   - max_snapshots: 50 -> 20  (now actually enforced via ref rewrite)
-    #   - auto_prune:   False -> True (orphans/stale pruned automatically)
-    # Opt in via ``son-of-anton chat --checkpoints`` or set enabled=True here.
     "git": {
         # AUTHOR identity for commits the agent makes on your behalf (/commit),
         # applied via `git commit --author=`. The committer is never touched —
@@ -652,41 +576,6 @@ DEFAULT_CONFIG = {
         # choose. Set both to author under a dedicated account (a bot user, say).
         "author_name": "",
         "author_email": "",
-    },
-    "checkpoints": {
-        "enabled": False,
-        # Max checkpoints to keep per working directory.  Pre-v2 this only
-        # limited the `/rollback` listing; v2 actually rewrites the ref and
-        # garbage-collects older commits.
-        "max_snapshots": 20,
-        # Hard ceiling on total ``~/.son-of-anton/checkpoints/`` size (MB).  When
-        # exceeded, the oldest checkpoint per project is dropped in a
-        # round-robin pass until total size falls under the cap.
-        # 0 disables the size cap.
-        "max_total_size_mb": 500,
-        # Skip any single file larger than this when staging a checkpoint.
-        # Prevents accidental snapshotting of datasets, model weights, and
-        # other large generated assets.  0 disables the filter.
-        "max_file_size_mb": 10,
-        # Auto-maintenance: son-of-anton sweeps the checkpoint base at startup
-        # (at most once per ``min_interval_hours``) and:
-        #   * deletes project entries whose last_touch is older than
-        #     ``retention_days``
-        #   * GCs the single shared store to reclaim unreachable objects
-        #   * enforces ``max_total_size_mb`` across remaining projects
-        #   * deletes ``legacy-*`` archives older than ``retention_days``
-        #
-        # NOTE: this automatic sweep never deletes "orphan" entries (workdir
-        # no longer found on disk). A missing workdir at startup is
-        # ambiguous — it can mean the project was deleted, or that an
-        # external volume / network share / VPN is simply not mounted yet —
-        # and this sweep runs unattended, so it must never guess. Orphan
-        # cleanup is only available via the explicit
-        # ``son-of-anton checkpoints prune`` command (add ``--keep-orphans`` to
-        # skip it), where a human is looking at the output.
-        "auto_prune": True,
-        "retention_days": 7,
-        "min_interval_hours": 24,
     },
 
     # Hard cap (chars) for a single automatic context file such as SOUL.md,
@@ -1149,21 +1038,6 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
-        # Monitor — urgency/importance classifier used by the important-mail
-        # monitor catalog automation (cron/scripts/classify_items.py). Scores
-        # candidate items 0-10 against the user's criteria so only above-
-        # threshold items get delivered. "auto" = main chat model; override to
-        # a cheap fast model (e.g. deepseek-v4, or a local
-        # haiku) since per-item scoring is high-volume and a small model is fine.
-        "monitor": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 60,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
     },
     
     "display": {
@@ -1468,64 +1342,11 @@ DEFAULT_CONFIG = {
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
     # configured providers (deepseek, openai-api, custom) are supported.
     "delegation": {
-        "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
-        "provider": "",    # e.g. "deepseek" (empty = inherit parent provider + credentials)
-        "base_url": "",    # direct OpenAI-compatible endpoint for subagents
-        "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
-        "api_mode": "",    # wire protocol for delegation.base_url: "chat_completions"
-                           # or "anthropic_messages". Empty = auto-detect
-                           # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
-                           # explicitly for non-standard endpoints the heuristic can't detect.
-        # When delegate_task narrows child toolsets explicitly, preserve any
-        # MCP toolsets the parent already has enabled. On by default so
-        # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
-        # extras" without silently stripping MCP tools the parent already has.
-        # Set to false for strict intersection.
-        "inherit_mcp_toolsets": True,
-        "max_iterations": 250,  # per-subagent iteration cap (each subagent gets its own budget,
-                               # independent of the parent's max_iterations)
-        # Subagent summaries return to the parent's context verbatim. A batch
-        # fan-out (N children) returns N summaries at once, which can exceed
-        # the parent's context window and trigger a compaction/429 death
-        # spiral. delegate_task sizes each summary against the parent's
-        # remaining context headroom (split across the batch); when it must
-        # trim, the full text is spilled to ~/.son-of-anton/cache/delegation/
-        # (mounted into remote backends) and the in-context summary becomes a
-        # head+tail window plus a footer with the exact read_file offset to
-        # page the omitted middle — the same convention web_extract uses for
-        # large pages. Nothing is lost. max_summary_chars is a hard per-summary
-        # character ceiling layered on top of that dynamic budget
-        # (belt-and-suspenders for models that ignore the "be concise"
-        # instruction). 0 disables the hard ceiling; the dynamic headroom
-        # budget still applies.
-        "max_summary_chars": 24000,
-
-        "child_timeout_seconds": 0,  # optional wall-clock cap per child agent. 0 (default)
-                                     # = no timeout: children fail only from real errors
-                                     # (API, tools, iteration budget), never a delegation
-                                     # stopwatch. Set a positive number of seconds
-                                     # (floor 30s) to enforce a hard cap.
-        "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
-                                 # "medium", "low", "minimal", "none" (empty = inherit)
+        "model": "",       # e.g. "unholy/dsv4-flash" (empty = inherit parent model)
         "max_concurrent_children": 10,  # unified concurrency cap: max parallel children per batch
                                        # AND max concurrent background (background=true)
                                        # delegation units. New async dispatches beyond the cap
                                        # fall back to synchronous execution. Floor of 1, no ceiling.
-                                       # (Replaces the deprecated max_async_children.)
-        # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
-        # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
-        # raise deliberately, each level multiplies API cost.
-        "max_spawn_depth": 1,        # depth (1 = flat [default], 2 = orchestrator→leaf, 3+ = deeper)
-        "orchestrator_enabled": True,  # kill switch for role="orchestrator"
-        # When a subagent hits a dangerous-command approval prompt, the parent's
-        # prompt_toolkit TUI owns stdin — a thread-local input() call from the
-        # subagent worker would deadlock the parent UI. To avoid the deadlock,
-        # subagent threads ALWAYS resolve approvals non-interactively:
-        #   false (default) → auto-deny with a logger.warning audit line (safe)
-        #   true             → auto-approve "once" with a logger.warning audit line
-        # Flip to true only if you trust delegated work to run dangerous cmds
-        # without human review (cron pipelines, batch automation, etc.).
-        "subagent_auto_approve": False,
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
@@ -1746,20 +1567,6 @@ DEFAULT_CONFIG = {
     #         instead of a Markdown table.
     "platform_hints": {},
 
-    # Shell-script hooks — declarative bridge that invokes shell scripts
-    # on plugin-hook events (pre_tool_call, post_tool_call, pre_llm_call,
-    # subagent_stop, etc.).  Each entry maps an event name to a list of
-    # {matcher, command, timeout} dicts.  First registration of a new
-    # command prompts the user for consent; subsequent runs reuse the
-    # stored approval from ~/.son-of-anton/shell-hooks-allowlist.json.
-    # See `website/docs/user-guide/features/hooks.md` for schema + examples.
-    "hooks": {},
-
-    # Auto-accept shell-hook registrations without a TTY prompt.  Also
-    # toggleable per-invocation via --accept-hooks or SON_OF_ANTON_ACCEPT_HOOKS=1.
-    # Gateway / cron / non-interactive runs need this (or one of the other
-    # channels) to pick up newly-added hooks.
-    "hooks_auto_accept": False,
     # Custom personalities — add your own entries here
     # Supports string format: {"name": "system prompt"}
     # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
@@ -1814,21 +1621,6 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
-        # Allow cron-spawned agents to use the cronjob toolset (create/edit/
-        # remove scheduled jobs from within a cron run — the "cron-librarian"
-        # pattern). Off by default: the cronjob toolset is policy-denied in
-        # cron context to prevent unattended scheduling loops. Jobs created
-        # this way are user-owned in the same flat jobs table as every other
-        # job. Interactive toolsets (messaging/clarify) stay denied in cron
-        # context regardless of this setting.
-        "allow_agent_scheduling": False,
-        # Pre-dispatch configuration validation (T1-26): before constructing
-        # any agent machinery for a job, verify the provider API key resolves
-        # (unless a fallback chain is configured) and delivery platforms are
-        # configured. A failing job is recorded as last_status=blocked_config
-        # with ONE alert (no re-alert every tick) and NO LLM call is made.
-        # Set to false to restore the old behavior (fail during the run).
-        "preflight": True,
         # Fail closed when an unpinned job's current global model/provider
         # differs from its creation-time snapshot. This prevents unattended
         # jobs from silently inheriting a paid default. Set to false only when
@@ -1844,70 +1636,6 @@ DEFAULT_CONFIG = {
         # Inference provider paired with cron.model. Empty string = resolve
         # from global config.
         "model_provider": "",
-        # Wrap delivered cron responses with a header (task name) and footer
-        # ("The agent cannot see this message").  Set to false for clean output.
-        "wrap_response": True,
-        # Make cron deliveries CONTINUABLE: a user can reply to a cron brief
-        # and the agent has it in context (no "what is Task #2?" amnesia).
-        # Default False preserves the historical isolation guarantee (cron
-        # deliveries live only in the cron job's own session). Per-job
-        # `attach_to_session` overrides this for a single job.
-        #
-        # Behaviour is THREAD-PREFERRED, scoped to the job's origin chat:
-        #   - Thread-capable platforms (Discord
-        #     threads, Slack threads): a dedicated thread is opened for the job
-        #     via the adapter's create_handoff_thread, the brief is delivered
-        #     into it, and that thread's session is seeded so the user's reply
-        #     in-thread continues with full context. Each continuable job gets
-        #     its own scrollback, isolated from the parent channel.
-        #   - DM-only platforms (Signal): no threads exist, so
-        #     the brief is mirrored into the origin DM session instead — the
-        #     DM itself is the continuation surface.
-        # Both paths ride the shipped gateway.mirror.mirror_to_session and are
-        # alternation- and cache-safe (appended at a turn boundary, never
-        # mid-loop, never mutating the cached system prompt). Only the origin
-        # chat is ever touched — fan-out / broadcast targets are never mirrored.
-        "mirror_delivery": False,
-        # Maximum number of due jobs to run in parallel per tick.
-        # null/0 = unbounded (limited only by thread count).
-        # 1 = serial (pre-v0.9 behaviour).
-        # Also overridable via SON_OF_ANTON_CRON_MAX_PARALLEL env var.
-        "max_parallel_jobs": None,
-        # Per-job output-file retention: save_job_output keeps the N most
-        # recent .md files and prunes older ones. 0 or negative disables
-        # pruning (for operators who manage cleanup externally). Default 50.
-        "output_retention": 50,
-        # Timeout (seconds) for a no-agent cron script. Also overridable via
-        # SON_OF_ANTON_CRON_SCRIPT_TIMEOUT. Keep this in sync with
-        # cron.scheduler._DEFAULT_SCRIPT_TIMEOUT so config set recognizes the
-        # same setting the scheduler reads.
-        "script_timeout_seconds": 3600,
-        # Timeout (seconds) for SessionDB() init inside cron jobs.
-        # SessionDB opens/migrates state.db synchronously and has no timeout
-        # of its own against a wedged sqlite3.connect. An unbounded hang here
-        # wedges the job's dispatch guard forever. Also overridable via
-        # SON_OF_ANTON_CRON_SESSION_DB_TIMEOUT env var. 0 = unlimited (skip the bound).
-        "session_db_timeout_seconds": 10,
-        # Timeout (seconds) for each media attachment send during cron
-        # delivery via a live gateway adapter. Large attachments (long TTS
-        # audio, big exports) can exceed the old fixed 30s window. Also
-        # overridable via SON_OF_ANTON_CRON_MEDIA_SEND_TIMEOUT env var. Keep in
-        # sync with cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.
-        "media_send_timeout_seconds": 300,
-    },
-
-    # execute_code settings — controls the tool used for programmatic tool calls.
-    "code_execution": {
-        # Execution mode:
-        #   project (default) — scripts run in the session's working directory
-        #     with the active virtualenv/conda env's python, so project deps
-        #     (pandas, torch, project packages) and relative paths resolve.
-        #   strict            — scripts run in an isolated temp directory with
-        #     son-of-anton's own python (sys.executable). Maximum isolation
-        #     and reproducibility; project deps and relative paths won't work.
-        # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
-        # tool whitelist apply identically in both modes.
-        "mode": "project",
     },
 
     # Tool Search (progressive disclosure for large tool surfaces).
@@ -2475,90 +2203,6 @@ DEFAULT_CONFIG = {
     },
 
 
-    # =========================================================================
-    # External secret sources
-    # =========================================================================
-    # Pull credentials from external secret managers at process startup
-    # rather than storing them in ~/.son-of-anton/.env.
-    "secrets": {
-        # Optional explicit ordering of enabled secret sources.  When
-        # omitted, sources run in registration order (bundled first,
-        # then plugin-registered).  Regardless of this list, "mapped"
-        # sources (explicit VAR→ref bindings, e.g. a future 1Password
-        # env: map) always take precedence over "bulk" sources
-        # (project dumps like Bitwarden BSM), and the first source to
-        # claim a var wins — later claims are skipped with a warning.
-        # Example: sources: [onepassword, bitwarden]
-        # "sources": [],
-        "bitwarden": {
-            # Master switch.  When false, BSM is never contacted and the
-            # bws binary is never auto-installed — same as not having
-            # this section at all.
-            "enabled": False,
-            # Name of the env var that holds the Bitwarden machine-account
-            # access token.  This is the one bootstrap secret; it lives
-            # in ~/.son-of-anton/.env (or your shell) and never in config.toml.
-            "access_token_env": "BWS_ACCESS_TOKEN",
-            # UUID of the BSM project to sync from.
-            "project_id": "",
-            # Seconds to reuse a fresh disk/memory cache entry before contacting
-            # Bitwarden again. 0 disables normal fresh-cache reuse.
-            "cache_ttl_seconds": 300,
-            # Optional encrypted last-good fallback for network/timeout outages.
-            # When enabled, successful BWS fetches write AES-GCM encrypted cache
-            # material under ~/.son-of-anton/cache/. If a later startup cannot reach
-            # Bitwarden due to NETWORK/TIMEOUT, Son of Anton may use this encrypted
-            # cache for up to max_stale_seconds. Auth failures do not fall back.
-            "encrypted_cache": {
-                "enabled": False,
-                "max_stale_seconds": 0,
-            },
-            # When True, BSM values overwrite existing env vars.  Default
-            # True because the point of using BSM is centralized rotation —
-            # if .env had the final say, rotating in Bitwarden wouldn't
-            # take effect until you also cleared the matching .env line.
-            "override_existing": True,
-            # bws must be on PATH: add pkgs.bws to the son-of-anton
-            # package's extraPackages. Nothing is downloaded at runtime.
-            # Bitwarden region / self-hosted endpoint.  Empty string
-            # means use the bws CLI default (US Cloud,
-            # https://vault.bitwarden.com).  Set to
-            # https://vault.bitwarden.eu for EU Cloud, or your own URL
-            # for self-hosted Bitwarden.  Plumbed into the bws subprocess
-            # as BWS_SERVER_URL.  Prompted for during
-            # `son-of-anton secrets bitwarden setup`.
-            "server_url": "",
-        },
-        "onepassword": {
-            # Master switch.  When false, the op CLI is never invoked —
-            # same as not having this section at all.
-            "enabled": False,
-            # Mapping of env-var name → 1Password secret reference
-            # (op://vault/item/field).  Each entry is resolved with a
-            # single `op read` at startup.
-            "env": {},
-            # Optional account shorthand / sign-in address passed as
-            # `op read --account <account>`.  Empty = op's default account.
-            "account": "",
-            # Name of the env var holding a 1Password service-account token
-            # for headless auth.  Sourced from ~/.son-of-anton/.env (or the shell)
-            # and exported to the op child as OP_SERVICE_ACCOUNT_TOKEN.
-            # Leave the var unset to use an interactive/desktop op session.
-            "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
-            # Optional absolute path to the op binary.  When set it is used
-            # verbatim (PATH is not consulted) — pin this to avoid trusting
-            # whatever `op` appears first on PATH.  Empty = resolve via PATH.
-            "binary_path": "",
-            # Seconds to cache resolved values in-process and on disk.  0
-            # disables BOTH cache layers (no values are written to disk).
-            "cache_ttl_seconds": 300,
-            # When True (default), resolved values overwrite existing env
-            # vars so rotating a secret in 1Password takes effect on next
-            # start.  Flip to false to let .env / shell exports win locally.
-            "override_existing": True,
-        },
-    },
-
     # Paste collapse thresholds (TUI + CLI).
     #
     # paste_collapse_threshold (default 5)
@@ -2579,67 +2223,6 @@ DEFAULT_CONFIG = {
     "paste_collapse_threshold": 5,
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
-
-    # =========================================================================
-    # Egress credential-injection proxy (iron-proxy)
-    # =========================================================================
-    # When enabled, outbound traffic from remote terminal sandboxes (SSH)
-    # is routed through a managed iron-proxy
-    # subprocess.  The sandbox sees opaque proxy tokens; iron-proxy swaps in
-    # real API credentials at the egress boundary.  Compromising the sandbox
-    # leaks tokens that only work behind the configured trusted proxy boundary
-    # (CA private key + proxy endpoint integrity are part of that boundary).
-    #
-    # Configure with `son-of-anton egress setup`.  Disabled by default — the rest of
-    # Son of Anton works exactly as before with `enabled: false`.
-    "proxy": {
-        # Master switch.  When false, iron-proxy is never started, no sandbox
-        # mounts are added, no binaries are auto-installed — feature is a
-        # complete no-op.
-        "enabled": False,
-        # Tunnel listener port.  Sandboxes get `HTTPS_PROXY=http://<host>:<port>`.
-        # 9090 is the default; collide-aware setup wizard can reassign.
-        "tunnel_port": 9090,
-        # Auto-download the pinned iron-proxy binary into ~/.son-of-anton/bin/ on
-        # first use.  When false, you must place `iron-proxy` on PATH yourself.
-        "auto_install": True,
-        # Where iron-proxy looks up the real upstream secrets at egress time.
-        # "env"        — process env (default; what bitwarden integration
-        #                already populates if you use it)
-        # "bitwarden"  — refetch via `bws secret list` on each proxy restart;
-        #                rotation in the Bitwarden web app propagates without
-        #                touching .env (requires `secrets.bitwarden.enabled`).
-        "credential_source": "env",
-        # When true, a sandbox refuses to start if the proxy is enabled but
-        # not running.  False = fall back to direct outbound with real
-        # credentials in the sandbox (the legacy posture).
-        "enforce_on_docker": True,
-        # NOTE: ``fail_on_uncovered_providers`` was removed.  It gated a
-        # refuse-start when Anthropic / Azure OpenAI / Gemini env vars were
-        # present — those providers are now first-class swapped providers
-        # via per-provider match_headers rules (x-api-key, api-key,
-        # x-goog-api-key), so the fail-closed tier is empty.  A leftover
-        # key in existing user configs is ignored harmlessly.
-        # When credential_source is bitwarden but the BWS access token /
-        # project_id is missing OR the bws fetch returns no values for
-        # mapped providers, the daemon raises by default.  Set this to
-        # True to opt back in to the legacy "silently fall back to host
-        # env" behaviour — useful for migrations where the operator wants
-        # to switch credential_source to bitwarden but hasn't fully wired
-        # BWS yet.  Defaults to false (strict).
-        "allow_env_fallback": False,
-        # SSRF deny list applied to outbound traffic.  Omit / leave empty
-        # to use the safe default: loopback, link-local (incl. cloud
-        # metadata IPs at 169.254.169.254), and RFC1918.  Set to an
-        # explicit ``[]`` to opt out entirely (only sensible in hermetic
-        # tests that need to reach a loopback upstream).
-        "upstream_deny_cidrs": None,
-        # Extra allowed upstream hosts beyond the bundled defaults (which
-        # cover OpenAI, DeepSeek, and self-hosted endpoints).
-        # Wildcards (`*.foo.com`) are supported.
-        "extra_allowed_hosts": [],
-    },
-
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 39,

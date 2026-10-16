@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import Callable
 
-from son_of_anton_cli.subcommands._shared import add_accept_hooks_flag
-
 
 def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     """Attach the ``mcp`` subcommand to ``subparsers``."""
@@ -36,31 +34,10 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         action="store_true",
         help="Enable verbose logging on stderr",
     )
-    add_accept_hooks_flag(mcp_serve_p)
 
     mcp_sub.add_parser("list", aliases=["ls"], help="List configured MCP servers")
 
     mcp_test_p = mcp_sub.add_parser("test", help="Test MCP server connection")
     mcp_test_p.add_argument("name", help="Server name to test")
 
-    mcp_login_p = mcp_sub.add_parser(
-        "login",
-        help="Force re-authentication for an OAuth-based MCP server",
-    )
-    mcp_login_p.add_argument("name", help="Server name to re-authenticate")
-
-    mcp_reauth_p = mcp_sub.add_parser(
-        "reauth",
-        help="Re-authenticate one OAuth MCP server, or all of them (--all)",
-    )
-    mcp_reauth_p.add_argument(
-        "name", nargs="?", help="Server name to re-authenticate (omit with --all)"
-    )
-    mcp_reauth_p.add_argument(
-        "--all",
-        action="store_true",
-        help="Re-authenticate every OAuth server in config, one at a time",
-    )
-
-    add_accept_hooks_flag(mcp_parser)
     mcp_parser.set_defaults(func=cmd_mcp)

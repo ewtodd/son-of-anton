@@ -1253,14 +1253,6 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         def _is_source_suppressed(_p, _s):  # type: ignore[misc]
             return False
 
-    def _secret_source_for_env(env_var: str) -> Optional[str]:
-        try:
-            from son_of_anton_cli.env_loader import get_secret_source
-            source_label = get_secret_source(env_var)
-        except Exception:
-            source_label = None
-        return str(source_label).strip() if source_label else None
-
     def _env_payload(
         *,
         source: str,
@@ -1276,9 +1268,6 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             "base_url": base_url,
             "label": env_var,
         }
-        secret_source = _secret_source_for_env(env_var)
-        if secret_source:
-            payload["secret_source"] = secret_source
         return payload
 
     pconfig = PROVIDER_REGISTRY.get(provider)

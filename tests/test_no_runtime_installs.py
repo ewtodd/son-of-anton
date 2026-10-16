@@ -48,16 +48,6 @@ def test_no_private_node_toolchain_is_provisioned() -> None:
         assert not hasattr(son_of_anton_constants, name), f"{name} is back"
 
 
-def test_bitwarden_takes_bws_from_path_only(tmp_path, monkeypatch) -> None:
-    """With bws absent, the source reports it and downloads nothing."""
-    from agent.secret_sources import bitwarden
-
-    monkeypatch.setenv("PATH", str(tmp_path))
-    assert bitwarden.find_bws() is None
-    assert not hasattr(bitwarden, "install_bws")
-    assert not any(tmp_path.iterdir()), "something was written while looking for bws"
-
-
 @pytest.mark.parametrize("module", REMOVED_MODULES)
 def test_runtime_installer_modules_are_gone(module: str) -> None:
     try:

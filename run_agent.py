@@ -51,12 +51,6 @@ from typing import List, Dict, Any, Optional, Callable
 #   (a) the single in-module `OpenAI(**client_kwargs)` call site at
 #       _create_openai_client, and
 #   (b) `patch("run_agent.OpenAI", ...)` test patterns used by ~28 test files.
-#
-# NOTE: `fire` is ONLY used in the `__main__` block below (for running
-# run_agent.py directly as a CLI) — it is NOT needed for library usage.
-# It is imported there, not here, so that importing run_agent from a
-# daemon thread (e.g. a delegated subagent) never fails with
-# ModuleNotFoundError on broken/partial installs where `fire` isn't present.
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,17 +63,10 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
 
     Only local CLI sessions get a recorded cwd: the directory the process was
     launched from is meaningful for ``son-of-anton -c`` / ``--resume`` (relaunch
-    where you left off). Gateway/cron/remote-backend sessions have no stable
-    host cwd to restore, so they record nothing.
-
-    ``TERMINAL_ENV`` is set by the CLI's config bridge (``load_cli_config``);
-    a non-"local" backend (docker/ssh/modal/...) means the host cwd is
-    irrelevant to the agent's tools, so we skip it there too.
+    where you left off). Gateway/cron sessions have no stable host cwd to
+    restore, so they record nothing.
     """
     if source != "cli":
-        return None
-    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
-    if backend and backend != "local":
         return None
     try:
         return os.getcwd()
@@ -135,7 +122,6 @@ else:
 # Import our tool system
 from model_tools import (
     get_tool_definitions,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.get_tool_definitions")
-    get_toolset_for_tool,
     handle_function_call,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.handle_function_call")
     check_toolset_requirements,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.check_toolset_requirements")
 )
@@ -199,14 +185,12 @@ from agent.trajectory import (
 )
 from agent.tool_dispatch_helpers import (
     _should_parallelize_tool_batch,  # noqa: F401  # re-exported for tests that `from run_agent import _should_parallelize_tool_batch`
-    _is_destructive_command,  # noqa: F401  # re-exported for tests that access `run_agent._is_destructive_command`
     _extract_parallel_scope_path,  # noqa: F401  # re-exported for tests that `from run_agent import _extract_parallel_scope_path`
     _paths_overlap,  # noqa: F401  # re-exported for tests that `from run_agent import _paths_overlap`
     _is_multimodal_tool_result,
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,  # noqa: F401  # re-exported for tests that `from run_agent import _append_subdir_hint_to_multimodal`
     _extract_file_mutation_targets,
-    _extract_landed_file_mutation_paths,
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
@@ -225,14 +209,6 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_empty_recovery_synthetic",
     "_empty_terminal_sentinel",
     "_thinking_prefill",
-    # verify-on-stop and pre_verify nudges append a synthetic user nudge to
-    # keep the agent going one more turn before it can claim completion.
-    # The nudge exists only to drive the verification loop; persisting it
-    # poisons the resumed transcript and breaks prompt-prefix cache reuse
-    # on later turns. The assistant candidate is NOT synthetic — it is
-    # persisted and emitted as an interim message (#65919).
-    "_verification_stop_synthetic",
-    "_pre_verify_synthetic",
     # dropped tool-call re-prompt pair (finish_reason=tool_calls with an
     # empty tool_calls array): the interim narration-only assistant turn
     # and the "issue the actual tool call now" user nudge exist only to
@@ -411,10 +387,6 @@ class AIAgent:
         run_budget_seconds: Optional[float] = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
-        checkpoints_enabled: bool = False,
-        checkpoint_max_snapshots: int = 20,
-        checkpoint_max_total_size_mb: int = 500,
-        checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
         requested_provider: str = None,
     ):
@@ -488,10 +460,6 @@ class AIAgent:
             run_budget_seconds=run_budget_seconds,
             fallback_model=fallback_model,
             credential_pool=credential_pool,
-            checkpoints_enabled=checkpoints_enabled,
-            checkpoint_max_snapshots=checkpoint_max_snapshots,
-            checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
-            checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
         )
 
@@ -1140,12 +1108,6 @@ class AIAgent:
         from agent.stream_diag import stream_diag_capture_response
         stream_diag_capture_response(self, diag, http_response)
 
-    @staticmethod
-    def _flatten_exception_chain(error: BaseException) -> str:
-        """Forwarder — see ``agent.stream_diag.flatten_exception_chain``."""
-        from agent.stream_diag import flatten_exception_chain
-        return flatten_exception_chain(error)
-
     def _is_provider_stream_parse_error(self, error: BaseException) -> bool:
         """Return True for malformed provider streaming data from SDK parsers.
 
@@ -1524,15 +1486,6 @@ class AIAgent:
             return False
 
         return not self._has_natural_response_ending(visible_text)
-
-    def _looks_like_intermediate_ack(
-        self,
-        assistant_content: str,
-        messages: List[Dict[str, Any]],
-    ) -> bool:
-        """Forwarder — see ``agent.agent_runtime_helpers.looks_like_intermediate_ack``."""
-        from agent.agent_runtime_helpers import looks_like_intermediate_ack
-        return looks_like_intermediate_ack(self, assistant_content, messages)
 
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """Forwarder — see ``agent.agent_runtime_helpers.extract_reasoning``."""
@@ -3297,20 +3250,6 @@ class AIAgent:
         if not targets:
             return
         landed = file_mutation_result_landed(tool_name, result)
-        if landed:
-            landed_paths = _extract_landed_file_mutation_paths(tool_name, args, result)
-            changed = getattr(self, "_turn_file_mutation_paths", None)
-            if changed is not None:
-                changed.update(landed_paths)
-            # Feed the checkpoint agent-write ledger so /rollback's safe mode
-            # can tell Son of Anton-authored content from later user hand-edits.
-            mgr = getattr(self, "_checkpoint_mgr", None)
-            if mgr is not None and getattr(mgr, "enabled", False):
-                for _p in landed_paths:
-                    try:
-                        mgr.record_agent_write(_p)
-                    except Exception:
-                        pass
         if is_error and not landed:
             preview = _extract_error_preview(result)
             for path in targets:
@@ -4680,33 +4619,6 @@ class AIAgent:
         from agent.agent_runtime_helpers import cleanup_dead_connections
         return cleanup_dead_connections(self)
 
-    @staticmethod
-    def _api_kwargs_have_image_parts(api_kwargs: dict) -> bool:
-        """Return True when the outbound request still contains native image parts."""
-        if not isinstance(api_kwargs, dict):
-            return False
-        candidates = []
-        messages = api_kwargs.get("messages")
-        if isinstance(messages, list):
-            candidates.extend(messages)
-        # Responses API payloads use `input`; after conversion, image parts can
-        # still be present there instead of in `messages`.
-        response_input = api_kwargs.get("input")
-        if isinstance(response_input, list):
-            candidates.extend(response_input)
-
-        def _contains_image(value: Any) -> bool:
-            if isinstance(value, dict):
-                ptype = value.get("type")
-                if ptype in {"image_url", "input_image"}:
-                    return True
-                return any(_contains_image(v) for v in value.values())
-            if isinstance(value, list):
-                return any(_contains_image(v) for v in value)
-            return False
-
-        return any(_contains_image(item) for item in candidates)
-
     # Close reasons the request workers' own ``finally`` unwind reports for
     # a request that produced a response — the only closes that both come
     # from the thread that owns the pool's FDs AND attest a healthy pool.
@@ -5333,22 +5245,6 @@ class AIAgent:
         ):
             return
         already_streamed = self._interim_content_was_streamed(visible)
-        try:
-            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
-
-            enqueue_plugin_stream_hook(
-                "on_interim_message",
-                turn_id=getattr(self, "_current_turn_id", "") or "",
-                iteration=int(getattr(self, "_api_call_count", 0) or 0),
-                session_id=self.session_id or "",
-                model=self.model or "",
-                provider=self.provider or "",
-                surface=self.platform or "cli",
-                text=visible,
-                already_streamed=already_streamed,
-            )
-        except Exception:
-            logger.debug("on_interim_message plugin hook enqueue failed", exc_info=True)
         cb = getattr(self, "interim_assistant_callback", None)
         if cb is None:
             return
@@ -5433,38 +5329,6 @@ class AIAgent:
                 where, _n,
             )
 
-    def _stream_hook_base_payload(self) -> Dict[str, Any]:
-        return {
-            "turn_id": getattr(self, "_current_turn_id", "") or "",
-            "iteration": int(getattr(self, "_api_call_count", 0) or 0),
-            "session_id": self.session_id or "",
-            "model": self.model or "",
-            "provider": self.provider or "",
-            "surface": self.platform or "cli",
-        }
-
-    def _emit_stream_start(self) -> None:
-        try:
-            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
-
-            enqueue_plugin_stream_hook("on_stream_start", **self._stream_hook_base_payload())
-        except Exception:
-            logger.debug("on_stream_start plugin hook enqueue failed", exc_info=True)
-
-    def _emit_stream_end(self, *, final_text: str, finished: bool, error: str | None) -> None:
-        try:
-            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
-
-            enqueue_plugin_stream_hook(
-                "on_stream_end",
-                **self._stream_hook_base_payload(),
-                final_text=final_text,
-                finished=finished,
-                error=error,
-            )
-        except Exception:
-            logger.debug("on_stream_end plugin hook enqueue failed", exc_info=True)
-
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
         # Single-writer guard (#65991): a superseded stream must not interleave
@@ -5520,17 +5384,6 @@ class AIAgent:
                 delivered = True
             except Exception:
                 pass
-        try:
-            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook
-
-            enqueue_plugin_stream_hook(
-                "on_stream_delta",
-                **self._stream_hook_base_payload(),
-                delta=text,
-                kind="text",
-            )
-        except Exception:
-            logger.debug("on_stream_delta plugin hook enqueue failed", exc_info=True)
         if delivered:
             self._record_streamed_assistant_text(text)
 
@@ -5547,18 +5400,6 @@ class AIAgent:
                 cb(text)
             except Exception:
                 pass
-        try:
-            from agent.plugin_stream_hooks import enqueue_plugin_stream_hook, stream_reasoning_deltas_enabled
-
-            if stream_reasoning_deltas_enabled():
-                enqueue_plugin_stream_hook(
-                    "on_stream_delta",
-                    **self._stream_hook_base_payload(),
-                    delta=text,
-                    kind="reasoning",
-                )
-        except Exception:
-            logger.debug("reasoning on_stream_delta plugin hook enqueue failed", exc_info=True)
 
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify display layer that the model is generating tool call arguments.
@@ -5577,13 +5418,6 @@ class AIAgent:
 
     def _has_stream_consumers(self) -> bool:
         """Return True if any streaming consumer is registered."""
-        try:
-            from agent.plugin_stream_hooks import has_stream_observer_hooks
-
-            if has_stream_observer_hooks():
-                return True
-        except Exception:
-            logger.debug("plugin stream hook consumer check failed", exc_info=True)
         return (
             self.stream_delta_callback is not None
             or getattr(self, "_stream_callback", None) is not None
@@ -6739,29 +6573,20 @@ class AIAgent:
         New DELEGATE_TASK_SCHEMA fields only need to be added here to reach all
         invocation paths (concurrent, sequential, inline).
         """
-        from tools.delegate_tool import (
-            _strip_model_hidden_task_fields,
-            delegate_task as _delegate_task,
-        )
-        # Delegations from the top-level MODEL always run in the background —
-        # the model does not get to choose. delegate_task returns immediately
-        # with a handle (one per task) and each subagent's result re-enters the
-        # conversation as a new message when it finishes. This applies to BOTH
-        # a single task and a fan-out batch (each task becomes its own
-        # independent background subagent). The one exception:
-        #   - A delegation from an ORCHESTRATOR SUBAGENT (depth > 0) stays
-        #     synchronous: the orchestrator needs its workers' results within
-        #     its own turn to compose a summary, and a subagent doesn't own the
-        #     gateway session the async result would route back to.
-        # The schema-level `background` param is intentionally ignored here.
-        _is_subagent = getattr(self, "_delegate_depth", 0) > 0
+        from tools.delegate_tool import delegate_task as _delegate_task
+        # Delegations from the MODEL always run in the background — the model
+        # does not get to choose (subagents cannot delegate at all).
+        # delegate_task returns immediately with a handle and the result
+        # re-enters the conversation as a new message when it finishes. This
+        # applies to BOTH a single task and a fan-out batch. The schema-level
+        # `background` param is intentionally ignored here.
         return _delegate_task(
             goal=function_args.get("goal"),
             context=function_args.get("context"),
-            tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
+            tasks=function_args.get("tasks"),
             max_iterations=function_args.get("max_iterations"),
             role=function_args.get("role"),
-            background=(not _is_subagent),
+            background=True,
             action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"),
             message=function_args.get("message"),
@@ -6854,7 +6679,6 @@ class AIAgent:
             finish_task_run,
             start_task_run,
         )
-        from agent.subagent_lifecycle import bind_subagent_parent
         effective_task_id = task_id or str(uuid.uuid4())
         session_id = str(getattr(self, "session_id", None) or "")
         task_context = {
@@ -7203,7 +7027,7 @@ class AIAgent:
             # replaces the value with the live runtime after fallback restoration.
             # Keep the scope local instead of storing ContextVar tokens on the agent,
             # which may be observed from another thread.
-            with bind_subagent_parent(self), scoped_runtime_main({}):
+            with scoped_runtime_main({}):
                 try:
                     if durable_turn_lease_thread is not None:
                         with durable_turn_lease_activity_lock:
@@ -7344,221 +7168,3 @@ class AIAgent:
         """
         result = self.run_conversation(message, stream_callback=stream_callback)
         return result["final_response"]
-
-def main(
-    query: str = None,
-    model: str = "",
-    api_key: str = None,
-    base_url: str = "",
-    max_turns: int = 10,
-    enabled_toolsets: str = None,
-    disabled_toolsets: str = None,
-    list_tools: bool = False,
-    save_trajectories: bool = False,
-    save_sample: bool = False,
-    verbose: bool = False,
-    log_prefix_chars: int = 20
-):
-    """
-    Main function for running the agent directly.
-
-    Args:
-        query (str): Natural language query for the agent. Defaults to Python 3.13 example.
-        model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/claude-sonnet-4.6.
-        api_key (str): API key for authentication. Uses OPENROUTER_API_KEY env var if not provided.
-        base_url (str): Base URL for the model API. Defaults to https://openrouter.ai/api/v1
-        max_turns (int): Maximum number of API call iterations. Defaults to 10.
-        enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined
-                              toolsets (e.g., "research", "development", "safe").
-                              Multiple toolsets can be combined: "web,vision"
-        disabled_toolsets (str): Comma-separated list of toolsets to disable (e.g., "terminal")
-        list_tools (bool): Just list available tools and exit
-        save_trajectories (bool): Save conversation trajectories to JSONL files (appends to trajectory_samples.jsonl). Defaults to False.
-        save_sample (bool): Save a single trajectory sample to a UUID-named JSONL file for inspection. Defaults to False.
-        verbose (bool): Enable verbose logging for debugging. Defaults to False.
-        log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses. Defaults to 20.
-
-    Toolset Examples:
-        - "research": Web search, extract, crawl + vision tools
-    """
-    print("🤖 AI Agent with Tool Calling")
-    print("=" * 50)
-    
-    # Handle tool listing
-    if list_tools:
-        from model_tools import get_all_tool_names, get_available_toolsets
-        from toolsets import get_all_toolsets, get_toolset_info
-        
-        print("📋 Available Tools & Toolsets:")
-        print("-" * 50)
-        
-        # Show new toolsets system
-        print("\n🎯 Predefined Toolsets (New System):")
-        print("-" * 40)
-        all_toolsets = get_all_toolsets()
-        
-        # Group by category
-        basic_toolsets = []
-        composite_toolsets = []
-        scenario_toolsets = []
-        
-        for name, toolset in all_toolsets.items():
-            info = get_toolset_info(name)
-            if info:
-                entry = (name, info)
-                if name in {"web", "terminal", "vision", "creative", "reasoning"}:
-                    basic_toolsets.append(entry)
-                elif name in {"research", "development", "analysis", "content_creation", "full_stack"}:
-                    composite_toolsets.append(entry)
-                else:
-                    scenario_toolsets.append(entry)
-        
-        # Print basic toolsets
-        print("\n📌 Basic Toolsets:")
-        for name, info in basic_toolsets:
-            tools_str = ', '.join(info['resolved_tools']) if info['resolved_tools'] else 'none'
-            print(f"  • {name:15} - {info['description']}")
-            print(f"    Tools: {tools_str}")
-        
-        # Print composite toolsets
-        print("\n📂 Composite Toolsets (built from other toolsets):")
-        for name, info in composite_toolsets:
-            includes_str = ', '.join(info['includes']) if info['includes'] else 'none'
-            print(f"  • {name:15} - {info['description']}")
-            print(f"    Includes: {includes_str}")
-            print(f"    Total tools: {info['tool_count']}")
-        
-        # Print scenario-specific toolsets
-        print("\n🎭 Scenario-Specific Toolsets:")
-        for name, info in scenario_toolsets:
-            print(f"  • {name:20} - {info['description']}")
-            print(f"    Total tools: {info['tool_count']}")
-        
-        
-        # Show legacy toolset compatibility
-        print("\n📦 Legacy Toolsets (for backward compatibility):")
-        legacy_toolsets = get_available_toolsets()
-        for name, info in legacy_toolsets.items():
-            status = "✅" if info["available"] else "❌"
-            print(f"  {status} {name}: {info['description']}")
-            if not info["available"]:
-                print(f"    Requirements: {', '.join(info['requirements'])}")
-        
-        # Show individual tools
-        all_tools = get_all_tool_names()
-        print(f"\n🔧 Individual Tools ({len(all_tools)} available):")
-        for tool_name in sorted(all_tools):
-            toolset = get_toolset_for_tool(tool_name)
-            print(f"  📌 {tool_name} (from {toolset})")
-        
-        print("\n💡 Usage Examples:")
-        print("  # Use predefined toolsets")
-        print("  python run_agent.py --enabled_toolsets=research --query='search for Python news'")
-        print("  python run_agent.py --enabled_toolsets=development --query='debug this code'")
-        print("  python run_agent.py --enabled_toolsets=safe --query='analyze without terminal'")
-        print("  ")
-        print("  # Combine multiple toolsets")
-        print("  python run_agent.py --enabled_toolsets=web,vision --query='analyze website'")
-        print("  ")
-        print("  # Disable toolsets")
-        print("  python run_agent.py --disabled_toolsets=terminal --query='no command execution'")
-        print("  ")
-        print("  # Run with trajectory saving enabled")
-        print("  python run_agent.py --save_trajectories --query='your question here'")
-        return
-    
-    # Parse toolset selection arguments
-    enabled_toolsets_list = None
-    disabled_toolsets_list = None
-    
-    if enabled_toolsets:
-        enabled_toolsets_list = [t.strip() for t in enabled_toolsets.split(",")]
-        print(f"🎯 Enabled toolsets: {enabled_toolsets_list}")
-    
-    if disabled_toolsets:
-        disabled_toolsets_list = [t.strip() for t in disabled_toolsets.split(",")]
-        print(f"🚫 Disabled toolsets: {disabled_toolsets_list}")
-    
-    if save_trajectories:
-        print("💾 Trajectory saving: ENABLED")
-        print("   - Successful conversations → trajectory_samples.jsonl")
-        print("   - Failed conversations → failed_trajectories.jsonl")
-    
-    # Initialize agent with provided parameters
-    try:
-        agent = AIAgent(
-            base_url=base_url,
-            model=model,
-            api_key=api_key,
-            max_iterations=max_turns,
-            enabled_toolsets=enabled_toolsets_list,
-            disabled_toolsets=disabled_toolsets_list,
-            save_trajectories=save_trajectories,
-            verbose_logging=verbose,
-            log_prefix_chars=log_prefix_chars
-        )
-    except RuntimeError as e:
-        print(f"❌ Failed to initialize agent: {e}")
-        return
-    
-    # Use provided query or default to Python 3.13 example
-    if query is None:
-        user_query = (
-            "Tell me about the latest developments in Python 3.13 and what new features "
-            "developers should know about. Please search for current information and try it out."
-        )
-    else:
-        user_query = query
-    
-    print(f"\n📝 User Query: {user_query}")
-    print("\n" + "=" * 50)
-    
-    # Run conversation
-    result = agent.run_conversation(user_query)
-    
-    print("\n" + "=" * 50)
-    print("📋 CONVERSATION SUMMARY")
-    print("=" * 50)
-    print(f"✅ Completed: {result['completed']}")
-    print(f"📞 API Calls: {result['api_calls']}")
-    print(f"💬 Messages: {len(result['messages'])}")
-    
-    if result['final_response']:
-        print("\n🎯 FINAL RESPONSE:")
-        print("-" * 30)
-        print(result['final_response'])
-    
-    # Save sample trajectory to UUID-named file if requested
-    if save_sample:
-        sample_id = str(uuid.uuid4())[:8]
-        sample_filename = f"sample_{sample_id}.json"
-        
-        # Convert messages to trajectory format (same as batch_runner)
-        trajectory = agent._convert_to_trajectory_format(
-            result['messages'], 
-            user_query, 
-            result['completed']
-        )
-        
-        entry = {
-            "conversations": trajectory,
-            "timestamp": datetime.now().isoformat(),
-            "model": model,
-            "completed": result['completed'],
-            "query": user_query
-        }
-        
-        try:
-            with open(sample_filename, "w", encoding="utf-8") as f:
-                # Pretty-print JSON with indent for readability
-                f.write(json.dumps(entry, ensure_ascii=False, indent=2))
-            print(f"\n💾 Sample trajectory saved to: {sample_filename}")
-        except Exception as e:
-            print(f"\n⚠️ Failed to save sample: {e}")
-    
-    print("\n👋 Agent execution completed!")
-
-
-if __name__ == "__main__":
-    import fire
-    fire.Fire(main)

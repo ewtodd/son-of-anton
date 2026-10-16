@@ -195,7 +195,7 @@ def test_every_child_turn_runs_under_the_subagent_harness() -> None:
     first = _turn("391", completed=True, messages=_transcript(("user", "go"), ("assistant", "391")))
     retry = _turn('{"answer": 391}', completed=True)
     child = _StubChild(first, retry, schema=_SCHEMA)
-    expected_callback = delegate_tool._get_subagent_approval_callback()
+    expected_callback = delegate_tool._subagent_auto_deny
 
     _run(child)
 

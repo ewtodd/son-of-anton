@@ -16,8 +16,7 @@ class ManagerToolExecutor:
     """Executes the Manager's tools and enforces the per-iteration token budget.
 
     Conforms to the duck-type interface expected by ``run_agent_loop``:
-    ``execute()``, ``active_tools``, ``stop_after_round``,
-    ``exit_tool_name``, ``exit_tool_names``, ``end_round()``.
+    ``execute()``, ``active_tools``, ``stop_after_round``, ``end_round()``.
 
     Wind-down contract (enforced in :meth:`end_round`):
 
@@ -318,14 +317,6 @@ class ManagerToolExecutor:
         self._total_manager_tokens: int = 0
         self.subagent_input_tokens: int = 0
         self.subagent_output_tokens: int = 0
-
-    @property
-    def exit_tool_name(self) -> str:
-        return "end_turn"
-
-    @property
-    def exit_tool_names(self) -> frozenset[str]:
-        return frozenset({"end_turn", "submit_final_answer"})
 
     @property
     def active_tools(self) -> list[dict] | None:

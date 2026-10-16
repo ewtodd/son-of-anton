@@ -475,11 +475,7 @@ def load_cli_config() -> Dict[str, Any]:
             },
         },
         "delegation": {
-            "max_iterations": 45,  # Max tool-calling turns per child agent
             "model": "",       # Subagent model override (empty = inherit parent model)
-            "provider": "",    # Subagent provider override (empty = inherit parent provider)
-            "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
-            "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         },
         "onboarding": {
             # First-touch hint flags (see agent/onboarding.py).  Each hint is
@@ -592,20 +588,12 @@ def load_cli_config() -> Dict[str, Any]:
     
     env_mappings = {
         "env_type": "TERMINAL_ENV",
-        "degraded_mode": "TERMINAL_DEGRADED_MODE",
         "cwd": "TERMINAL_CWD",
         "timeout": "TERMINAL_TIMEOUT",
         "home_mode": "TERMINAL_HOME_MODE",
         "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-        # SSH config
-        "ssh_host": "TERMINAL_SSH_HOST",
-        "ssh_user": "TERMINAL_SSH_USER",
-        "ssh_port": "TERMINAL_SSH_PORT",
-        "ssh_key": "TERMINAL_SSH_KEY",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-        # Persistent shell (non-local backends)
-        "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-        # Sudo support (works with all backends)
+        # Sudo support
         "sudo_password": "SUDO_PASSWORD",
     }
     
@@ -922,12 +910,6 @@ def _prepare_deferred_agent_startup() -> None:
     if os.environ.get("SON_OF_ANTON_DEFER_AGENT_STARTUP") != "1":
         return
     _deferred_agent_startup_done = True
-    _accept_hooks = os.environ.get("SON_OF_ANTON_ACCEPT_HOOKS", "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
     try:
         from son_of_anton_cli.plugins import discover_plugins
 
@@ -947,23 +929,6 @@ def _prepare_deferred_agent_startup() -> None:
     except Exception:
         logger.debug(
             "MCP tool discovery failed at deferred CLI startup",
-            exc_info=True,
-        )
-    try:
-        from agent.shell_hooks import register_from_config
-        from son_of_anton_cli.config import load_config
-
-        _hooks_cfg = load_config()
-        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
-
-        from agent.outbound_webhooks import (
-            register_from_config as register_outbound_webhooks,
-        )
-
-        register_outbound_webhooks(_hooks_cfg)
-    except Exception:
-        logger.debug(
-            "shell-hook registration failed at deferred CLI startup",
             exc_info=True,
         )
 
@@ -2347,35 +2312,6 @@ def _run_state_db_auto_maintenance(session_db) -> None:
         )
     except Exception as exc:
         logger.debug("state.db auto-maintenance skipped: %s", exc)
-
-
-def _run_checkpoint_auto_maintenance() -> None:
-    """Call ``checkpoint_manager.maybe_auto_prune_checkpoints`` using current config.
-
-    Reads the ``checkpoints:`` section from config.toml via
-    :func:`son_of_anton_cli.config.load_config`. Honours ``auto_prune`` /
-    ``retention_days`` / ``delete_orphans`` / ``min_interval_hours``.
-    Never raises — maintenance must never block interactive startup.
-    """
-    try:
-        from son_of_anton_cli.config import load_config as _load_full_config
-        cfg = (_load_full_config().get("checkpoints") or {})
-        if not cfg.get("auto_prune", False):
-            return
-        from tools.checkpoint_manager import maybe_auto_prune_checkpoints
-        # delete_orphans is intentionally never honoured here: a missing
-        # workdir at startup is ambiguous (deleted project vs. an unmounted
-        # external volume / network share / VPN not yet up) and this sweep
-        # runs unattended. Orphan cleanup is only ever done via the explicit
-        # `son-of-anton checkpoints prune` command, which the user has to invoke.
-        maybe_auto_prune_checkpoints(
-            retention_days=int(cfg.get("retention_days", 7)),
-            min_interval_hours=int(cfg.get("min_interval_hours", 24)),
-            delete_orphans=False,
-            max_total_size_mb=int(cfg.get("max_total_size_mb", 500)),
-        )
-    except Exception as exc:
-        logger.debug("checkpoint auto-maintenance skipped: %s", exc)
 
 
 def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
@@ -3932,7 +3868,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         verbose: Optional[bool] = None,
         compact: bool = False,
         resume: str = None,
-        checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
     ):
@@ -4203,14 +4138,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}")
         
-        # Filesystem checkpoints: CLI flag > config
-        cp_cfg = CLI_CONFIG.get("checkpoints", {})
-        if isinstance(cp_cfg, bool):
-            cp_cfg = {"enabled": cp_cfg}
-        self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
-        self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 20)
-        self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
-        self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
         self.pass_session_id = pass_session_id
         # --ignore-rules: honor either the constructor flag or the env var set
         # by `son-of-anton chat --ignore-rules` in son_of_anton_cli/main.py. When true we
@@ -4332,11 +4259,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # it's shared across all Son of Anton processes for this SON_OF_ANTON_HOME.
         # Never blocks startup on failure.
         _run_state_db_auto_maintenance(self._session_db)
-
-        # Opportunistic shadow-repo cleanup — deletes orphan/stale
-        # checkpoint repos under ~/.son-of-anton/checkpoints/.  Opt-in via
-        # checkpoints.auto_prune, idempotent via .last_prune marker.
-        _run_checkpoint_auto_maintenance()
 
         # Deferred title: stored in memory until the session is created in the DB
         self._pending_title: Optional[str] = None
@@ -6300,20 +6222,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return False
 
 
-    def _resolve_checkpoint_ref(self, ref: str, checkpoints: list) -> str | None:
-        """Resolve a checkpoint number or hash to a full commit hash."""
-        try:
-            idx = int(ref) - 1  # 1-indexed for user
-            if 0 <= idx < len(checkpoints):
-                return checkpoints[idx]["hash"]
-            else:
-                print(f"  Invalid checkpoint number. Use 1-{len(checkpoints)}.")
-                return None
-        except ValueError:
-            # Treat as a git hash
-            return ref
-
-
     def _write_osc52_clipboard(self, text: str) -> None:
         """Copy *text* to terminal clipboard via OSC 52.
 
@@ -6821,11 +6729,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print()
         print("  -- Terminal --")
         print(f"  Environment:  {terminal_env}")
-        if terminal_env == "ssh":
-            ssh_host = os.getenv("TERMINAL_SSH_HOST", "not set")
-            ssh_user = os.getenv("TERMINAL_SSH_USER", "not set")
-            ssh_port = os.getenv("TERMINAL_SSH_PORT", "22")
-            print(f"  SSH Target:   {ssh_user}@{ssh_host}:{ssh_port}")
         print(f"  Working Dir:  {terminal_cwd}")
         print(f"  Timeout:      {terminal_timeout}s")
         print()
@@ -9132,8 +9035,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     print("  Enable/disable: son-of-anton plugins enable/disable <name>")
             except Exception as e:
                 print(f"Plugin system error: {e}")
-        elif canonical == "rollback":
-            self._handle_rollback_command(cmd_original)
         elif canonical == "stop":
             self._handle_stop_command()
         elif canonical == "agents":
@@ -12326,7 +12227,6 @@ def main(
     resume: str = None,
     worktree: bool = False,
     w: bool = False,
-    checkpoints: bool = False,
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
@@ -12485,21 +12385,9 @@ def main(
                 else:
                     toolsets_list.append(str(t))
     else:
-        # Coding posture (base Son of Anton): with no explicit --toolsets, collapse
-        # to the coding toolset (+ enabled MCP servers) when sitting in a code
-        # workspace. See agent/coding_context.py.
-        _coding = None
-        try:
-            from agent.coding_context import coding_selection
-            _coding = coding_selection(platform="cli", config=CLI_CONFIG)
-        except Exception:
-            _coding = None
-        if _coding is not None:
-            toolsets_list = _coding
-        else:
-            # Use the shared resolver so MCP servers are included at runtime
-            from son_of_anton_cli.tools_config import _get_platform_tools
-            toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
+        # Use the shared resolver so MCP servers are included at runtime
+        from son_of_anton_cli.tools_config import _get_platform_tools
+        toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
     # Create CLI instance. Textual is the one interactive front-end
     # (son_of_anton_tui.backend.TextualBackend subclasses SonOfAntonCLI), so
@@ -12518,7 +12406,6 @@ def main(
         verbose=verbose,
         compact=compact,
         resume=resume,
-        checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
     )
@@ -12806,9 +12693,3 @@ def main(
     from son_of_anton_tui.tui import run_app as _run_textual_app
 
     _run_textual_app(cli)
-
-
-if __name__ == "__main__":
-    import fire
-
-    fire.Fire(main)

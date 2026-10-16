@@ -1,7 +1,7 @@
 """
 MCP Server Management CLI — ``son-of-anton mcp`` subcommand.
 
-Implements ``son-of-anton mcp list/test/login/reauth`` for MCP servers declared
+Implements ``son-of-anton mcp list/test`` for MCP servers declared
 in config.toml; servers are never installed or added from here.
 
 Relies on tools/mcp_tool.py for connection/discovery and keeps
@@ -32,9 +32,6 @@ def _info(text: str):
 
 def _success(text: str):
     print(color(f"  ✓ {text}", Colors.GREEN))
-
-def _warning(text: str):
-    print(color(f"  ⚠ {text}", Colors.YELLOW))
 
 def _error(text: str):
     print(color(f"  ✗ {text}", Colors.RED))
@@ -201,22 +198,6 @@ def _probe_single_server(
     return tools_found
 
 
-def _oauth_tokens_present(name: str) -> bool:
-    """Return True if an OAuth token file exists on disk for ``name``.
-
-    Used after ``son-of-anton mcp login`` to distinguish a genuine authentication
-    from a probe that succeeded only because the server allowed
-    initialize/tools-list without auth (so no token was ever acquired).
-    """
-    try:
-        from tools.mcp_oauth import SonOfAntonTokenStorage
-        return SonOfAntonTokenStorage(name).has_cached_tokens()
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.debug("Could not check OAuth tokens for '%s': %s", name, exc)
-        # Be permissive on unexpected errors: don't block a real success.
-        return True
-
-
 def _unwrap_exception_group(exc: BaseException) -> Exception:
     """Extract the root-cause exception from anyio TaskGroup wrappers.
 
@@ -326,11 +307,8 @@ def cmd_mcp_test(args):
         _info(f"Transport: stdio → {cmd}")
 
     # Show auth info (masked)
-    auth_type = cfg.get("auth", "")
     headers = cfg.get("headers", {})
-    if auth_type == "oauth":
-        _info("Auth: OAuth 2.1 PKCE")
-    elif headers:
+    if headers:
         for k, v in headers.items():
             if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):
                 # Mask the value (accepts ${VAR} and Cursor-style ${env:VAR})
@@ -364,183 +342,6 @@ def cmd_mcp_test(args):
     print()
 
 
-# ─── son-of-anton mcp login ────────────────────────────────────────────────────────
-
-def _reauth_oauth_server(name: str, server_config: dict) -> bool:
-    """Force a fresh OAuth flow for one server. Returns True on success.
-
-    Wipes cached OAuth state (disk + in-process MCPOAuthManager cache),
-    re-probes to trigger the browser flow, and verifies a token actually
-    landed before reporting success. Shared by ``son-of-anton mcp login`` and
-    ``son-of-anton mcp reauth`` so both behave identically for a single server.
-    """
-    url = server_config.get("url")
-    if not url:
-        _error(f"Server '{name}' has no URL — not an OAuth-capable server")
-        return False
-    if server_config.get("auth") != "oauth":
-        _error(f"Server '{name}' is not configured for OAuth (auth={server_config.get('auth')})")
-        _info("Set auth = \"oauth\" on its mcp_servers entry in config.toml.")
-        return False
-
-    # Wipe both disk and in-memory cache so the next probe forces a fresh
-    # OAuth flow.
-    try:
-        from tools.mcp_oauth_manager import get_manager
-        get_manager().remove(name)
-    except Exception as exc:
-        _warning(f"Could not clear existing OAuth state: {exc}")
-
-    print()
-    _info(f"Starting OAuth flow for '{name}'...")
-
-    # Probe triggers the OAuth flow (browser redirect + callback capture).
-    # Honor the server's configured connect_timeout so a human has enough
-    # time to complete the browser sign-in; the 30s default is too tight for
-    # an interactive OAuth round-trip. Floor at 315s — the OAuth callback
-    # window (300s in mcp_oauth) plus headroom — matching the GUI re-auth
-    # path in web_server.py so CLI and dashboard behave identically.
-    #
-    # force_interactive_oauth: `son-of-anton mcp login` is *explicitly* user-
-    # initiated even when stdin isn't a TTY (Son of Anton desktop / agent-
-    # spawned terminals). Without this, OAuth refuses before opening a
-    # browser because _is_interactive() only checks sys.stdin.isatty().
-    try:
-        from tools.mcp_oauth import force_interactive_oauth
-
-        _login_connect_timeout = server_config.get("connect_timeout")
-        try:
-            _login_connect_timeout = float(_login_connect_timeout)
-        except (TypeError, ValueError):
-            _login_connect_timeout = 0.0
-        _login_connect_timeout = max(_login_connect_timeout, 315.0)
-        with force_interactive_oauth():
-            tools = _probe_single_server(
-                name, server_config, connect_timeout=_login_connect_timeout
-            )
-        # A clean probe is NOT proof of authentication. Some MCP servers
-        # (notably Google's official Drive server) serve initialize +
-        # tools/list WITHOUT auth, so the probe lists tools even when the
-        # OAuth flow never completed — e.g. dynamic client registration
-        # 400'd because the provider doesn't support RFC 7591. Reporting
-        # "Authenticated — N tools" in that case is a false success: every
-        # real tool call later hangs until timeout because there's no token.
-        # Verify a token actually landed on disk before claiming success.
-        if not _oauth_tokens_present(name):
-            _warning(
-                "Server responded, but no OAuth token was obtained — "
-                "authentication did not complete."
-            )
-            print()
-            _info(
-                "Some providers (e.g. Google Drive, Atlassian) do not support "
-                "automatic client registration. For those you must create an "
-                "OAuth client yourself and add its credentials to config.toml:"
-            )
-            print()
-            print(color("    mcp_servers:", Colors.DIM))
-            print(color(f"      {name}:", Colors.DIM))
-            print(color(f"        url: {url}", Colors.DIM))
-            print(color("        auth: oauth", Colors.DIM))
-            print(color("        oauth:", Colors.DIM))
-            print(color("          client_id: \"<your-oauth-client-id>\"", Colors.DIM))
-            print(color("          client_secret: \"<your-oauth-client-secret>\"", Colors.DIM))
-            print()
-            _info("Then re-run `son-of-anton mcp login " + name + "`.")
-            return False
-        if tools:
-            _success(f"Authenticated — {len(tools)} tool(s) available")
-        else:
-            _success("Authenticated (server reported no tools)")
-        return True
-    except Exception as exc:
-        try:
-            from tools.mcp_oauth import humanize_oauth_registration_error
-
-            humanized = humanize_oauth_registration_error(
-                name, exc, server_url=url
-            )
-        except Exception:
-            humanized = None
-        _error(f"Authentication failed: {humanized or exc}")
-        return False
-
-
-def cmd_mcp_login(args):
-    """Force re-authentication for an OAuth-based MCP server.
-
-    Deletes cached tokens (both on disk and in the running process's
-    MCPOAuthManager cache) and triggers a fresh OAuth flow via the
-    existing probe path.
-
-    Use this when:
-      - Tokens are stuck in a bad state (server revoked, refresh token
-        consumed by an external process, etc.)
-      - You want to re-authenticate to change scopes or account
-      - A tool call returned ``needs_reauth: true``
-    """
-    name = args.name
-    servers = _get_mcp_servers()
-
-    if name not in servers:
-        _error(f"Server '{name}' not found in config.")
-        if servers:
-            _info(f"Available servers: {', '.join(servers)}")
-        return
-
-    _reauth_oauth_server(name, servers[name])
-
-
-def cmd_mcp_reauth(args):
-    """Re-authenticate one OAuth MCP server, or all of them sequentially.
-
-    ``son-of-anton mcp reauth <name>`` re-auths a single server (same as ``login``).
-    ``son-of-anton mcp reauth --all`` discovers every ``auth: oauth`` server in
-    config and re-auths them ONE AT A TIME.
-
-    Serial-by-design: a human can only complete one browser OAuth flow at a
-    time, so re-authing all servers concurrently would open N tabs at once
-    and N-1 would time out. This is the self-service fix for the recurring
-    stale-client ritual in GH#36767 (and avoids the startup popup storm when
-    several servers go stale at once).
-    """
-    servers = _get_mcp_servers()
-    do_all = getattr(args, "all", False)
-    name = getattr(args, "name", None)
-
-    if do_all:
-        oauth_servers = [
-            (n, c) for n, c in servers.items()
-            if c.get("auth") == "oauth" and c.get("url")
-        ]
-        if not oauth_servers:
-            _info("No OAuth-based MCP servers found in config.")
-            return
-        print()
-        _info(f"Re-authenticating {len(oauth_servers)} OAuth server(s) one at a time...")
-        succeeded = 0
-        for n, c in oauth_servers:
-            print()
-            print(color(f"  ── {n} ──", Colors.CYAN + Colors.BOLD))
-            if _reauth_oauth_server(n, c):
-                succeeded += 1
-        print()
-        _success(f"Re-authenticated {succeeded}/{len(oauth_servers)} server(s)")
-        return
-
-    if not name:
-        _error("Specify a server name, or use --all to re-auth every OAuth server.")
-        _info("Usage: son-of-anton mcp reauth <name>   |   son-of-anton mcp reauth --all")
-        return
-    if name not in servers:
-        _error(f"Server '{name}' not found in config.")
-        if servers:
-            _info(f"Available servers: {', '.join(servers)}")
-        return
-
-    _reauth_oauth_server(name, servers[name])
-
-
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 def mcp_command(args):
@@ -548,7 +349,7 @@ def mcp_command(args):
 
     MCP servers are declared in config.toml (``mcp_servers``), e.g. by the
     Nix module's settings. Son of Anton never installs or adds one itself, so
-    these commands only inspect, test and authenticate declared servers.
+    these commands only inspect and test declared servers.
     """
     action = getattr(args, "mcp_action", None)
 
@@ -561,8 +362,6 @@ def mcp_command(args):
         "list": cmd_mcp_list,
         "ls": cmd_mcp_list,
         "test": cmd_mcp_test,
-        "login": cmd_mcp_login,
-        "reauth": cmd_mcp_reauth,
     }
 
     handler = handlers.get(action)
@@ -575,7 +374,5 @@ def mcp_command(args):
     _info("son-of-anton mcp serve                              Run as MCP server")
     _info("son-of-anton mcp list                               List declared servers")
     _info("son-of-anton mcp test <name>                        Test connection")
-    _info("son-of-anton mcp login <name>                       Re-authenticate OAuth")
-    _info("son-of-anton mcp reauth <name> | --all              Re-auth one or all OAuth servers")
     _info("Servers are declared under mcp_servers in config.toml (e.g. your Nix module).")
     print()

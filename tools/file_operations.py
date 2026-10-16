@@ -2,8 +2,8 @@
 """
 File Operations Module
 
-Provides file manipulation capabilities (read, write, patch, search) that work
-across all terminal backends (local, ssh).
+Provides file manipulation capabilities (read, write, patch, search) on top
+of the terminal environment.
 
 The key insight is that all file operations can be expressed as shell commands,
 so we wrap the terminal backend's execute() interface to provide a unified file API.
@@ -544,15 +544,6 @@ class FileOperations(ABC):
         """Delete a file. Returns WriteResult with .error set on failure."""
         ...
 
-    def delete_path(self, path: str, recursive: bool = False) -> WriteResult:
-        """Cross-platform delete that handles files and (with recursive=True)
-        directory trees. Default implementation delegates to ``delete_file``
-        for the non-recursive case; backends with native recursive support
-        should override.
-        """
-        if recursive:
-            return WriteResult(error="Recursive delete not implemented for this backend")
-        return self.delete_file(path)
 
     @abstractmethod
     def move_file(self, src: str, dst: str) -> WriteResult:
@@ -830,8 +821,7 @@ class ShellFileOperations(FileOperations):
     """
     File operations implemented via shell commands.
     
-    Works with ANY terminal backend that has execute(command, cwd) method.
-    This includes local and ssh environments.
+    Works with any terminal environment that has an execute(command, cwd) method.
     """
     
     def __init__(self, terminal_env, cwd: str = None):
@@ -1761,14 +1751,6 @@ class ShellFileOperations(FileOperations):
         """
         return self._python_delete(path, recursive=False)
 
-    def delete_path(self, path: str, recursive: bool = False) -> WriteResult:
-        """Cross-platform delete that handles files and (with recursive=True)
-        directory trees. Always preferred over emitting ``rm -rf`` /
-        ``Remove-Item -Recurse`` directly so the same tool call works on
-        every backend (local / ssh / Windows).
-        """
-        return self._python_delete(path, recursive=recursive)
-
     def _python_delete(self, path: str, recursive: bool) -> WriteResult:
         path = self._expand_path(path)
         denied = get_write_denied_error(path, verb="Delete")
@@ -2482,24 +2464,13 @@ class ShellFileOperations(FileOperations):
         )
 
     def _lsp_local_only(self) -> bool:
-        """Return True iff this FileOperations is wired to a local backend.
+        """Return True iff this FileOperations is wired to an environment.
 
-        LSP servers run on the host process — they need access to the
-        files they're linting.  Remote backends (e.g. SSH) keep files on the
-        remote host where the host-side LSP server can't reach them, so we
-        skip the LSP path for those entirely.
+        Defensive: some callers construct ShellFileOperations via ``__new__``
+        without going through ``__init__``, so ``self.env`` may be missing.
+        No env = no LSP path.
         """
-        env = getattr(self, "env", None)
-        if env is None:
-            # Defensive: some tests construct ShellFileOperations via
-            # ``__new__`` without going through ``__init__``, so
-            # ``self.env`` may be missing.  No env = no LSP path.
-            return False
-        try:
-            from tools.environments.local import LocalEnvironment
-        except Exception:  # noqa: BLE001
-            return False
-        return isinstance(env, LocalEnvironment)
+        return getattr(self, "env", None) is not None
 
     def _lsp_handles_extension(self, ext: str) -> bool:
         """Return True iff some registered LSP server claims this extension.

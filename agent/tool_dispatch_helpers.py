@@ -2,8 +2,6 @@
 
 Pure module-level utilities extracted from ``run_agent.py``:
 
-* ``_is_destructive_command`` — terminal-command heuristic used to gate
-  parallel batch dispatch.
 * ``_should_parallelize_tool_batch`` / ``_extract_parallel_scope_paths`` /
   ``_extract_parallel_scope_path`` / ``_paths_overlap`` — the rules engine
   deciding when a multi-tool batch can run concurrently (V4A patch scope
@@ -12,8 +10,7 @@ Pure module-level utilities extracted from ``run_agent.py``:
   ``_append_subdir_hint_to_multimodal`` — envelope helpers for the
   ``{"_multimodal": True, "content": [...], "text_summary": ...}`` dict
   shape returned by tools like ``computer_use``.
-* ``_extract_file_mutation_targets`` / ``_extract_landed_file_mutation_paths`` /
-  ``_extract_error_preview`` —
+* ``_extract_file_mutation_targets`` / ``_extract_error_preview`` —
   per-turn file-mutation verifier inputs.
 * ``_trajectory_normalize_msg`` — strip image blobs from a message for
   trajectory saving.
@@ -69,48 +66,6 @@ _PATH_SCOPED_WRITERS = frozenset({"write_file", "patch"})
 
 # File tools can run concurrently when they target independent paths.
 _PATH_SCOPED_TOOLS = _PATH_SCOPED_READERS | _PATH_SCOPED_WRITERS
-
-# Patterns that indicate a terminal command may modify/delete files.
-_DESTRUCTIVE_PATTERNS = re.compile(
-    r"""(?:^|\s|&&|\|\||;|`)(?:
-        rm\s|rmdir\s|
-        cp\s|install\s|
-        mv\s|
-        sed\s+-i|
-        truncate\s|
-        dd\s|
-        shred\s|
-        git\s+(?:reset|clean|checkout)\s
-    )""",
-    re.VERBOSE,
-)
-# Output redirects that overwrite files (> but not >>)
-_REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
-
-
-def _is_destructive_command(cmd: str) -> bool:
-    """Heuristic: does this terminal command look like it modifies/deletes files?"""
-    if not cmd:
-        return False
-    if _DESTRUCTIVE_PATTERNS.search(cmd):
-        return True
-    if _REDIRECT_OVERWRITE.search(cmd):
-        return True
-    return False
-
-
-def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
-    """Check if an MCP tool comes from a server with parallel tool calls enabled.
-
-    Lazy-imports from ``tools.mcp_tool`` to avoid circular dependencies.
-    Returns False if the MCP module is not available.
-    """
-    try:
-        from tools.mcp_tool import is_mcp_tool_parallel_safe
-        return is_mcp_tool_parallel_safe(tool_name)
-    except Exception:
-        return False
-
 
 def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = None) -> List[tuple]:
     """Split a tool-call batch into ordered ``(kind, calls)`` segments.
@@ -214,7 +169,7 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
             current.append(tool_call)
             continue
 
-        if tool_name in _PARALLEL_SAFE_TOOLS or _is_mcp_tool_parallel_safe(tool_name):
+        if tool_name in _PARALLEL_SAFE_TOOLS:
             current.append(tool_call)
             continue
 
@@ -450,35 +405,6 @@ def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List
                 paths.append(dst)
         return paths
     return []
-
-
-def _extract_landed_file_mutation_paths(
-    tool_name: str,
-    args: Dict[str, Any],
-    result: Any,
-) -> List[str]:
-    """Return the concrete file paths a successful mutation reports."""
-    targets = _extract_file_mutation_targets(tool_name, args)
-    if tool_name not in _FILE_MUTATING_TOOLS or not isinstance(result, str):
-        return targets
-    try:
-        data = json.loads(result.strip())
-    except Exception:
-        return targets
-    if not isinstance(data, dict):
-        return targets
-
-    files = data.get("files_modified")
-    if isinstance(files, list):
-        landed = [str(p) for p in files if p]
-        if landed:
-            return landed
-
-    resolved = data.get("resolved_path")
-    if resolved:
-        return [str(resolved)]
-
-    return targets
 
 
 def _extract_error_preview(result: Any, max_len: int = 180) -> str:
@@ -779,9 +705,6 @@ __all__ = [
     "_PATH_SCOPED_TOOLS",
     "_PATH_SCOPED_READERS",
     "_PATH_SCOPED_WRITERS",
-    "_DESTRUCTIVE_PATTERNS",
-    "_REDIRECT_OVERWRITE",
-    "_is_destructive_command",
     "_plan_tool_batch_segments",
     "_should_parallelize_tool_batch",
     "_canonical_path",
@@ -792,7 +715,6 @@ __all__ = [
     "_multimodal_text_summary",
     "_append_subdir_hint_to_multimodal",
     "_extract_file_mutation_targets",
-    "_extract_landed_file_mutation_paths",
     "_extract_error_preview",
     "_trajectory_normalize_msg",
     "_detect_upstream_elision",

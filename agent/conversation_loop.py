@@ -94,7 +94,7 @@ from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent import empty_response_guard as _empty_guard
 from son_of_anton_constants import PARTIAL_STREAM_STUB_ID
 from son_of_anton_logging import set_session_context
-from utils import base_url_host_matches, env_var_enabled
+from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
 
@@ -1658,17 +1658,6 @@ def run_conversation(
     # objects without the attribute (older pickles / minimal stubs).
     max_compaction_attempts = getattr(agent, "max_compaction_attempts", 3)
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
-    # Last composed answer intentionally held back by a verification gate. If
-    # that continuation consumes the remaining budget, this is the best
-    # user-facing result available; it must not be confused with error or
-    # recovery text produced by unrelated exit paths.
-    _pending_verification_response = None
-    # Tracks whether the pending verification candidate was already streamed
-    # to the user as interim content. The finalizer uses this to set
-    # ``_response_was_previewed`` ONLY when the pending candidate is actually
-    # reused as the final response — not merely because any interim was
-    # streamed. (#65919 review: response-loss blocker)
-    _pending_verification_response_previewed = False
 
     # Reset the per-turn usage holder forwarded to the context engine's
     # on_turn_complete() observation hook. Set after each successful provider
@@ -1687,9 +1676,6 @@ def run_conversation(
                     f"User correction during the turn: {_redirect_text}"
                 )
             agent._persist_session(messages, conversation_history)
-
-        # Reset per-turn checkpoint dedup so each iteration can take one snapshot
-        agent._checkpoint_mgr.new_turn()
 
         # Check for interrupt request (e.g., user sent new message)
         if agent._interrupt_requested:
@@ -2368,8 +2354,6 @@ def run_conversation(
                 except Exception:
                     pass
 
-                if env_var_enabled("SON_OF_ANTON_DUMP_REQUESTS"):
-                    agent._dump_api_request_debug(api_kwargs, reason="preflight")
 
                 # Always prefer the streaming path — even without stream
                 # consumers.  Streaming gives us fine-grained health
@@ -6590,21 +6574,15 @@ def run_conversation(
                 agent._emit_pending_fallback_notice()
                 agent._clear_status_buffer()
 
-                from agent.agent_runtime_helpers import (
-                    intent_ack_continuation_mode,
-                    trailing_continue_intent,
-                )
+                from agent.agent_runtime_helpers import trailing_continue_intent
 
-                _ack_mode = intent_ack_continuation_mode(agent)
                 # Said-continue-but-stopped guard (agent.stall_guards): the
                 # model ended the turn with no tool calls but its short reply
                 # TAILS with an announced next action ("Let me now…",
-                # "I will now…"). Unlike the intent-ack detector below, this
-                # fires mid-task too (after tool results), which is exactly
-                # where eval traces show the stall. It reuses the SAME bounded
-                # continuation path and counter (max 2 per turn), so the
-                # alternation-safe interim-assistant + user-nudge mechanism —
-                # not a new parallel one — carries the recovery.
+                # "I will now…"). It fires mid-task too (after tool results),
+                # which is exactly where eval traces show the stall. Bounded
+                # (max 2 per turn) by the alternation-safe interim-assistant +
+                # user-nudge mechanism.
                 _stall_continue_intent = (
                     bool(getattr(agent, "_stall_guards", True))
                     and agent.valid_tool_names
@@ -6613,21 +6591,12 @@ def run_conversation(
                         agent._strip_think_blocks(final_response or "")
                     )
                 )
-                if _stall_continue_intent or (
-                    _ack_mode != "off"
-                    and agent.valid_tool_names
-                    and intent_ack_continuations < 2
-                    and agent._looks_like_intermediate_ack(
-                        assistant_content=final_response,
-                        messages=messages,
+                if _stall_continue_intent:
+                    logger.info(
+                        "Stall guard: turn ending on trailing continue-"
+                        "intent with no tool calls — re-prompting to act "
+                        "(%d/2)", intent_ack_continuations + 1,
                     )
-                ):
-                    if _stall_continue_intent:
-                        logger.info(
-                            "Stall guard: turn ending on trailing continue-"
-                            "intent with no tool calls — re-prompting to act "
-                            "(%d/2)", intent_ack_continuations + 1,
-                        )
                     intent_ack_continuations += 1
                     interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
                     append_message(messages, interim_msg)
@@ -6731,127 +6700,6 @@ def run_conversation(
                     )
                 ):
                     messages.pop()
-
-                try:
-                    from agent.verification_stop import (
-                        build_verify_on_stop_nudge,
-                        verify_on_stop_enabled,
-                    )
-
-                    if verify_on_stop_enabled():
-                        _verify_nudge = build_verify_on_stop_nudge(
-                            session_id=getattr(agent, "session_id", None),
-                            changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
-                            attempts=getattr(agent, "_verification_stop_nudges", 0),
-                        )
-                    else:
-                        _verify_nudge = None
-                except Exception:
-                    logger.debug("verification stop-loop check failed", exc_info=True)
-                    _verify_nudge = None
-
-                if _verify_nudge:
-                    agent._verification_stop_nudges = (
-                        getattr(agent, "_verification_stop_nudges", 0) + 1
-                    )
-                    final_msg["finish_reason"] = "verification_required"
-                    # The assistant response is real content — persist it and
-                    # emit to the UI as an interim message so the user sees the
-                    # attempted final answer before the verification loop runs.
-                    # Only the nudge is flagged synthetic so it gets stripped
-                    # from the durable transcript (#65919 §7).
-                    agent._emit_interim_assistant_message(final_msg)
-                    append_message(messages, final_msg)
-                    try:
-                        agent._flush_messages_to_session_db(messages, conversation_history)
-                    except Exception:
-                        logger.debug("verify-on-stop interim flush failed", exc_info=True)
-                    append_message(messages, {
-                        "role": "user",
-                        "content": _verify_nudge,
-                        "_verification_stop_synthetic": True,
-                    })
-                    agent._session_messages = messages
-                    # Run the verification-stop loop silently — the nudge is an
-                    # internal turn that should not add noise to the user's
-                    # terminal. Keep a debug breadcrumb in agent.log for tracing.
-                    logger.debug("verification stop-loop nudge issued (attempt %d)",
-                                 agent._verification_stop_nudges)
-                    # Keep the attempted answer only as an explicit fallback for
-                    # continuation-budget exhaustion.  ``final_response`` itself
-                    # must be cleared so the finalizer can distinguish this gate
-                    # from unrelated error/recovery exits. (#61631)
-                    # Track whether this candidate was already streamed so the
-                    # finalizer can mark the turn previewed only if the
-                    # candidate is actually reused as the final response.
-                    _pending_verification_response = final_response
-                    _pending_verification_response_previewed = (
-                        agent._interim_content_was_streamed(final_response or "")
-                    )
-                    final_response = None
-                    continue
-
-                # User verification-loop gate: when the agent edited code this
-                # turn, let a registered `pre_verify` hook (plugin/shell) keep it
-                # going one more turn. The shipped guidance is folded into the
-                # evidence-based verify-on-stop nudge above, so this path has no
-                # default continuation cost.
-                _verify_nudge2 = None
-                _edited = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
-                _attempt = getattr(agent, "_pre_verify_nudges", 0)
-                try:
-                    from agent.verify_hooks import max_verify_nudges
-                    from son_of_anton_cli.lifecycle import has_hook
-                    from son_of_anton_cli.plugins import get_pre_verify_continue_message
-
-                    if _edited and has_hook("pre_verify") and _attempt < max_verify_nudges():
-                        # Posture is fixed for the session — resolve once + cache.
-                        coding = getattr(agent, "_resolved_is_coding", None)
-                        if coding is None:
-                            from agent.coding_context import is_coding_context
-                            coding = bool(is_coding_context(platform=getattr(agent, "platform", "") or ""))
-                            agent._resolved_is_coding = coding
-                        _verify_nudge2 = get_pre_verify_continue_message(
-                            session_id=getattr(agent, "session_id", None) or "",
-                            platform=getattr(agent, "platform", "") or "",
-                            model=getattr(agent, "model", "") or "",
-                            coding=coding,
-                            attempt=_attempt,
-                            final_response=final_response,
-                            changed_paths=_edited,
-                        )
-                except Exception:
-                    logger.debug("pre_verify hook check failed", exc_info=True)
-                    _verify_nudge2 = None
-
-                if _verify_nudge2:
-                    agent._pre_verify_nudges = _attempt + 1
-                    final_msg["finish_reason"] = "verify_hook_continue"
-                    # The assistant response is real content — persist it and
-                    # emit to the UI as an interim message so the user sees the
-                    # attempted final answer before the pre_verify loop runs.
-                    # Only the nudge is flagged synthetic so it gets stripped
-                    # from the durable transcript (#65919 §7).
-                    agent._emit_interim_assistant_message(final_msg)
-                    append_message(messages, final_msg)
-                    try:
-                        agent._flush_messages_to_session_db(messages, conversation_history)
-                    except Exception:
-                        logger.debug("pre_verify interim flush failed", exc_info=True)
-                    append_message(messages, {
-                        "role": "user",
-                        "content": _verify_nudge2,
-                        "_pre_verify_synthetic": True,
-                    })
-                    agent._session_messages = messages
-                    logger.debug("pre_verify nudge issued (attempt %d)",
-                                 agent._pre_verify_nudges)
-                    _pending_verification_response = final_response
-                    _pending_verification_response_previewed = (
-                        agent._interim_content_was_streamed(final_response or "")
-                    )
-                    final_response = None
-                    continue
 
                 append_message(messages, final_msg)
                 # Make the completed answer durable before leaving the loop —
@@ -6988,8 +6836,6 @@ def run_conversation(
         user_message=user_message,
         original_user_message=original_user_message,
         _turn_exit_reason=_turn_exit_reason,
-        _pending_verification_response=_pending_verification_response,
-        _pending_verification_response_previewed=_pending_verification_response_previewed,
     )
 
 

@@ -503,6 +503,28 @@ _REMOVED_SYMBOLS = (
     "stt_echo_transcripts",
     "_release_permission_mode_dependents",
     "_workspace_has_runnable_recipe",
+    # Core residue: desktop, Bot Mode, MCP OAuth, hooks, secret managers,
+    # verification ledger, checkpoints, worktree subagents
+    "plugin_guard",
+    "bot_mode_probe",
+    "osv_check",
+    "close_terminal_tool",
+    "mcp_oauth",
+    "mcp_oauth_manager",
+    "mcp_dashboard_oauth",
+    "mcp_schema_cache",
+    "shell_hooks",
+    "secret_sources",
+    "get_secret_source",
+    "plugin_llm",
+    "plugin_stream_hooks",
+    "verification_evidence",
+    "verification_stop",
+    "verify_hooks",
+    "checkpoint_manager",
+    "subagent_worktree",
+    "subagent_lifecycle",
+    "reaction_callback",
 )
 
 

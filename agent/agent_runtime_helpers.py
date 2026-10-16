@@ -40,7 +40,7 @@ from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED, credential_pool_matches_provider
 from agent.error_classifier import FailoverReason
 from agent.turn_context import drop_stale_api_content
-from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
+from utils import base_url_host_matches, base_url_hostname, atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -576,12 +576,6 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     # messages are only adjacent here when nothing (no tool result, no
     # user turn) separates them — an intervening ``tool`` message means
     # two distinct, valid tool-call rounds that must NOT be merged.
-    #
-    def _is_verification_candidate(m: Dict) -> bool:
-        return m.get("finish_reason") in {
-            "verification_required",
-            "verify_hook_continue",
-        }
 
     collapsed: List[Dict] = []
     for msg in messages:
@@ -593,16 +587,6 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             and collapsed[-1].get("role") == "assistant"
         ):
             prev = collapsed[-1]
-            # Verification candidate collapsing: when the earlier assistant
-            # message is a provisional candidate (finish_reason =
-            # verification_required / verify_hook_continue), the later
-            # response supersedes it for model replay — replace rather than
-            # union. Both remain durable in state.db; this only affects the
-            # in-memory sequence sent to the model. (#65919 §7)
-            if _is_verification_candidate(prev):
-                collapsed[-1] = msg
-                repairs += 1
-                continue
             # Union tool_calls (preserve order, both may carry them).
             prev_calls = list(prev.get("tool_calls") or [])
             new_calls = list(msg.get("tool_calls") or [])
@@ -1774,9 +1758,6 @@ def dump_api_request_debug(
         atomic_json_write(dump_file, _redacted_payload, default=str)
 
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
-
-        if env_var_enabled("SON_OF_ANTON_DUMP_REQUEST_STDOUT"):
-            print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))
 
         return dump_file
     except Exception as dump_error:
@@ -3405,61 +3386,6 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return messages
 
 
-def looks_like_intermediate_ack(
-    agent,
-    assistant_content: str,
-    messages: List[Dict[str, Any]],
-) -> bool:
-    """Detect a planning/ack message that should continue instead of ending the turn.
-
-    A future-ack + short-content + no-prior-tools + action-verb response is
-    treated as unfinished intent: the model announced it would do something
-    and stopped without calling a tool. Conversational replies like "I'll help
-    you brainstorm" carry no action verb and never trip it.
-    """
-    if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
-        return False
-
-    assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
-    if not assistant_text:
-        return False
-    if len(assistant_text) > 1200:
-        return False
-
-    has_future_ack = bool(
-        re.search(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b", assistant_text)
-    )
-    if not has_future_ack:
-        return False
-
-    action_markers = (
-        "look into",
-        "look at",
-        "inspect",
-        "scan",
-        "check",
-        "analyz",
-        "review",
-        "explore",
-        "read",
-        "open",
-        "run",
-        "test",
-        "fix",
-        "debug",
-        "search",
-        "find",
-        "walkthrough",
-        "report back",
-        "summarize",
-    )
-    assistant_mentions_action = any(marker in assistant_text for marker in action_markers)
-    if not assistant_mentions_action:
-        return False
-
-    return True
-
-
 # Conservative "trailing continue-intent" detector for the said-continue-but-
 # stopped stall guard (agent.stall_guards). Matches only when the message TAIL
 # announces an immediate next action ("Let me now…", "I will now…",
@@ -3489,27 +3415,6 @@ def trailing_continue_intent(text: str) -> bool:
     if not t or len(t) > _TRAILING_CONTINUE_INTENT_MAX_CHARS:
         return False
     return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
-
-
-def intent_ack_continuation_mode(agent) -> str:
-    """Classify the resolved intent-ack continuation mode for this turn.
-
-    Returns one of:
-      * ``"off"`` — never continue.
-      * ``"all"`` — user opted in; continue on any future-ack + action verb.
-
-    ``True``/"true"/"always"/"yes"/"on" → all; ``False``/"false"/"never"/"no"/
-    "off" → off; ``list`` → all when a substring matches the active model name,
-    else off.  Anything else (including the ``"auto"`` default) → off.
-    """
-    mode = getattr(agent, "_intent_ack_continuation", "auto")
-
-    if mode is True or (isinstance(mode, str) and mode.lower() in {"true", "always", "yes", "on"}):
-        return "all"
-    if isinstance(mode, list):
-        model_lower = (agent.model or "").lower()
-        return "all" if any(p.lower() in model_lower for p in mode if isinstance(p, str)) else "off"
-    return "off"
 
 
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
@@ -3992,7 +3897,6 @@ __all__ = [
     "invoke_tool",
     "repair_tool_call",
     "sanitize_api_messages",
-    "looks_like_intermediate_ack",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",
     "extract_api_error_context",

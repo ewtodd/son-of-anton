@@ -141,7 +141,6 @@ def test_secret_scope_exposes_no_scoping_api() -> None:
         )
 
     assert hasattr(secret_scope, "get_secret")
-    assert hasattr(secret_scope, "load_env_file")
 
 
 def test_gateway_config_has_no_multiplex_settings() -> None:

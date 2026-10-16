@@ -206,28 +206,12 @@ _DEFAULT_CRON_INACTIVITY_TIMEOUT = 600.0
 def _oneshot_run_claim_ttl_seconds() -> float:
     """Resolve the one-shot running-claim stale-recovery TTL.
 
-    Derived from ``SON_OF_ANTON_CRON_TIMEOUT`` (the cron inactivity timeout the
-    scheduler enforces on each run) so the safety valve tracks how long a run
-    is actually allowed to go quiet, instead of a magic constant:
-
-    - unset / invalid → default 600s inactivity limit → TTL = 1800s
-    - ``0`` (unlimited runs) → no finite bound to derive from → fall back to
-      ``ONESHOT_RUN_CLAIM_TTL_SECONDS``
-    - positive N → ``max(N * headroom, ONESHOT_RUN_CLAIM_TTL_SECONDS)`` so a
-      tiny configured timeout can never expire a claim mid-run.
+    Derived from the cron inactivity timeout the scheduler enforces on each run
+    so the safety valve tracks how long a run is actually allowed to go quiet,
+    never below ``ONESHOT_RUN_CLAIM_TTL_SECONDS``.
     """
-    raw = os.getenv("SON_OF_ANTON_CRON_TIMEOUT", "").strip()
-    timeout = _DEFAULT_CRON_INACTIVITY_TIMEOUT
-    if raw:
-        try:
-            timeout = float(raw)
-        except (ValueError, TypeError):
-            timeout = _DEFAULT_CRON_INACTIVITY_TIMEOUT
-    if timeout <= 0:
-        # Unlimited runs — cannot bound; use the fixed fallback floor.
-        return float(ONESHOT_RUN_CLAIM_TTL_SECONDS)
     return max(
-        timeout * _ONESHOT_RUN_CLAIM_TTL_HEADROOM,
+        _DEFAULT_CRON_INACTIVITY_TIMEOUT * _ONESHOT_RUN_CLAIM_TTL_HEADROOM,
         float(ONESHOT_RUN_CLAIM_TTL_SECONDS),
     )
 
@@ -1073,24 +1057,6 @@ def _atomic_write_epoch(path: Path) -> None:
     atomic_write_text(path, str(time.time()), tmp_prefix=".hb_")
 
 
-def _atomic_write_counter(path: Path, value: int) -> None:
-    """Atomically persist a non-negative integer counter."""
-    ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".count_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(str(max(0, value)))
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-
-
 def record_ticker_heartbeat(success: bool = False) -> None:
     """Record a ticker liveness signal, and optionally a successful-tick signal.
 
@@ -1152,19 +1118,6 @@ def get_ticker_success_age() -> Optional[float]:
     return _epoch_file_age(store.cron_dir / "ticker_last_success")
 
 
-def record_catch_up_occurrence() -> None:
-    """Increment the profile-local stale-schedule catch-up counter, best effort."""
-    path = _current_cron_store().cron_dir / "catch_up_occurrences"
-    try:
-        try:
-            value = int(path.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            value = 0
-        _atomic_write_counter(path, max(0, value) + 1)
-    except Exception:
-        pass
-
-
 def record_ticker_error(message: str) -> None:
     """Persist the most recent tick failure so other processes can surface it.
 
@@ -1198,15 +1151,6 @@ def record_ticker_error(message: str) -> None:
             raise
     except Exception:
         pass
-
-
-def get_catch_up_occurrence_count() -> int:
-    """Return the profile-local stale-schedule catch-up count."""
-    path = _current_cron_store().cron_dir / "catch_up_occurrences"
-    try:
-        return max(0, int(path.read_text(encoding="utf-8").strip()))
-    except (OSError, ValueError):
-        return 0
 
 
 def clear_ticker_error() -> None:
@@ -1999,7 +1943,7 @@ def create_job(
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
-    # global cron.mirror_delivery config, default off).
+    # mirror default, off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
     # Same conditional-persist rule for the per-job reasoning effort pin:
@@ -2757,12 +2701,9 @@ def advance_next_runs(job_ids) -> int:
 def _machine_id() -> str:
     """Stable-ish identifier for claim attribution/debugging (NOT correctness).
 
-    Uses ``SON_OF_ANTON_MACHINE_ID`` if set, else hostname + pid. The CAS correctness
-    comes from the file lock + the fresh-claim check, not from this value.
+    Hostname + pid. The CAS correctness comes from the file lock + the
+    fresh-claim check, not from this value.
     """
-    explicit = os.getenv("SON_OF_ANTON_MACHINE_ID", "").strip()
-    if explicit:
-        return explicit
     try:
         import socket
         host = socket.gethostname()
@@ -2872,23 +2813,8 @@ COMPLETED_ONESHOT_RETENTION_DAYS = 7
 
 
 def _completed_oneshot_retention_days() -> float:
-    """Resolve the completed one-shot retention window from config.
-
-    ``cron.completed_retention_days`` (number, default
-    ``COMPLETED_ONESHOT_RETENTION_DAYS``). A non-positive value disables the
-    sweep, retaining completed one-shot records indefinitely.
-    """
-    try:
-        from son_of_anton_cli.config import load_config
-        cfg = load_config() or {}
-        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
-        return float(
-            cron_cfg.get(
-                "completed_retention_days", COMPLETED_ONESHOT_RETENTION_DAYS
-            )
-        )
-    except Exception:
-        return float(COMPLETED_ONESHOT_RETENTION_DAYS)
+    """The completed one-shot retention window (days)."""
+    return float(COMPLETED_ONESHOT_RETENTION_DAYS)
 
 
 def _sweep_completed_oneshots(
@@ -3345,7 +3271,6 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                 rj["next_run_at"] = new_next
                                 needs_save = True
                                 break
-                        record_catch_up_occurrence()
                         # Fall through to due.append(job) — execute once now
 
                 # One-shot dispatch-limit guard (issue #38758): a finite one-shot
@@ -3446,14 +3371,8 @@ _CRON_OUTPUT_DEFAULT_KEEP = 50
 
 
 def _cron_output_keep() -> int:
-    """Resolve the per-job output-file retention cap from config (``cron.output_retention``)."""
-    try:
-        from son_of_anton_cli.config import load_config
-        cfg = load_config() or {}
-        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
-        return int(cron_cfg.get("output_retention", _CRON_OUTPUT_DEFAULT_KEEP))
-    except Exception:
-        return _CRON_OUTPUT_DEFAULT_KEEP
+    """The per-job output-file retention cap."""
+    return _CRON_OUTPUT_DEFAULT_KEEP
 
 
 def _prune_job_output(job_output_dir: Path, keep: int) -> int:

@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import Any, Dict, List, Optional
 
@@ -52,7 +51,6 @@ from agent.prompt_builder import (
 from agent.runtime_cwd import resolve_context_cwd
 from son_of_anton_constants import get_default_son_of_anton_root, get_son_of_anton_home
 from pathlib import Path
-from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 _PLUGIN_SECTION_FRAME_RE = re.compile(
@@ -123,36 +121,6 @@ def _resolve_platform_hint(agent: Any, platform_key: str, default_hint: str) -> 
     if isinstance(append_text, str) and append_text.strip():
         return f"{base}\n\n{append_text.strip()}".strip()
     return base
-
-
-_TUI_EMBEDDED_PANE_CLARIFIER = (
-    " You're in its embedded terminal pane, beside the GUI chat — the user can "
-    "select your output (Option-drag on macOS, Shift-drag elsewhere) and press "
-    "Cmd/Ctrl+L to send it to the chat composer."
-)
-
-
-def _tui_embedded_pane_clarifier(hint: str) -> str:
-    """Append the desktop-embedded-terminal-pane clarifier to a tui hint.
-
-    Triggered by ``SON_OF_ANTON_DESKTOP_TERMINAL=1`` (set by ``main.cjs`` only on the
-    shell env of the desktop's embedded TUI PTY — never on the chat backend).
-    This is a runtime-surface qualifier, not a config override, so it lives at
-    the resolution site rather than inside ``_resolve_platform_hint`` (which
-    is purely the config-platform_hints override applier). Byte-stable for the
-    cache: called once per session build, deterministically from env state.
-
-    Idempotent and empty-safe: re-applying on an already-augmented hint is a
-    no-op, and an empty input returns empty (we never synthesize the
-    clarifier without its tui framing).
-    """
-    if not hint:
-        return hint
-    if _TUI_EMBEDDED_PANE_CLARIFIER in hint:
-        return hint
-    if not is_truthy_value(os.getenv("SON_OF_ANTON_DESKTOP_TERMINAL")):
-        return hint
-    return hint + _TUI_EMBEDDED_PANE_CLARIFIER
 
 
 def _plugin_session_info(agent: Any) -> Dict[str, str]:
@@ -430,14 +398,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if agent.valid_tool_names:
         stable_parts.append(STEER_CHANNEL_NOTE)
 
-    # Computer-use — goes in as its own block rather than being merged into
-    # tool_guidance because the content is multi-paragraph. The guidance is
-    # rendered for the host platform so Windows/Linux hosts don't see
-    # macOS-only wording (Mac, Space, cmd+s).
-    if "computer_use" in agent.valid_tool_names:
-        from agent.prompt_builder import computer_use_guidance
-        stable_parts.append(computer_use_guidance())
-
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.toml
     # agent.tool_use_enforcement:
@@ -669,8 +629,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             pass  # Config read failure — fall back to base hint only
 
     _effective_hint = _resolve_platform_hint(agent, platform_key, _default_hint)
-    if platform_key == "tui" and _effective_hint:
-        _effective_hint = _tui_embedded_pane_clarifier(_effective_hint)
     if _effective_hint:
         post_workspace_parts.append(_effective_hint)
 

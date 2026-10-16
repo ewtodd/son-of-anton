@@ -1,9 +1,8 @@
-"""Base class for all Son of Anton execution environment backends.
+"""Base class for the Son of Anton execution environment (local).
 
 Unified spawn-per-call model: every command spawns a fresh ``bash -c`` process.
 A session snapshot (env vars, functions, aliases) is captured once at init and
-re-sourced before each command. CWD persists via in-band stdout markers (remote)
-or a temp file (local).
+re-sourced before each command. CWD persists via in-band stdout markers.
 """
 
 import codecs
@@ -26,19 +25,6 @@ from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
-# Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
-# SON_OF_ANTON_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and
-# every is_interrupted() state change from _wait_for_process.  Off by default
-# to avoid flooding production gateway logs.
-_DEBUG_INTERRUPT = bool(os.getenv("SON_OF_ANTON_DEBUG_INTERRUPT"))
-
-if _DEBUG_INTERRUPT:
-    # AIAgent's quiet_mode path (run_agent.py) forces the `tools` logger to
-    # ERROR on CLI startup, which would silently swallow every trace we emit.
-    # Force this module's own logger back to INFO so the trace is visible in
-    # agent.log regardless of quiet-mode.  Scoped to the opt-in case only.
-    logger.setLevel(logging.INFO)
-
 # Thread-local activity callback.  The agent sets this before a tool call so
 # long-running _wait_for_process loops can report liveness to the gateway.
 _activity_callback_local = threading.local()
@@ -48,32 +34,6 @@ _activity_callback_local = threading.local()
 # enough that the collector never evicts in practice, keeping a single code
 # path for both bounded and unbounded modes.
 _UNBOUNDED_CAPTURE_CHARS = 2**63 - 1
-
-
-class EnvironmentConnectionError(RuntimeError):
-    """Infrastructure/connection-class failure of a terminal backend.
-
-    Raised when the backend itself is unreachable (SSH host down, Docker
-    daemon not running, remote file sync failing on a dead link) — never
-    for a command that merely exited nonzero.  Subclassing RuntimeError
-    keeps every existing ``except RuntimeError`` catcher working.
-
-    ``terminal_tool`` turns this into a structured ``status: "degraded"``
-    tool result (config gate ``terminal.degraded_mode: warn|fail``) so the
-    model gets an actionable reason + retry hint instead of a traceback.
-    The failed backend is never cached, so a later call retries from
-    scratch and simply works once the backend is reachable again.
-    """
-
-    def __init__(self, reason: str, *, retry_hint: str = ""):
-        super().__init__(reason)
-        self.reason = reason
-        self.retry_hint = retry_hint or (
-            "This is an infrastructure failure, not a command failure. "
-            "Verify the backend is reachable (network, service running, "
-            "credentials), then retry the same command — recovery is "
-            "automatic once the backend is back."
-        )
 
 
 class _BoundedOutputCollector:
@@ -147,11 +107,6 @@ class _BoundedOutputCollector:
                 pass
             self._spill_fh = None
             return str(self._spill_path)
-
-    @property
-    def buffered_chars(self) -> int:
-        with self._lock:
-            return self._head_chars + self._tail_chars
 
     @property
     def total_chars(self) -> int:
@@ -278,8 +233,7 @@ def touch_activity_if_due(
 
 
 def get_sandbox_dir() -> Path:
-    """Return the host-side root for all sandbox storage (Docker workspaces,
-    Singularity overlays/SIF cache, etc.).
+    """Return the host-side root for sandbox storage.
 
     Configurable via TERMINAL_SANDBOX_DIR. Defaults to {SON_OF_ANTON_HOME}/sandboxes/.
     """
@@ -359,48 +313,13 @@ def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
     thread.start()
 
 
-def _popen_bash(
-    cmd: list[str], stdin_data: str | None = None, **kwargs
-) -> subprocess.Popen:
-    """Spawn a subprocess with standard stdout/stderr/stdin setup.
-
-    If *stdin_data* is provided, writes it asynchronously via :func:`_pipe_stdin`.
-    Backends with special Popen needs (e.g. local's ``preexec_fn``) can bypass
-    this and call :func:`_pipe_stdin` directly.
-    """
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-        text=True, encoding="utf-8", errors="replace",
-        **kwargs,
-    )
-    if stdin_data is not None:
-        _pipe_stdin(proc, stdin_data)
-    return proc
-
-
-def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
-    """Return ``(mtime, size)`` for cache comparison, or ``None`` if unreadable."""
-    try:
-        st = Path(host_path).stat()
-        return (st.st_mtime, st.st_size)
-    except OSError:
-        return None
-
-
 # ---------------------------------------------------------------------------
 # ProcessHandle protocol
 # ---------------------------------------------------------------------------
 
 
 class ProcessHandle(Protocol):
-    """Duck type that every backend's _run_bash() must return.
-
-    subprocess.Popen satisfies this natively.  SDK backends (Modal, Daytona)
-    return _ThreadedProcessHandle which adapts their blocking calls.
-    """
+    """Duck type that _run_bash() returns; subprocess.Popen satisfies it."""
 
     def poll(self) -> int | None: ...
     def kill(self) -> None: ...
@@ -414,7 +333,7 @@ class ProcessHandle(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# CWD marker for remote backends
+# CWD marker
 # ---------------------------------------------------------------------------
 
 
@@ -509,21 +428,15 @@ class BaseEnvironment(ABC):
     interrupt handling, and timeout enforcement.
     """
 
-    # Subclasses that embed stdin as a heredoc (Modal, Daytona) set this.
-    _stdin_mode: str = "pipe"  # "pipe" or "heredoc"
-
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
-    # Local and Docker override this because they resolve allowlisted values
-    # through the active profile scope. Other backends keep their existing
-    # snapshot semantics until they implement the same resolver contract.
+    # Local resolves allowlisted values through the active profile scope.
     _profile_scoped_passthrough: bool = False
 
     def get_temp_dir(self) -> str:
         """Return the backend temp directory used for session artifacts.
 
-        Most sandboxed backends use ``/tmp`` inside the target environment.
         LocalEnvironment overrides this when ``/tmp`` is missing and
         ``TMPDIR`` is the portable writable location.
         """
@@ -560,14 +473,13 @@ class BaseEnvironment(ABC):
     ) -> ProcessHandle:
         """Spawn a bash process to run *cmd_string*.
 
-        Returns a ProcessHandle (subprocess.Popen or _ThreadedProcessHandle).
-        Must be overridden by every backend.
+        Returns a ProcessHandle (subprocess.Popen).
         """
         raise NotImplementedError(f"{type(self).__name__} must implement _run_bash()")
 
     @abstractmethod
     def cleanup(self):
-        """Release backend resources (container, instance, connection)."""
+        """Release backend resources."""
         ...
 
     # ------------------------------------------------------------------
@@ -744,8 +656,7 @@ class BaseEnvironment(ABC):
         """Quote *path* for interpolation into a bash script.
 
         LocalEnvironment overrides this to rewrite native/mixed paths to the
-        shell form before quoting. Remote backends leave paths
-        as-is (they already speak POSIX).
+        shell form before quoting.
         """
         return shlex.quote(path)
 
@@ -809,10 +720,7 @@ class BaseEnvironment(ABC):
         # ``SON_OF_ANTON_AGENT`` marker.  The value MUST equal our id in the public
         # agent-harness registry (``son-of-anton`` — see huggingface.js
         # ``agent-harnesses.ts``); standard-var matching is exact, so any other
-        # value is reported as "unknown".  Setting it here (rather than only in
-        # the host process env) is what carries the marker into REMOTE backends
-        # (Docker/SSH/Modal/Daytona/Singularity/Vercel), whose exec env is not
-        # inherited from the Son of Anton process.  ``${VAR:-default}`` semantics:
+        # value is reported as "unknown".  ``${VAR:-default}`` semantics:
         # never clobber an outer harness value that arrived via the inherited
         # process env (Son of Anton running inside another agent's terminal).
         parts.append(
@@ -849,8 +757,8 @@ class BaseEnvironment(ABC):
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )
 
-        # Emit the CWD stdout marker; all backends (including local, since
-        # PR #63255) parse it from output — no temp-file write needed.
+        # Emit the CWD stdout marker, parsed from output — no temp-file write
+        # needed.
         # Use a distinct line for the marker. The leading \n ensures
         # the marker starts on its own line even if the command doesn't
         # end with a newline (e.g. printf 'exact'). We'll strip this
@@ -861,16 +769,6 @@ class BaseEnvironment(ABC):
         parts.append("exit $__son_of_anton_ec")
 
         return "\n".join(parts)
-
-    # ------------------------------------------------------------------
-    # Stdin heredoc embedding (for SDK backends)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _embed_stdin_heredoc(command: str, stdin_data: str) -> str:
-        """Append stdin_data as a shell heredoc to the command string."""
-        delimiter = f"SON_OF_ANTON_STDIN_{uuid.uuid4().hex[:12]}"
-        return f"{command} << '{delimiter}'\n{stdin_data}\n{delimiter}"
 
     # ------------------------------------------------------------------
     # Process lifecycle
@@ -961,39 +859,8 @@ class BaseEnvironment(ABC):
         # U+FFFD substitution rather than clobbering the whole buffer.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
-        def _drain_iterable(stream):
-            # Fallback path: ``stream`` is not backed by a real OS file
-            # descriptor (no usable ``fileno()``).  This covers in-memory
-            # ProcessHandle adapters that expose stdout as a plain iterator of
-            # already-collected output (the legacy ``for line in proc.stdout``
-            # contract) rather than a live pipe.  Iterate it to EOF.  Without
-            # this, the drain thread would raise an unhandled exception and die
-            # silently, losing all of the process's output.
-            try:
-                for piece in stream:
-                    if piece is None:
-                        continue
-                    if isinstance(piece, bytes):
-                        output.append(decoder.decode(piece))
-                    else:
-                        output.append(str(piece))
-            except Exception:
-                pass
-            finally:
-                try:
-                    tail = decoder.decode(b"", final=True)
-                    if tail:
-                        output.append(tail)
-                except Exception:
-                    pass
-
         def _drain():
-            # Resolve a real OS file descriptor up front.  Real subprocesses and
-            # the SDK ``_ThreadedProcessHandle`` (os.pipe-backed) both return an
-            # integer fd here.  Mocks / iterator-style stdout streams either lack
-            # ``fileno()`` entirely or return a non-integer — in that case fall
-            # back to draining the stream as an iterable instead of crashing the
-            # thread (issue: 'list_iterator' object has no attribute 'fileno').
+            # Resolve the pipe's OS file descriptor up front.
             stream = proc.stdout
             if stream is None:
                 return
@@ -1003,7 +870,6 @@ class BaseEnvironment(ABC):
             except Exception:
                 fd = None
             if not isinstance(fd, int) or fd < 0:
-                _drain_iterable(stream)
                 return
             # select on the pipe fd: blocks at most 0.1s per cycle and stops
             # promptly on EOF; idle detection catches a grandchild holding the
@@ -1051,36 +917,10 @@ class BaseEnvironment(ABC):
             "start": _now,
         }
 
-        # --- Debug tracing (opt-in via SON_OF_ANTON_DEBUG_INTERRUPT=1) -------------
-        # Captures loop entry/exit, interrupt state changes, and periodic
-        # heartbeats so we can diagnose "agent never sees the interrupt"
-        # reports without reproducing locally.
-        _tid = threading.current_thread().ident
-        _pid = getattr(proc, "pid", None)
-        _iter_count = 0
-        _last_heartbeat = _now
-        _last_interrupt_state = False
-        _cb_was_none = get_activity_callback() is None
-        if _DEBUG_INTERRUPT:
-            logger.info(
-                "[interrupt-debug] _wait_for_process ENTER tid=%s pid=%s "
-                "timeout=%ss activity_cb=%s initial_interrupt=%s",
-                _tid, _pid, timeout,
-                "set" if not _cb_was_none else "MISSING",
-                is_interrupted(),
-            )
-
         try:
             _poll_sleep = 0.005
             while proc.poll() is None:
-                _iter_count += 1
                 if is_interrupted():
-                    if _DEBUG_INTERRUPT:
-                        logger.info(
-                            "[interrupt-debug] _wait_for_process INTERRUPT DETECTED "
-                            "tid=%s pid=%s iter=%d elapsed=%.1fs — killing process group",
-                            _tid, _pid, _iter_count, time.monotonic() - _activity_state["start"],
-                        )
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
                     return self._finalize_wait_result(
@@ -1089,12 +929,6 @@ class BaseEnvironment(ABC):
                         130,
                     )
                 if time.monotonic() > deadline:
-                    if _DEBUG_INTERRUPT:
-                        logger.info(
-                            "[interrupt-debug] _wait_for_process TIMEOUT "
-                            "tid=%s pid=%s iter=%d timeout=%ss",
-                            _tid, _pid, _iter_count, timeout,
-                        )
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
                     timeout_msg = f"\n[Command timed out after {timeout}s]"
@@ -1107,24 +941,6 @@ class BaseEnvironment(ABC):
                     )
                 # Periodic activity touch so the gateway knows we're alive
                 touch_activity_if_due(_activity_state, "terminal command running")
-
-                # Heartbeat every ~30s: proves the loop is alive and reports
-                # the activity-callback state (thread-local, can get clobbered
-                # by nested tool calls or executor thread reuse).
-                if _DEBUG_INTERRUPT and time.monotonic() - _last_heartbeat >= 30.0:
-                    _cb_now_none = get_activity_callback() is None
-                    logger.info(
-                        "[interrupt-debug] _wait_for_process HEARTBEAT "
-                        "tid=%s pid=%s iter=%d elapsed=%.0fs "
-                        "interrupt=%s activity_cb=%s%s",
-                        _tid, _pid, _iter_count,
-                        time.monotonic() - _activity_state["start"],
-                        is_interrupted(),
-                        "set" if not _cb_now_none else "MISSING",
-                        " (LOST during run)" if _cb_now_none and not _cb_was_none else "",
-                    )
-                    _last_heartbeat = time.monotonic()
-                    _cb_was_none = _cb_now_none
 
                 # Adaptive poll: start at 5ms so fast commands (echo, pwd,
                 # date, cat short files) return in ~6ms instead of being
@@ -1145,13 +961,6 @@ class BaseEnvironment(ABC):
             # python exits and the child is reparented to init (PPID=1) and
             # keeps running as an orphan.  Killing the process group here
             # guarantees the tool's side effects stop when the agent stops.
-            if _DEBUG_INTERRUPT:
-                logger.info(
-                    "[interrupt-debug] _wait_for_process EXCEPTION_EXIT "
-                    "tid=%s pid=%s iter=%d elapsed=%.1fs — killing subprocess group before re-raise",
-                    _tid, _pid, _iter_count,
-                    time.monotonic() - _activity_state["start"],
-                )
             try:
                 self._kill_process(proc)
                 drain_thread.join(timeout=2)
@@ -1168,15 +977,6 @@ class BaseEnvironment(ABC):
             proc.stdout.close()
         except Exception:
             pass
-
-        if _DEBUG_INTERRUPT:
-            logger.info(
-                "[interrupt-debug] _wait_for_process EXIT (natural) "
-                "tid=%s pid=%s iter=%d elapsed=%.1fs returncode=%s",
-                _tid, _pid, _iter_count,
-                time.monotonic() - _activity_state["start"],
-                proc.returncode,
-            )
 
         # Join the stdin writer thread before reading its error list: a child
         # that exits without reading stdin can otherwise race ahead of a
@@ -1225,7 +1025,6 @@ class BaseEnvironment(ABC):
         """Parse the __SON_OF_ANTON_CWD_{session}__ marker from stdout output.
 
         Updates self.cwd and strips the marker from result["output"].
-        Used by remote backends (Docker, SSH, Modal, Daytona, Singularity).
 
         Sets ``result["cwd_observed"]`` when the marker yielded a directory for
         THIS command. The wrapper prints the marker after the command returns,
@@ -1264,20 +1063,6 @@ class BaseEnvironment(ABC):
         result["output"] = output[:line_start] + output[line_end:]
 
     # ------------------------------------------------------------------
-    # Hooks
-    # ------------------------------------------------------------------
-
-    def _before_execute(self) -> None:
-        """Hook called before each command execution.
-
-        Remote backends (SSH, Modal, Daytona) override this to trigger
-        their FileSyncManager.  Bind-mount backends (Docker, Singularity)
-        and Local don't need file sync — the host filesystem is directly
-        visible inside the container/process.
-        """
-        pass
-
-    # ------------------------------------------------------------------
     # Unified execute()
     # ------------------------------------------------------------------
 
@@ -1302,8 +1087,6 @@ class BaseEnvironment(ABC):
         the patch engine, code-execution RPC reads, log reads — MUST leave
         it False: truncating those corrupts data, not just display.
         """
-        self._before_execute()
-
         exec_command, sudo_stdin = self._prepare_command(command)
         # Guard against the `A && B &` subshell-wait trap by default.
         # Some callers (spawn_via_env) already produce shell-safe wrappers and
@@ -1321,11 +1104,6 @@ class BaseEnvironment(ABC):
             effective_stdin = sudo_stdin
         else:
             effective_stdin = stdin_data
-
-        # Embed stdin as heredoc for backends that need it
-        if effective_stdin and self._stdin_mode == "heredoc":
-            exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
-            effective_stdin = None
 
         wrapped = self._wrap_command(exec_command, effective_cwd)
 

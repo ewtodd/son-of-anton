@@ -16,7 +16,6 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-import sys
 
 import pytest
 
@@ -128,18 +127,6 @@ def test_the_options_come_from_the_builder_itself() -> None:
     built = add_arguments(argparse.ArgumentParser())
     flags = {a for action in built._actions for a in action.option_strings}
     assert {"--data", "--goal", "--truth", "--no-llm", "--print-card"} <= flags
-
-
-def test_the_builder_still_runs_standalone() -> None:
-    """`python -m autophysicist.spec_builder --help` must keep working."""
-    result = subprocess.run(
-        [sys.executable, "-m", "autophysicist.spec_builder", "--help"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "--data" in result.stdout
 
 
 # --- the help text must describe the CLI that exists ------------------------

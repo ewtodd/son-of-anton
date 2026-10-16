@@ -147,40 +147,6 @@ TOOLSETS = {
         "includes": [],
     },
 
-    # Scenario-specific toolsets
-
-    "debugging": {
-        "description": "Debugging and troubleshooting toolkit",
-        "tools": ["terminal", "process"],
-        "includes": ["web", "file"]
-    },
-
-    "safe": {
-        "description": "Safe toolkit without terminal access",
-        "tools": [],
-        "includes": ["web", "vision"]
-    },
-
-    # Coding posture (base Son of Anton — CLI/TUI). Auto-selected in a code
-    # workspace; see agent/coding_context.py.
-    "coding": {
-        "description": "Coding-focused toolset: files, terminal, search, web docs, todo, delegate, vision",
-        "tools": [
-            "web_search", "web_extract",
-            "terminal", "process",
-            "read_file", "write_file", "patch", "search_files",
-            "vision_analyze",
-            "todo", "memory",
-            "session_search", "clarify",
-            "execute_code", "delegate_task",
-        ],
-        "includes": [],
-        # Posture toolset: selected per-session by agent/coding_context.py,
-        # never auto-recovered into per-platform tool config (see the
-        # non-configurable-toolset recovery loop in son_of_anton_cli/tools_config.py).
-        "posture": True,
-    },
-
     # ==========================================================================
     # Full Son of Anton toolsets (CLI + messaging platforms)
     #
@@ -460,25 +426,6 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
     return result
 
 
-def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
-    """
-    Resolve multiple toolsets and combine their tools.
-    
-    Args:
-        toolset_names (List[str]): List of toolset names to resolve
-        
-    Returns:
-        List[str]: Combined list of all tool names (deduplicated)
-    """
-    all_tools = set()
-    
-    for name in toolset_names:
-        tools = resolve_toolset(name)
-        all_tools.update(tools)
-    
-    return sorted(all_tools)
-
-
 def _get_plugin_toolset_names() -> Set[str]:
     """Return toolset names registered by plugins (from the tool registry).
 
@@ -573,30 +520,6 @@ def validate_toolset(name: str) -> bool:
     return name in _get_registry_toolset_aliases()
 
 
-def create_custom_toolset(
-    name: str,
-    description: str,
-    tools: List[str] = None,
-    includes: List[str] = None
-) -> None:
-    """
-    Create a custom toolset at runtime.
-    
-    Args:
-        name (str): Name for the new toolset
-        description (str): Description of the toolset
-        tools (List[str]): Direct tools to include
-        includes (List[str]): Other toolsets to include
-    """
-    TOOLSETS[name] = {
-        "description": description,
-        "tools": tools or [],
-        "includes": includes or []
-    }
-
-
-
-
 def get_toolset_info(name: str) -> Dict[str, Any]:
     """
     Get detailed information about a toolset including resolved tools.
@@ -622,44 +545,3 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
         "tool_count": len(resolved_tools),
         "is_composite": bool(toolset["includes"])
     }
-
-
-
-
-if __name__ == "__main__":
-    print("Toolsets System Demo")
-    print("=" * 60)
-    
-    print("\nAvailable Toolsets:")
-    print("-" * 40)
-    for name, toolset in get_all_toolsets().items():
-        info = get_toolset_info(name)
-        composite = "[composite]" if info["is_composite"] else "[leaf]"
-        print(f"  {composite} {name:20} - {toolset['description']}")
-        print(f"     Tools: {len(info['resolved_tools'])} total")
-    
-    print("\nToolset Resolution Examples:")
-    print("-" * 40)
-    for name in ["web", "terminal", "safe", "debugging"]:
-        tools = resolve_toolset(name)
-        print(f"\n  {name}:")
-        print(f"    Resolved to {len(tools)} tools: {', '.join(sorted(tools))}")
-    
-    print("\nMultiple Toolset Resolution:")
-    print("-" * 40)
-    combined = resolve_multiple_toolsets(["web", "vision", "terminal"])
-    print("  Combining ['web', 'vision', 'terminal']:")
-    print(f"    Result: {', '.join(sorted(combined))}")
-    
-    print("\nCustom Toolset Creation:")
-    print("-" * 40)
-    create_custom_toolset(
-        name="my_custom",
-        description="My custom toolset for specific tasks",
-        tools=["web_search"],
-        includes=["terminal", "vision"]
-    )
-    custom_info = get_toolset_info("my_custom")
-    print("  Created 'my_custom' toolset:")
-    print(f"    Description: {custom_info['description']}")
-    print(f"    Resolved tools: {', '.join(custom_info['resolved_tools'])}")

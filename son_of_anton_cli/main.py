@@ -594,8 +594,8 @@ def _confirm_startup_expensive_model_override(args) -> None:
         return
 
     # Cost and provider-routing confirmation is intentionally independent of
-    # --yolo / --accept-hooks: those flags approve local command/tool risk, not
-    # paid aggregator spend or a surprising provider route.
+    # --yolo: that flag approves local command/tool risk, not paid aggregator
+    # spend or a surprising provider route.
     is_interactive = sys.stdin.isatty()
     allow_unattended_data_training = (
         security_cfg.get("allow_data_training_tiers_noninteractive") is True
@@ -1470,7 +1470,6 @@ def cmd_chat(args):
         "image": getattr(args, "image", None),
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
-        "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
         "run_budget": getattr(args, "run_budget", None),
@@ -2807,10 +2806,7 @@ def _prompt_api_key(
         return new_key, False
 
     # Already configured — offer K / R / C ────────────────────────────────
-    from son_of_anton_cli.env_loader import format_secret_source_suffix
-
-    source_suffix = format_secret_source_suffix(key_env) if key_env else ""
-    print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓{source_suffix}")
+    print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
     if not key_env:
         # Nothing we can rewrite; just acknowledge and move on.
         print()
@@ -3294,7 +3290,6 @@ def _prepare_agent_startup(args) -> None:
     ):
         return
 
-    _accept_hooks = bool(getattr(args, "accept_hooks", False))
     try:
         from son_of_anton_cli.plugins import start_background_plugin_discovery
 
@@ -3342,23 +3337,6 @@ def _prepare_agent_startup(args) -> None:
                 "MCP tool discovery failed at CLI startup",
                 exc_info=True,
             )
-    try:
-        from son_of_anton_cli.config import load_config
-        from agent.shell_hooks import register_from_config
-
-        _hooks_cfg = load_config()
-        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
-
-        from agent.outbound_webhooks import (
-            register_from_config as register_outbound_webhooks,
-        )
-
-        register_outbound_webhooks(_hooks_cfg)
-    except Exception:
-        logger.debug(
-            "shell-hook registration failed at CLI startup",
-            exc_info=True,
-        )
 
 
 def _apply_safe_mode(args) -> None:
@@ -3498,46 +3476,6 @@ def _advertise_agent_env() -> None:
     os.environ.setdefault("SON_OF_ANTON_AGENT", "true")
 
 
-class _CwdEnvTrace(dict):
-    """Debug wrapper that logs every TERMINAL_* os.environ write with a stack."""
-
-    def __setitem__(self, key, value):
-        if isinstance(key, str) and key.startswith("TERMINAL_"):
-            old = dict.get(self, key)
-            if old != value:
-                import logging
-                import traceback
-                logging.getLogger("son_of_anton_cwd_debug").info(
-                    "ENV WRITE %s: %r -> %r @ %s",
-                    key, old, value,
-                    " | ".join(
-                        line.strip()
-                        for line in traceback.format_stack(limit=9)[:-1]
-                    ),
-                )
-        return dict.__setitem__(self, key, value)
-
-    def __delitem__(self, key):
-        if isinstance(key, str) and key.startswith("TERMINAL_"):
-            import logging
-            import traceback
-            logging.getLogger("son_of_anton_cwd_debug").info(
-                "ENV DELETE %s: %r @ %s",
-                key, dict.get(self, key),
-                " | ".join(
-                    line.strip()
-                    for line in traceback.format_stack(limit=9)[:-1]
-                ),
-            )
-        return dict.__delitem__(self, key)
-
-
-def _install_cwd_env_tracer() -> None:
-    """Replace os.environ with a write-tracing proxy (DEBUG_CWD gate only)."""
-    import os as _os
-    _os.environ = _CwdEnvTrace(_os.environ)
-
-
 def _guard_son_of_anton_home_access() -> None:
     """Fail fast with a clear message when SON_OF_ANTON_HOME is unusable.
 
@@ -3576,8 +3514,6 @@ def _guard_son_of_anton_home_access() -> None:
 def main():
     """Main entry point for son-of-anton CLI."""
     _guard_son_of_anton_home_access()
-    if os.environ.get("SON_OF_ANTON_DEBUG_CWD"):
-        _install_cwd_env_tracer()
 
     # Cosmetic: make the process show up as 'son-of-anton' instead of 'python3.11'
     # in ps/top/htop.  Non-fatal — just a nicer UX.

@@ -198,22 +198,8 @@ def _configured_terminal_cwd() -> str | None:
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
-    """Return a registered cwd override for the raw task id, when available.
-
-    ``terminal_tool`` intentionally collapses CWD-only task overrides to the
-    shared ``"default"`` environment so TUI/dashboard/ACP sessions do not spin
-    up isolated sandboxes just because they have different workspaces. The cwd
-    value itself is still keyed by the raw session/task id, so file tools must
-    read that raw override before falling back to the collapsed container key.
-    """
-    try:
-        from tools.terminal_tool import resolve_task_overrides
-
-        overrides = resolve_task_overrides(task_id)
-    except Exception:
-        return None
-
-    return _sentinel_free_abs_cwd(overrides.get("cwd"))
+    """Registered per-task cwd overrides no longer exist; always ``None``."""
+    return None
 
 
 def _authoritative_workspace_root(task_id: str = "default") -> str | None:
@@ -226,11 +212,7 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
          registration, keyed by the raw session id. Because the record is
          per-session, one session's ``cd`` can never leak into another
          session's resolution.
-      2. A registered task/session cwd override (TUI/Desktop/ACP sessions
-         register a raw-keyed cwd before any tool runs). Normally already
-         mirrored into the record at registration; kept as a direct fallback
-         so a cleared/never-written record still resolves the workspace.
-      3. A sentinel-free absolute ``$TERMINAL_CWD`` (the worktree path set by
+      2. A sentinel-free absolute ``$TERMINAL_CWD`` (the worktree path set by
          ``cli.py``/``main.py`` for ``-w`` sessions).
 
     Returns ``None`` only when there is genuinely no reliable anchor, in which
@@ -244,9 +226,6 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
         recorded = None
     if recorded:
         return recorded
-    registered = _registered_task_cwd_override(task_id)
-    if registered:
-        return registered
     return _configured_terminal_cwd()
 
 
@@ -339,23 +318,6 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
         return None
 
 
-def _file_ops_uses_host_paths(file_ops) -> bool:
-    """Return True when *file_ops* targets the same host filesystem as Son of Anton.
-
-    Only then may we rewrite V4A header paths to resolved host-absolute
-    paths: a container/remote backend has its own filesystem namespace where
-    a host-absolute path would be meaningless.
-    """
-    env = getattr(file_ops, "env", None)
-    if env is None:
-        return True
-    try:
-        from tools.environments.local import LocalEnvironment
-    except ImportError:
-        return True
-    return isinstance(env, LocalEnvironment)
-
-
 def _rewrite_v4a_patch_paths_for_host(
     patch: str,
     path_to_resolved: dict,
@@ -374,11 +336,7 @@ def _rewrite_v4a_patch_paths_for_host(
 
     Header patterns mirror ``patch_parser`` (``\\s*`` after ``***`` accepts the
     no-space ``***Update File:`` form) and cover ``Move File: src -> dst``.
-    Only applied when *file_ops* targets the host filesystem.
     """
-    if not _file_ops_uses_host_paths(file_ops):
-        return patch
-
     import re as _re
 
     def _resolved_or_original(raw: str) -> str:
@@ -1298,19 +1256,14 @@ def _is_internal_file_tool_content(content: str) -> bool:
 
 
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
-    """Get or create ShellFileOperations for a terminal environment.
-
-    Respects the TERMINAL_ENV setting -- if the task_id doesn't have an
-    environment yet, creates one using the configured backend (local, ssh,
-    etc.) rather than always defaulting to local.
+    """Get or create ShellFileOperations for the terminal environment.
 
     Thread-safe: uses the same per-task creation locks as terminal_tool to
     prevent duplicate sandbox creation from concurrent tool calls.
 
     Note: subagent task_ids are collapsed to "default" via
     ``_resolve_container_task_id`` so delegate_task children share the
-    parent's sandbox and its cached file_ops. RL/benchmark task_ids with
-    a registered env override keep their isolation.
+    parent's sandbox and its cached file_ops.
     """
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
@@ -1376,49 +1329,18 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 terminal_env = None
 
         if terminal_env is None:
-            from tools.terminal_tool import resolve_task_overrides
-
             config = _get_env_config()
             env_type = config["env_type"]
-            overrides = resolve_task_overrides(raw_task_id)
-
-            image = ""
 
             try:
                 from tools.terminal_tool import get_session_cwd
                 recorded_cwd = get_session_cwd(raw_task_id)
             except Exception:
                 recorded_cwd = None
-            cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
+            cwd = recorded_cwd or config["cwd"]
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
-            ssh_config = None
-            if env_type == "ssh":
-                ssh_config = {
-                    "host": config.get("ssh_host", ""),
-                    "user": config.get("ssh_user", ""),
-                    "port": config.get("ssh_port", 22),
-                    "key": config.get("ssh_key", ""),
-                    "persistent": config.get("ssh_persistent", False),
-                }
-
-            local_config = None
-            if env_type == "local":
-                local_config = {
-                    "persistent": config.get("local_persistent", False),
-                }
-
-            terminal_env = _create_environment(
-                env_type=env_type,
-                image=image,
-                cwd=cwd,
-                timeout=config["timeout"],
-                ssh_config=ssh_config,
-                container_config=None,
-                local_config=local_config,
-                task_id=task_id,
-                host_cwd=None,
-            )
+            terminal_env = _create_environment(cwd=cwd, timeout=config["timeout"])
 
             with _env_lock:
                 _active_environments[task_id] = terminal_env
@@ -1448,9 +1370,7 @@ def _special_file_kind(path) -> str | None:
 
     Stat-based sibling of the name-based ``_is_blocked_device`` guard: a
     FIFO at ``logs/live.pipe`` or a socket in a workspace hangs ``read_file``
-    just as hard as ``/dev/zero``, but carries no recognizable name. Only
-    called for host-visible filesystems (see ``_file_ops_uses_host_paths``);
-    remote backends cannot be statted from here.
+    just as hard as ``/dev/zero``, but carries no recognizable name.
 
     Returns None for regular files, missing paths, and anything unstattable
     (those flow to the normal read path and its own error handling).
@@ -1496,18 +1416,17 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         # The name blocklist above catches /dev/* and /proc/* aliases; this
         # catches the class — any FIFO/socket/device wherever it lives. A
         # read on a FIFO blocks until the exec timeout: a self-shipped DoS.
-        if _file_ops_uses_host_paths(_get_file_ops(task_id)):
-            kind = _special_file_kind(_resolved)
-            if kind is not None:
-                return json.dumps({
-                    "success": False,
-                    "note": (
-                        f"'{path}' is {kind}, not a regular file — reading "
-                        "it would block indefinitely, so no read was "
-                        "attempted. Use terminal utilities if you need to "
-                        "interact with it."
-                    ),
-                })
+        kind = _special_file_kind(_resolved)
+        if kind is not None:
+            return json.dumps({
+                "success": False,
+                "note": (
+                    f"'{path}' is {kind}, not a regular file — reading "
+                    "it would block indefinitely, so no read was "
+                    "attempted. Use terminal utilities if you need to "
+                    "interact with it."
+                ),
+            })
 
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
@@ -1992,40 +1911,6 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     return None
 
 
-def _mark_verification_stale(
-    task_id: str,
-    resolved_paths: list[str],
-    session_id: str | None = None,
-) -> None:
-    """Best-effort note that successful edits made prior verification stale."""
-    paths = [p for p in resolved_paths if p]
-    if not paths:
-        return
-    try:
-        from agent.coding_context import project_facts_for
-        from agent.verification_evidence import mark_workspace_edited
-
-        cwd = None
-        for path in paths:
-            try:
-                candidate = str(Path(path).parent)
-            except Exception:
-                continue
-            if project_facts_for(candidate):
-                cwd = candidate
-                break
-        if cwd is None:
-            cwd = _authoritative_workspace_root(task_id)
-        if cwd is None:
-            try:
-                cwd = str(Path(paths[0]).parent)
-            except Exception:
-                cwd = None
-        mark_workspace_edited(session_id=session_id or task_id, cwd=cwd, paths=paths)
-    except Exception:
-        logger.debug("verification stale marker failed", exc_info=True)
-
-
 def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:
     """Reject text-tool writes that would corrupt a binary document.
 
@@ -2070,8 +1955,7 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
 
 
 def write_file_tool(path: str, content: str, task_id: str = "default",
-                    cross_profile: bool = False,
-                    session_id: str | None = None) -> str:
+                    cross_profile: bool = False) -> str:
     """Write content to a file.
 
     ``cross_profile`` opts out of the soft cross-Son of Anton-profile guard. The
@@ -2118,8 +2002,6 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             result_dict = result.to_dict()
             if stale_warning:
                 result_dict["_warning"] = stale_warning
-            if not result_dict.get("error"):
-                _mark_verification_stale(task_id, [path], session_id=session_id)
             _update_read_timestamp(path, task_id)
             return json.dumps(result_dict, ensure_ascii=False)
 
@@ -2146,7 +2028,6 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             result_dict["resolved_path"] = _resolved
             if not result_dict.get("error"):
                 result_dict["files_modified"] = [_resolved]
-                _mark_verification_stale(task_id, [_resolved], session_id=session_id)
             # Refresh stamps after the successful write so consecutive
             # writes by this task don't trigger false staleness warnings.
             _update_read_timestamp(path, task_id)
@@ -2163,8 +2044,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
-               task_id: str = "default", cross_profile: bool = False,
-               session_id: str | None = None) -> str:
+               task_id: str = "default", cross_profile: bool = False) -> str:
     """Patch a file using replace mode or V4A patch format.
 
     ``cross_profile`` opts out of the soft cross-Son of Anton-profile guard for
@@ -2330,7 +2210,6 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 result_dict["files_modified"] = _resolved_modified
                 if len(_resolved_modified) == 1:
                     result_dict["resolved_path"] = _resolved_modified[0]
-                _mark_verification_stale(task_id, _resolved_modified, session_id=session_id)
                 for _p in _paths_to_check:
                     _update_read_timestamp(_p, task_id)
                     _r = _path_to_resolved.get(_p)
@@ -2628,7 +2507,6 @@ def _handle_write_file(args, **kw):
     return write_file_tool(
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
-        session_id=kw.get("session_id"),
     )
 
 
@@ -2639,7 +2517,6 @@ def _handle_patch(args, **kw):
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
-        session_id=kw.get("session_id"),
     )
 
 

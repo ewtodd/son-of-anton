@@ -15,27 +15,13 @@ sets ``problem_solved`` on the executor and breaks the outer loop;
 
 from __future__ import annotations
 
-import argparse
 import copy
 import json
 import os
 import subprocess
 import time
+import tomllib
 from pathlib import Path
-
-from dotenv import load_dotenv
-
-load_dotenv()
-
-import tomllib  # noqa: E402
-
-def load_problem(path: Path) -> tuple[dict, str, str]:
-    """Read a problem TOML file into (definition, text, answer template)."""
-    problem_def = tomllib.loads(path.read_text(encoding="utf-8"))
-    problem_text = problem_def.get("problem", "")
-    answer_template = problem_def.get("answer_template", "")
-    return problem_def, problem_text, answer_template
-
 
 from .core.config import Config, build_config  # noqa: E402
 from .core.console import console  # noqa: E402
@@ -811,43 +797,3 @@ def run_autophysicist(
     )
     console.print(f"Workspace: {workspace_root}")
     return workspace_root
-
-
-def main() -> None:
-    """CLI shim: run the Autophysicist loop from a problem TOML file."""
-    parser = argparse.ArgumentParser(
-        prog="autophysicist",
-        description="Autophysicist: iterative Research Manager.",
-    )
-    parser.add_argument("problem", type=Path, help="Path to problem TOML file")
-    parser.add_argument("--model", type=str, default=None)
-    parser.add_argument("--max-iterations", type=int, default=50)
-    parser.add_argument(
-        "--token-budget",
-        type=int,
-        default=64000,
-        help=(
-            "Token spend cap per iteration: new input plus output tokens, "
-            "the Manager's and its sub-agents' (default 64000)."
-        ),
-    )
-    parser.add_argument("--scratchpad-window", type=int, default=5)
-    parser.add_argument("--workspace-dir", type=str, default=None)
-    args = parser.parse_args()
-
-    problem_def, problem_text, answer_template = load_problem(args.problem)
-    run_autophysicist(
-        problem_text=problem_text,
-        answer_template=answer_template,
-        problem_def=problem_def,
-        problem_name=args.problem.stem,
-        model=args.model,
-        max_iterations=args.max_iterations,
-        token_budget=args.token_budget,
-        scratchpad_window=args.scratchpad_window,
-        workspace_root=Path(args.workspace_dir) if args.workspace_dir else None,
-    )
-
-
-if __name__ == "__main__":
-    main()

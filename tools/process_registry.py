@@ -9,10 +9,6 @@ Tracks processes spawned via terminal(background=true), providing:
   - Crash recovery via JSON checkpoint file
   - Session-scoped tracking for gateway reset protection
 
-Background processes execute THROUGH the environment interface -- nothing
-runs on the host machine unless TERMINAL_ENV=local. For Docker, Singularity,
-Modal, Daytona, and SSH backends, the command runs inside the sandbox.
-
 Usage:
     from tools.process_registry import process_registry
 
@@ -33,7 +29,6 @@ import codecs
 import json
 import logging
 import os
-import shlex
 import signal
 import subprocess
 import threading
@@ -372,7 +367,6 @@ class ProcessSession:
     session_key: str = ""                       # Gateway session key (for reset protection)
     pid: Optional[int] = None                   # OS process ID
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
-    env_ref: Any = None                         # Reference to the environment object
     cwd: Optional[str] = None                   # Working directory
     started_at: float = 0.0                     # time.time() of spawn (wall clock)
     host_start_time: Optional[int] = None       # kernel start ticks (/proc/<pid>/stat f22) — PID-reuse guard
@@ -383,7 +377,6 @@ class ProcessSession:
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
-    pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run (#70716)
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
@@ -756,7 +749,7 @@ class ProcessRegistry:
 
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
         """Update recovered host-PID sessions when the underlying process has exited."""
-        if session is None or session.exited or not session.detached or session.pid_scope != "host":
+        if session is None or session.exited or not session.detached:
             return session
 
         # Identity-aware liveness: a recycled PID (alive but a different process
@@ -900,19 +893,6 @@ class ProcessRegistry:
 
     # ----- Spawn -----
 
-    @staticmethod
-    def _env_temp_dir(env: Any) -> str:
-        """Return the writable sandbox temp dir for env-backed background tasks."""
-        get_temp_dir = getattr(env, "get_temp_dir", None)
-        if callable(get_temp_dir):
-            try:
-                temp_dir = get_temp_dir()
-                if isinstance(temp_dir, str) and temp_dir.startswith("/"):
-                    return temp_dir.rstrip("/") or "/"
-            except Exception as exc:
-                logger.debug("Could not resolve environment temp dir: %s", exc)
-        return "/tmp"
-
     def spawn_local(
         self,
         command: str,
@@ -925,8 +905,6 @@ class ProcessRegistry:
     ) -> ProcessSession:
         """
         Spawn a background process locally.
-
-        Only for TERMINAL_ENV=local. Other backends use spawn_via_env().
 
         Args:
             use_pty: If True, use a pseudo-terminal via ptyprocess for interactive
@@ -1155,106 +1133,6 @@ class ProcessRegistry:
 
         return session
 
-    def spawn_via_env(
-        self,
-        env: Any,
-        command: str,
-        cwd: str = None,
-        task_id: str = "",
-        session_key: str = "",
-        timeout: int = 10,
-    ) -> ProcessSession:
-        """
-        Spawn a background process through a non-local environment backend.
-
-        For Docker/Singularity/Modal/Daytona/SSH: runs the command inside the sandbox
-        using the environment's execute() interface. We wrap the command to
-        capture the in-sandbox PID and redirect output to a log file inside
-        the sandbox, then poll the log via subsequent execute() calls.
-
-        This is less capable than local spawn (no live stdout pipe, no stdin),
-        but it ensures the command runs in the correct sandbox context.
-        """
-        session = ProcessSession(
-            id=f"proc_{uuid.uuid4().hex[:12]}",
-            command=command,
-            task_id=task_id,
-            session_key=session_key,
-            cwd=cwd,
-            started_at=time.time(),
-            env_ref=env,
-            pid_scope="sandbox",
-        )
-
-        # Run the command in the sandbox with output capture
-        temp_dir = self._env_temp_dir(env)
-        log_path = f"{temp_dir}/son_of_anton_bg_{session.id}.log"
-        pid_path = f"{temp_dir}/son_of_anton_bg_{session.id}.pid"
-        exit_path = f"{temp_dir}/son_of_anton_bg_{session.id}.exit"
-        quoted_command = shlex.quote(command)
-        quoted_temp_dir = shlex.quote(temp_dir)
-        quoted_log_path = shlex.quote(log_path)
-        quoted_pid_path = shlex.quote(pid_path)
-        quoted_exit_path = shlex.quote(exit_path)
-        bg_command = (
-            f"mkdir -p {quoted_temp_dir} && "
-            f"( nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
-            f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
-            f"echo $! > {quoted_pid_path} && cat {quoted_pid_path}"
-        )
-
-        try:
-            result = env.execute(
-                bg_command,
-                timeout=timeout,
-                rewrite_compound_background=False,
-            )
-            output = result.get("output", "").strip()
-            # Try to extract the PID from the output
-            for line in output.splitlines():
-                line = line.strip()
-                if line.isdigit():
-                    session.pid = int(line)
-                    break
-            # If the wrapper couldn't produce a PID (for example, syntax
-            # error or broken redirect), treat it as a failed launch instead
-            # of exposing a fake running session.
-            if session.pid is None:
-                session.exited = True
-                session.exit_code = int(result.get("returncode", -1))
-                if session.exit_code == 0:
-                    session.exit_code = -1
-                session.completion_reason = "failed_start"
-                session.termination_source = "failed_start"
-                session.output_buffer = result.get("output", "").strip()
-        except Exception as e:
-            session.exited = True
-            session.exit_code = -1
-            session.completion_reason = "failed_start"
-            session.termination_source = "failed_start"
-            session.output_buffer = f"Failed to start: {e}"
-
-        if not session.exited:
-            # Start a poller thread that periodically reads the log file
-            reader = threading.Thread(
-                target=self._env_poller_loop,
-                args=(session, env, log_path, pid_path, exit_path),
-                daemon=True,
-                name=f"proc-poller-{session.id}",
-            )
-            session._reader_thread = reader
-            reader.start()
-
-        with self._lock:
-            self._prune_if_needed()
-            if not session.exited:
-                self._running[session.id] = session
-
-        if not session.exited:
-            self._write_checkpoint()
-
-        return session
-
     # ----- Reader / Poller Threads -----
 
     def _reader_loop(self, session: ProcessSession):
@@ -1385,63 +1263,6 @@ class ProcessRegistry:
                 session.exit_code = session.process.returncode
                 session.completion_reason = "exited"
             self._move_to_finished(session)
-
-    def _env_poller_loop(
-        self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
-    ):
-        """Background thread: poll a sandbox log file for non-local backends."""
-        quoted_log_path = shlex.quote(log_path)
-        quoted_pid_path = shlex.quote(pid_path)
-        quoted_exit_path = shlex.quote(exit_path)
-        prev_output_len = 0  # track delta for watch pattern scanning
-        while not session.exited:
-            time.sleep(2)  # Poll every 2 seconds
-            try:
-                # Read new output from the log file
-                result = env.execute(f"cat {quoted_log_path} 2>/dev/null", timeout=10)
-                new_output = result.get("output", "")
-                if new_output:
-                    # Compute delta for watch pattern scanning
-                    delta = new_output[prev_output_len:] if len(new_output) > prev_output_len else ""
-                    prev_output_len = len(new_output)
-                    with session._lock:
-                        session.output_buffer = new_output
-                        if len(session.output_buffer) > session.max_output_chars:
-                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                    if delta:
-                        self._check_watch_patterns(session, delta)
-
-                # Check if process is still running
-                check = env.execute(
-                    f"kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?",
-                    timeout=5,
-                )
-                check_output = check.get("output", "").strip()
-                if check_output and check_output.splitlines()[-1].strip() != "0":
-                    # Process has exited -- get exit code captured by the wrapper shell.
-                    exit_result = env.execute(
-                        f"cat {quoted_exit_path} 2>/dev/null",
-                        timeout=5,
-                    )
-                    exit_str = exit_result.get("output", "").strip()
-                    try:
-                        session.exit_code = int(exit_str.splitlines()[-1].strip())
-                    except (ValueError, IndexError):
-                        session.exit_code = -1
-                    session.exited = True
-                    if session.completion_reason != "killed":
-                        session.completion_reason = "exited"
-                    self._move_to_finished(session)
-                    return
-
-            except Exception:
-                # Environment might be gone (sandbox reaped, etc.)
-                session.exited = True
-                session.exit_code = -1
-                session.completion_reason = "lost"
-                session.termination_source = "backend_lost"
-                self._move_to_finished(session)
-                return
 
     def _pty_reader_loop(self, session: ProcessSession):
         """Background thread: read output from a PTY process."""
@@ -2049,7 +1870,7 @@ class ProcessRegistry:
                 self._completion_consumed.add(session_id)
             return result
 
-        # Kill via PTY, Popen (local), or env execute (non-local)
+        # Kill via PTY, Popen, or a recovered host PID
         try:
             if session._pty:
                 # PTY process -- terminate via ptyprocess
@@ -2062,10 +1883,7 @@ class ProcessRegistry:
                 # Local process -- kill the process tree (the shell wrapper
                 # alone would leave descendants behind).
                 self._terminate_host_pid(session.process.pid, session.host_start_time)
-            elif session.env_ref and session.pid:
-                # Non-local -- kill inside sandbox
-                session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
-            elif session.detached and session.pid_scope == "host" and session.pid:
+            elif session.detached and session.pid:
                 # Identity check, not bare liveness: if the PID is gone OR was
                 # recycled onto an unrelated process, treat our process as
                 # exited and never tree-kill the stranger.  If this recovered
@@ -2437,7 +2255,7 @@ class ProcessRegistry:
                         # Lazily backfill the kernel start time for host PIDs so
                         # recovery after restart can detect PID recycling even
                         # for sessions spawned before this field existed.
-                        if s.host_start_time is None and s.pid_scope == "host" and s.pid:
+                        if s.host_start_time is None and s.pid:
                             s.host_start_time = self._safe_host_start_time(s.pid)
                         entries.append({
                             "session_id": s.id,
@@ -2450,7 +2268,6 @@ class ProcessRegistry:
                             # command), so masking is lossless.
                             "command": redact_sensitive_text(s.command, code_file=True),
                             "pid": s.pid,
-                            "pid_scope": s.pid_scope,
                             "host_start_time": s.host_start_time,
                             "systemd_unit": s.systemd_unit,
                             "cwd": s.cwd,
@@ -2503,19 +2320,6 @@ class ProcessRegistry:
             if not pid:
                 continue
 
-            pid_scope = entry.get("pid_scope", "host")
-            if pid_scope != "host":
-                # Sandbox-backed processes keep only in-sandbox PIDs in the
-                # checkpoint, which are not meaningful to the restarted host
-                # process once the original environment handle is gone.
-                logger.info(
-                    "Skipping recovery for non-host process: %s (pid=%s, scope=%s)",
-                    entry.get("command", "unknown")[:60],
-                    pid,
-                    pid_scope,
-                )
-                continue
-
             # The PID must be alive AND still the same process we spawned. A
             # bare liveness check is unsafe: across a restart (especially a
             # reboot or long uptime) the kernel may have recycled this number
@@ -2549,7 +2353,6 @@ class ProcessRegistry:
                 session_key=entry.get("session_key", ""),
                 pid=pid,
                 host_start_time=recorded_start,
-                pid_scope=pid_scope,
                 systemd_unit=entry.get("systemd_unit", ""),
                 cwd=entry.get("cwd"),
                 started_at=entry.get("started_at", time.time()),

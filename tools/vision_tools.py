@@ -62,12 +62,9 @@ def _load_auxiliary_client() -> None:
 
 
 from son_of_anton_constants import get_son_of_anton_dir
-from tools.debug_helpers import DebugSession
-import sys
 
 logger = logging.getLogger(__name__)
 
-_debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
 
 # Configurable HTTP download timeout for _download_image().
 # Separate from auxiliary.vision.timeout which governs the LLM API call.
@@ -1269,18 +1266,6 @@ async def vision_analyze_tool(
     """
     if not isinstance(user_prompt, str):
         user_prompt = str(user_prompt) if user_prompt is not None else ""
-    debug_call_data = {
-        "parameters": {
-            "image_url": image_url,
-            "user_prompt": user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
-            "model": model
-        },
-        "error": None,
-        "success": False,
-        "analysis_length": 0,
-        "model_used": model,
-        "image_size_bytes": 0
-    }
     
     temp_image_path = None
     # Track whether we should clean up the file after processing.
@@ -1384,7 +1369,6 @@ async def vision_analyze_tool(
                     f"even after resizing. Compress or crop the image manually."
                 )
 
-        debug_call_data["image_size_bytes"] = image_size_bytes
         
         # Use the prompt as provided (model_tools.py now handles full description formatting)
         comprehensive_prompt = user_prompt
@@ -1482,12 +1466,8 @@ async def vision_analyze_tool(
         if scale_note:
             result["scale_note"] = scale_note
         
-        debug_call_data["success"] = True
-        debug_call_data["analysis_length"] = analysis_length
         
         # Log debug information
-        _debug.log_call("vision_analyze_tool", debug_call_data)
-        _debug.save()
         
         return json.dumps(result, indent=2, ensure_ascii=False)
         
@@ -1534,9 +1514,6 @@ async def vision_analyze_tool(
             "analysis": analysis,
         }
         
-        debug_call_data["error"] = error_msg
-        _debug.log_call("vision_analyze_tool", debug_call_data)
-        _debug.save()
         
         return json.dumps(result, indent=2, ensure_ascii=False)
     
@@ -1580,58 +1557,6 @@ def check_vision_requirements() -> bool:
             return client is not None
     except Exception:
         return False
-
-
-if __name__ == "__main__":
-    """
-    Simple test/demo when run directly
-    """
-    print("👁️ Vision Tools Module")
-    print("=" * 40)
-    
-    # Check if vision model is available
-    api_available = check_vision_requirements()
-    
-    if not api_available:
-        print("❌ No auxiliary vision model available")
-        print("Configure a supported multimodal backend (OpenRouter, Nous, Codex, Anthropic, or a custom OpenAI-compatible endpoint).")
-        sys.exit(1)
-    else:
-        print("✅ Vision model available")
-    
-    print("🛠️ Vision tools ready for use!")
-    
-    # Show debug mode status
-    if _debug.active:
-        print(f"🐛 Debug mode ENABLED - Session ID: {_debug.session_id}")
-        print(f"   Debug logs will be saved to: ./logs/vision_tools_debug_{_debug.session_id}.json")
-    else:
-        print("🐛 Debug mode disabled (set VISION_TOOLS_DEBUG=true to enable)")
-    
-    print("\nBasic usage:")
-    print("  from vision_tools import vision_analyze_tool")
-    print("  import asyncio")
-    print("")
-    print("  async def main():")
-    print("      result = await vision_analyze_tool(")
-    print("          image_url='https://example.com/image.jpg',")
-    print("          user_prompt='What do you see in this image?'")
-    print("      )")
-    print("      print(result)")
-    print("  asyncio.run(main())")
-    
-    print("\nExample prompts:")
-    print("  - 'What architectural style is this building?'")
-    print("  - 'Describe the emotions and mood in this image'")
-    print("  - 'What text can you read in this image?'")
-    print("  - 'Identify any safety hazards visible'")
-    print("  - 'What products or brands are shown?'")
-    
-    print("\nDebug mode:")
-    print("  # Enable debug logging")
-    print("  export VISION_TOOLS_DEBUG=true")
-    print("  # Debug logs capture all vision analysis calls and results")
-    print("  # Logs saved to: ./logs/vision_tools_debug_UUID.json")
 
 
 # ---------------------------------------------------------------------------
@@ -1767,55 +1692,6 @@ def _video_to_base64_data_url(video_path: Path, mime_type: Optional[str] = None)
     return f"data:{mime};base64,{encoded}"
 
 
-def _terminal_backend_is_local() -> bool:
-    backend = os.getenv("TERMINAL_ENV", "local").strip().lower()
-    return backend in ("", "local")
-
-
-def _is_path_like_video_source(value: str) -> bool:
-    lowered = (value or "").strip().lower()
-    if not lowered:
-        return False
-    return not lowered.startswith(("http://", "https://", "data:"))
-
-
-async def _materialize_video_from_terminal_backend(video_source: str, task_id: Optional[str]) -> Path:
-    """Read a path via the shared media resolver into a local temp video file.
-
-    Routes through :func:`tools.image_source.resolve_image_source` with
-    ``permitted=("video",)`` so terminal-backend video reads get the exact
-    pipeline vision_analyze uses: media-cache host reads (gateway-downloaded
-    videos live on the host, not in the sandbox), bounded in-sandbox exec-read
-    (``head -c`` cap — no unbounded base64 stream, no python3 dependency in
-    the sandbox image), lazy env bring-up (#62825), the credential-read
-    guard, and the 50MB ingest cap.
-    """
-    from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
-
-    source = video_source
-    if source.startswith("file://"):
-        source = source[len("file://"):]
-    suffix = Path(source).suffix.lower()
-    if suffix not in _VIDEO_MIME_TYPES:
-        raise ValueError(
-            f"Unsupported video format: '{suffix}'. "
-            f"Supported: {', '.join(sorted(_VIDEO_MIME_TYPES.keys()))}"
-        )
-
-    try:
-        resolved = await resolve_image_source(
-            video_source, ResolveContext(task_id=task_id), permitted=("video",)
-        )
-    except ImageResolutionError as exc:
-        raise ValueError(f"Could not read video from terminal backend: {exc}") from exc
-
-    temp_dir = get_son_of_anton_dir("cache/video", "temp_video_files")
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    temp_path = temp_dir / f"terminal_video_{uuid.uuid4()}{suffix}"
-    temp_path.write_bytes(resolved.data)
-    return temp_path
-
-
 async def _download_video(video_url: str, destination: Path, max_retries: int = 3) -> Path:
     """Download video from URL with SSRF protection and retry."""
     import asyncio
@@ -1881,18 +1757,6 @@ async def video_analyze_tool(
     """Analyze a video via multimodal LLM. Returns JSON {success, analysis}."""
     if not isinstance(user_prompt, str):
         user_prompt = str(user_prompt) if user_prompt is not None else ""
-    debug_call_data = {
-        "parameters": {
-            "video_url": video_url,
-            "user_prompt": user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
-            "model": model,
-        },
-        "error": None,
-        "success": False,
-        "analysis_length": 0,
-        "model_used": model,
-        "video_size_bytes": 0,
-    }
 
     temp_video_path = None
     should_cleanup = True
@@ -1911,11 +1775,7 @@ async def video_analyze_tool(
             resolved_url = resolved_url[len("file://"):]
         local_path = Path(os.path.expanduser(resolved_url))
 
-        if not _terminal_backend_is_local() and _is_path_like_video_source(video_url):
-            logger.info("Reading video source via terminal backend: %s", video_url)
-            temp_video_path = await _materialize_video_from_terminal_backend(video_url, task_id)
-            should_cleanup = True
-        elif local_path.is_file():
+        if local_path.is_file():
             from agent.file_safety import raise_if_read_blocked
             raise_if_read_blocked(str(local_path))
             logger.info("Using local video file: %s", video_url)
@@ -1955,7 +1815,6 @@ async def video_analyze_tool(
                 f"Compress or trim the video and retry."
             )
 
-        debug_call_data["video_size_bytes"] = video_size_bytes
 
         messages = [
             {
@@ -2016,10 +1875,6 @@ async def video_analyze_tool(
             "analysis": analysis or "There was a problem with the request and the video could not be analyzed.",
         }
 
-        debug_call_data["success"] = True
-        debug_call_data["analysis_length"] = analysis_length
-        _debug.log_call("video_analyze_tool", debug_call_data)
-        _debug.save()
 
         return json.dumps(result, indent=2, ensure_ascii=False)
 
@@ -2066,9 +1921,6 @@ async def video_analyze_tool(
             "analysis": analysis,
         }
 
-        debug_call_data["error"] = error_msg
-        _debug.log_call("video_analyze_tool", debug_call_data)
-        _debug.save()
 
         return json.dumps(result, indent=2, ensure_ascii=False)
 

@@ -9,7 +9,6 @@ module-level constants live in son_of_anton_state_common.
 """
 
 import logging
-import json
 from typing import Any, Dict, List, Optional
 
 from son_of_anton_state_common import (
@@ -176,74 +175,4 @@ class SessionPortabilityMixin:
             messages = self.get_messages(session["id"])
             results.append({**session, "messages": messages})
         return results
-
-    @staticmethod
-    def _import_text_or_none(value: Any, field: str) -> Optional[str]:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            return value
-        raise ValueError(f"{field} must be a string")
-
-    @staticmethod
-    def _import_json_object_or_none(value: Any, field: str) -> Optional[str]:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            try:
-                parsed = json.loads(value)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{field} must be valid JSON") from exc
-            if not isinstance(parsed, dict):
-                raise ValueError(f"{field} must be a JSON object")
-            return value
-        if not isinstance(value, dict):
-            raise ValueError(f"{field} must be a JSON object")
-        try:
-            return json.dumps(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"{field} must be JSON serializable") from exc
-
-    @staticmethod
-    def _float_or_none(value: Any) -> Optional[float]:
-        if value is None:
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-
-    @staticmethod
-    def _import_int_or_none(value: Any, field: str) -> Optional[int]:
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"{field} must be an integer") from exc
-
-    @staticmethod
-    def _int_or_default(value: Any, default: int = 0) -> int:
-        if value is None:
-            return default
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-
-    @staticmethod
-    def _reasoning_json_value(value: Any) -> Any:
-        if not isinstance(value, str):
-            return value
-        try:
-            return json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            return value
-
-    @staticmethod
-    def _import_error(index: int, session_id: str, error: str) -> Dict[str, Any]:
-        item: Dict[str, Any] = {"index": index, "error": error}
-        if session_id:
-            item["session_id"] = session_id
-        return item
 

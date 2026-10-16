@@ -219,7 +219,6 @@ def run_oneshot(
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.
     os.environ["SON_OF_ANTON_YOLO_MODE"] = "1"
-    os.environ["SON_OF_ANTON_ACCEPT_HOOKS"] = "1"
 
     # One-shot prints a single final response and exits: there is no later turn
     # for a detached subagent's completion to re-enter, and nothing here drains
@@ -455,8 +454,6 @@ def _run_agent(
             #                the tool's built-in "not available" error
             #   - sudo password prompt → terminal_tool gates on
             #                SON_OF_ANTON_INTERACTIVE which we never set
-            #   - shell-hook approval → auto-approved via SON_OF_ANTON_ACCEPT_HOOKS=1
-            #                (set above); also falls back to deny on non-tty
             #   - dangerous-command approval → bypassed via SON_OF_ANTON_YOLO_MODE=1
             clarify_callback=_oneshot_clarify_callback,
         )

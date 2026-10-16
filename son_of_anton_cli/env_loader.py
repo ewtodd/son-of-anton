@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from utils import atomic_replace, fast_toml_load
+from utils import atomic_replace
 
 
 # Env var name suffixes that indicate credential values.  These are the
@@ -61,26 +61,6 @@ def _env_file_exists(path: Path) -> bool:
 # for the same file (user env + project env + hot-reload); once per path
 # is enough.
 _WARNED_UTF32_PATHS: set[str] = set()
-
-# Map of env-var name → source label ("bitwarden", etc.) for credentials
-# that were injected by an external secret source during load_son_of_anton_dotenv().
-# Used by setup / `son-of-anton model` flows to label detected credentials so
-# users understand WHERE a key came from when their .env doesn't contain it
-# directly (otherwise the "credentials detected ✓" line looks identical to
-# the .env case and they don't know Bitwarden is wired up).
-_SECRET_SOURCES: dict[str, str] = {}
-# Applied values are immutable per-home snapshots.  ``os.environ`` is shared
-# across profiles and may be overwritten by a later home's source apply.
-_SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
-
-# SON_OF_ANTON_HOME paths we've already pulled external secrets for during this
-# process.  ``load_son_of_anton_dotenv()`` is called at module-import time from
-# several hot modules (cli.py, son_of_anton_cli/main.py, run_agent.py,
-# trajectory_compactor.py, gateway/run.py, ...), so without this guard the
-# Bitwarden status line gets printed 3-5x per startup.  Bitwarden's own
-# in-process cache prevents redundant network calls, but the print, the
-# config re-parse, and the ASCII sanitization sweep still ran every time.
-_APPLIED_HOMES: set[str] = set()
 
 
 # Behavioral routing keys a parent Son of Anton process injects into child env and
@@ -160,61 +140,6 @@ def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
     for key in _PROFILE_MANAGED_ENV_KEYS:
         if key not in defined and key in os.environ:
             del os.environ[key]
-
-
-def get_secret_source(env_var: str) -> str | None:
-    """Return the label of the secret source that supplied ``env_var``, if any.
-
-    Returns ``"bitwarden"`` for keys pulled from Bitwarden Secrets Manager
-    during the current process's ``load_son_of_anton_dotenv()`` call.  Returns
-    ``None`` for keys that came from ``.env``, the shell environment, or
-    aren't tracked.  The returned label is metadata only: credential-pool
-    persistence may store it to explain the origin of a borrowed secret, but
-    must never treat it as authorization to persist the raw value.
-    """
-    return _SECRET_SOURCES.get(env_var)
-
-
-def reset_secret_source_cache() -> None:
-    """Forget which SON_OF_ANTON_HOME paths have already had external secrets applied.
-
-    The first call to ``_apply_external_secret_sources(home_path)`` in a
-    process pulls from Bitwarden (or other configured backend), records the
-    applied keys in ``_SECRET_SOURCES``, and remembers ``home_path`` so
-    subsequent calls in the same process are no-ops.  Call this to force the
-    next call to re-pull — useful for tests, and for long-running processes
-    that want to refresh after a config change.
-    """
-    _APPLIED_HOMES.clear()
-    _SECRET_SOURCES.clear()
-    _SECRET_SOURCE_VALUES_BY_HOME.clear()
-
-
-def format_secret_source_suffix(env_var: str) -> str:
-    """Return a human-readable suffix like ``" (from Bitwarden)"`` or ``""``.
-
-    Use this when printing a detected credential so the user can see where
-    it came from.  Empty string when the credential came from ``.env`` or
-    the shell — those are the implicit / "default" cases users already
-    understand.
-    """
-    source = get_secret_source(env_var)
-    if not source:
-        return ""
-    if source == "bitwarden":
-        return " (from Bitwarden)"
-    # Ask the registry for the source's human label (e.g. "1Password").
-    # Fall back to the raw source name for labels the registry doesn't
-    # know (stale provenance from an uninstalled plugin, tests).
-    try:
-        from agent.secret_sources.registry import get_source
-
-        registered = get_source(source)
-        if registered is not None and registered.label:
-            return f" (from {registered.label})"
-    except Exception:  # noqa: BLE001 — label lookup must never raise
-        pass
-    return f" (from {source})"
 
 
 def _format_offending_chars(value: str, limit: int = 3) -> str:
@@ -457,25 +382,10 @@ def load_son_of_anton_dotenv(
         # absent from this profile's .env do not leak into the runtime.
         _clear_known_keys_missing_from_dotenv(user_env)
 
-    # Load .op.env AFTER .env so that .env values win, but the bootstrap
-    # token (OP_SERVICE_ACCOUNT_TOKEN) becomes available for
-    # apply_onepassword_secrets() even in cron / subprocess environments
-    # that inherit no shell state (no systemd EnvironmentFile, no op run).
-    # .op.env is gitignored — the service-account token never enters the
-    # committed .env file.
-    # Users on systemd can alternatively use:
-    #   EnvironmentFile=-/path/to/.son-of-anton/.op.env
-    # in their gateway unit, which takes precedence (override=False below
-    # ensures .op.env never clobbers a token already in the environment).
-    op_env = home_path / ".op.env"
-    if _env_file_exists(op_env) and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
-        _load_dotenv_with_fallback(op_env, override=False)
-
     if project_env_path and _env_file_exists(project_env_path):
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
-    _apply_external_secret_sources(home_path)
     _apply_managed_env()
 
     # config.toml is the documented source of truth for terminal.* settings,
@@ -552,181 +462,6 @@ def _apply_managed_env() -> None:
         return
     _sanitize_env_file_if_needed(managed_env)
     _load_dotenv_with_fallback(managed_env, override=True)
-
-
-def _apply_external_secret_sources(home_path: Path) -> None:
-    """Pull secrets from every enabled external source into env.
-
-    Runs AFTER dotenv loads so .env values are visible (sources use them
-    to locate bootstrap tokens) but BEFORE the rest of Son of Anton reads
-    ``os.environ`` for credentials.  Any failure here is logged and
-    swallowed — external secret sources must never block startup.
-
-    The heavy lifting (source ordering, mapped-beats-bulk precedence,
-    first-claim-wins conflict handling, override semantics, provenance)
-    lives in ``agent.secret_sources.registry.apply_all``; this wrapper
-    owns the once-per-SON_OF_ANTON_HOME guard, the post-apply ASCII
-    sanitization sweep, the ``_SECRET_SOURCES`` provenance map that
-    UI surfaces read, and the startup status lines.
-
-    Idempotent within a process: subsequent calls for the same
-    ``home_path`` are no-ops.  ``load_son_of_anton_dotenv()`` runs at import
-    time from several hot modules (cli.py, son_of_anton_cli/main.py,
-    run_agent.py, trajectory_compactor.py, ...), so without this guard
-    the status lines would print 3-5x per CLI startup.  Use
-    ``reset_secret_source_cache()`` if you need to force a re-pull
-    (tests, long-running processes after a config change).
-    """
-    home_key = str(Path(home_path).resolve())
-    if home_key in _APPLIED_HOMES:
-        return
-
-    try:
-        cfg = _load_secrets_config(home_path)
-    except Exception:  # noqa: BLE001 — config errors must not block startup
-        # Deliberately NOT marked applied: a malformed config.toml would
-        # otherwise permanently disable secret loading for this process
-        # even after the user fixes the file (#40597).
-        return
-    if not cfg:
-        # No secrets section (or everything disabled at parse level).  Not
-        # marked applied either — the re-parse is a cheap fast_toml_load and
-        # leaving the home unmarked lets a process pick up a config change
-        # on its next load_son_of_anton_dotenv() call instead of never.
-        return
-
-    # Defer the registry import until we know a secrets source is enabled —
-    # agent.secret_sources.bitwarden eagerly loads cryptography._rust.pyd,
-    # which causes the Windows updater to self-lock before its preflight
-    # (the updater itself maps the .pyd before the dependency sync runs).
-    # A config with no enabled sources costs one dict scan; a config with
-    # enabled sources pays the crypto load exactly once, on demand.
-    # NOTE: only keys that smell like a real secret source trigger the import —
-    # a generic dict entry must not force crypto load on every son-of-anton launch.
-    # We whitelist by *shape* (source dict with enabled flag) rather than
-    # hardcoding names, so plugin/test sources pass through unknown keys.
-    any_enabled = any(
-        isinstance(v, dict) and v.get("enabled") is True
-        for v in cfg.values()
-    )
-    if not any_enabled:
-        return
-
-    try:
-        from agent.secret_sources.registry import apply_all
-    except ImportError:
-        return
-
-    try:
-        report = apply_all(cfg, home_path)
-    except Exception:  # noqa: BLE001 — belt-and-braces; apply_all shouldn't raise
-        return
-
-    if not report.sources:
-        # Config parsed but no source is enabled: keep retrying cheaply
-        # (no fetch happens for disabled sources) so flipping a source on
-        # mid-process takes effect on the next call.
-        return
-
-    # A real fetch attempt happened (success OR error).  Mark the home now
-    # so the 3-5 import-time load_son_of_anton_dotenv() calls per startup don't
-    # re-fetch / re-print — error retries within one process are opt-in via
-    # reset_secret_source_cache().  Marking AFTER the attempt (not before,
-    # see #40597) is what lets the earlier failure paths stay retryable.
-    _APPLIED_HOMES.add(home_key)
-
-    if report.applied_any:
-        # Re-run the ASCII sanitization pass: vault values are
-        # user-supplied and might have the same copy-paste corruption as
-        # a manually edited .env (see #6843).
-        _sanitize_loaded_credentials()
-        # Remember where each var came from so setup / `son-of-anton model`
-        # flows can label detected credentials with "(from Bitwarden)" /
-        # "(from 1Password)" — otherwise users see "credentials ✓" with
-        # no hint the value came from a vault rather than .env.
-        values: dict[str, str] = {}
-        for name, applied in report.provenance.items():
-            _SECRET_SOURCES[name] = applied.source
-            if name in os.environ:
-                values[name] = os.environ[name]
-        _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
-
-    for src in report.sources:
-        if src.applied:
-            print(
-                f"  {src.label}: applied {len(src.applied)} "
-                f"secret{'s' if len(src.applied) != 1 else ''}",
-                file=sys.stderr,
-            )
-        if src.result.error:
-            print(f"  {src.label}: {src.result.error}", file=sys.stderr)
-            hint = _remediation_hint(
-                src.name, src.result.error_kind, cfg, scope=home_key
-            )
-            if hint:
-                print(f"  {src.label}: → {hint}", file=sys.stderr)
-        for warn in src.result.warnings:
-            print(f"  {src.label}: {warn}", file=sys.stderr)
-    for conflict in report.conflicts:
-        print(f"  Secret sources: {conflict}", file=sys.stderr)
-
-
-def _remediation_hint(
-    source_name: str,
-    error_kind,
-    secrets_cfg: dict,
-    *,
-    scope: str | None = None,
-) -> str:
-    """Ask the failed source for its one-line fix-it hint.
-
-    Defensive wrapper: remediation() is a pure mapping and shouldn't
-    raise, but a plugin source could — and startup must never break on
-    a status line.
-    """
-    try:
-        from agent.secret_sources.registry import get_source
-
-        source = get_source(source_name, scope=scope)
-        if source is None:
-            return ""
-        src_cfg = secrets_cfg.get(source_name)
-        src_cfg = src_cfg if isinstance(src_cfg, dict) else {}
-        return str(source.remediation(error_kind, src_cfg) or "").strip()
-    except Exception:  # noqa: BLE001 — hints must never block startup
-        return ""
-
-
-def _load_secrets_config(home_path: Path) -> dict:
-    """Read just the ``secrets:`` section out of config.toml.
-
-    Imported lazily and isolated from the main config loader so a
-    malformed config can't take down dotenv loading entirely.
-    """
-    config_path = home_path / "config.toml"
-    if not config_path.exists():
-        return {}
-    # Prefer the shared (mtime, size)-keyed raw-config cache — this is the
-    # first config.toml read in a normal `son-of-anton` startup, so populating the
-    # shared cache here lets main.py's early bridge and son_of_anton_logging reuse
-    # the same parse (one parse per process instead of 3-4). Falls back to a
-    # direct isolated parse if the shared reader is unavailable, preserving
-    # the "malformed config can't take down dotenv loading" property (the
-    # shared reader also swallows parse errors and returns {}).
-    if home_path == _process_son_of_anton_home():
-        try:
-            from son_of_anton_cli.config import read_raw_config
-
-            data = read_raw_config() or {}
-            return data.get("secrets") or {}
-        except Exception:
-            pass
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            data = fast_toml_load(f) or {}
-    except Exception:  # noqa: BLE001
-        return {}
-    return data.get("secrets") or {}
 
 
 def _process_son_of_anton_home() -> Path:

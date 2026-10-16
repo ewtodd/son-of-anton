@@ -159,7 +159,7 @@ son-of-anton/
 ├── agent/                # Agent internals (providers, memory, caching, compaction, ...)
 ├── son_of_anton_cli/           # CLI subcommands, setup wizard, plugins loader, skin engine
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
-│   └── environments/     # Terminal backends (local, ssh)
+│   └── environments/     # Terminal environment (local)
 ├── gateway/              # Messaging gateway — run.py + session.py + platforms/
 │   └── platforms/        # signal (built-in); discord + slack live in plugins/platforms/
 ├── plugins/              # Plugin system (see "Plugins" below)
@@ -217,7 +217,7 @@ class AIAgent:
         skip_context_files: bool = False,
         skip_memory: bool = False,
         # ... plus callbacks, thread/user/chat IDs, budgets, fallback_model,
-        # checkpoints config, prefill_messages, etc.
+        # prefill_messages, etc.
     ): ...
 
     def chat(self, message: str) -> str:
@@ -643,9 +643,10 @@ Enable/disable per platform via `son-of-anton tools` (the curses UI) or the
 
 `tools/delegate_tool.py` spawns a subagent with an isolated context + terminal session.
 Single (`goal`) or batch (`tasks: [...]`, concurrency capped by
-`delegation.max_concurrent_children`). Roles: `leaf` (focused worker, cannot delegate) and
-`orchestrator` (can spawn workers; gated by `delegation.orchestrator_enabled`, bounded by
-`delegation.max_spawn_depth`).
+`delegation.max_concurrent_children`). Every child is a leaf: it inherits the parent's
+provider and credentials (only `delegation.model` can pin its model) and cannot delegate
+further. The schema still lists `role: orchestrator`, byte-stable for the prompt cache, but
+it is forced to `leaf`.
 
 Durability rule: background `delegate_task` is detached from the current turn but still
 process-local. For work that must survive process restart, use `cronjob` or

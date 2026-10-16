@@ -18,8 +18,6 @@ from __future__ import annotations
 import argparse
 from typing import Callable
 
-from son_of_anton_cli.subcommands._shared import add_accept_hooks_flag
-
 
 def _add_compat_platform_flag(parser: argparse.ArgumentParser) -> None:
     """Accept stale `gateway <verb> --platform X` docs without advertising it.
@@ -101,8 +99,6 @@ def build_gateway_parser(
             "launchd/systemd wrapper strips its native environment markers."
         ),
     )
-    add_accept_hooks_flag(gateway_run)
-    add_accept_hooks_flag(gateway_parser)
 
     # gateway status
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")

@@ -2107,17 +2107,11 @@ def _bridge_gateway_config_to_env() -> None:
                 ).strip().lower()
                 _terminal_env_map = {
                     "backend": "TERMINAL_ENV",
-                    "degraded_mode": "TERMINAL_DEGRADED_MODE",
                     "cwd": "TERMINAL_CWD",
                     "timeout": "TERMINAL_TIMEOUT",
                     "home_mode": "TERMINAL_HOME_MODE",
                     "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-                    "ssh_host": "TERMINAL_SSH_HOST",
-                    "ssh_user": "TERMINAL_SSH_USER",
-                    "ssh_port": "TERMINAL_SSH_PORT",
-                    "ssh_key": "TERMINAL_SSH_KEY",
                     "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-                    "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
                 }
                 for _cfg_key, _env_var in _terminal_env_map.items():
                     if _cfg_key in _terminal_cfg:
@@ -3317,35 +3311,6 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
     except Exception:
         pass
     return raw
-
-
-def _checkpoint_agent_kwargs(config: dict | None) -> dict:
-    """Translate gateway checkpoint config into ``AIAgent`` constructor args.
-
-    The gateway reads raw TOML instead of ``load_config()``, so checkpoint
-    defaults must be supplied here.  Keep legacy ``checkpoints: true`` configs
-    working while giving every gateway-created agent the same limits.
-    """
-    cp_cfg = config.get("checkpoints", {}) if isinstance(config, dict) else {}
-    if isinstance(cp_cfg, bool):
-        cp_cfg = {"enabled": cp_cfg}
-    elif not isinstance(cp_cfg, dict):
-        cp_cfg = {}
-
-    from son_of_anton_cli.config import DEFAULT_CONFIG
-    defaults = DEFAULT_CONFIG["checkpoints"]
-    return {
-        "checkpoints_enabled": cp_cfg.get("enabled", defaults["enabled"]),
-        "checkpoint_max_snapshots": cp_cfg.get(
-            "max_snapshots", defaults["max_snapshots"],
-        ),
-        "checkpoint_max_total_size_mb": cp_cfg.get(
-            "max_total_size_mb", defaults["max_total_size_mb"],
-        ),
-        "checkpoint_max_file_size_mb": cp_cfg.get(
-            "max_file_size_mb", defaults["max_file_size_mb"],
-        ),
-    }
 
 
 def _load_gateway_runtime_config() -> dict:
@@ -5318,7 +5283,6 @@ class TurnRunner:
             agent = ctx.AIAgent(
                 model=turn_route["model"],
                 **turn_route["runtime"],
-                **_checkpoint_agent_kwargs(ctx.user_config),
                 max_iterations=max_iterations,
                 quiet_mode=True,
                 verbose_logging=False,
@@ -6585,29 +6549,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     )
             except Exception as exc:
                 logger.debug("state.db auto-maintenance skipped: %s", exc)
-
-        # Opportunistic shadow-repo cleanup — deletes stale checkpoint repos
-        # under ~/.son-of-anton/checkpoints/.  Opt-in via checkpoints.auto_prune,
-        # idempotent via .last_prune marker.
-        try:
-            from son_of_anton_cli.config import load_config as _load_full_config
-            _ckpt_cfg = (_load_full_config().get("checkpoints") or {})
-            if _ckpt_cfg.get("auto_prune", False):
-                from tools.checkpoint_manager import maybe_auto_prune_checkpoints
-                # delete_orphans is intentionally never honoured here: a
-                # missing workdir at startup is ambiguous (deleted project
-                # vs. an unmounted external volume / network share / VPN
-                # not yet up) and this sweep runs unattended. Orphan cleanup
-                # is only ever done via the explicit `son-of-anton checkpoints
-                # prune` command, which the user has to invoke.
-                maybe_auto_prune_checkpoints(
-                    retention_days=int(_ckpt_cfg.get("retention_days", 7)),
-                    min_interval_hours=int(_ckpt_cfg.get("min_interval_hours", 24)),
-                    delete_orphans=False,
-                    max_total_size_mb=int(_ckpt_cfg.get("max_total_size_mb", 500)),
-                )
-        except Exception as exc:
-            logger.debug("checkpoint auto-maintenance skipped: %s", exc)
 
         # DM pairing store for code-based user authorization. One store per
         # gateway process, shared by the runner and the
@@ -10752,14 +10693,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             )
         except Exception:
             pass
-        try:
-            from son_of_anton_cli.config import load_config
-            from agent.monitoring.gateway_health_export import start_gateway_health_export
-            self._gateway_health_export_runtime = start_gateway_health_export(load_config())
-            if getattr(self._gateway_health_export_runtime, "enabled", False):
-                logger.info("Gateway health OTLP export: enabled")
-        except Exception:
-            logger.debug("gateway health OTLP export startup failed", exc_info=True)
 
         # Log any active supply-chain security advisories. Operators see this
         # in gateway.log and `son-of-anton status` surfaces it; we do NOT block
@@ -10898,31 +10831,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception:
             logger.warning(
                 "relay adapter registration failed at gateway startup", exc_info=True,
-            )
-
-        # Register declarative shell hooks from cli-config.toml.  Gateway
-        # has no TTY, so consent has to come from one of the three opt-in
-        # channels (--accept-hooks on launch, SON_OF_ANTON_ACCEPT_HOOKS env var,
-        # or hooks_auto_accept: true in config.toml).  We pass
-        # accept_hooks=False here and let register_from_config resolve
-        # the effective value from env + config itself — the CLI-side
-        # registration already honored --accept-hooks, and re-reading
-        # hooks_auto_accept here would just duplicate that lookup.
-        # Failures are logged but must never block gateway startup.
-        try:
-            from son_of_anton_cli.config import load_config
-            from agent.shell_hooks import register_from_config
-            _hooks_cfg = load_config()
-            register_from_config(_hooks_cfg, accept_hooks=False)
-
-            from agent.outbound_webhooks import (
-                register_from_config as register_outbound_webhooks,
-            )
-            register_outbound_webhooks(_hooks_cfg)
-        except Exception:
-            logger.debug(
-                "shell-hook registration failed at gateway startup",
-                exc_info=True,
             )
 
         # Discover and load event hooks
@@ -13018,7 +12926,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 self._update_runtime_status("running", self._exit_reason)
             else:
                 self._update_runtime_status("stopped", self._exit_reason)
-            _shutdown_gateway_health_export(self)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
         self._stop_task = asyncio.create_task(_stop_impl())
@@ -14822,9 +14729,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return await self._handle_sessions_command(event)
 
 
-        if canonical == "rollback":
-            return await self._handle_rollback_command(event)
-
         if canonical == "diff":
             return await self._handle_diff_command(event)
 
@@ -15226,13 +15130,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 )
 
         if audio_file_paths:
-            from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
             for _apath in audio_file_paths:
                 _basename = os.path.basename(_apath)
                 _parts = _basename.split("_", 2)
                 _display = _parts[2] if len(_parts) >= 3 else _basename
                 _display = re.sub(r'[^\w.\- ]', '_', _display)
-                _agent_path = _to_agent_path(_apath)
+                _agent_path = _apath
                 _note = (
                     f"[The user sent an audio file attachment: '{_display}'. "
                     f"It is saved at: {_agent_path}. "
@@ -15245,13 +15148,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 message_text = f"{_note}\n\n{message_text}"
 
         if video_paths:
-            from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
             for _vpath in video_paths:
                 _basename = os.path.basename(_vpath)
                 _parts = _basename.split("_", 2)
                 _display = _parts[2] if len(_parts) >= 3 else _basename
                 _display = re.sub(r'[^\w.\- ]', '_', _display)
-                _agent_path = _to_agent_path(_vpath)
+                _agent_path = _vpath
                 _note = (
                     f"[The user sent a video attachment: '{_display}'. "
                     f"It is saved at: {_agent_path}. "
@@ -15265,7 +15167,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         if event.media_urls:
             import mimetypes as _mimetypes
-            from tools.credential_files import to_agent_visible_cache_path
 
             _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
             for i, path in enumerate(event.media_urls):
@@ -15305,7 +15206,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 # Translate host cache path to the sandbox-visible path for
                 # remote (ssh) backends, so the agent receives a path it can
                 # open inside its sandbox. Local backends return it unchanged.
-                agent_path = to_agent_visible_cache_path(path)
+                agent_path = path
 
                 context_note = _build_document_context_note(display_name, agent_path, mtype)
                 message_text = f"{context_note}\n\n{message_text}"
@@ -18568,7 +18469,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
-                    **_checkpoint_agent_kwargs(user_config),
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -21440,10 +21340,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         ("compaction", "min_tail_user_messages"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
-        ("checkpoints", "enabled"),
-        ("checkpoints", "max_snapshots"),
-        ("checkpoints", "max_total_size_mb"),
-        ("checkpoints", "max_file_size_mb"),
     )
 
     _HONCHO_CACHE_BUSTING_KEYS = (
@@ -21567,11 +21463,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         cfg = user_config if isinstance(user_config, dict) else {}
         for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
             section_val = cfg.get(section)
-            if section == "checkpoints" and isinstance(section_val, bool):
-                # Preserve legacy ``checkpoints: true`` behavior.  A live
-                # toggle must still rebuild the cached agent.
-                out[f"{section}.{key}"] = section_val if key == "enabled" else None
-            elif isinstance(section_val, dict):
+            if isinstance(section_val, dict):
                 out[f"{section}.{key}"] = section_val.get(key)
             else:
                 out[f"{section}.{key}"] = None
@@ -24980,18 +24872,6 @@ async def _await_thread_exit(
     return not thread.is_alive()
 
 
-def _shutdown_gateway_health_export(runner: Any) -> None:
-    """Idempotently drain and detach Gateway Health OTLP export."""
-    runtime = getattr(runner, "_gateway_health_export_runtime", None)
-    if runtime is None:
-        return
-    runner._gateway_health_export_runtime = None
-    try:
-        runtime.shutdown()
-    except Exception:
-        logger.debug("gateway health OTLP export shutdown failed", exc_info=True)
-
-
 def _gateway_stderr_formatter() -> logging.Formatter:
     """Return the redacting formatter used by the gateway stderr stream."""
     from agent.redact import RedactingFormatter
@@ -25445,13 +25325,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         logger.debug("MCP tool discovery failed: %s", e)
 
     # Start the gateway
-    try:
-        success = await runner.start()
-    except BaseException:
-        _shutdown_gateway_health_export(runner)
-        raise
+    success = await runner.start()
     if not success:
-        _shutdown_gateway_health_export(runner)
         return False
     # Recover any pending messages flushed during a previous shutdown (#72680).
     try:
@@ -25464,7 +25339,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception:
         pass
     if runner.should_exit_cleanly:
-        _shutdown_gateway_health_export(runner)
         if runner.exit_reason:
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
         # A clean exit that carries an explicit exit code (e.g. a fatal
@@ -25480,22 +25354,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if not runner._running:
         # Startup was intentionally aborted by restart/shutdown before entering
         # running mode; preserve that lifecycle path without starting cron.
+        await runner.wait_for_shutdown()
+        if runner.should_exit_with_failure:
+            if runner.exit_reason:
+                logger.error("Gateway exiting with failure: %s", runner.exit_reason)
+            return False
         try:
-            await runner.wait_for_shutdown()
-            if runner.should_exit_with_failure:
-                if runner.exit_reason:
-                    logger.error("Gateway exiting with failure: %s", runner.exit_reason)
-                return False
-            try:
-                from tools.mcp_tool import shutdown_mcp_servers
-                shutdown_mcp_servers()
-            except Exception:
-                pass
-            if runner.exit_code is not None:
-                raise SystemExit(runner.exit_code)
-            return True
-        finally:
-            _shutdown_gateway_health_export(runner)
+            from tools.mcp_tool import shutdown_mcp_servers
+            shutdown_mcp_servers()
+        except Exception:
+            pass
+        if runner.exit_code is not None:
+            raise SystemExit(runner.exit_code)
+        return True
 
     # Start the in-process cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE

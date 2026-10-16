@@ -676,32 +676,6 @@ class LSPService:
             return_exceptions=True,
         )
 
-    # ------------------------------------------------------------------
-    # status / introspection (used by ``son-of-anton lsp status``)
-    # ------------------------------------------------------------------
-
-    def get_status(self) -> Dict[str, Any]:
-        """Return a snapshot of the service for the CLI status command."""
-        with self._state_lock:
-            clients = [
-                {
-                    "server_id": k[0],
-                    "workspace_root": k[1],
-                    "state": c.state,
-                    "running": c.is_running,
-                }
-                for k, c in self._clients.items()
-            ]
-            broken = list(self._broken)
-        return {
-            "enabled": self._enabled,
-            "wait_mode": self._wait_mode,
-            "wait_timeout": self._wait_timeout,
-            "clients": clients,
-            "broken": broken,
-            "disabled_servers": sorted(self._disabled_servers),
-        }
-
 
 def _diag_key(d: Dict[str, Any]) -> str:
     """Content equality key used for cross-edit delta filtering.

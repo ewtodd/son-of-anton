@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import sys
 import threading
@@ -40,6 +39,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+
+import son_of_anton_constants
 
 logger = logging.getLogger("son_of_anton.mcp_serve")
 
@@ -65,11 +66,7 @@ except ImportError:
 
 def _get_sessions_dir() -> Path:
     """Return the sessions directory using SON_OF_ANTON_HOME."""
-    try:
-        from son_of_anton_constants import get_son_of_anton_home
-        return get_son_of_anton_home() / "sessions"
-    except ImportError:
-        return Path(os.environ.get("SON_OF_ANTON_HOME", Path.home() / ".son-of-anton")) / "sessions"
+    return son_of_anton_constants.get_son_of_anton_home() / "sessions"
 
 
 def _get_session_db():
@@ -213,13 +210,7 @@ def _load_sessions_index_from_json() -> dict:
 
 def _load_channel_directory() -> dict:
     """Load the cached channel directory for available targets."""
-    try:
-        from son_of_anton_constants import get_son_of_anton_home
-        directory_file = get_son_of_anton_home() / "channel_directory.json"
-    except ImportError:
-        directory_file = Path(
-            os.environ.get("SON_OF_ANTON_HOME", Path.home() / ".son-of-anton")
-        ) / "channel_directory.json"
+    directory_file = son_of_anton_constants.get_son_of_anton_home() / "channel_directory.json"
 
     if not directory_file.exists():
         return {}
@@ -488,11 +479,7 @@ class EventBridge:
         last_seen=0.0 in _poll_once, so a brand-new conversation's first
         message is still delivered on its state.db-change tick.
         """
-        try:
-            from son_of_anton_constants import get_son_of_anton_home
-            db_file = get_son_of_anton_home() / "state.db"
-        except ImportError:
-            db_file = Path(os.environ.get("SON_OF_ANTON_HOME", Path.home() / ".son-of-anton")) / "state.db"
+        db_file = son_of_anton_constants.get_son_of_anton_home() / "state.db"
         try:
             self._state_db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0
         except OSError:
@@ -545,11 +532,7 @@ class EventBridge:
         eliminating the old dual-file (sessions.json + state.db) race that
         could drop brand-new conversations (#8925).
         """
-        try:
-            from son_of_anton_constants import get_son_of_anton_home
-            db_file = get_son_of_anton_home() / "state.db"
-        except ImportError:
-            db_file = Path(os.environ.get("SON_OF_ANTON_HOME", Path.home() / ".son-of-anton")) / "state.db"
+        db_file = son_of_anton_constants.get_son_of_anton_home() / "state.db"
 
         try:
             db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0

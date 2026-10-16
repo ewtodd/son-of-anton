@@ -148,8 +148,6 @@ def _classify_write_denial(path: str) -> Optional[str]:
         if resolved.startswith(prefix):
             return "credential"
 
-    mcp_tokens_dir_name = "mcp-tokens"
-
     son_of_anton_dirs = []
     for base in (_son_of_anton_home_path(), _son_of_anton_root_path()):
         try:
@@ -169,12 +167,6 @@ def _classify_write_denial(path: str) -> Optional[str]:
             sessions_real = os.path.realpath(os.path.join(base_real, "sessions"))
             if resolved == sessions_real or resolved.startswith(sessions_real + os.sep):
                 return True
-        except Exception:
-            pass
-        try:
-            mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))
-            if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):
-                return "credential"
         except Exception:
             pass
         try:
@@ -246,8 +238,8 @@ def get_read_block_error(path: str) -> Optional[str]:
 
       * Credential / secret stores under SON_OF_ANTON_HOME and the global Son of Anton
         root: ``auth.json``, ``auth.lock``, ``.anthropic_oauth.json``,
-        ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``,
-        and anything under ``mcp-tokens/``. These hold plaintext provider keys,
+        ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``.
+        These hold plaintext provider keys,
         OAuth tokens, and HMAC secrets that the agent never needs to read
         directly — provider tools / gateway adapters consume them through
         internal channels.
@@ -325,29 +317,6 @@ def get_read_block_error(path: str) -> Optional[str]:
                     "(Defense-in-depth — not a security boundary; the "
                     "terminal tool can still bypass.)"
                 )
-
-    # mcp-tokens/: directory prefix match — anything inside is OAuth
-    # token material.
-    for hd in son_of_anton_dirs:
-        try:
-            mcp_tokens = (hd / "mcp-tokens").resolve()
-        except Exception:
-            continue
-        if resolved == mcp_tokens:
-            return (
-                f"Access denied: {path} is the Son of Anton MCP token directory "
-                "and cannot be read directly. (Defense-in-depth — not a "
-                "security boundary; the terminal tool can still bypass.)"
-            )
-        try:
-            resolved.relative_to(mcp_tokens)
-        except ValueError:
-            continue
-        return (
-            f"Access denied: {path} is a Son of Anton MCP token file "
-            "and cannot be read directly. (Defense-in-depth — not a "
-            "security boundary; the terminal tool can still bypass.)"
-        )
 
     # Block common secret-bearing project-local .env files anywhere on disk.
     # The agent helping a user with their project rarely needs to read raw

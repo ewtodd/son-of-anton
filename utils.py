@@ -46,22 +46,6 @@ def strip_decorative_glyphs(text: str) -> str:
         return text
 
 
-def is_local_terminal_backend(terminal_cfg: Any) -> bool:
-    """True when a ``terminal:`` config block names the local backend.
-
-    Unset / empty / ``"local"`` all mean local (the default) — the working
-    directory contract for local terminals is the process's own directory,
-    so ``terminal.cwd`` must not redirect it. Accepts both the documented
-    ``backend`` key and the legacy ``env_type`` alias.
-    """
-    if not isinstance(terminal_cfg, dict):
-        return True
-    backend = str(
-        terminal_cfg.get("backend") or terminal_cfg.get("env_type") or ""
-    ).strip().lower()
-    return not backend or backend == "local"
-
-
 def is_truthy_value(value: Any, default: bool = False) -> bool:
     """Coerce bool-ish values using the project's shared truthy string set."""
     if value is None:

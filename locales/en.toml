@@ -253,16 +253,7 @@ relay_failed = "Could not attach terminal session **{name}**: {error}"
 [gateway.retry]
 no_previous = "No previous message to retry."
 
-[gateway.rollback]
-not_enabled = "Checkpoints are not enabled.\nEnable in config.toml:\n```toml\n[checkpoints]\nenabled = true\n```"
-none_found = "No checkpoints found for {cwd}"
-invalid_number = "Invalid checkpoint number. Use 1-{max}."
-restored = "Restored to checkpoint {hash}: {reason}\nA pre-rollback snapshot was saved automatically."
-kept_user_edits = "Kept your hand-edits: {files}\nUse /rollback <N> --all to restore those too."
-restore_failed = "{error}"
-
 [gateway.diff]
-not_enabled = "Checkpoints are not enabled, so there's no session baseline.\nEnable in config.toml:\n```toml\n[checkpoints]\nenabled = true\n```\nPlain /diff still works — it uses git directly."
 no_changes = "No changes."
 failed = "{error}"
 

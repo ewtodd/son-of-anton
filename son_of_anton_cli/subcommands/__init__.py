@@ -9,8 +9,7 @@ argument definitions.
 
 Handlers (the ``cmd_*`` functions) still live in ``main.py`` for now and are
 dependency-injected into the builders so these modules never import ``main``
-(which would create a cycle). Shared parser helpers live in
-``_shared.py``.
+(which would create a cycle).
 
 Part of the god-file decomposition plan (Phase 2).
 """

@@ -2598,80 +2598,12 @@ class GatewaySlashCommandsMixin:
 
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
-    async def _handle_rollback_command(self, event: MessageEvent) -> str:
-        """Handle /rollback command — list or restore filesystem checkpoints."""
-        from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
-        from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
-
-        cp_kwargs = _checkpoint_agent_kwargs(_load_gateway_config())
-
-        if not cp_kwargs["checkpoints_enabled"]:
-            return t("gateway.rollback.not_enabled")
-
-        mgr = CheckpointManager(
-            enabled=True,
-            max_snapshots=cp_kwargs["checkpoint_max_snapshots"],
-            max_total_size_mb=cp_kwargs["checkpoint_max_total_size_mb"],
-            max_file_size_mb=cp_kwargs["checkpoint_max_file_size_mb"],
-        )
-
-        cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
-        arg = event.get_command_args().strip()
-
-        # --all / --force: classic full restore, overwriting user edits too.
-        restore_all = False
-        arg_parts = []
-        for tok in arg.split():
-            if tok.lower() in ("--all", "--force"):
-                restore_all = True
-            else:
-                arg_parts.append(tok)
-        arg = " ".join(arg_parts)
-
-        if not arg:
-            checkpoints = mgr.list_checkpoints(cwd)
-            return format_checkpoint_list(checkpoints, cwd)
-
-        # Restore by number or hash
-        checkpoints = mgr.list_checkpoints(cwd)
-        if not checkpoints:
-            return t("gateway.rollback.none_found", cwd=cwd)
-
-        target_hash = None
-        try:
-            idx = int(arg) - 1
-            if 0 <= idx < len(checkpoints):
-                target_hash = checkpoints[idx]["hash"]
-            else:
-                return t("gateway.rollback.invalid_number", max=len(checkpoints))
-        except ValueError:
-            target_hash = arg
-
-        result = mgr.restore(cwd, target_hash, safe=not restore_all)
-        if result["success"]:
-            msg = t(
-                "gateway.rollback.restored",
-                hash=result["restored_to"],
-                reason=result["reason"],
-            )
-            skipped = result.get("skipped_user_edits") or []
-            if skipped:
-                shown = ", ".join(skipped[:5])
-                more = f" (+{len(skipped) - 5})" if len(skipped) > 5 else ""
-                msg += "\n" + t(
-                    "gateway.rollback.kept_user_edits",
-                    files=shown + more,
-                )
-            return msg
-        return t("gateway.rollback.restore_failed", error=result["error"])
-
     async def _handle_diff_command(self, event: MessageEvent) -> str:
         """Handle /diff — show git changes in the working directory.
 
         ``/diff`` (default) shows unstaged + untracked changes, ``/diff
-        staged`` the staged ones, ``/diff all`` everything since HEAD, and
-        ``/diff session`` the cumulative checkpoint-baseline diff of what
-        Son of Anton itself changed. ``--stat`` limits output to the summary.
+        staged`` the staged ones, ``/diff all`` everything since HEAD.
+        ``--stat`` limits output to the summary.
 
         The diff body is truncated hard here (messaging surfaces are not a
         pager); platform senders additionally split/clamp long messages to
@@ -2690,13 +2622,8 @@ class GatewaySlashCommandsMixin:
                 mode = "staged"
             elif low in ("all", "--all", "head"):
                 mode = "all"
-            elif low == "session":
-                mode = "session"
 
         cwd = os.getenv("TERMINAL_CWD", str(Path.home()))
-
-        if mode == "session":
-            return await self._gateway_session_diff(cwd, stat_only)
 
         from tools.working_diff import collect_working_diff
 
@@ -2718,39 +2645,6 @@ class GatewaySlashCommandsMixin:
             shown = "\n".join(f"+ {rel}" for rel in untracked[:15])
             more = f"\n... and {len(untracked) - 15} more" if len(untracked) > 15 else ""
             out.append(f"**Untracked:**\n```\n{shown}{more}\n```")
-        if not stat_only and diff:
-            out.append(self._fenced_truncated_diff(diff))
-        return "\n\n".join(out)
-
-    async def _gateway_session_diff(self, cwd: str, stat_only: bool) -> str:
-        """Cumulative checkpoint-baseline diff for /diff session (gateway)."""
-        from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
-        from tools.checkpoint_manager import CheckpointManager
-
-        cp_kwargs = _checkpoint_agent_kwargs(_load_gateway_config())
-        if not cp_kwargs["checkpoints_enabled"]:
-            return t("gateway.diff.not_enabled")
-
-        mgr = CheckpointManager(
-            enabled=True,
-            max_snapshots=cp_kwargs["checkpoint_max_snapshots"],
-            max_total_size_mb=cp_kwargs["checkpoint_max_total_size_mb"],
-            max_file_size_mb=cp_kwargs["checkpoint_max_file_size_mb"],
-        )
-
-        result = await asyncio.to_thread(mgr.session_diff, cwd)
-        if not result.get("success"):
-            return t("gateway.diff.failed",
-                     error=result.get("error", "Could not generate diff"))
-
-        stat = result.get("stat", "")
-        diff = result.get("diff", "")
-        if result.get("empty") or (not stat and not diff):
-            return t("gateway.diff.no_changes")
-
-        out: list[str] = []
-        if stat:
-            out.append(f"```\n{stat}\n```")
         if not stat_only and diff:
             out.append(self._fenced_truncated_diff(diff))
         return "\n\n".join(out)

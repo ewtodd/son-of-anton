@@ -481,7 +481,7 @@ def _ensure_reference_path_allowed(path: Path) -> None:
     # the single source of truth used by the file/terminal read path. The narrow
     # list above predates that guard and never caught the real credential stores:
     # provider keys (auth.json), Anthropic OAuth tokens (.anthropic_oauth.json),
-    # MCP OAuth material (mcp-tokens/), webhook HMAC secrets, and project-local
+    # webhook HMAC secrets, and project-local
     # .env files. That gap matters because the gateway feeds UNTRUSTED remote
     # message text into reference expansion, so `@file:~/.son-of-anton/auth.json` from a
     # chat peer would otherwise read the operator's keys straight into context.
@@ -499,7 +499,7 @@ def _ensure_reference_path_allowed(path: Path) -> None:
     except Exception:
         # Fail CLOSED on the security path. This guard exists specifically to
         # cover credential stores the narrow list above misses (auth.json,
-        # .anthropic_oauth.json, mcp-tokens/, ...). If the canonical lookup
+        # .anthropic_oauth.json, ...). If the canonical lookup
         # ever fails, silently falling through would re-open that exact hole —
         # the gateway feeds untrusted remote text here, so a probe could then
         # attach the operator's keys. Refuse instead: a spurious block on a
@@ -628,30 +628,6 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
     return files[:limit]
 
 
-def _agent_visible_path(path: Path) -> str:
-    """Map a host path to the path the agent's tools can read in the active backend.
-
-    Under a container backend (docker) the gateway host path dangles inside the
-    sandbox — the container has its own filesystem and the host path is not
-    mounted. Files staged into an auto-mounted cache dir (``images/``,
-    ``attachments/``, ...) are translated to their in-container path via the
-    existing ``tools.credential_files`` machinery (#76577). Falls back to the
-    host path when the backend is local or translation is unavailable.
-    """
-    try:
-        # Desktop/in-process gateways may not have bridged ``terminal.*``
-        # config into ``TERMINAL_ENV`` at startup; run the idempotent bridge so
-        # the credential_files translation gate sees the active backend.
-        from tools.terminal_tool import _ensure_terminal_env_bridged
-
-        _ensure_terminal_env_bridged()
-        from tools.credential_files import to_agent_visible_cache_path
-
-        return to_agent_visible_cache_path(str(path))
-    except Exception:
-        return str(path)
-
-
 def _binary_reference_block(ref: ContextReference, path: Path) -> str:
     mime, _ = mimetypes.guess_type(path.name)
     mime = mime or "application/octet-stream"
@@ -661,7 +637,7 @@ def _binary_reference_block(ref: ContextReference, path: Path) -> str:
         size = "unknown size"
     return (
         f"📎 {ref.raw} ({mime}, {size}) — binary file, not inlined as text. "
-        f"It is available on disk at `{_agent_visible_path(path)}`. Use your tools to work with it "
+        f"It is available on disk at `{path}`. Use your tools to work with it "
         f"(read or convert it, extract its text, or view/render it as needed); "
         f"do not tell the user the file type is unsupported."
     )

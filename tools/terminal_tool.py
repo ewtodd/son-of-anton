@@ -2,16 +2,10 @@
 """
 Terminal Tool Module
 
-A terminal tool that executes commands in local and SSH environments.
-
-Environment Selection (via TERMINAL_ENV environment variable):
-- "local": Execute directly on the host machine (default, fastest)
-- "ssh": Execute on a remote host reached over SSH
+A terminal tool that executes commands on the host machine.
 
 Features:
-- Local and SSH execution backends
 - Background task support
-- VM/container lifecycle management
 - Automatic cleanup after inactivity
 
 Usage:
@@ -28,8 +22,6 @@ import json
 import logging
 import os
 import re
-import shlex
-import stat
 import time
 import threading
 import atexit
@@ -677,15 +669,10 @@ def _count_real_sudo_invocations(command: str) -> int:
 def _sudo_nopasswd_works() -> bool:
     """Return True when local sudo currently works without prompting.
 
-    Only probes for the `local` terminal backend; SSH must
-    not inherit the host's sudo state. Re-probes every call (no process-level
-    cache) so an expired sudo timestamp cannot make a later command silently
-    block waiting for a password.
+    Re-probes every call (no process-level cache) so an expired sudo
+    timestamp cannot make a later command silently block waiting for a
+    password.
     """
-    terminal_env = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
-    if terminal_env != "local":
-        return False
-
     try:
         probe = subprocess.run(
             ["sudo", "-n", "true"],
@@ -921,8 +908,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 
     # Local hosts with sudoers NOPASSWD should not be forced through the
     # interactive Son of Anton password prompt or the sudo -S password-pipe path.
-    # Scoped to the local terminal backend so SSH can't
-    # inherit host sudo state. Re-probes every call (no process-lifetime
+    # Re-probes every call (no process-lifetime
     # cache) so an expired sudo timestamp doesn't make a later command block
     # silently without Son of Anton prompting.
     if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
@@ -947,10 +933,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 
 
 # Environment classes now live in tools/environments/
-from tools.environments.base import EnvironmentConnectionError
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
-from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
-import sys
 
 
 # Tool description for LLM
@@ -976,14 +959,8 @@ _cleanup_thread = None
 _cleanup_running = False
 
 
-# Per-task environment overrides registry.
-# Allows environments (e.g., TerminalBench2Env) to specify a custom
-# ``env_type`` for a specific task_id BEFORE the agent loop starts. When the
-# terminal or file tools create a new sandbox for that task_id, they check
-# this registry first.
-#
-# This is never exposed to the model -- only infrastructure code calls it.
-# Thread-safe because each task_id is unique per rollout.
+# Per-task environment overrides. Nothing registers any; kept empty for the
+# execute_code environment lookup that still reads it.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 
 # ── Per-session cwd records (cwd rearchitecture, step 1) ────────────────────
@@ -1039,91 +1016,13 @@ def clear_session_cwd(session_key: str) -> None:
         _session_cwd.pop(session_key, None)
 
 
-# Subagent → parent sandbox aliasing.  delegate_task children get their own
-# task_id (file-state tracking, TUI events) but must share the PARENT
-# session's environment — one bash, one /workspace, one set of installed
-# packages.  The spawn site registers an explicit alias so the child resolves
-# to the parent's sandbox key.
-_container_aliases: Dict[str, str] = {}
-_container_alias_lock = threading.Lock()
-
-
-def register_container_alias(child_task_id: str, parent_task_id: Optional[str]) -> None:
-    """Make *child_task_id* resolve to *parent_task_id*'s sandbox.
-
-    Called by ``delegate_task`` at child spawn so subagents share the parent
-    session's sandbox. A missing/empty parent id aliases the child to
-    ``"default"`` (top-level CLI parent).
-    """
-    if not child_task_id:
-        return
-    with _container_alias_lock:
-        _container_aliases[child_task_id] = str(parent_task_id or "default")
-
-
-_ISOLATION_OVERRIDE_KEYS = frozenset({
-    "env_type",
-})
-
-
-def _has_isolation_overrides(task_id: Optional[str]) -> bool:
-    """True when *task_id* registered backend/env_type overrides.
-
-    The single owner of the "is this an RL/benchmark-style isolated rollout"
-    predicate — shared by sandbox-key resolution and sandbox creation so
-    the two can't drift.
-    """
-    if not task_id or task_id not in _task_env_overrides:
-        return False
-    return bool(set(_task_env_overrides[task_id].keys()) & _ISOLATION_OVERRIDE_KEYS)
-
-
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
+    """Map a tool-call ``task_id`` to the sandbox key used by
+    ``_active_environments``: every task (the top-level agent and every
+    ``delegate_task`` child) shares the one ``"default"`` sandbox — one shell,
+    one workspace, one set of installed packages.
     """
-    Map a tool-call ``task_id`` to the sandbox key used by
-    ``_active_environments``.
-
-    The top-level agent passes ``task_id=None`` and lands on ``"default"``.
-    ``delegate_task`` children pass their own subagent ID so that
-    file-state tracking, the active-subagents registry, and TUI events stay
-    distinct per child -- but we deliberately collapse that ID back to
-    ``"default"`` here so subagents share the parent's long-lived sandbox
-    (one shell, one workspace, one set of installed packages).
-
-    Exception: RL / benchmark environments (TerminalBench2, SonOfAntonSweEnv, ...)
-    call ``register_task_env_overrides(task_id, {...})`` to request a
-    per-task backend. When an override is registered for a task_id, we
-    honour it by returning the task_id unchanged -- those rollouts need
-    their own isolated sandbox, which is the whole point of the override.
-
-    CWD-only overrides (registered by the ACP adapter for workspace
-    tracking) are *not* isolation signals — they should not cause each
-    session to spin up its own sandbox.  Only overrides containing
-    backend-specific keys or ``env_type`` trigger isolation.
-    """
-    if task_id and _has_isolation_overrides(task_id):
-        return task_id
     return "default"
-
-
-def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
-    """Return the env overrides for *task_id*, raw key first then collapsed.
-
-    ``register_task_env_overrides`` writes under the *raw* task/session id, but
-    a CWD-only override collapses (:func:`_resolve_container_task_id`) to the
-    shared ``"default"`` sandbox so per-session surfaces (ACP/gateway/
-    dashboard) don't each spin up their own sandbox. Callers that need the
-    override (terminal command setup, file-tool cwd resolution) must therefore
-    read the raw id FIRST and only fall back to the collapsed sandbox id, or
-    the originating session's override is silently dropped. This is the single
-    source of that lookup so the terminal and file layers can't drift apart.
-    """
-    raw = task_id or "default"
-    return (
-        _task_env_overrides.get(raw)
-        or _task_env_overrides.get(_resolve_container_task_id(raw))
-        or {}
-    )
 
 
 # Configuration from environment variables
@@ -1215,26 +1114,12 @@ def _ensure_terminal_env_bridged() -> None:
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     _ensure_terminal_env_bridged()
-    env_type = os.getenv("TERMINAL_ENV", "local")
-
-    # Default cwd: local uses the host's current directory, ssh uses the
-    # remote home.  (Any unknown env_type is rejected by _create_environment.)
-    if env_type == "local":
-        default_cwd = _safe_getcwd()
-    else:
-        default_cwd = "~"
+    env_type = "local"
+    default_cwd = _safe_getcwd()
 
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
-    from son_of_anton_cli.config import _is_ssh_remote_tilde_cwd
-    if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
+    if cwd:
         cwd = os.path.expanduser(cwd)
-
-    if os.environ.get("SON_OF_ANTON_DEBUG_CWD"):
-        import logging as _dbg_logging
-        _dbg_logging.getLogger("son_of_anton_cwd_debug").info(
-            "envcfg: TERMINAL_ENV=%r TERMINAL_CWD=%r default_cwd=%r getcwd=%r -> cwd=%r",
-            env_type, os.environ.get("TERMINAL_CWD"), default_cwd, _safe_getcwd(), cwd,
-        )
 
     return {
         "env_type": env_type,
@@ -1242,80 +1127,16 @@ def _get_env_config() -> Dict[str, Any]:
         "host_cwd": None,
         "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
         "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
-        # SSH-specific config
-        "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
-        "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
-        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
-        "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
-        # Persistent shell: SSH defaults to the config-level persistent_shell
-        # setting (true by default for non-local backends); local is always opt-in.
-        # Per-backend env vars override if explicitly set.
-        "ssh_persistent": os.getenv(
-            "TERMINAL_SSH_PERSISTENT",
-            os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
-        ).lower() in {"true", "1", "yes"},
-        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
     }
 
 
-def _ssh_config_from_config(config: Dict[str, Any]) -> dict:
-    """Build the ``ssh_config`` dict passed to :func:`_create_environment`.
+def _create_environment(cwd: str, timeout: int, **_ignored):
+    """Create the local execution environment.
 
-    Shared by the terminal tool's own get-or-create path and the lazy
-    :func:`ensure_task_env` bring-up so both derive SSH connection settings
-    from the resolved config identically.
+    ``env_type``/``image``/``ssh_config``/... keywords from older call sites
+    are accepted and ignored: local is the only backend.
     """
-    return {
-        "host": config.get("ssh_host", ""),
-        "user": config.get("ssh_user", ""),
-        "port": config.get("ssh_port", 22),
-        "key": config.get("ssh_key", ""),
-        "persistent": config.get("ssh_persistent", False),
-    }
-
-
-def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
-                        ssh_config: dict = None, container_config: dict = None,
-                        local_config: dict = None,
-                        task_id: str = "default",
-                        host_cwd: Optional[str] = None):
-    """
-    Create an execution environment for sandboxed command execution.
-
-    Args:
-        env_type: One of "local" or "ssh".
-        image: Kept for call-site compatibility; ignored by local/ssh.
-        cwd: Working directory
-        timeout: Default command timeout
-        ssh_config: SSH connection config (for env_type="ssh")
-        container_config: Accepted for compatibility with legacy callers;
-            container backends were removed, so it is ignored.
-        task_id: Task identifier for environment reuse and snapshot keying
-        host_cwd: Accepted for compatibility with legacy callers; host-path
-            mounting was removed, so it is ignored.
-
-    Returns:
-        Environment instance with execute() method
-    """
-    if env_type == "local":
-        return _LocalEnvironment(cwd=cwd, timeout=timeout)
-
-    elif env_type == "ssh":
-        if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
-            raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
-        return _SSHEnvironment(
-            host=ssh_config["host"],
-            user=ssh_config["user"],
-            port=ssh_config.get("port", 22),
-            key_path=ssh_config.get("key", ""),
-            cwd=cwd,
-            timeout=timeout,
-        )
-
-    else:
-        raise ValueError(
-            f"Unknown environment type: {env_type}. Use 'local' or 'ssh'."
-        )
+    return _LocalEnvironment(cwd=cwd, timeout=timeout)
 
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
@@ -1424,83 +1245,12 @@ def get_active_env(task_id: str):
         return _active_environments.get(lookup) or _active_environments.get(task_id)
 
 
-def ensure_task_env(task_id: Optional[str] = None):
-    """Lazily create and cache the sandbox env for *task_id* if none is active.
-
-    :func:`terminal_tool` creates the environment on the first terminal command,
-    but nothing else did — so under a non-local backend (ssh, …) a
-    session whose first action is ``vision_analyze`` on a remote-only path hit
-    "no active sandbox session" because the SSH handshake never ran
-    (issue #62825). vision reads such paths inside the sandbox (see
-    ``tools.image_source``), so it calls this to bring the env up on demand,
-    reusing the same creation machinery as the terminal tool.
-
-    No-op on the local backend (images are read host-side). Returns the env
-    instance, or ``None`` when local or when creation fails (best-effort: a
-    failure leaves the caller's fail-closed error path intact).
-    """
-    config = _get_env_config()
-    env_type = config["env_type"]
-    if env_type == "local":
-        return None
-
-    effective_task_id = _resolve_container_task_id(task_id)
-
-    # Fast path: already active — mirror terminal_tool and refresh activity.
-    existing = get_active_env(effective_task_id)
-    if existing is not None:
-        with _env_lock:
-            _last_activity[effective_task_id] = time.time()
-        return existing
-
-    image = ""
-
-    _start_cleanup_thread()
-
-    # Per-task creation lock so a concurrent terminal_tool call and this helper
-    # don't each spawn a sandbox for the same task.
-    with _creation_locks_lock:
-        task_lock = _creation_locks.setdefault(effective_task_id, threading.Lock())
-
-    with task_lock:
-        existing = get_active_env(effective_task_id)
-        if existing is not None:
-            return existing
-        try:
-            new_env = _create_environment(
-                env_type=env_type,
-                image=image,
-                cwd=config["cwd"],
-                timeout=config["timeout"],
-                ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
-                container_config=None,
-                local_config=None,
-                task_id=effective_task_id,
-                host_cwd=None,
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort bring-up
-            logger.warning(
-                "Lazy %s environment init failed for task %s: %s",
-                env_type, effective_task_id[:8], exc,
-            )
-            return None
-
-        with _env_lock:
-            _active_environments[effective_task_id] = new_env
-            _last_activity[effective_task_id] = time.time()
-        logger.info(
-            "%s environment lazily initialized for task %s",
-            env_type, effective_task_id[:8],
-        )
-        return new_env
-
-
 def is_persistent_env(task_id: str) -> bool:
     """Return True if the active environment for task_id is configured for
     cross-turn persistence.
 
     Used by the agent loop to skip per-turn teardown for backends whose whole
-    point is to survive between turns (e.g. SSH with ``persistent_shell``).
+    point is to survive between turns.
     The idle reaper (``_cleanup_inactive_envs``) handles persistent envs once
     they exceed ``terminal.lifetime_seconds``.
     """
@@ -1910,7 +1660,6 @@ def _resolve_command_cwd(
     workdir: Optional[str],
     default_cwd: str,
     session_key: Optional[str] = None,
-    env_type: Optional[str] = None,
 ) -> str:
     """Return the cwd for a command. Explicit ``workdir=`` overrides everything.
 
@@ -1920,26 +1669,10 @@ def _resolve_command_cwd(
     ``cd`` lands in another record and can't affect us. A session with no
     record yet (first command) runs in ``default_cwd`` (config/override cwd),
     which is also what seeds a fresh environment.
-
-    ``env_type`` is accepted for call-site compatibility; the local/ssh
-    backends use the same host-style path semantics, so no backend-specific
-    sanitization happens here.
     """
     if workdir:
-        if os.environ.get("SON_OF_ANTON_DEBUG_CWD"):
-            import logging as _dbg_logging
-            _dbg_logging.getLogger("son_of_anton_cwd_debug").info(
-                "cmd: explicit workdir=%r", workdir
-            )
         return workdir
-    recorded = get_session_cwd(session_key)
-    if os.environ.get("SON_OF_ANTON_DEBUG_CWD"):
-        import logging as _dbg_logging
-        _dbg_logging.getLogger("son_of_anton_cwd_debug").info(
-            "cmd: session_key=%r recorded=%r default_cwd=%r -> %r",
-            session_key, recorded, default_cwd, recorded or default_cwd,
-        )
-    return recorded or default_cwd
+    return get_session_cwd(session_key) or default_cwd
 
 
 def terminal_tool(
@@ -2002,23 +1735,11 @@ def terminal_tool(
         config = _get_env_config()
         env_type = config["env_type"]
 
-        # Use task_id for environment isolation. By default all subagent
-        # task_ids collapse back to "default" so the top-level agent and
-        # every delegate_task child share one sandbox; only task_ids with
-        # a registered env override (RL benchmarks) get isolated sandboxes.
+        # All task_ids (the top-level agent and every delegate_task child)
+        # share one sandbox.
         effective_task_id = _resolve_container_task_id(task_id)
 
-        # Check per-task overrides (set by environments like TerminalBench2Env)
-        # before falling back to global env var config. ``resolve_task_overrides``
-        # reads the raw task id first then the collapsed sandbox id, so a
-        # CWD-only override (which collapses ``effective_task_id`` to
-        # ``"default"``) is still found under its originating session id while
-        # isolation-keyed RL/benchmark overrides keep resolving as before.
-        overrides = resolve_task_overrides(task_id)
-
-        image = ""
-
-        cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
+        cwd = get_session_cwd(task_id) or config["cwd"]
         default_timeout = config["timeout"]
 
         # Validate an explicit timeout before it flows into deadline math.
@@ -2101,25 +1822,7 @@ def terminal_tool(
                     _check_disk_usage_warning()
                     logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
                     try:
-                        ssh_config = _ssh_config_from_config(config) if env_type == "ssh" else None
-
-                        local_config = None
-                        if env_type == "local":
-                            local_config = {
-                                "persistent": config.get("local_persistent", False),
-                            }
-
-                        new_env = _create_environment(
-                            env_type=env_type,
-                            image=image,
-                            cwd=cwd,
-                            timeout=effective_timeout,
-                            ssh_config=ssh_config,
-                            container_config=None,
-                            local_config=local_config,
-                            task_id=effective_task_id,
-                            host_cwd=None,
-                        )
+                        new_env = _create_environment(cwd=cwd, timeout=effective_timeout)
                     except ImportError as e:
                         return json.dumps({
                             "output": "",
@@ -2155,7 +1858,6 @@ def terminal_tool(
         # but applies unconditionally (force=True cannot help here).
         if os.environ.get("_SON_OF_ANTON_GATEWAY") == "1":
             from cron.lifecycle_guard import (
-                _MAX_REFERENCED_SCRIPT_BYTES,
                 contains_gateway_lifecycle_command_or_referenced_script,
                 contains_launchctl_submit_command,
             )
@@ -2178,68 +1880,11 @@ def terminal_tool(
                 workdir=workdir,
                 default_cwd=guard_cwd_base,
                 session_key=session_key,
-                env_type=env_type,
             )
-
-            def _read_script_in_env(script_path: str) -> Optional[str]:
-                """Best-effort script read; uses env.execute only when local read fails.
-
-                For local backends the script path is on the host filesystem. For
-                SSH the same path is remote; the local read misses, so we
-                fall back to a bounded ``env.execute('head -c ... < path')`` read.
-                """
-                if env is None:
-                    return None
-                try:
-                    local_path = Path(script_path).expanduser()
-                    if not local_path.is_absolute():
-                        local_path = Path(guard_cwd) / local_path
-                    if local_path.is_file():
-                        metadata = local_path.stat()
-                        if stat.S_ISREG(metadata.st_mode) and metadata.st_size <= _MAX_REFERENCED_SCRIPT_BYTES:
-                            data = local_path.read_bytes()
-                            if len(data) <= _MAX_REFERENCED_SCRIPT_BYTES:
-                                if b"\x00" in data:
-                                    # Binary (ELF/Mach-O/PE), not a shell script:
-                                    # feeding its decoded bytes back into the guard
-                                    # tokenizes machine code into bogus NUL-bearing
-                                    # paths and crashes the scanner (#77703). Mirror
-                                    # lifecycle_guard._read_referenced_script and
-                                    # treat it as nothing to scan.
-                                    return None
-                                return data.decode("utf-8", errors="replace")
-                except Exception:
-                    pass
-                # Remote / sandboxed backend: read via the environment's shell.
-                # Bound the read at the source with `head -c` so an oversized
-                # file (e.g. a 166MB ELF invoked by absolute path) never
-                # crosses the wire — `cat` of such a binary previously pinned
-                # the gateway's tool thread on a superlinear shlex scan for
-                # 30+ minutes. One byte over the guard's budget is enough for
-                # lifecycle_guard's sanitizer to fail the oversized case
-                # closed, mirroring the local-read semantics. The `< path`
-                # redirect keeps leading-dash paths out of argv (same form as
-                # tools/image_source.py).
-                try:
-                    result = env.execute(
-                        f"head -c {_MAX_REFERENCED_SCRIPT_BYTES + 1} "
-                        f"< {shlex.quote(script_path)}"
-                    )
-                    if result.get("returncode", -1) == 0:
-                        output = result.get("output", "")
-                        if output and "\x00" in output:
-                            # Binary content from a remote read: skip for the
-                            # same reason as the local branch above (#77703).
-                            return None
-                        return output
-                except Exception:
-                    pass
-                return None
 
             if contains_gateway_lifecycle_command_or_referenced_script(
                 command,
                 cwd=guard_cwd,
-                read_remote_script=_read_script_in_env,
             ):
                 return json.dumps({
                     "output": "",
@@ -2265,37 +1910,6 @@ def terminal_tool(
                     "exit_code": -1,
                     "error": workdir_error,
                     "status": "blocked"
-                }, ensure_ascii=False)
-
-        # Guard against the agent mutating the Son of Anton checkout that backs
-        # this interpreter — a self-inflicted ``git reset --hard`` would corrupt
-        # the running process. Remote backends cannot reach that checkout.
-        if env_type == "local":
-            from tools.self_repo_guard import (
-                detect_self_repo_git_mutation,
-                guard_active,
-            )
-
-            guard_cwd = _resolve_command_cwd(
-                workdir=workdir,
-                default_cwd=cwd,
-                session_key=session_key,
-            )
-            _self_repo_hit, _self_repo_msg = (
-                detect_self_repo_git_mutation(command, guard_cwd)
-                if guard_active()
-                else (False, None)
-            )
-            if _self_repo_hit:
-                logger.warning(
-                    "Blocked self-repo git mutation (command: %s)",
-                    _safe_command_preview(command),
-                )
-                return json.dumps({
-                    "output": "",
-                    "exit_code": 1,
-                    "error": _self_repo_msg,
-                    "status": "blocked",
                 }, ensure_ascii=False)
 
         # Pre-exec security checks (tirith + dangerous command detection)
@@ -2360,35 +1974,24 @@ def terminal_tool(
 
         # The session key is already computed above the gateway guard.
         if background:
-            # Spawn a tracked background process via the process registry.
-            # For local backends: uses subprocess.Popen with output buffering.
-            # For non-local backends: runs inside the sandbox via env.execute().
+            # Spawn a tracked background process via the process registry
+            # (subprocess.Popen with output buffering).
             from tools.process_registry import process_registry
 
             effective_cwd = _resolve_command_cwd(
                 workdir=workdir,
                 default_cwd=cwd,
                 session_key=session_key,
-                env_type=env_type,
             )
             try:
-                if env_type == "local":
-                    proc_session = process_registry.spawn_local(
-                        command=command,
-                        cwd=effective_cwd,
-                        task_id=effective_task_id,
-                        session_key=session_key,
-                        env_vars=env.env if hasattr(env, 'env') else None,
-                        use_pty=effective_pty,
-                    )
-                else:
-                    proc_session = process_registry.spawn_via_env(
-                        env=env,
-                        command=command,
-                        cwd=effective_cwd,
-                        task_id=effective_task_id,
-                        session_key=session_key,
-                    )
+                proc_session = process_registry.spawn_local(
+                    command=command,
+                    cwd=effective_cwd,
+                    task_id=effective_task_id,
+                    session_key=session_key,
+                    env_vars=env.env if hasattr(env, 'env') else None,
+                    use_pty=effective_pty,
+                )
 
                 result_data = {
                     "output": "Background process started",
@@ -2639,7 +2242,6 @@ def terminal_tool(
                         workdir=workdir,
                         default_cwd=cwd,
                         session_key=session_key,
-                        env_type=env_type,
                     )
                     execute_kwargs = {
                         "timeout": effective_timeout,
@@ -2868,25 +2470,6 @@ def terminal_tool(
                         Path(spill_file_path).unlink()
                     except OSError:
                         pass
-            try:
-                from agent.verification_evidence import record_terminal_result
-
-                evidence = record_terminal_result(
-                    command=command,
-                    cwd=command_cwd,
-                    session_id=session_id or task_id or effective_task_id or "default",
-                    exit_code=returncode,
-                    output=output,
-                )
-                if evidence:
-                    result_dict["verification_evidence"] = {
-                        "status": evidence.get("status"),
-                        "kind": evidence.get("kind"),
-                        "scope": evidence.get("scope"),
-                        "canonical_command": evidence.get("canonical_command"),
-                    }
-            except Exception:
-                logger.debug("verification evidence recording failed", exc_info=True)
             if approval_note:
                 # Treat rc=130 as an interrupt only when the executor's marker is
                 # present.  A command can legitimately exit 130 on its own
@@ -2912,45 +2495,6 @@ def terminal_tool(
 
             return json.dumps(result_dict, ensure_ascii=False)
 
-    except EnvironmentConnectionError as e:
-        # Infrastructure/connection-class failure (SSH host unreachable) —
-        # distinct from a command failing with a nonzero exit code.  Config
-        # gate ``terminal.degraded_mode``:
-        #   warn (default) — return a structured degraded result the model
-        #                    can act on (reason + retry hint, no traceback).
-        #   fail           — preserve the historical error+traceback result.
-        degraded_mode = os.getenv("TERMINAL_DEGRADED_MODE", "warn").strip().lower()
-        if degraded_mode == "fail":
-            import traceback
-            tb_str = traceback.format_exc()
-            logger.error("terminal_tool exception:\n%s", tb_str)
-            # Exception text can embed the failing command line (and any
-            # secrets inline in it) — redact before returning to the model.
-            return json.dumps({
-                "output": "",
-                "exit_code": -1,
-                "error": _redact_terminal_error_text(f"Failed to execute command: {e}"),
-                "traceback": _redact_terminal_error_text(tb_str),
-                "status": "error"
-            }, ensure_ascii=False)
-
-        logger.warning("terminal backend degraded: %s", e.reason)
-        # Never keep a possibly-broken backend cached: evict it so the next
-        # call re-creates the environment from scratch and simply works once
-        # the backend is reachable again.
-        try:
-            _evict_environment_for_task(task_id)
-        except Exception:
-            logger.debug("degraded-env eviction failed", exc_info=True)
-        return json.dumps({
-            "output": "",
-            "exit_code": -1,
-            "status": "degraded",
-            "reason": e.reason,
-            "retry_hint": e.retry_hint,
-            "error": f"Terminal backend degraded: {e.reason}",
-        }, ensure_ascii=False)
-
     except Exception as e:
         import traceback
         tb_str = traceback.format_exc()
@@ -2966,97 +2510,9 @@ def terminal_tool(
         }, ensure_ascii=False)
 
 
-def _evict_environment_for_task(task_id: Optional[str]) -> None:
-    """Drop any cached environment for *task_id* (and its collapsed key).
-
-    Used when a backend reports an infrastructure failure: keeping the dead
-    env cached would make every subsequent call fail against a stale
-    connection, defeating automatic recovery.
-    """
-    keys = {_resolve_container_task_id(task_id)}
-    if task_id:
-        keys.add(task_id)
-    evicted = []
-    with _env_lock:
-        for key in keys:
-            env = _active_environments.pop(key, None)
-            _last_activity.pop(key, None)
-            if env is not None:
-                evicted.append(env)
-    for env in evicted:
-        try:
-            env.cleanup()
-        except Exception:
-            logger.debug("cleanup of degraded environment failed", exc_info=True)
-
-
 def check_terminal_requirements() -> bool:
-    """Check if all requirements for the terminal tool are met."""
-    try:
-        config = _get_env_config()
-        env_type = config["env_type"]
-
-        if env_type == "local":
-            return True
-
-        elif env_type == "ssh":
-            if not config.get("ssh_host") or not config.get("ssh_user"):
-                logger.error(
-                    "SSH backend selected but TERMINAL_SSH_HOST and TERMINAL_SSH_USER "
-                    "are not both set. Configure both or switch TERMINAL_ENV to 'local'."
-                )
-                return False
-            return True
-
-        else:
-            logger.error(
-                "Unknown TERMINAL_ENV '%s'. Use one of: local or ssh.",
-                env_type,
-            )
-            return False
-    except Exception as e:
-        logger.error("Terminal requirements check failed: %s", e, exc_info=True)
-        return False
-
-
-if __name__ == "__main__":
-    # Simple test when run directly
-    print("Terminal Tool Module")
-    print("=" * 50)
-    
-    config = _get_env_config()
-    print("\nCurrent Configuration:")
-    print(f"  Environment type: {config['env_type']}")
-    print(f"  Working directory: {config['cwd']}")
-    print(f"  Default timeout: {config['timeout']}s")
-    print(f"  Lifetime: {config['lifetime_seconds']}s")
-
-    if not check_terminal_requirements():
-        print("\n❌ Requirements not met. Please check the messages above.")
-        sys.exit(1)
-
-    print("\n✅ All requirements met!")
-    print("\nAvailable Tool:")
-    print("  - terminal_tool: Execute commands in sandboxed environments")
-
-    print("\nUsage Examples:")
-    print("  # Execute a command")
-    print("  result = terminal_tool(command='ls -la')")
-    print("  ")
-    print("  # Run a background task")
-    print("  result = terminal_tool(command='python server.py', background=True)")
-
-    print("\nEnvironment Variables:")
-    print(
-        "  TERMINAL_ENV: "
-        f"{os.getenv('TERMINAL_ENV', 'local')} "
-        "(local/ssh)"
-    )
-    print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', _safe_getcwd())}")
-    from son_of_anton_constants import display_son_of_anton_home as _dhh
-    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")
-    print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
-    print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")
+    """The local backend has no requirements beyond the host shell."""
+    return True
 
 
 # ---------------------------------------------------------------------------

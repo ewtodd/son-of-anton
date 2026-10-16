@@ -18,17 +18,7 @@ Defense against context-window overflow operates at three levels:
    sessions that never ran a terminal command (MCP-only, cron, gateway) —
    previously those hit the inline-truncate fallback because
    ``get_active_env()`` returned None until the first terminal call created
-   an environment.
-
-   What the model sees depends on the backend:
-
-   - **Local backend (or no active env):** the host path itself.
-   - **Remote backends (docker/ssh/modal/daytona):** ``cache/spillover`` is
-     in the auto-mounted/synced cache-dir list (tools/credential_files.py),
-     so the reference is the translated in-sandbox path (probed for
-     readability first). When the sandbox can't see it (e.g. a persistent
-     container created before spillover joined the mount list), fall back
-     to writing a copy into the sandbox temp dir via env.execute().
+   an environment. The model sees the host path itself.
 
    The spillover dir is pruned two ways: the gateway housekeeping loop
    sweeps it hourly with the other media caches, and a once-per-process
@@ -44,9 +34,7 @@ Defense against context-window overflow operates at three levels:
 
 import hashlib
 import logging
-import os
 import re
-import shlex
 import threading
 import time
 
@@ -59,7 +47,6 @@ from tools.budget_config import (
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
-STORAGE_DIR = "/tmp/son-of-anton-results"
 SPILLOVER_SUBDIR = "cache/spillover"
 SPILLOVER_MAX_AGE_HOURS = 24
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
@@ -121,25 +108,6 @@ def _prune_spillover_once() -> None:
         logger.debug("Spillover prune failed: %s", exc)
 
 
-def _is_host_side_env(env) -> bool:
-    """True when the spill file should be written by this process directly.
-
-    Covers ``env=None`` (no sandbox environment active — e.g. a session
-    that has not run a terminal command yet) and the local backend
-    (where env.execute() runs on this same host anyway). Remote backends
-    (docker/ssh/modal/daytona) return False: their read_file resolves
-    inside the sandbox, so the spill must be written there.
-    """
-    if env is None:
-        return True
-    try:
-        from tools.environments.local import LocalEnvironment
-
-        return isinstance(env, LocalEnvironment)
-    except Exception:
-        return False
-
-
 def _write_to_spillover(content: str, filename: str):
     """Write content host-side to $SON_OF_ANTON_HOME/cache/spillover.
 
@@ -155,57 +123,6 @@ def _write_to_spillover(content: str, filename: str):
         return None
     _prune_spillover_once()
     return str(path)
-
-
-def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
-    """Return the path where a remote backend can read *host_path*, or None.
-
-    ``cache/spillover`` is one of the auto-mounted/synced cache dirs
-    (tools/credential_files.py), so on docker it is bind-mounted and on
-    modal/ssh/daytona it is file-synced into the sandbox. Translate the
-    host path with the same helper the image tools use, force a sync for
-    synced backends, then PROBE readability — a persistent docker
-    container created before spillover joined the mount list won't have
-    the bind mount, and must fall back to the in-sandbox write.
-    """
-    try:
-        from tools.credential_files import to_agent_visible_cache_path
-
-        visible = to_agent_visible_cache_path(host_path)
-    except Exception as exc:
-        logger.debug("Spillover path translation failed: %s", exc)
-        return None
-
-    sync_manager = getattr(env, "_sync_manager", None)
-    if sync_manager is not None:
-        try:
-            sync_manager.sync(force=True)
-        except Exception as exc:
-            logger.debug("Spillover sync failed: %s", exc)
-
-    try:
-        result = env.execute(f"test -r {shlex.quote(visible)}", timeout=15)
-        if result.get("returncode", 1) == 0:
-            return visible
-    except Exception as exc:
-        logger.debug("Spillover readability probe failed: %s", exc)
-    return None
-
-
-def _resolve_storage_dir(env) -> str:
-    """Return the best temp-backed storage dir for this environment."""
-    if env is not None:
-        get_temp_dir = getattr(env, "get_temp_dir", None)
-        if callable(get_temp_dir):
-            try:
-                temp_dir = get_temp_dir()
-            except Exception as exc:
-                logger.debug("Could not resolve env temp dir: %s", exc)
-            else:
-                if temp_dir:
-                    temp_dir = temp_dir.rstrip("/") or "/"
-                    return f"{temp_dir}/son-of-anton-results"
-    return STORAGE_DIR
 
 
 def _safe_result_filename(tool_use_id: str) -> str:
@@ -235,25 +152,6 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     if last_nl > max_chars // 2:
         truncated = truncated[:last_nl + 1]
     return truncated, True
-
-
-def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
-    """Write content into the sandbox via env.execute(). Returns True on success.
-
-    Pushes ``content`` through stdin rather than embedding it in the command
-    string. Linux's ``MAX_ARG_STRLEN`` caps any single argv element at 128 KB
-    (32 * PAGE_SIZE), so the previous heredoc-in-the-command-string approach
-    silently failed with ``OSError: [Errno 7] Argument list too long`` for any
-    tool result over ~128 KB — exactly the case persistence exists to handle.
-    Routing through stdin removes that ceiling on local + ssh (``_stdin_mode
-    == "pipe"``); remote backends with ``_stdin_mode == "heredoc"`` keep their
-    existing API-body sized limit, which is orders of magnitude larger than
-    the exec-arg ceiling.
-    """
-    storage_dir = os.path.dirname(remote_path)
-    cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
-    result = env.execute(cmd, timeout=30, stdin_data=content)
-    return result.get("returncode", 1) == 0
 
 
 def _build_persisted_message(
@@ -310,17 +208,15 @@ def maybe_persist_tool_result(
     config: BudgetConfig = DEFAULT_BUDGET,
     threshold: int | float | None = None,
 ) -> str:
-    """Layer 2: persist oversized result into the sandbox, return preview + path.
+    """Layer 2: persist oversized result host-side, return preview + path.
 
-    Writes via env.execute() so the file is accessible from any backend
-    (local, Docker, SSH, Modal, Daytona). Falls back to inline truncation
-    if write fails or no env is available.
+    Falls back to inline truncation if the write fails.
 
     Args:
         content: Raw tool result string.
         tool_name: Name of the tool (used for threshold lookup).
         tool_use_id: Unique ID for this tool call (used as filename).
-        env: The active BaseEnvironment instance, or None.
+        env: Unused (kept for call-site compatibility).
         config: BudgetConfig controlling thresholds and preview size.
         threshold: Explicit override; takes precedence over config resolution.
 
@@ -338,43 +234,16 @@ def maybe_persist_tool_result(
     filename = _safe_result_filename(tool_use_id)
     preview, has_more = generate_preview(content, max_chars=config.preview_size)
 
-    # Always persist host-side first: $SON_OF_ANTON_HOME/cache/spillover is the
-    # single canonical home for spilled results (with the other Son of Anton-owned
-    # caches, pruned by gateway housekeeping) regardless of backend.
+    # $SON_OF_ANTON_HOME/cache/spillover is the single canonical home for
+    # spilled results (with the other Son of Anton-owned caches, pruned by
+    # gateway housekeeping).
     host_path = _write_to_spillover(content, filename)
-
-    if _is_host_side_env(env):
-        if host_path is not None:
-            logger.info(
-                "Persisted large tool result: %s (%s, %d chars -> %s)",
-                tool_name, tool_use_id, len(content), host_path,
-            )
-            return _build_persisted_message(preview, has_more, len(content), host_path)
-    elif env is not None:
-        # Remote backend: the spillover dir is auto-mounted (docker) or
-        # file-synced (modal/ssh/daytona) into the sandbox, so reference the
-        # translated path when the sandbox can actually read it.
-        if host_path is not None:
-            visible = _sandbox_visible_spillover_path(host_path, env)
-            if visible is not None:
-                logger.info(
-                    "Persisted large tool result: %s (%s, %d chars -> %s [host: %s])",
-                    tool_name, tool_use_id, len(content), visible, host_path,
-                )
-                return _build_persisted_message(preview, has_more, len(content), visible)
-        # Fallback: write into the sandbox temp dir (pre-existing containers
-        # without the spillover mount, translation/probe failures).
-        storage_dir = _resolve_storage_dir(env)
-        remote_path = f"{storage_dir}/{filename}"
-        try:
-            if _write_to_sandbox(content, remote_path, env):
-                logger.info(
-                    "Persisted large tool result: %s (%s, %d chars -> %s)",
-                    tool_name, tool_use_id, len(content), remote_path,
-                )
-                return _build_persisted_message(preview, has_more, len(content), remote_path)
-        except Exception as exc:
-            logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
+    if host_path is not None:
+        logger.info(
+            "Persisted large tool result: %s (%s, %d chars -> %s)",
+            tool_name, tool_use_id, len(content), host_path,
+        )
+        return _build_persisted_message(preview, has_more, len(content), host_path)
 
     logger.info(
         "Inline-truncating large tool result: %s (%d chars, no sandbox write)",

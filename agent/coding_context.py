@@ -9,23 +9,14 @@ Architecture — one seam, many consumers
 ----------------------------------------
 The posture is modelled as a frozen :class:`RuntimeMode` selected from a small
 :class:`ContextProfile` registry (today: ``coding`` and ``general``). A profile
-is *data* — it declares the toolset to collapse to, the operating brief to
-inject, and hints for other domains (model routing, memory, subagents). Every
-domain reads the same resolved object instead of probing git/config itself:
+is *data* — it declares the operating brief to inject. Every domain reads the
+same resolved object instead of probing git/config itself:
 
   * **System prompt** — ``RuntimeMode.system_blocks()`` → the operating brief +
     a live git/workspace snapshot (``agent/system_prompt.py``).
-  * **Toolset** — ``RuntimeMode.toolset_selection()`` → the ``coding`` toolset
-    plus the user's enabled MCP servers (``cli.py`` / ``tui_gateway``). Only
-    under the opt-in ``focus`` mode: the default posture is prompt-only and
-    never touches the user's configured toolsets (toolsets like messaging /
-    smart-home / music are off-by-default anyway, and someone who explicitly
-    enabled image-gen or Spotify shouldn't lose it for being in a git repo).
-  * **Delegation** — subagents inherit the parent's toolset and run through the
-    same prompt builder, so the coding posture propagates to children for free.
-  * **Model / memory / compaction** — declared on the profile
-    (``model_hint``, ``memory_policy``) as the extension seam; consumers read
-    ``mode.profile`` rather than re-deciding.
+  * **Toolset** — never touched: the posture is prompt-only.
+  * **Delegation** — subagents run through the same prompt builder, so the
+    coding posture propagates to children for free.
 
 Cache safety
 ------------
@@ -41,8 +32,6 @@ Activation (config ``agent.coding_context``):
   * ``auto`` (default) — posture (brief + snapshot) on an interactive coding
     surface sitting in a code workspace (git repo or recognised project root).
     Prompt-only; toolsets untouched.
-  * ``focus`` — like ``auto``, but additionally collapses the toolset to the
-    ``coding`` set + enabled MCP servers. Explicit opt-in for a lean schema.
   * ``on`` — force the posture anywhere (incl. non-workspaces). Prompt-only.
   * ``off`` — disable entirely.
 """
@@ -61,8 +50,6 @@ from typing import Any, Optional
 from son_of_anton_cli._subprocess_compat import bounded_git_probe
 
 logger = logging.getLogger("son-of-anton.coding_context")
-
-CODING_TOOLSET = "coding"
 
 # Surfaces where a coding posture makes sense under ``auto``. Messaging
 # platforms (telegram, discord, slack, …) are intentionally absent — a chat bot
@@ -270,29 +257,18 @@ CODING_AGENT_GUIDANCE = (
 class ContextProfile:
     """A named operating posture. Pure data — consumers read these fields.
 
-    ``toolset``      — collapse to this toolset (+ enabled MCP) when no explicit
-                       selection is pinned; ``None`` keeps the platform default.
     ``guidance``     — operating brief injected into the stable system prompt;
                        ``""`` injects nothing.
-    ``model_hint``   — routing preference key for smart model routing
-                       (extension seam; not yet consumed by the router).
-    ``memory_policy``— memory namespace/weighting hint (extension seam).
     """
 
     name: str
-    toolset: Optional[str] = None
     guidance: str = ""
-    model_hint: Optional[str] = None
-    memory_policy: str = "default"
 
 
 GENERAL_PROFILE = ContextProfile(name="general")
 CODING_PROFILE = ContextProfile(
     name="coding",
-    toolset=CODING_TOOLSET,
     guidance=CODING_AGENT_GUIDANCE,
-    model_hint="coding",
-    memory_policy="project",
 )
 
 _PROFILES: dict[str, ContextProfile] = {
@@ -310,7 +286,7 @@ def get_profile(name: str) -> ContextProfile:
 
 
 def _coding_mode(config: Optional[dict[str, Any]]) -> str:
-    """Return the normalized ``agent.coding_context`` mode (auto/focus/on/off)."""
+    """Return the normalized ``agent.coding_context`` mode (auto/on/off)."""
     if config is None:
         try:
             from son_of_anton_cli.config import load_config_readonly
@@ -320,36 +296,11 @@ def _coding_mode(config: Optional[dict[str, Any]]) -> str:
             config = {}
     raw = ((config or {}).get("agent", {}) or {}).get("coding_context", "auto")
     mode = str(raw).strip().lower()
-    if mode in {"focus", "strict", "lean"}:
-        return "focus"
     if mode in {"on", "true", "yes", "1", "always"}:
         return "on"
     if mode in {"off", "false", "no", "0", "never"}:
         return "off"
     return "auto"
-
-
-def _coding_instructions(config: Optional[dict[str, Any]]) -> str:
-    """Standing operator instructions for the coding posture (config).
-
-    ``agent.coding_instructions`` — a string or list of strings appended to the
-    coding brief as an extra stable system block, so a user can pin project-wide
-    coding-workflow rules (e.g. "for UI work don't run tsc/lint until I approve;
-    clean the diff before committing") without editing the shipped brief.
-    Cache-safe: resolved once per session into the stable system-prompt tier,
-    like the rest of the posture.
-    """
-    if config is None:
-        try:
-            from son_of_anton_cli.config import load_config
-
-            config = load_config()
-        except Exception:
-            config = {}
-    raw = ((config or {}).get("agent", {}) or {}).get("coding_instructions", "")
-    if isinstance(raw, (list, tuple)):
-        return "\n".join(str(item).strip() for item in raw if str(item).strip())
-    return str(raw or "").strip()
 
 
 def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
@@ -410,7 +361,7 @@ def _marker_root(cwd: Path) -> Optional[Path]:
 def _detect_profile_name(mode: str, platform: str, cwd_str: str) -> str:
     """Resolve which profile applies.
 
-    ``auto``/``focus``: coding when the surface is interactive AND the cwd is a
+    ``auto``: coding when the surface is interactive AND the cwd is a
     code workspace (a git repo or a recognised project root). ``on``: always
     coding. ``off``: always general.
 
@@ -459,16 +410,10 @@ class RuntimeMode:
     profile: ContextProfile
     surface: str
     cwd: Path
-    # The normalized ``agent.coding_context`` mode this posture was resolved
-    # under (auto/focus/on/off). Toolset collapse is gated on ``focus``.
-    config_mode: str = "auto"
     # The model id this session runs (e.g. "anthropic/claude-opus-4.8"). Used
     # only to steer edit-format guidance toward the model's family — see
     # ``_edit_format_line``. Fixed for the session, so cache-safe.
     model: Optional[str] = None
-    # Standing operator instructions (``agent.coding_instructions``), appended
-    # as an extra stable system block. Empty unless the user configures it.
-    instructions: str = ""
 
     @property
     def kind(self) -> str:
@@ -477,24 +422,6 @@ class RuntimeMode:
     @property
     def is_coding(self) -> bool:
         return self.profile.name == CODING_PROFILE.name
-
-    def toolset_selection(self, config: Optional[dict[str, Any]] = None) -> Optional[list[str]]:
-        """Toolset list for this posture, or ``None`` to keep the platform default.
-
-        Non-``None`` only under the opt-in ``focus`` mode. The default posture
-        is prompt-only: most strippable toolsets are off-by-default anyway, and
-        a user who explicitly enabled one (image-gen for frontend/game assets,
-        messaging for build notifications, …) keeps it while coding.
-
-        Callers apply this only when the user hasn't pinned an explicit
-        selection (``--toolsets``, ``SON_OF_ANTON_TUI_TOOLSETS``, …); they never
-        override a pin. Returns the profile's toolset plus enabled MCP servers.
-        """
-        if self.config_mode != "focus":
-            return None
-        if self.profile.toolset is None:
-            return None
-        return [self.profile.toolset, *_enabled_mcp_servers(config)]
 
     def system_prompt_parts(self) -> tuple[list[str], list[str], list[str]]:
         """Return prefix, workspace, and trailing posture blocks separately.
@@ -522,10 +449,6 @@ class RuntimeMode:
         workspace = build_coding_workspace_block(self.cwd)
         if workspace:
             workspace_parts.append(workspace)
-        # Operator instructions ride their own block so the brief (block 0) stays
-        # byte-stable and cache-keyed independently of user config.
-        if self.instructions:
-            trailing.append(f"Operator instructions (from config):\n{self.instructions}")
         return prefix, workspace_parts, trailing
 
 
@@ -554,39 +477,11 @@ def resolve_runtime_mode(
         profile=get_profile(name),
         surface=platform or "",
         cwd=resolved_cwd,
-        config_mode=mode,
         model=model,
-        instructions=_coding_instructions(config),
     )
 
 
 # ── Back-compat surface (thin wrappers over RuntimeMode) ────────────────────
-
-
-def is_coding_context(
-    *,
-    platform: Optional[str] = None,
-    cwd: Optional[str | Path] = None,
-    config: Optional[dict[str, Any]] = None,
-) -> bool:
-    """Whether Son of Anton should operate in its coding posture right now."""
-    return resolve_runtime_mode(platform=platform, cwd=cwd, config=config).is_coding
-
-
-def coding_selection(
-    *,
-    platform: Optional[str] = None,
-    cwd: Optional[str | Path] = None,
-    config: Optional[dict[str, Any]] = None,
-) -> Optional[list[str]]:
-    """Toolset selection for the coding posture.
-
-    ``None`` unless the user opted into ``focus`` mode AND the posture is
-    active — the default coding posture never overrides configured toolsets.
-    """
-    return resolve_runtime_mode(
-        platform=platform, cwd=cwd, config=config
-    ).toolset_selection(config)
 
 
 def coding_system_prompt_parts(
@@ -600,27 +495,6 @@ def coding_system_prompt_parts(
     return resolve_runtime_mode(
         platform=platform, cwd=cwd, config=config, model=model
     ).system_prompt_parts()
-
-
-def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
-    """Names of MCP servers the user has enabled — kept in the coding posture.
-
-    MCP servers (figma, browser, tophat, …) are explicitly configured and part
-    of the coding workflow, not noise to strip.
-    """
-    try:
-        from son_of_anton_cli.config import read_raw_config
-        from son_of_anton_cli.tools_config import _parse_enabled_flag
-
-        servers = read_raw_config().get("mcp_servers") or {}
-        return [
-            str(name)
-            for name, cfg in servers.items()
-            if isinstance(cfg, dict)
-            and _parse_enabled_flag(cfg.get("enabled", True), default=True)
-        ]
-    except Exception:
-        return []
 
 
 # ── git/workspace probe ─────────────────────────────────────────────────────
@@ -748,28 +622,6 @@ def _project_facts(root: Path) -> list[str]:
         facts.append(f"- Context files: {', '.join(f.context_files)}")
 
     return facts
-
-
-def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, Any]]:
-    """Structured project facts for ``cwd`` — ``None`` outside a workspace.
-
-    Same detection the system-prompt snapshot uses (git root, else marker root),
-    exposed for non-prompt consumers (the desktop verify UI) so they never
-    re-derive "are we coding?" or duplicate the verify-command sniffing.
-    """
-    resolved = _resolve_cwd(cwd)
-    root = _git_root(resolved) or _marker_root(resolved)
-    if root is None:
-        return None
-
-    f = detect_project_facts(root)
-    return {
-        "root": str(root),
-        "manifests": f.manifests,
-        "packageManagers": f.package_managers,
-        "verifyCommands": f.verify_commands,
-        "contextFiles": f.context_files,
-    }
 
 
 def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:

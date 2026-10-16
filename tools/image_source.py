@@ -1,6 +1,6 @@
 """Single resolver for every media source -> bytes + mime.
 
-All source handling (data:/http(s)/file/local/container) funnels through
+All source handling (data:/http(s)/file/local) funnels through
 :func:`resolve_image_source` so size and magic-byte checks are enforced exactly
 once.  Returns raw bytes (not a path): the downstream step is base64 -> data URL
 (RFC 2397) and provider base64 content blocks.
@@ -10,25 +10,6 @@ takes video opt in via ``permitted=("video",)`` — the same confinement and
 credential-guard pipeline applies, and only the type check at the end differs
 (extension-table typing plus an mp4 magic sniff, rather than image magic
 bytes). Every existing call site keeps the image-only default unchanged.
-
-Security (terminal-backend confinement, GHSA-gpxw-6wxv-w3qq): under a non-local
-terminal backend the file tools are confined to the sandbox, but vision
-read images host-side. This resolver enforces the same boundary:
-
-  * local backend            -> read any host path (chosen posture, unchanged)
-  * non-local backend:
-      path in a media cache   -> host-read (the gateway/download caches live on
-                                 the host and are bind-mounted into the sandbox)
-      path anywhere else      -> read the bytes *inside the sandbox* via exec-read
-                                 (the agent can already ``cat`` any container file;
-                                 this stays within the sandbox boundary and never
-                                 reaches the host's ``/etc/passwd`` / ``~/.ssh``).
-
-So a prompt-injected ``vision_analyze('/etc/passwd')`` under Docker reads the
-*container's* file (what every other tool sees), not the host's — no escape —
-while container-only images (tmpfs ``/workspace``, root-owned) are still
-deliverable. This is the unified delivery + confinement model: the same
-mechanism that fixes "vision can't see container files" also closes the escape.
 """
 from __future__ import annotations
 
@@ -84,7 +65,7 @@ class ResolveContext:
 class ResolvedImage:
     data: bytes
     mime: str
-    origin: str  # one of: data | http | file | local | container
+    origin: str  # one of: data | http | file | local
 
 
 # Explicit URL scheme, e.g. "ftp://", "s3://". Bare Windows drive paths
@@ -121,13 +102,11 @@ async def resolve_image_source(
     # like "pic.png" (accepted on main; a path-shape gate here regressed them).
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
     p = Path(os.path.expanduser(candidate))
-    # Confinement decision (see module docstring). Under a non-local backend
-    # a path is host-readable ONLY if it lands in a media cache (after
-    # translating a container-visible cache path back to its host mount);
-    # every other path is read inside the sandbox via exec-read, so a host
-    # path outside the caches never yields the host's bytes.
-    host_target = _permitted_host_read_target(p, ctx)
-    if host_target is not None and host_target.is_file():
+    try:
+        host_target = p.resolve()
+    except Exception:  # noqa: BLE001 — unresolved path: let is_file() fail
+        host_target = p
+    if host_target.is_file():
         # Shared credential-read guard (agent.file_safety, #57698): refuse
         # secret-bearing files (.env, auth.json, ...) with an intentional,
         # specific error instead of relying on the magic-byte sniff to
@@ -146,14 +125,7 @@ async def resolve_image_source(
                 raise SourceUnsafe(str(exc), src=s, origin="file")
         data = await asyncio.to_thread(host_target.read_bytes)
         return _finalize(data, "", "file", s, permitted)
-    if _is_local_terminal_backend():
-        # Local backend: any path was host-readable, so a miss simply means
-        # the file doesn't exist — no sandbox to fall back to.
-        raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
-    # Not a permitted host read (or the host file is absent) -> read the
-    # bytes inside the sandbox. Under a sandbox this reads the container's
-    # filesystem, never the host's.
-    return await _resolve_container_fallback(p, ctx, s, permitted)
+    raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
 
 
 def _resolve_data_url(s: str) -> tuple[bytes, str]:
@@ -199,178 +171,6 @@ async def _download_to_bytes(url: str) -> bytes:
         raise SourceUnsafe(str(exc), src=url, origin="http")
     finally:
         tmp.unlink(missing_ok=True)
-
-
-def _is_local_terminal_backend() -> bool:
-    """True when the terminal backend runs directly on the host.
-
-    Mirrors ``tools.browser_tool._is_local_backend`` and terminal_tool's own
-    dispatch, which key off ``TERMINAL_ENV``.
-    """
-    return os.getenv("TERMINAL_ENV", "local").strip().lower() in ("local", "")
-
-
-def _media_cache_roots() -> list:
-    """Agent-managed media cache directories under SON_OF_ANTON_HOME (host side).
-
-    The only host paths vision may read under a non-local backend: gateway-
-    downloaded inbound media and the tools' own URL-download temp dirs. Covers
-    the consolidated ``cache/`` layout and the legacy flat directories.
-    """
-    from son_of_anton_constants import get_son_of_anton_home
-
-    home = get_son_of_anton_home()
-    return [
-        home / "cache",  # cache/images, cache/vision, cache/video(s), cache/audio
-        home / "images",  # desktop/clipboard/PDF uploads (tui_gateway) — #69575
-        home / "image_cache",
-        home / "audio_cache",
-        home / "video_cache",
-        home / "temp_vision_images",
-        home / "temp_video_files",
-    ]
-
-
-def _permitted_host_read_target(p: Path, ctx: ResolveContext) -> Optional[Path]:
-    """Return the host path to read, or ``None`` if a host read is not permitted.
-
-    - Local backend: any path is permitted (chosen posture). Returns ``p``.
-    - Non-local backend: permitted only if the path resolves inside a media
-      cache root. A container-visible cache path (e.g. ``/root/.son-of-anton/cache/
-      images/x.png``) is first translated back to its host mount; anything that
-      is not under a cache returns ``None`` so the caller routes it to the
-      in-sandbox exec-read instead of reading the host filesystem.
-    """
-    if _is_local_terminal_backend():
-        try:
-            return p.resolve()
-        except Exception:  # noqa: BLE001 — unresolved path: let is_file() fail downstream
-            return p
-
-    from tools.credential_files import from_agent_visible_cache_path
-
-    host_candidate = Path(from_agent_visible_cache_path(str(p)))
-    try:
-        real = host_candidate.resolve()
-    except Exception:  # noqa: BLE001 — cannot resolve -> not a safe host read
-        return None
-    for root in _media_cache_roots():
-        try:
-            real.relative_to(root.resolve())
-            return real
-        except ValueError:
-            continue
-    return None
-
-
-def _get_active_env(task_id: Optional[str]):
-    if not task_id:
-        return None
-    try:
-        from tools.terminal_tool import get_active_env
-
-        return get_active_env(task_id)
-    except Exception:
-        return None
-
-
-def _ensure_container_env(task_id: Optional[str]) -> None:
-    """Lazily bring up the sandbox (SSH/Docker/…) before an in-sandbox read.
-
-    Unlike the terminal tool, vision never triggered environment creation, so a
-    session whose first action is ``vision_analyze`` on a container-only path
-    under a non-local backend found no active env and failed — until a terminal
-    command happened to create one (issue #62825). Best-effort: any failure just
-    leaves the env absent and the caller hits the existing fail-closed error.
-    """
-    if not task_id:
-        return
-    try:
-        from tools.terminal_tool import ensure_task_env
-
-        ensure_task_env(task_id)
-    except Exception:
-        pass
-
-
-async def _resolve_container_fallback(
-    p: Path, ctx: ResolveContext, src: str, permitted: tuple = ("image",)
-) -> ResolvedImage:
-    """Read the image bytes inside the sandbox (fail-closed when none exists).
-
-    Reached when a host read is not permitted or the host file is absent. The
-    agent can already ``cat`` any container file (file_operations.py reads
-    root-owned mode-600 files this way), so this stays within the same sandbox
-    boundary and never touches the host filesystem. ``--`` stops a leading-dash
-    path from being parsed as a ``base64`` option; ``base64 -w0`` is GNU-only,
-    so pipe through ``tr -d`` for BusyBox.
-
-    Fail-closed: if there is no active sandbox env we refuse rather than falling
-    back to a host read, so a non-cache host path under a sandbox never leaks.
-
-    Cold-start retry: under Docker the very first exec against a freshly
-    started container can fail (empty pipe / partial setup) while an identical
-    second call succeeds. We retry once with a short delay before giving up,
-    so callers don't see "could not read inside the sandbox" on a file that is
-    verifiably readable on the immediate retry. See #76566.
-
-    Diagnostic: when every attempt fails, the container's own output (stderr
-    + stdout) is folded into the raised error so the user can distinguish
-    "no such file" from "permission denied" from "container never came up"
-    instead of staring at one opaque message.
-    """
-    import asyncio
-    import shlex
-
-    # Bring the sandbox up on demand: without this, the first vision_analyze of
-    # a session (before any terminal command) has no active env to read from
-    # under a non-local backend (issue #62825).
-    _ensure_container_env(ctx.task_id)
-
-    env = _get_active_env(ctx.task_id)
-    if env is None:
-        raise SourceNotFound(
-            f"'{p}' is not reachable inside the sandbox and no active sandbox "
-            f"session is available to read it",
-            src=src, origin="container")
-
-    # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 bytes
-    # so a huge file (or /dev/zero) can't stream unbounded base64 into host
-    # memory — the +1 byte lets us distinguish "exactly at the cap" from
-    # "over the cap" after decode. The input redirect (< path) avoids argv
-    # entirely, so leading-dash paths can't be parsed as options; base64
-    # -w0 is GNU-only, so pipe through tr -d for BusyBox.
-    # env.execute is a blocking backend exec; keep it off the event loop so a
-    # multi-MB base64 read doesn't stall every other coroutine.
-    qp = shlex.quote(str(p))
-    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'"
-
-    last_res: dict = {"returncode": 1, "output": ""}
-    for attempt in range(2):
-        last_res = await asyncio.to_thread(env.execute, cmd)
-        if last_res.get("returncode", 1) == 0:
-            break
-        if attempt == 0:
-            # Cold-start: give the container a moment to settle its pipes
-            # before retrying. 150ms covers Docker exec warm-up in practice
-            # without making a real failure feel sluggish.
-            await asyncio.sleep(0.15)
-    if last_res.get("returncode", 1) != 0:
-        diag = (last_res.get("output") or "").strip().splitlines()
-        # Keep the diagnostic small and noise-free: first non-empty line,
-        # trimmed to a sane length so it slots into the agent's error UI.
-        first = next((ln.strip() for ln in diag if ln.strip()), "")
-        suffix = f" ({first[:200]})" if first else ""
-        raise SourceNotFound(
-            f"could not read '{p}' inside the sandbox{suffix}",
-            src=src, origin="container")
-    try:
-        data = base64.b64decode(last_res.get("output", ""), validate=True)
-    except Exception as exc:
-        raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
-    if len(data) > _MAX_INGEST_BYTES:
-        raise SourceTooLarge("media exceeds size limit", src=src, origin="container")
-    return _finalize(data, "", "container", src, permitted)
 
 
 def _finalize(

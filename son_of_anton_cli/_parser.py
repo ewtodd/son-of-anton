@@ -204,18 +204,6 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
-        "--accept-hooks",
-        action="store_true",
-        default=False,
-        help=(
-            "Auto-approve any unseen shell hooks declared in config.toml "
-            "without a TTY prompt.  Equivalent to SON_OF_ANTON_ACCEPT_HOOKS=1 or "
-            "hooks_auto_accept: true in config.toml.  Use on CI / headless "
-            "runs that can't prompt."
-        ),
-    )
-    _inherited_flag(
-        parser,
         "--yolo",
         action="store_true",
         default=False,
@@ -394,23 +382,6 @@ def build_top_level_parser():
             "Open the session most recently handed off or relayed from your "
             "messaging chat, and end the relaying"
         ),
-    )
-    _inherited_flag(
-        chat_parser,
-        "--accept-hooks",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help=(
-            "Auto-approve any unseen shell hooks declared in config.toml "
-            "without a TTY prompt (see also SON_OF_ANTON_ACCEPT_HOOKS env var and "
-            "hooks_auto_accept: in config.toml)."
-        ),
-    )
-    chat_parser.add_argument(
-        "--checkpoints",
-        action="store_true",
-        default=False,
-        help="Enable filesystem checkpoints before destructive file operations (use /rollback to restore)",
     )
     chat_parser.add_argument(
         "--max-turns",

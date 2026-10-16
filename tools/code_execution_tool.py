@@ -5,36 +5,22 @@ Code Execution Tool -- Programmatic Tool Calling (PTC)
 Lets the LLM write a Python script that calls Son of Anton tools via RPC,
 collapsing multi-step tool chains into a single inference turn.
 
-Architecture (two transports):
-
-  **Local backend (UDS):**
+Architecture:
   1. Parent generates a `son_of_anton_tools.py` stub module with UDS RPC functions
   2. Parent opens a Unix domain socket and starts an RPC listener thread
-  3. Parent spawns a child process that runs the LLM's script
+  3. Parent spawns a child process that runs the LLM's script in the
+     session's working directory with the active venv's python
   4. Tool calls travel over the UDS back to the parent for dispatch
 
-  **Remote backends (file-based RPC):**
-  1. Parent generates `son_of_anton_tools.py` with file-based RPC stubs
-  2. Parent ships both files to the remote environment
-  3. Script runs inside the terminal backend (SSH/local)
-  4. Tool calls are written as request files; a polling thread on the parent
-     reads them via env.execute(), dispatches, and writes response files
-  5. The script polls for response files and continues
-
-In both cases, only the script's stdout is returned to the LLM; intermediate
-tool results never enter the context window.
-
-Platform: Linux / macOS only (Unix domain sockets for local).
-Remote execution additionally requires Python 3 in the terminal backend.
+Only the script's stdout is returned to the LLM; intermediate tool results
+never enter the context window.
 """
 
-import base64
 import json
 import logging
 import os
 import re
 import secrets
-import shlex
 import socket
 import subprocess
 import sys
@@ -64,7 +50,7 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "terminal",
 ])
 
-# Resource limit defaults (overridable via config.toml → code_execution.*)
+# Resource limits
 DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
@@ -112,20 +98,6 @@ def _assemble_stdout_result(
         )
     return stdout_text, metadata
 
-
-def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
-    """Cap a complete stdout string by bytes using the same head/tail policy."""
-    stdout_bytes = stdout_text.encode("utf-8", errors="replace")
-    if len(stdout_bytes) <= MAX_STDOUT_BYTES:
-        return _assemble_stdout_result(stdout_bytes)
-
-    head_bytes = int(MAX_STDOUT_BYTES * 0.4)
-    tail_bytes = MAX_STDOUT_BYTES - head_bytes
-    return _assemble_stdout_result(
-        stdout_bytes[:head_bytes],
-        stdout_bytes[-tail_bytes:],
-        total_bytes=len(stdout_bytes),
-    )
 
 # Environment variable scrubbing rules (shared between the local + remote
 # backends).  Secret-substring block is applied first; anything left must
@@ -368,17 +340,11 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
     return None
 
 
-def generate_son_of_anton_tools_module(enabled_tools: List[str],
-                                 transport: str = "uds") -> str:
+def generate_son_of_anton_tools_module(enabled_tools: List[str]) -> str:
     """
     Build the source code for the son_of_anton_tools.py stub module.
 
     Only tools in both SANDBOX_ALLOWED_TOOLS and enabled_tools get stubs.
-
-    Args:
-        enabled_tools: Tool names enabled in the current session.
-        transport: ``"uds"`` for Unix domain socket (local backend) or
-                   ``"file"`` for file-based RPC (remote backends).
     """
     tools_to_generate = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
 
@@ -395,15 +361,10 @@ def generate_son_of_anton_tools_module(enabled_tools: List[str],
         )
         export_names.append(func_name)
 
-    if transport == "file":
-        header = _FILE_TRANSPORT_HEADER
-    else:
-        header = _UDS_TRANSPORT_HEADER
-
-    return header + "\n".join(stub_functions)
+    return _UDS_TRANSPORT_HEADER + "\n".join(stub_functions)
 
 
-# ---- Shared helpers section (embedded in both transport headers) ----------
+# ---- Helpers section (embedded in the transport header) -------------------
 
 _COMMON_HELPERS = '''\
 
@@ -446,7 +407,7 @@ def retry(fn, max_attempts=3, delay=2):
 
 '''
 
-# ---- UDS transport (local backend) ---------------------------------------
+# ---- UDS transport ---------------------------------------------------------
 
 _UDS_TRANSPORT_HEADER = '''\
 """Auto-generated Son of Anton tools RPC stubs."""
@@ -502,73 +463,6 @@ def _call(tool_name, args):
     return result
 
 '''
-
-# ---- File-based transport (remote backends) -------------------------------
-
-_FILE_TRANSPORT_HEADER = '''\
-"""Auto-generated Son of Anton tools RPC stubs (file-based transport)."""
-import json, os, shlex, tempfile, threading, time
-
-_RPC_DIR = os.environ.get("SON_OF_ANTON_RPC_DIR") or os.path.join(tempfile.gettempdir(), "son_of_anton_rpc")
-_seq = 0
-# `_seq += 1` is not atomic (read-modify-write), so concurrent _call()
-# invocations from multiple threads could allocate the same sequence number
-# and clobber each other's request files. Guard seq allocation with a lock.
-_seq_lock = threading.Lock()
-''' + _COMMON_HELPERS + '''\
-
-def _call(tool_name, args):
-    """Send a tool call request via file-based RPC and wait for response."""
-    global _seq
-    with _seq_lock:
-        _seq += 1
-        seq = _seq
-    seq_str = f"{seq:06d}"
-    req_file = os.path.join(_RPC_DIR, f"req_{seq_str}")
-    res_file = os.path.join(_RPC_DIR, f"res_{seq_str}")
-
-    # Write request atomically (write to .tmp, then rename).
-    # encoding="utf-8" is critical: on a non-UTF-8 locale the default open()
-    # mode would mangle non-ASCII chars in tool args when encoding them as
-    # JSON.
-    tmp = req_file + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({
-            "tool": tool_name,
-            "args": args,
-            "seq": seq,
-            "token": os.environ.get("SON_OF_ANTON_RPC_TOKEN", ""),
-        }, f)
-    os.rename(tmp, req_file)
-
-    # Wait for response with adaptive polling
-    deadline = time.monotonic() + 300  # 5-minute timeout per tool call
-    poll_interval = 0.05  # Start at 50ms
-    while not os.path.exists(res_file):
-        if time.monotonic() > deadline:
-            raise RuntimeError(f"RPC timeout: no response for {tool_name} after 300s")
-        time.sleep(poll_interval)
-        poll_interval = min(poll_interval * 1.2, 0.25)  # Back off to 250ms
-
-    with open(res_file, encoding="utf-8") as f:
-        raw = f.read()
-
-    # Clean up response file
-    try:
-        os.unlink(res_file)
-    except OSError:
-        pass
-
-    result = json.loads(raw)
-    if isinstance(result, str):
-        try:
-            return json.loads(result)
-        except (json.JSONDecodeError, TypeError):
-            return result
-    return result
-
-'''
-
 
 # ---------------------------------------------------------------------------
 # RPC server (runs in a thread inside the parent process)
@@ -710,451 +604,6 @@ def _rpc_server_loop(
 # Remote execution support (file-based RPC via terminal backend)
 # ---------------------------------------------------------------------------
 
-def _get_or_create_env(task_id: str):
-    """Get or create the terminal environment for *task_id*.
-
-    Reuses the same environment (container/sandbox/SSH session) that the
-    terminal and file tools use, creating one if it doesn't exist yet.
-    Returns ``(env, env_type)`` tuple.
-    """
-    from tools.terminal_tool import (
-        _active_environments, _env_lock, _create_environment,
-        _get_env_config, _last_activity, _start_cleanup_thread,
-        _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id,
-    )
-
-    effective_task_id = _resolve_container_task_id(task_id)
-
-    # Fast path: environment already exists
-    with _env_lock:
-        if effective_task_id in _active_environments:
-            _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], _get_env_config()["env_type"]
-
-    # Slow path: create environment (same pattern as file_tools._get_file_ops)
-    with _creation_locks_lock:
-        if effective_task_id not in _creation_locks:
-            _creation_locks[effective_task_id] = threading.Lock()
-        task_lock = _creation_locks[effective_task_id]
-
-    with task_lock:
-        with _env_lock:
-            if effective_task_id in _active_environments:
-                _last_activity[effective_task_id] = time.time()
-                return _active_environments[effective_task_id], _get_env_config()["env_type"]
-
-        config = _get_env_config()
-        env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
-
-        image = ""
-
-        cwd = overrides.get("cwd") or config["cwd"]
-
-        ssh_config = None
-        if env_type == "ssh":
-            ssh_config = {
-                "host": config.get("ssh_host", ""),
-                "user": config.get("ssh_user", ""),
-                "port": config.get("ssh_port", 22),
-                "key": config.get("ssh_key", ""),
-                "persistent": config.get("ssh_persistent", False),
-            }
-
-        local_config = None
-        if env_type == "local":
-            local_config = {
-                "persistent": config.get("local_persistent", False),
-            }
-
-        logger.info("Creating new %s environment for execute_code task %s...",
-                     env_type, effective_task_id[:8])
-        env = _create_environment(
-            env_type=env_type,
-            image=image,
-            cwd=cwd,
-            timeout=config["timeout"],
-            ssh_config=ssh_config,
-            container_config=None,
-            local_config=local_config,
-            task_id=effective_task_id,
-            host_cwd=None,
-        )
-
-        with _env_lock:
-            _active_environments[effective_task_id] = env
-            _last_activity[effective_task_id] = time.time()
-
-        _start_cleanup_thread()
-        logger.info("%s environment ready for execute_code task %s",
-                     env_type, effective_task_id[:8])
-        return env, env_type
-
-
-def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
-    """Write *content* to *remote_path* on the remote environment.
-
-    Uses ``echo … | base64 -d`` rather than stdin piping because some
-    backends don't reliably deliver stdin_data to chained
-    commands.  Base64 output is shell-safe ([A-Za-z0-9+/=]) so single
-    quotes are fine.
-    """
-    encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-    quoted_remote_path = shlex.quote(remote_path)
-    env.execute(
-        f"echo '{encoded}' | base64 -d > {quoted_remote_path}",
-        cwd="/",
-        timeout=30,
-    )
-
-
-def _env_temp_dir(env: Any) -> str:
-    """Return a writable temp dir for env-backed execute_code sandboxes."""
-    get_temp_dir = getattr(env, "get_temp_dir", None)
-    if callable(get_temp_dir):
-        try:
-            temp_dir = get_temp_dir()
-            if isinstance(temp_dir, str) and temp_dir.startswith("/"):
-                return temp_dir.rstrip("/") or "/"
-        except Exception as exc:
-            logger.debug("Could not resolve execute_code env temp dir: %s", exc)
-    candidate = tempfile.gettempdir()
-    if isinstance(candidate, str) and candidate.startswith("/"):
-        return candidate.rstrip("/") or "/"
-    return "/tmp"
-
-
-def _rpc_poll_loop(
-    env,
-    rpc_dir: str,
-    task_id: str,
-    tool_call_log: list,
-    tool_call_counter: list,
-    max_tool_calls: int,
-    allowed_tools: frozenset,
-    stop_event: threading.Event,
-    rpc_token: str,
-):
-    """Poll the remote filesystem for tool call requests and dispatch them.
-
-    Runs in a background thread.  Each ``env.execute()`` spawns an
-    independent process, so these calls run safely concurrent with the
-    script-execution thread.
-    """
-    from model_tools import handle_function_call
-
-    poll_interval = 0.1  # 100 ms
-
-    quoted_rpc_dir = shlex.quote(rpc_dir)
-    while not stop_event.is_set():
-        try:
-            # List pending request files (skip .tmp partials)
-            ls_result = env.execute(
-                f"ls -1 {quoted_rpc_dir}/req_* 2>/dev/null || true",
-                cwd="/",
-                timeout=10,
-            )
-            output = ls_result.get("output", "").strip()
-            if not output:
-                stop_event.wait(poll_interval)
-                continue
-
-            req_files = sorted([
-                f.strip() for f in output.split("\n")
-                if f.strip()
-                and not f.strip().endswith(".tmp")
-                and "/req_" in f.strip()
-            ])
-
-            for req_file in req_files:
-                if stop_event.is_set():
-                    break
-
-                call_start = time.monotonic()
-
-                quoted_req_file = shlex.quote(req_file)
-                # Read request
-                read_result = env.execute(
-                    f"cat {quoted_req_file}",
-                    cwd="/",
-                    timeout=10,
-                )
-                try:
-                    request = json.loads(read_result.get("output", ""))
-                except (json.JSONDecodeError, ValueError):
-                    logger.debug("Malformed RPC request in %s", req_file)
-                    # Remove bad request to avoid infinite retry
-                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
-                    continue
-
-                if not rpc_token or not secrets.compare_digest(
-                    # Compare as bytes: compare_digest raises TypeError on a
-                    # str with non-ASCII characters, and the token comes from
-                    # sandbox-script-supplied JSON.
-                    str(request.get("token") or "").encode(), rpc_token.encode()
-                ):
-                    logger.debug("Unauthorized RPC request in %s", req_file)
-                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
-                    continue
-
-                tool_name = request.get("tool", "")
-                tool_args = request.get("args", {})
-                seq = request.get("seq", 0)
-                seq_str = f"{seq:06d}"
-                res_file = f"{rpc_dir}/res_{seq_str}"
-                quoted_res_file = shlex.quote(res_file)
-
-                # Enforce allow-list
-                if tool_name not in allowed_tools:
-                    available = ", ".join(sorted(allowed_tools))
-                    tool_result = tool_error(
-                        f"Tool '{tool_name}' is not available in execute_code. "
-                        f"Available: {available}"
-                    )
-                # Enforce tool call limit
-                elif tool_call_counter[0] >= max_tool_calls:
-                    tool_result = tool_error(
-                        f"Tool call limit reached ({max_tool_calls}). "
-                        "No more tool calls allowed in this execution."
-                    )
-                else:
-                    # Strip forbidden terminal parameters
-                    if tool_name == "terminal" and isinstance(tool_args, dict):
-                        for param in _TERMINAL_BLOCKED_PARAMS:
-                            tool_args.pop(param, None)
-
-                    # Dispatch through the standard tool handler
-                    try:
-                        with thread_scoped_silence():
-                            tool_result = handle_function_call(
-                                tool_name, tool_args, task_id=task_id
-                            )
-                    except Exception as exc:
-                        logger.error("Tool call failed in remote sandbox: %s",
-                                     exc, exc_info=True)
-                        tool_result = tool_error(str(exc))
-
-                    tool_call_counter[0] += 1
-                    call_duration = time.monotonic() - call_start
-                    tool_call_log.append({
-                        "tool": tool_name,
-                        "args_preview": str(tool_args)[:80],
-                        "duration": round(call_duration, 2),
-                    })
-
-                # Write response atomically (tmp + rename).
-                # Use echo piping (not stdin_data) because some backends don't
-                # reliably deliver stdin to chained commands.
-                encoded_result = base64.b64encode(
-                    tool_result.encode("utf-8")
-                ).decode("ascii")
-                env.execute(
-                    f"echo '{encoded_result}' | base64 -d > {quoted_res_file}.tmp"
-                    f" && mv {quoted_res_file}.tmp {quoted_res_file}",
-                    cwd="/",
-                    timeout=60,
-                )
-
-                # Remove the request file
-                env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
-
-        except Exception as e:
-            if not stop_event.is_set():
-                logger.debug("RPC poll error: %s", e, exc_info=True)
-
-        if not stop_event.is_set():
-            stop_event.wait(poll_interval)
-
-
-def _execute_remote(
-    code: str,
-    task_id: Optional[str],
-    enabled_tools: Optional[List[str]],
-) -> str:
-    """Run a script on the remote terminal backend via file-based RPC.
-
-    The script and the generated son_of_anton_tools.py module are shipped to
-    the remote environment, and tool calls are proxied through a polling
-    thread that communicates via request/response files.
-    """
-
-    _cfg = _load_config()
-    timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
-    max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
-
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-    if not sandbox_tools:
-        sandbox_tools = SANDBOX_ALLOWED_TOOLS
-
-    effective_task_id = task_id or "default"
-    env, env_type = _get_or_create_env(effective_task_id)
-
-    sandbox_id = uuid.uuid4().hex[:12]
-    temp_dir = _env_temp_dir(env)
-    sandbox_dir = f"{temp_dir}/son_of_anton_exec_{sandbox_id}"
-    quoted_sandbox_dir = shlex.quote(sandbox_dir)
-    quoted_rpc_dir = shlex.quote(f"{sandbox_dir}/rpc")
-
-    tool_call_log: list = []
-    tool_call_counter = [0]
-    exec_start = time.monotonic()
-    stop_event = threading.Event()
-    rpc_thread = None
-
-    try:
-        # Verify Python is available on the remote
-        py_check = env.execute(
-            "command -v python3 >/dev/null 2>&1 && echo OK",
-            cwd="/", timeout=15,
-        )
-        if "OK" not in py_check.get("output", ""):
-            return json.dumps({
-                "status": "error",
-                "error": (
-                    f"Python 3 is not available in the {env_type} terminal "
-                    "environment. Install Python to use execute_code with "
-                    "remote backends."
-                ),
-                "tool_calls_made": 0,
-                "duration_seconds": 0,
-            })
-
-        # Create sandbox directory on remote
-        env.execute(
-            f"mkdir -p {quoted_rpc_dir}", cwd="/", timeout=10,
-        )
-
-        rpc_token = secrets.token_urlsafe(32)
-
-        # Generate and ship files
-        tools_src = generate_son_of_anton_tools_module(
-            list(sandbox_tools), transport="file",
-        )
-        _ship_file_to_remote(env, f"{sandbox_dir}/son_of_anton_tools.py", tools_src)
-        _ship_file_to_remote(env, f"{sandbox_dir}/script.py", code)
-
-        # Wrapped so the thread inherits the turn's approval context + callbacks
-        # (see tools.thread_context) — else sandbox RPC tool calls lose approval
-        # routing (#33057).
-        rpc_thread = threading.Thread(
-            target=propagate_context_to_thread(_rpc_poll_loop),
-            args=(
-                env, f"{sandbox_dir}/rpc", effective_task_id,
-                tool_call_log, tool_call_counter, max_tool_calls,
-                sandbox_tools, stop_event, rpc_token,
-            ),
-            daemon=True,
-        )
-        rpc_thread.start()
-
-        # Build environment variable prefix for the script
-        env_prefix = (
-            f"SON_OF_ANTON_RPC_DIR={shlex.quote(f'{sandbox_dir}/rpc')} "
-            f"SON_OF_ANTON_RPC_TOKEN={shlex.quote(rpc_token)} "
-            f"PYTHONDONTWRITEBYTECODE=1"
-        )
-        tz = os.getenv("SON_OF_ANTON_TIMEZONE", "").strip()
-        if tz:
-            env_prefix += f" TZ={shlex.quote(tz)}"
-
-        # Execute the script on the remote backend
-        logger.info("Executing code on %s backend (task %s)...",
-                     env_type, effective_task_id[:8])
-        script_result = env.execute(
-            f"cd {quoted_sandbox_dir} && {env_prefix} python3 script.py",
-            timeout=timeout,
-        )
-
-        stdout_text = script_result.get("output", "") or ""
-        exit_code = script_result.get("returncode", -1)
-        status = "success"
-
-        # Check for timeout/interrupt from the backend
-        if exit_code == 124:
-            status = "timeout"
-        elif exit_code == 130:
-            status = "interrupted"
-
-    except Exception as exc:
-        duration = round(time.monotonic() - exec_start, 2)
-        logger.error(
-            "execute_code remote failed after %ss with %d tool calls: %s: %s",
-            duration, tool_call_counter[0], type(exc).__name__, exc,
-            exc_info=True,
-        )
-        return json.dumps({
-            "status": "error",
-            "error": str(exc),
-            "tool_calls_made": tool_call_counter[0],
-            "duration_seconds": duration,
-        }, ensure_ascii=False)
-
-    finally:
-        # Stop the polling thread
-        stop_event.set()
-        if rpc_thread is not None:
-            rpc_thread.join(timeout=5)
-
-        # Clean up remote sandbox dir
-        try:
-            env.execute(
-                f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15,
-            )
-        except Exception:
-            logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
-
-    duration = round(time.monotonic() - exec_start, 2)
-
-    # --- Post-process output (same as local path) ---
-
-    stdout_text, stdout_metadata = _truncate_stdout_text(stdout_text)
-
-    # Strip ANSI escape sequences
-    from tools.ansi_strip import strip_ansi
-    stdout_text = strip_ansi(stdout_text)
-
-    # Redact secrets. code_file=True: execute_code output is code-execution
-    # output that often echoes source/config — skip false-positive ENV/JSON/
-    # f-string-template redaction while still masking real credentials.
-    from agent.redact import redact_sensitive_text
-    stdout_text = redact_sensitive_text(stdout_text, code_file=True)
-
-    # Build response
-    result: Dict[str, Any] = {
-        "status": status,
-        "output": stdout_text,
-        "exit_code": exit_code,
-        "tool_calls_made": tool_call_counter[0],
-        "duration_seconds": duration,
-    }
-    result.update(stdout_metadata)
-
-    if status == "timeout":
-        timeout_msg = f"Script timed out after {timeout}s and was killed."
-        result["error"] = timeout_msg
-        # Include timeout message in output so the LLM always surfaces it
-        # to the user (see local path comment — same reasoning, #10807).
-        if stdout_text:
-            result["output"] = stdout_text + f"\n\n⏰ {timeout_msg}"
-        else:
-            result["output"] = f"⏰ {timeout_msg}"
-        logger.warning(
-            "execute_code (remote) timed out after %ss (limit %ss) with %d tool calls",
-            duration, timeout, tool_call_counter[0],
-        )
-    elif status == "interrupted":
-        result["output"] = (
-            stdout_text + "\n[execution interrupted — user sent a new message]"
-        )
-    elif exit_code != 0:
-        result["status"] = "error"
-        result["error"] = f"Script exited with code {exit_code}"
-
-    return json.dumps(result, ensure_ascii=False)
-
-
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -1167,9 +616,6 @@ def execute_code(
     """
     Run a Python script in a sandboxed child process with RPC access
     to a subset of Son of Anton tools.
-
-    Dispatches to the local (UDS) or remote (file-based RPC) path
-    depending on the configured terminal backend.
 
     Args:
         code:          Python source code to execute.
@@ -1193,14 +639,13 @@ def execute_code(
             "terminal(command=...) instead."
         )
 
-    # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config
     _env_config = _get_env_config()
     env_type = _env_config["env_type"]
 
     # execute_code runs arbitrary Python (subprocess/os.system/...) that never
     # passes through terminal()/DANGEROUS_PATTERNS, so guard the whole script
-    # here before either dispatch path spawns it. Runs synchronously in the
+    # here before the script is spawned. Runs synchronously in the
     # caller (tool-executor) thread, which holds the session context (#30882).
     from tools.approval import check_execute_code_guard
     _guard = check_execute_code_guard(
@@ -1214,28 +659,20 @@ def execute_code(
             "duration_seconds": 0,
         }, ensure_ascii=False)
 
-    # Clean interrupt slate for a user-approved script before EITHER dispatch
-    # path spawns it: drop a stale bit that landed on this thread during the
-    # blocking approval-wait so it can't kill the just-approved run on the first
-    # poll (local _wait_for_process loop, or remote/ssh env.execute which routes
-    # through the same poll loop).  A genuine post-clear interrupt re-sets the
-    # bit and is still caught downstream.
+    # Clean interrupt slate for a user-approved script before it is spawned:
+    # drop a stale bit that landed on this thread during the blocking
+    # approval-wait so it can't kill the just-approved run on the first poll.
+    # A genuine post-clear interrupt re-sets the bit and is still caught
+    # downstream.
     if _guard.get("user_approved"):
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
 
-    if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools)
-
-    # --- Local execution path (UDS) --- below this line is unchanged ---
-
     # Import per-thread interrupt check (cooperative cancellation)
     from tools.interrupt import is_interrupted as _is_interrupted
 
-    # Resolve config
-    _cfg = _load_config()
-    timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
-    max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    timeout = DEFAULT_TIMEOUT
+    max_tool_calls = DEFAULT_MAX_TOOL_CALLS
 
     # Determine which tools the sandbox can call
     session_tools = set(enabled_tools) if enabled_tools else set()
@@ -1246,11 +683,7 @@ def execute_code(
 
     # --- Set up temp directory with son_of_anton_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="son_of_anton_sandbox_")
-    # Use /tmp on macOS to avoid the long /var/folders/... path that pushes
-    # Unix domain socket paths past the 104-byte macOS AF_UNIX limit.
-    # On Linux, tempfile.gettempdir() already returns /tmp.
-    _sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
-    sock_path = os.path.join(_sock_tmpdir, f"son_of_anton_rpc_{uuid.uuid4().hex}.sock")
+    sock_path = os.path.join(tempfile.gettempdir(), f"son_of_anton_rpc_{uuid.uuid4().hex}.sock")
     rpc_endpoint = sock_path
 
     tool_call_log: list = []
@@ -1331,14 +764,10 @@ def execute_code(
         from son_of_anton_constants import apply_subprocess_home_env
         apply_subprocess_home_env(child_env)
 
-        # Resolve interpreter + CWD based on execute_code mode.
-        #   - strict : today's behavior (sys.executable + tmpdir CWD).
-        #   - project: user's venv python + session's working directory, so
-        #              project deps like pandas and user files resolve.
-        # Env scrubbing and tool whitelist apply identically in both modes.
-        _mode = _get_execution_mode()
-        _child_python = _resolve_child_python(_mode)
-        _child_cwd = _resolve_child_cwd(_mode, tmpdir, task_id=task_id or "")
+        # Interpreter + CWD: the user's venv python and the session's working
+        # directory, so project deps like pandas and user files resolve.
+        _child_python = _resolve_child_python()
+        _child_cwd = _resolve_child_cwd(tmpdir, task_id=task_id or "")
         _script_path = os.path.join(tmpdir, "script.py")
 
         # ``son_of_anton_tools.py`` always lives in the staging directory, so that
@@ -1658,62 +1087,6 @@ def _kill_process_group(proc, escalate: bool = False):
                     logger.debug("Could not kill process: %s", e2, exc_info=True)
 
 
-def _load_config() -> dict:
-    """Load code_execution config without importing the interactive CLI.
-
-    This helper is called while building the module-level execute_code schema
-    during tool discovery.  Importing ``cli`` here pulls prompt_toolkit/Rich and
-    a large chunk of the classic REPL onto every agent startup path, including
-    ``son-of-anton --tui`` where it is never used.  Read the lightweight raw config
-    instead; the config layer already caches by (mtime, size), and an absent
-    key cleanly falls back to DEFAULT_EXECUTION_MODE.
-    """
-    try:
-        from son_of_anton_cli.config import read_raw_config
-
-        cfg = read_raw_config().get("code_execution", {})
-        return cfg if isinstance(cfg, dict) else {}
-    except Exception:
-        return {}
-
-
-# ---------------------------------------------------------------------------
-# Execution mode resolution (strict vs project)
-# ---------------------------------------------------------------------------
-
-# Valid values for code_execution.mode. Kept as a module constant so tests
-# and the config layer can reference the canonical set.
-EXECUTION_MODES = ("project", "strict")
-DEFAULT_EXECUTION_MODE = "project"
-
-
-def _get_execution_mode() -> str:
-    """Return the active execute_code mode — 'project' or 'strict'.
-
-    Reads ``code_execution.mode`` from config.toml; invalid values fall back
-    to ``DEFAULT_EXECUTION_MODE`` ('project') with a log warning.
-
-    Mode semantics:
-      - ``project`` (default): scripts run in the session's working directory
-        with the active virtual environment's python, so project dependencies
-        (pandas, torch, project packages) and files resolve naturally.
-      - ``strict``: scripts run in an isolated temp directory with
-        ``sys.executable`` (son-of-anton's python). Reproducible and the
-        interpreter is guaranteed to work, but project deps and relative paths
-        won't resolve.
-
-    Env scrubbing and tool whitelist apply identically in both modes.
-    """
-    cfg_value = str(_load_config().get("mode", DEFAULT_EXECUTION_MODE)).strip().lower()
-    if cfg_value in EXECUTION_MODES:
-        return cfg_value
-    logger.warning(
-        "Ignoring code_execution.mode=%r (expected one of %s), falling back to %r",
-        cfg_value, EXECUTION_MODES, DEFAULT_EXECUTION_MODE,
-    )
-    return DEFAULT_EXECUTION_MODE
-
-
 # Shared budget for the two interpreter-probe caches below. Success-only
 # dict caches (FIFO-evicted at the cap) rather than lru_cache: a transient
 # probe failure (fork pressure, 5s timeout on a loaded host) must not stick
@@ -1800,9 +1173,9 @@ def _uses_son_of_anton_python_environment(python_path: str) -> bool:
     """Whether *python_path* belongs to Son of Anton's active Python environment.
 
     Short-circuits when *python_path* IS the running interpreter (by path or
-    realpath) — no subprocess probe on the default strict-mode path, and no
-    way for a flaky probe of ``sys.executable`` itself to break the invariant
-    that repo-root modules are importable in strict mode.  The realpath leg
+    realpath) — no subprocess probe, and no way for a flaky probe of
+    ``sys.executable`` itself to break the invariant that repo-root modules
+    are importable for it.  The realpath leg
     also covers venvs whose bin/python resolves to the same binary (e.g.
     ``uv run`` setting VIRTUAL_ENV without changing sys.prefix).
     """
@@ -1813,20 +1186,14 @@ def _uses_son_of_anton_python_environment(python_path: str) -> bool:
     return _python_environment_prefix(python_path) == os.path.realpath(sys.prefix)
 
 
-def _resolve_child_python(mode: str) -> str:
+def _resolve_child_python() -> str:
     """Pick the Python interpreter for the execute_code subprocess.
 
-    In ``strict`` mode, always ``sys.executable`` — guaranteed to work and
-    keeps behavior fully reproducible across sessions.
-
-    In ``project`` mode, prefer the user's active virtualenv/conda env's
-    python so ``import pandas`` etc. work. Falls back to ``sys.executable``
-    if no venv is detected, the candidate binary is missing/not executable,
-    or it fails a Python 3.8+ version check.
+    Prefer the user's active virtualenv/conda env's python so ``import
+    pandas`` etc. work. Falls back to ``sys.executable`` if no venv is
+    detected, the candidate binary is missing/not executable, or it fails a
+    Python 3.8+ version check.
     """
-    if mode != "project":
-        return sys.executable
-
     exe_names = ("python", "python3")
     subdirs = ("bin",)
 
@@ -1852,24 +1219,20 @@ def _resolve_child_python(mode: str) -> str:
     return sys.executable
 
 
-def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
+def _resolve_child_cwd(staging_dir: str, task_id: str = "") -> str:
     """Resolve the working directory for the execute_code subprocess.
 
-    - ``strict``: the staging tmpdir (today's behavior).
-    - ``project``: the session's own cwd — its per-session cwd record
-      (written after every completed terminal command), then the raw
-      per-session cwd override registered via ``session.cwd.set`` /
-      ``register_task_env_overrides``, then the session's TERMINAL_CWD
-      (same as the terminal tool), or ``os.getcwd()`` if none points at a
-      real dir. Falls back to the staging tmpdir as a last resort so we
-      never invoke Popen with a nonexistent cwd.
+    The session's own cwd — its per-session cwd record (written after every
+    completed terminal command), then the raw per-session cwd override
+    registered via ``session.cwd.set`` / ``register_task_env_overrides``,
+    then the session's TERMINAL_CWD (same as the terminal tool), or
+    ``os.getcwd()`` if none points at a real dir. Falls back to the staging
+    tmpdir as a last resort so we never invoke Popen with a nonexistent cwd.
 
     This mirrors the resolution ladder file tools and the terminal use
     (record → registered override → TERMINAL_CWD), so all file-writing
     paths within a session agree on the working directory. (#56047)
     """
-    if mode != "project":
-        return staging_dir
     if task_id:
         # 1. The session's cwd record — IS the session's `cd` state.
         try:
@@ -1932,24 +1295,15 @@ _TOOL_DOC_LINES = [
 ]
 
 
-def build_execute_code_schema(enabled_sandbox_tools: set = None,
-                              mode: str = None) -> dict:
+def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
     """Build the execute_code schema with description listing only enabled tools.
 
     When tools are disabled via ``son-of-anton tools`` (e.g. web is turned off),
     the schema description should NOT mention web_search / web_extract —
     otherwise the model thinks they are available and keeps trying to use them.
-
-    ``mode`` controls the working-directory sentence in the description:
-      - ``'strict'``: scripts run in a temp dir (not the session's CWD)
-      - ``'project'`` (default): scripts run in the session's CWD with the
-        active venv's python
-    If ``mode`` is None, the current ``code_execution.mode`` config is read.
     """
     if enabled_sandbox_tools is None:
         enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
-    if mode is None:
-        mode = _get_execution_mode()
 
     # Build tool documentation lines for only the enabled tools
     tool_lines = "\n".join(
@@ -1965,19 +1319,10 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     else:
         import_str = "..."
 
-    # Mode-specific CWD guidance. Project mode is the default and matches
-    # terminal()'s filesystem/interpreter; strict mode retains the isolated
-    # temp-dir staging and son-of-anton's own python.
-    if mode == "strict":
-        cwd_note = (
-            "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
-            "(os.path.expanduser('~/.son-of-anton/.env')) or terminal()/read_file() for user files."
-        )
-    else:
-        cwd_note = (
-            "Scripts run in the session's working directory with the active venv's python, "
-            "so project deps (pandas, etc.) and relative paths work like in terminal()."
-        )
+    cwd_note = (
+        "Scripts run in the session's working directory with the active venv's python, "
+        "so project deps (pandas, etc.) and relative paths work like in terminal()."
+    )
 
     description = (
         "Run a Python script that calls Son of Anton tools programmatically. "
@@ -2018,8 +1363,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     }
 
 
-# Default schema used at registration time (all sandbox tools listed,
-# current configured mode).  model_tools.py rebuilds per-session anyway.
+# Default schema used at registration time (all sandbox tools listed).
+# model_tools.py rebuilds per-session anyway.
 EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 

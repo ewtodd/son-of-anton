@@ -849,18 +849,3 @@ def run(args, parser: argparse.ArgumentParser | None = None) -> int:
             file=sys.stderr,
         )
     return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    """Standalone entry point: ``python -m autophysicist.spec_builder``."""
-    parser = add_arguments(
-        argparse.ArgumentParser(
-            prog="son-of-anton problem create",
-            description="Generate a physics-mode problem.toml from data plus a goal.",
-        )
-    )
-    return run(parser.parse_args(argv), parser)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -27,7 +27,6 @@ import random
 import re
 import sqlite3
 import subprocess
-import sys
 import threading
 import time
 import weakref
@@ -945,71 +944,6 @@ def _apply_wal_size_limit(conn: sqlite3.Connection) -> None:
         logger.debug("journal_size_limit not applied: %s", exc)
 
 
-def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
-    """Enable ``PRAGMA checkpoint_fullfsync`` on macOS (no-op elsewhere).
-
-    On Darwin, ``synchronous=FULL`` (the WAL default) issues a plain
-    ``fsync()``, which Apple documents does *not* guarantee that data
-    has reached stable storage or that writes are not reordered — see
-    the ``fsync(2)`` man page.  SQLite's WAL corruption-safety guarantee
-    assumes the OS honors the fsync write barrier; macOS does not unless
-    the app uses ``F_FULLFSYNC``.
-
-    During a launchd *system* shutdown/reboot the OS page cache is
-    dropped (effectively a power-loss event for in-flight pages), so a
-    WAL checkpoint whose ``fsync()`` "reported" durable may never have
-    hit the platter — corrupting ``state.db`` with a malformed image.
-    This is the trigger in issue #30636 ("SIGTERM during launchd
-    shutdown under high load"), distinct from a plain in-session kill
-    (which the page cache survives and SQLite recovers from).
-
-    ``checkpoint_fullfsync=1`` forces an ``F_FULLFSYNC`` barrier only at
-    checkpoint boundaries — where WAL frames land in the main DB — so the
-    cost amortizes to roughly +0.1 ms/commit (vs ~+4 ms for the broader
-    ``fullfsync=1`` that flushes on every commit's WAL sync).  Guarded by
-    ``sys.platform == "darwin"`` because ``F_FULLFSYNC`` is macOS-only;
-    on other platforms the PRAGMA is a no-op, so we skip it entirely.
-
-    Best-effort: never raises.
-    """
-    if sys.platform != "darwin":
-        return
-    try:
-        conn.execute("PRAGMA checkpoint_fullfsync=1")
-    except sqlite3.OperationalError:
-        pass
-
-
-def _enforce_macos_synchronous_full(conn: sqlite3.Connection) -> None:
-    """Enforce ``PRAGMA synchronous=FULL`` on macOS to prevent btree corruption.
-
-    On Darwin, the default ``synchronous=NORMAL`` only calls ``fsync()``,
-    which Apple's fsync(2) man page explicitly states does *not* guarantee
-    data-on-platter or write-ordering. During a WAL checkpoint race with
-    process termination (e.g., launchd shutdown), this can leave the main
-    DB with half-written btree pages → ``btreeInitPage error 11``.
-
-    WAL mode's durability guarantee assumes the OS honors fsync barriers;
-    macOS does not unless we explicitly set ``synchronous=FULL``, which issues
-    a real ``fsync()`` on every transaction commit.  The ``F_FULLFSYNC``
-    barrier at checkpoint boundaries is handled separately by
-    :func:`_apply_macos_checkpoint_barrier`.
-
-    This function is called after any successful WAL activation (either
-    from ``apply_wal_with_fallback()`` setting a fresh WAL or when probing
-    an existing WAL mode). It ensures macOS connections always use FULL
-    synchronous mode, even if a prior connection set ``synchronous=NORMAL``.
-
-    Best-effort: never raises.
-    """
-    if sys.platform != "darwin":
-        return
-    try:
-        conn.execute("PRAGMA synchronous=FULL")
-    except sqlite3.OperationalError:
-        pass
-
-
 def is_sqlite_wal_reset_vulnerable(
     version_info: Optional[tuple] = None,
 ) -> bool:
@@ -1024,20 +958,6 @@ def is_sqlite_wal_reset_vulnerable(
     info = version_info if version_info is not None else sqlite3.sqlite_version_info
     return _is_sqlite_wal_reset_vulnerable(info)
 
-
-def sqlite_source_id() -> str:
-    """Return ``sqlite_source_id()``, or an empty string when unavailable."""
-    try:
-        conn = sqlite3.connect(":memory:")
-        try:
-            row = conn.execute("SELECT sqlite_source_id()").fetchone()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return ""
-    if not row or row[0] is None:
-        return ""
-    return str(row[0])
 
 
 def resolve_journal_mode() -> str:
@@ -1152,8 +1072,6 @@ def apply_wal_with_fallback(
     current_mode = _on_disk_journal_mode(conn)
     if current_mode == "wal":
         _apply_wal_size_limit(conn)
-        _apply_macos_checkpoint_barrier(conn)
-        _enforce_macos_synchronous_full(conn)
         return "wal"
 
     # #68545: honor the canonical database.journal_mode setting. Existing
@@ -1193,8 +1111,6 @@ def apply_wal_with_fallback(
         mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
         if mode == "wal":
             _apply_wal_size_limit(conn)
-            _apply_macos_checkpoint_barrier(conn)
-            _enforce_macos_synchronous_full(conn)
             return "wal"
         # Silent refusal (macOS NFS / SMB / AgentFS overlay): WAL was not
         # honored, but nothing raised.
@@ -1242,8 +1158,6 @@ def apply_wal_with_fallback(
                 )
                 if mode == "wal":
                     _apply_wal_size_limit(conn)
-                    _apply_macos_checkpoint_barrier(conn)
-                    _enforce_macos_synchronous_full(conn)
                     return "wal"
                 break
         # Don't downgrade if another process already set WAL on disk, or if
@@ -1322,8 +1236,6 @@ def _apply_delete_for_wal_reset_bug(
         # still hold this WAL DB open — same safety rule as the NFS path.
         _log_wal_reset_bug_once(db_label, kept_wal=True)
         _apply_wal_size_limit(conn)
-        _apply_macos_checkpoint_barrier(conn)
-        _enforce_macos_synchronous_full(conn)
         return "wal"
 
     if current is None:
@@ -11765,16 +11677,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         with self._read_ctx() as conn:
             root = self._session_turn_lease_key_on_conn(conn, session_id)
             return self._relay_unconsumed(conn, root)
-
-    def claim_relay_inbox(self, session_id: str) -> List[Dict[str, Any]]:
-        """Atomically take every unconsumed inbox message, oldest first."""
-        now = time.time()
-
-        def _do(conn):
-            root = self._session_turn_lease_key_on_conn(conn, session_id)
-            return self._relay_claim_on_conn(conn, root, now)
-
-        return self._execute_write(_do)
 
     def release_relay_inbox(self, message_ids: List[int]) -> int:
         """Put claimed messages back (their run never started)."""

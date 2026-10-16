@@ -1155,17 +1155,9 @@ def _media_delivery_denied_paths() -> List[Path]:
         os.path.join("cache", "bws_cache.enc.json"),
     )
     # Directory trees whose every child is credential material.
-    #
-    # mcp-tokens/ holds live MCP OAuth access tokens (<server>.json) and
-    # dynamically-registered client credentials (<server>.client.json); see
-    # tools/mcp_oauth.py. Same credential class as auth.json/credentials/.
-    # The write side already denies it (file_tools _check_sensitive_path);
-    # this pairs the media-delivery (exfil) side so a prompt-injection MEDIA
-    # tag can't deliver a live bearer token as a native attachment.
     # (session/kanban SQLite stores are handled by #41071 — kept out here.)
     _ROOT_CREDENTIAL_DIRS = (
         "pairing",
-        "mcp-tokens",
     )
     for son_of_anton_root in (_SON_OF_ANTON_HOME, _SON_OF_ANTON_ROOT):
         for rel in _ROOT_CREDENTIAL_FILES:
@@ -1233,210 +1225,6 @@ def _path_is_within(path: Path, root: Path) -> bool:
         return False
 
 
-def _parse_docker_volume_mounts() -> List[Tuple[Path, Path]]:
-    """Parse configured Docker volume mounts into ``(host_path, container_path)``.
-
-    Source of truth is ``TERMINAL_DOCKER_VOLUMES`` (JSON list of
-    ``host:container[:mode]`` specs), matching terminal/docker runtime config.
-    Named volumes and non-absolute hosts are skipped because they cannot be
-    resolved on the gateway host for media delivery.
-    """
-    raw = os.getenv("TERMINAL_DOCKER_VOLUMES", "").strip()
-    if not raw:
-        return []
-    try:
-        import json as _json
-
-        parsed = _json.loads(raw)
-    except Exception:
-        return []
-    if not isinstance(parsed, list):
-        return []
-
-    mounts: List[Tuple[Path, Path]] = []
-    for entry in parsed:
-        if not isinstance(entry, str):
-            continue
-        spec = entry.strip()
-        if not spec:
-            continue
-        # Prefer the first ':/' so absolute container paths are unambiguous.
-        sep = spec.find(":/")
-        if sep <= 0:
-            continue
-        host_raw = spec[:sep]
-        container_and_mode = spec[sep + 1 :]  # starts with /
-        container_raw = container_and_mode.split(":", 1)[0]
-        if not container_raw.startswith("/"):
-            continue
-        # Skip named volumes (no absolute/drive host path).
-        host_expanded = os.path.expanduser(host_raw)
-        if not (
-            host_expanded.startswith("/")
-            or (len(host_expanded) > 1 and host_expanded[1] == ":")
-        ):
-            continue
-        try:
-            host_path = Path(host_expanded).resolve(strict=False)
-            container_path = Path(container_raw)
-        except (OSError, RuntimeError, ValueError):
-            continue
-        if not container_path.is_absolute():
-            continue
-        mounts.append((host_path, container_path))
-    return mounts
-
-
-def _default_docker_workspace_host_root() -> Optional[Path]:
-    """Host path for Docker's default persistent ``/workspace`` mount."""
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
-        return None
-    if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        return None
-    # Explicit cwd mount takes over /workspace when enabled.
-    if os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
-        try:
-            host = Path(os.path.expanduser(cwd)).resolve(strict=False)
-        except (OSError, RuntimeError, ValueError):
-            return None
-        return host if host.is_dir() else None
-    try:
-        from tools.environments.base import get_sandbox_dir
-
-        root = (get_sandbox_dir() / "docker" / "default" / "workspace").resolve(strict=False)
-    except Exception:
-        return None
-    return root if root.is_dir() else None
-
-
-def _docker_persistent_home_host_root() -> Optional[Path]:
-    """Host path for Docker's default persistent ``/root`` home mount.
-
-    Persistent containers bind ``<sandbox>/docker/<task>/home`` to ``/root``
-    (tools/environments/docker.py), so an agent that writes ``/root/out.png``
-    produced a real host file the gateway couldn't find. Same collapse rule as
-    the workspace mount: the gateway's container sharing resolves to the
-    ``default`` task sandbox.
-    """
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
-        return None
-    if os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").strip().lower() not in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        return None
-    try:
-        from tools.environments.base import get_sandbox_dir
-
-        root = (get_sandbox_dir() / "docker" / "default" / "home").resolve(strict=False)
-    except Exception:
-        return None
-    return root if root.is_dir() else None
-
-
-def _cache_dir_container_mounts() -> List[Tuple[Path, Path]]:
-    """(host, container) pairs for the auto-mounted Son of Anton cache dirs.
-
-    The agent legitimately sees generated artifacts at ``/root/.son-of-anton/...``
-    (``agent_visible_image`` from image_generate, cache-dir reads) and will
-    naturally emit those container paths in MEDIA tags. These mounts are
-    longer prefixes than the ``/root`` home mount, so longest-prefix matching
-    picks the cache translation over the home translation for them.
-    """
-    if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
-        return []
-    try:
-        from tools.credential_files import get_cache_directory_mounts
-
-        return [
-            (Path(m["host_path"]), Path(m["container_path"]))
-            for m in get_cache_directory_mounts()
-        ]
-    except Exception:
-        return []
-
-
-def _translate_docker_container_media_path(candidate: Path) -> Optional[Path]:
-    """Translate a container-absolute path to its host path when possible.
-
-    Uses longest-prefix match across configured ``docker_volumes``, the
-    auto-mounted Son of Anton cache dirs (``/root/.son-of-anton/...``), the default
-    persistent Docker ``/workspace`` host root, and the persistent ``/root``
-    home mount.
-    """
-    if not candidate.is_absolute():
-        return None
-
-    # In-process gateways (Desktop backend, `son-of-anton serve`) may not have
-    # bridged terminal.* config into TERMINAL_* env vars — run the idempotent
-    # bridge so the mount parsing below sees the active backend and volumes
-    # (same guard _binary_reference_block applies for inbound attachments).
-    try:
-        from tools.terminal_tool import _ensure_terminal_env_bridged
-
-        _ensure_terminal_env_bridged()
-    except Exception:
-        pass
-
-    mounts = list(_parse_docker_volume_mounts())
-    mounts.extend(_cache_dir_container_mounts())
-    # Synthetic /workspace mount for default persistent sandbox / cwd bind.
-    default_ws = _default_docker_workspace_host_root()
-    if default_ws is not None and not any(c.as_posix() == "/workspace" for _, c in mounts):
-        mounts.append((default_ws, Path("/workspace")))
-    # Synthetic /root mount for the persistent home bind. Cache mounts above
-    # are longer prefixes, so /root/.son-of-anton/... still translates to the host
-    # cache — this only catches stray home writes like /root/out.png.
-    default_home = _docker_persistent_home_host_root()
-    if default_home is not None and not any(c.as_posix() == "/root" for _, c in mounts):
-        # /root/.son-of-anton/* that did NOT match a cache mount is the container's
-        # credential/secret surface (.env, auth.json, ... are individually
-        # bind-mounted from the real host stores). Translating those through
-        # the home mount would resolve to sandbox-home copies OUTSIDE the
-        # host-side credential denylist prefixes — refuse instead so the
-        # normal "container path doesn't exist on host" rejection applies.
-        if not candidate.as_posix().startswith("/root/.son-of-anton"):
-            mounts.append((default_home, Path("/root")))
-
-    if not mounts:
-        return None
-
-    # Longest container-prefix match.
-    best: Optional[Tuple[Path, Path, int]] = None
-    candidate_posix = candidate.as_posix()
-    for host_root, container_root in mounts:
-        container_posix = container_root.as_posix().rstrip("/") or "/"
-        if candidate_posix == container_posix or candidate_posix.startswith(container_posix + "/"):
-            score = len(container_posix)
-            if best is None or score > best[2]:
-                best = (host_root, container_root, score)
-    if best is None:
-        return None
-
-    host_root, container_root, _ = best
-    try:
-        relative = candidate.relative_to(container_root)
-        translated = (host_root / relative).resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
-        return None
-    if translated != host_root and not _path_is_within(translated, host_root):
-        return None
-    return translated
-
-
 def validate_media_delivery_path(path: str) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
@@ -1475,17 +1263,10 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if not expanded.is_absolute():
         return None
 
-    # Docker agents emit MEDIA:/workspace/... (or other configured container
-    # mount paths). Resolve those to host paths before the normal host-side
-    # existence / denylist checks.
-    translated = _translate_docker_container_media_path(expanded)
-    if translated is not None:
-        resolved = translated
-    else:
-        try:
-            resolved = expanded.resolve(strict=True)
-        except (OSError, RuntimeError, ValueError):
-            return None
+    try:
+        resolved = expanded.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
 
     if not resolved.is_file():
         return None
@@ -1970,8 +1751,6 @@ def cache_media_bytes(
     ``application/octet-stream``); only images that fail validation
     (``cache_image_from_bytes`` raises ValueError) return None.
     """
-    from tools.credential_files import to_agent_visible_cache_path
-
     ext = _resolve_media_ext(filename, mime_type)
     mime = (mime_type or "").lower()
     display = re.sub(r"[^\w.\- ]", "_", filename) if filename else (ext.lstrip(".") or "file")
@@ -1991,18 +1770,18 @@ def cache_media_bytes(
         except ValueError:
             return None
         out_mime = mime if mime.startswith("image/") else SUPPORTED_IMAGE_DOCUMENT_TYPES.get(img_ext, "image/jpeg")
-        return CachedMedia(to_agent_visible_cache_path(path), out_mime, "image", display)
+        return CachedMedia(path, out_mime, "image", display)
 
     if is_video:
         vid_ext = ext if ext in SUPPORTED_VIDEO_TYPES else ".mp4"
         path = cache_video_from_bytes(data, ext=vid_ext)
-        return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_VIDEO_TYPES.get(vid_ext, "video/mp4"), "video", display)
+        return CachedMedia(path, SUPPORTED_VIDEO_TYPES.get(vid_ext, "video/mp4"), "video", display)
 
     if is_audio:
         aud_ext = ext if ext in _AUDIO_EXTS else ".ogg"
         path = cache_audio_from_bytes(data, ext=aud_ext)
         out_mime = mime if mime.startswith("audio/") else _AUDIO_MIME_TYPES[aud_ext]
-        return CachedMedia(to_agent_visible_cache_path(path), out_mime, "audio", display)
+        return CachedMedia(path, out_mime, "audio", display)
 
     # Any other file type is cached and surfaced to the agent as a local path
     # so it can be inspected with terminal / read_file / etc. Authorization to
@@ -2017,7 +1796,7 @@ def cache_media_bytes(
         out_mime = SUPPORTED_DOCUMENT_TYPES[ext]
     else:
         out_mime = mime if mime else "application/octet-stream"
-    return CachedMedia(to_agent_visible_cache_path(path), out_mime, "document", display or fallback_name)
+    return CachedMedia(path, out_mime, "document", display or fallback_name)
 
 
 class MessageType(Enum):

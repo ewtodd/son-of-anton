@@ -22,9 +22,7 @@ Two privacy tiers:
   ``0o600`` files — for spills that may hold raw, pre-redaction secrets
   (terminal output, hook context).
 * ``private=False`` keeps umask-default permissions — for cache dirs that
-  are bind-mounted into remote terminal backends (Docker/Modal/SSH via
-  ``credential_files._CACHE_DIRS``), where a non-root container UID must
-  still be able to read them (public web content, delegation summaries).
+  hold public web content and delegation summaries.
 
 Disk failures are the caller's concern: helpers raise ``OSError`` and the
 call sites keep their existing best-effort handling.

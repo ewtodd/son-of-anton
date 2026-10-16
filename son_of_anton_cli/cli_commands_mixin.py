@@ -36,133 +36,6 @@ class CLICommandsMixin:
     ``SonOfAntonCLI`` via the MRO.
     """
 
-    def _handle_rollback_command(self, command: str):
-        """Handle /rollback — list, diff, or restore filesystem checkpoints.
-
-        Syntax:
-            /rollback                 — list checkpoints
-            /rollback <N>             — restore checkpoint N, preserving user
-                                        hand-edits (also undoes last chat turn)
-            /rollback <N> --all       — classic full restore (may overwrite
-                                        files you edited after Son of Anton did)
-            /rollback diff <N>        — preview changes since checkpoint N
-            /rollback <N> <file>      — restore a single file from checkpoint N
-        """
-        from tools.checkpoint_manager import format_checkpoint_list
-
-        if not hasattr(self, 'agent') or not self.agent:
-            print("  No active agent session.")
-            return
-
-        mgr = self.agent._checkpoint_mgr
-        if not mgr.enabled:
-            print("  Checkpoints are not enabled.")
-            print("  Enable with: son-of-anton --checkpoints")
-            print("  Or in config.toml: checkpoints: { enabled: true }")
-            return
-
-        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-        parts = command.split()
-        args = parts[1:] if len(parts) > 1 else []
-
-        # --all / --force: classic full restore, overwriting user edits too.
-        restore_all = False
-        filtered = []
-        for a in args:
-            if a.lower() in ("--all", "--force"):
-                restore_all = True
-            else:
-                filtered.append(a)
-        args = filtered
-
-        if not args:
-            # List checkpoints — fall back to the cross-project view when the
-            # current directory has none (#10505, reapply of PR #10633 by
-            # @nightq). The Aug 2026 QA sweep hit this live: writes landed
-            # checkpoints under the session cwd (/tmp/qa-repo) while bare
-            # /rollback searched only TERMINAL_CWD's project and reported
-            # "No checkpoints found" despite fresh checkpoints existing.
-            checkpoints = mgr.list_checkpoints(cwd)
-            if not checkpoints:
-                all_checkpoints = mgr.list_all_checkpoints()
-                if all_checkpoints:
-                    print(f"  No checkpoints for {cwd} — showing all directories.")
-                    print(format_checkpoint_list(all_checkpoints, "all directories"))
-                    return
-            print(format_checkpoint_list(checkpoints, cwd))
-            return
-
-        # Handle /rollback diff <N>
-        if args[0].lower() == "diff":
-            if len(args) < 2:
-                print("  Usage: /rollback diff <N>")
-                return
-            checkpoints = mgr.list_checkpoints(cwd)
-            if not checkpoints:
-                print(f"  No checkpoints found for {cwd}")
-                return
-            target_hash = self._resolve_checkpoint_ref(args[1], checkpoints)
-            if not target_hash:
-                return
-            result = mgr.diff(cwd, target_hash)
-            if result["success"]:
-                stat = result.get("stat", "")
-                diff = result.get("diff", "")
-                if not stat and not diff:
-                    print("  No changes since this checkpoint.")
-                else:
-                    if stat:
-                        print(f"\n{stat}")
-                    if diff:
-                        # Limit diff output to avoid terminal flood
-                        diff_lines = diff.splitlines()
-                        if len(diff_lines) > 80:
-                            print("\n".join(diff_lines[:80]))
-                            print(f"\n  ... ({len(diff_lines) - 80} more lines, showing first 80)")
-                        else:
-                            print(f"\n{diff}")
-            else:
-                print(f"  ❌ {result['error']}")
-            return
-
-        # Resolve checkpoint reference (number or hash)
-        checkpoints = mgr.list_checkpoints(cwd)
-        if not checkpoints:
-            print(f"  No checkpoints found for {cwd}")
-            return
-
-        target_hash = self._resolve_checkpoint_ref(args[0], checkpoints)
-        if not target_hash:
-            return
-
-        # Check for file-level restore: /rollback <N> <file>
-        file_path = args[1] if len(args) > 1 else None
-
-        result = mgr.restore(
-            cwd, target_hash, file_path=file_path,
-            safe=not restore_all and not file_path,
-        )
-        if result["success"]:
-            if file_path:
-                print(f"  ✅ Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}")
-            else:
-                print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
-            skipped = result.get("skipped_user_edits") or []
-            if skipped:
-                shown = ", ".join(skipped[:5])
-                more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
-                print(f"  ↷ Kept your hand-edits: {shown}{more}")
-                print("  Use /rollback <N> --all to restore those too.")
-            print("  A pre-rollback snapshot was saved automatically.")
-
-            # Also undo the last conversation turn so the agent's context
-            # matches the restored filesystem state
-            if self.conversation_history:
-                self.undo_last(prefill=False)
-                print("  Chat turn undone to match restored file state.")
-        else:
-            print(f"  ❌ {result['error']}")
-
     def _handle_diff_command(self, command: str):
         """Handle /diff — show git changes in the working directory.
 
@@ -170,7 +43,6 @@ class CLICommandsMixin:
             /diff                  — unstaged changes + untracked files
             /diff staged           — staged changes (git diff --cached)
             /diff all              — staged + unstaged + untracked (vs HEAD)
-            /diff session          — everything Son of Anton changed (checkpoint baseline)
             /diff [mode] --stat    — summary only (changed files + counts)
             /diff [mode] <path...> — restrict to specific paths
         """
@@ -192,16 +64,10 @@ class CLICommandsMixin:
                 mode = "staged"
             elif low in ("all", "--all", "head"):
                 mode = "all"
-            elif low == "session":
-                mode = "session"
             else:
                 paths.append(arg)
 
         cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-
-        if mode == "session":
-            self._print_session_diff(cwd, stat_only)
-            return
 
         from tools.working_diff import collect_working_diff
 
@@ -237,46 +103,6 @@ class CLICommandsMixin:
             print(
                 f"\n  ... ({len(diff_lines) - 400} more lines — "
                 "run /diff --stat for a summary)"
-            )
-        else:
-            self._print_diff_text(diff)
-
-    def _print_session_diff(self, cwd: str, stat_only: bool):
-        """Print the cumulative checkpoint-baseline diff (/diff session)."""
-        if not hasattr(self, 'agent') or not self.agent:
-            print("  No active agent session.")
-            return
-
-        mgr = self.agent._checkpoint_mgr
-        if not mgr.enabled:
-            print("  Checkpoints are not enabled, so there's no session baseline.")
-            print("  Enable with: son-of-anton --checkpoints")
-            print("  Or in config.toml: checkpoints: { enabled: true }")
-            print("  (Plain /diff still works — it uses git directly.)")
-            return
-
-        result = mgr.session_diff(cwd)
-        if not result.get("success"):
-            print(f"  {result.get('error', 'Could not generate diff')}")
-            return
-
-        stat = result.get("stat", "")
-        diff = result.get("diff", "")
-        if result.get("empty") or (not stat and not diff):
-            print("  No changes — Son of Anton hasn't edited any files here yet.")
-            return
-
-        if stat:
-            self._print_diff_text(f"\n{stat}")
-        if stat_only or not diff:
-            return
-        diff_lines = diff.splitlines()
-        print("")
-        if len(diff_lines) > 400:
-            self._print_diff_text("\n".join(diff_lines[:400]))
-            print(
-                f"\n  ... ({len(diff_lines) - 400} more lines — "
-                "run /diff session --stat for a summary)"
             )
         else:
             self._print_diff_text(diff)

@@ -539,10 +539,6 @@ def _get_platform_tools(
             continue
         if ts_def.get("includes"):
             continue
-        # Posture toolsets (e.g. ``coding``) are session-level selections made
-        # by agent/coding_context.py — not per-platform capabilities to recover.
-        if ts_def.get("posture"):
-            continue
         # Static membership (see #49622): a registry-added tool absent from the
         # platform composite must not block recovery of a non-configurable
         # toolset whose authored tools the composite does list.

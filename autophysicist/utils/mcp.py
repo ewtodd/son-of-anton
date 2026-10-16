@@ -304,10 +304,6 @@ class LookupExecutor:
     def active_tools(self) -> list[dict] | None:
         return None
 
-    @property
-    def exit_tool_names(self) -> frozenset[str]:
-        return frozenset()
-
     def execute(self, tool_name: str, tool_input: dict):
         from ..core.tool_call import ToolCall
 

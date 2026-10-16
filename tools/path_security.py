@@ -2,7 +2,7 @@
 
 Extracts the ``resolve() + relative_to()`` and ``..`` traversal check
 patterns previously duplicated across tool implementations (cronjob_tools,
-credential_files, ...).
+file_tools, ...).
 """
 
 import logging

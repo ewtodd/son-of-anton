@@ -5044,19 +5044,6 @@ This compaction should PRIORITISE preserving all information related to the focu
         return summaries
 
     @classmethod
-    def _find_latest_context_summary(
-        cls,
-        messages: List[Dict[str, Any]],
-        start: int,
-        end: int,
-    ) -> tuple[Optional[int], str]:
-        """Find the newest handoff summary inside a compaction window."""
-        summaries = cls._find_context_summaries(messages, start, end)
-        if summaries:
-            return summaries[-1]
-        return None, ""
-
-    @classmethod
     def _strip_context_summary_handoff_message(
         cls,
         message: Dict[str, Any],

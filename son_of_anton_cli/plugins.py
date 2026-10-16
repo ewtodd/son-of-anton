@@ -163,24 +163,6 @@ VALID_HOOKS: Set[str] = {
     "transform_llm_output",
     "pre_llm_call",
     "post_llm_call",
-    # Streaming LLM output observer hooks. Fired asynchronously off the token
-    # path by agent.plugin_stream_hooks; callbacks observe immutable normalized
-    # text/lifecycle payloads and cannot transform the stream.
-    "on_stream_start",
-    "on_stream_delta",
-    "on_stream_end",
-    "on_interim_message",
-    # Verification-loop gate. Fired once per turn when the agent has edited code
-    # and is about to verify/finish (after the verify-on-stop guard). A callback
-    # may keep the agent going — run a check, defer it, tidy the diff — instead
-    # of stopping by returning:
-    #   {"action": "continue", "message": "<follow-up instruction>"}
-    # The Claude-Code Stop shape {"decision": "block", "reason": "..."} (block
-    # the stop == keep going) is accepted too. Anything else lets the turn
-    # finish. Son of Anton' shipped guidance lives in the evidence-based
-    # verification-stop nudge; this hook is for user/plugin policy and is
-    # bounded by agent.max_verify_nudges.
-    "pre_verify",
     "pre_api_request",
     "post_api_request",
     "api_request_error",
@@ -363,16 +345,6 @@ VALID_HOOKS: Set[str] = {
     #   alias_used: the exact token the user typed (str), args_raw: str,
     #   session_key: str | None (gateway), platform: str | None (gateway).
     "pre_command",
-}
-
-# Hooks whose return value carries a directive that the shell-hook response
-# parser (``agent/shell_hooks._parse_response``) has no channel for.
-# ``VALID_HOOKS`` doubles as the shell-hook config allow-list, so without
-# this exclusion a shell hook could register for one of these events and
-# have its output silently ignored — registration is refused loudly instead.
-# Support for a shell response shape can lift an event out of this set.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {
-    "transform_api_error_classification",
 }
 
 ENTRY_POINTS_GROUP = "son_of_anton_agent.plugins"
@@ -1361,9 +1333,6 @@ class PluginContext:
     def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
         self.manifest = manifest
         self._manager = manager
-        # Lazy-built host-owned LLM facade — see ctx.llm property below.
-        self._llm: Any = None
-        self._subagent_lifecycle: Any = None
         self._state: PluginState | None = None
         # Lazy-built capability-gated platform action facade (#64176).
         self._platform_actions: Any = None
@@ -1529,43 +1498,6 @@ class PluginContext:
         )
         return self._track(kind, key, lease.dispose)
 
-    # -- host-owned LLM access ----------------------------------------------
-
-    @property
-    def llm(self) -> Any:
-        """Return the plugin's :class:`agent.plugin_llm.PluginLlm` facade.
-
-        Lets trusted plugins run host-owned chat or structured completions
-        against the user's active model and auth without bringing their
-        own provider keys. Override capability (model, agent id, auth
-        profile) is fail-closed by default and gated through
-        ``plugins.entries.<plugin_id>.llm.*`` config keys.
-
-        See :mod:`agent.plugin_llm` for the full surface."""
-        if self._llm is None:
-            from agent.plugin_llm import PluginLlm
-            plugin_id = self.manifest.key or self.manifest.name
-            self._llm = PluginLlm(plugin_id=plugin_id)
-        return self._llm
-
-    @property
-    def subagent_lifecycle(self) -> Any:
-        """Return the public, plugin-safe subagent lifecycle service.
-
-        The service only resolves the active host-owned parent agent when a
-        child is launched. Plugins receive serializable handles and immutable
-        snapshots; they never receive a live agent or a private registry.
-        """
-        if self._subagent_lifecycle is None:
-            from agent.subagent_lifecycle import (
-                SubagentLifecycleService,
-                get_active_subagent_parent,
-            )
-            self._subagent_lifecycle = SubagentLifecycleService(
-                get_active_subagent_parent
-            )
-        return self._subagent_lifecycle
-
     # -- profile awareness --------------------------------------------------
 
     @property
@@ -1678,8 +1610,7 @@ class PluginContext:
 
         ``override=True`` against a built-in tool requires the operator to
         opt in via ``plugins.entries.<plugin_id>.allow_tool_override: true``
-        in config.toml — mirrors the trust gate pattern used for
-        ``ctx.llm`` provider/model overrides (#23194). Without that gate,
+        in config.toml. Without that gate,
         any enabled plugin could silently replace a privileged built-in
         like ``shell_exec`` or ``write_file`` and exfiltrate everything
         the model invokes through it.
@@ -2419,73 +2350,6 @@ class PluginContext:
         )
         return handle
 
-    # -- secret source registration -------------------------------------------
-
-    @_serialized_replacement
-    def register_secret_source(self, source) -> Optional[PluginRegistration]:
-        """Register an external secret-manager backend.
-
-        ``source`` must be an instance of
-        :class:`agent.secret_sources.base.SecretSource`.  Registered
-        sources run during ``load_son_of_anton_dotenv()`` startup — after
-        ``~/.son-of-anton/.env`` loads, before Son of Anton reads credentials — when
-        their ``secrets.<source.name>`` config section is enabled.  The
-        orchestrator (``agent.secret_sources.registry.apply_all``) owns
-        ordering, mapped-vs-bulk precedence, conflict warnings, and
-        provenance; the source only fetches.
-
-        NOTE ON TIMING: ``load_son_of_anton_dotenv()`` usually runs at import
-        *before* plugin discovery.  After discovery completes, the plugin
-        manager re-pulls enabled plugin secret sources (``reset_secret_source_cache``
-        + ``load_son_of_anton_dotenv``) so the first process sees them (#64177).
-        Child processes that load env after plugins still work without that
-        re-pull.  Failed re-pulls never block startup.
-
-        Contract requirements (rejected with a warning otherwise):
-        inherit from ``SecretSource``, ``api_version`` matching
-        ``SECRET_SOURCE_API_VERSION``, lowercase unique ``name``,
-        ``shape`` of ``"mapped"`` or ``"bulk"``, unique ``scheme`` (when
-        set), and a ``fetch()`` that never raises and never prompts.
-        See the base-module docstring for the full contract.
-        """
-        from agent.secret_sources.base import SecretSource
-        from agent.secret_sources.registry import (
-            register_source,
-            restore_registration,
-            snapshot_registration,
-        )
-
-        if not isinstance(source, SecretSource):
-            logger.warning(
-                "Plugin '%s' tried to register a secret source that does "
-                "not inherit from SecretSource. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        registry_name = source.name
-        scope = self._manager.scope_key
-        previous = snapshot_registration(registry_name, scope=scope)
-        if register_source(source, scope=scope):
-            registered = snapshot_registration(registry_name, scope=scope)
-            if registered is not source:
-                return None
-            handle = self._track_replacement(
-                "secret_source",
-                registry_name,
-                slot=("secret_source", scope, registry_name),
-                current=source,
-                previous=previous,
-                restore=lambda replacement: restore_registration(
-                    registry_name, source, replacement, scope=scope
-                ),
-            )
-            logger.info(
-                "Plugin '%s' registered secret source: %s",
-                self.manifest.name, registry_name,
-            )
-            return handle
-        return None
-
     # -- platform adapter registration ---------------------------------------
 
     @_serialized_replacement
@@ -2720,9 +2584,7 @@ class PluginContext:
                 f"Pick a plugin-namespaced key (e.g. '{self.manifest.name}_{key}')."
             )
 
-        # Owner is the plugin's canonical id (``key or name``) — the same id
-        # ``ctx.llm`` is bound to (PluginLlm._plugin_id) — so the task trust
-        # gate in agent/plugin_llm.py can match ownership. For the common
+        # Owner is the plugin's canonical id (``key or name``). For the common
         # case where a manifest sets no explicit ``key`` this equals the name.
         owner_id = self.manifest.key or self.manifest.name
 
@@ -3436,85 +3298,9 @@ class PluginManager:
             self._discovered = True
             try:
                 self._discover_and_load_inner()
-                # Plugin secret sources register during discover; the initial
-                # load_son_of_anton_dotenv() already ran at import time. Re-pull so the
-                # first process sees plugin backends (tracking #64177).
-                self._refresh_secret_sources_after_discovery()
-                if force:
-                    # config.toml shell hooks live in ``_hooks`` but are
-                    # config-owned, not plugin-owned — the ledger-driven
-                    # unload() above wiped them and cannot restore them.
-                    # Re-register so force-reload is symmetric (#60036;
-                    # tracking #64178 — salvaged from PR #64188).
-                    self._re_register_shell_hooks_after_force()
             except BaseException:
                 self._discovered = False
                 raise
-
-    def _re_register_shell_hooks_after_force(self) -> None:
-        """Restore config.toml shell hooks wiped by force-clear of ``_hooks``."""
-        try:
-            from agent.shell_hooks import re_register_config_hooks
-
-            re_register_config_hooks()
-        except Exception as exc:
-            # Import cycle / missing module must not abort force reload.
-            logger.debug("force-reload shell-hook re-register skipped: %s", exc)
-
-    def _refresh_secret_sources_after_discovery(self) -> None:
-        """If any plugin secret source is enabled, reset cache and re-apply.
-
-        Enablement is delegated to each source's ``is_enabled(cfg)`` — the
-        same contract the orchestrator uses (``registry._ordered_enabled_sources``)
-        — so a source with custom activation logic is honored, not just
-        ``secrets.<name>.enabled``.
-
-        No-op when only bundled sources exist or none are enabled.
-        Fail-open: never raise into discover_and_load.
-        """
-        try:
-            from agent.secret_sources.registry import list_plugin_sources
-            from son_of_anton_cli.env_loader import load_son_of_anton_dotenv, reset_secret_source_cache
-        except Exception:
-            return
-        try:
-            plugin_sources = list_plugin_sources()
-        except Exception:
-            return
-        if not plugin_sources:
-            return
-        # Load the secrets config once; hand each source its own section and
-        # let its is_enabled() decide (honours custom activation extensions).
-        try:
-            from son_of_anton_cli.config import load_config
-
-            cfg = load_config() or {}
-            secrets = cfg.get("secrets") or {}
-        except Exception:
-            secrets = {}
-        enabled_names = []
-        for source in plugin_sources:
-            name = getattr(source, "name", "")
-            section = secrets.get(name)
-            section = section if isinstance(section, dict) else {}
-            try:
-                if source.is_enabled(section):
-                    enabled_names.append(name)
-            except Exception:
-                # A source whose is_enabled() raises is skipped, mirroring
-                # the orchestrator's defensive posture.
-                continue
-        if not enabled_names:
-            return
-        try:
-            reset_secret_source_cache()
-            load_son_of_anton_dotenv()
-            logger.debug(
-                "Re-applied secret sources after plugin discovery for: %s",
-                ", ".join(sorted(enabled_names)),
-            )
-        except Exception as exc:
-            logger.debug("secret source re-apply after discovery failed: %s", exc)
 
     def _discover_and_load_inner(self) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""
@@ -5691,57 +5477,6 @@ def _dispatch_pre_tool_call_hooks(
         turn_id=turn_id, tool_call_id=tool_call_id, session_id=session_id,
     )
     return (block_msg, details.modified_args)
-
-
-def get_pre_verify_continue_message(
-    *,
-    session_id: str = "",
-    platform: str = "",
-    model: str = "",
-    coding: bool = False,
-    attempt: int = 0,
-    final_response: str = "",
-    changed_paths: Optional[List[str]] = None,
-) -> Optional[str]:
-    """Check user ``pre_verify`` hooks for a directive to keep the agent going.
-
-    Fired once per turn when the agent edited code and is about to verify/finish.
-    A hook keeps the turn going (run a check, defer it, tidy the diff) by
-    returning::
-
-        {"action": "continue", "message": "<follow-up for the model>"}
-
-    The Claude-Code Stop shape ``{"decision": "block", "reason": "..."}`` (block
-    the stop == keep going) is accepted too. The first directive carrying a
-    non-empty message wins; any other return lets the turn finish. Mirrors
-    :func:`get_pre_tool_call_block_message` — the call site stays a one-liner.
-
-    ``coding`` / ``attempt`` let a hook scope itself (``if not coding`` …) and
-    self-throttle (``if attempt`` …), the same way a ``pre_tool_call`` hook
-    scopes on ``tool_name``.
-    """
-    hook_results = invoke_hook(
-        "pre_verify",
-        session_id=session_id,
-        platform=platform,
-        model=model,
-        coding=coding,
-        attempt=attempt,
-        final_response=final_response,
-        changed_paths=list(changed_paths or []),
-    )
-
-    for result in hook_results:
-        if not isinstance(result, dict):
-            continue
-        action = str(result.get("action") or result.get("decision") or "").strip().lower()
-        if action not in ("continue", "block"):
-            continue
-        message = result.get("message") or result.get("reason")
-        if isinstance(message, str) and message.strip():
-            return message.strip()
-
-    return None
 
 
 def get_plugin_error_classification(

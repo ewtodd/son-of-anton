@@ -362,22 +362,15 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
       - ``messaging`` — interactive, needs a live gateway session
       - ``clarify`` — interactive, blocks waiting for user input
 
-    ``cronjob`` is policy-denied by default (loop prevention, not a security
-    boundary) and config-gated: setting ``cron.allow_agent_scheduling: true``
-    in config.toml drops it from the base denylist so cron-spawned agents may
-    manage the user's cron table. The gate only removes the built-in policy
-    denial — it never overrides the user denylist below.
+    ``cronjob`` is policy-denied as well (loop prevention, not a security
+    boundary).
 
     User-level ``agent.disabled_toolsets`` from config.toml is layered on top
     so per-job ``enabled_toolsets`` cannot bypass policy that applies to
     ordinary agent runs (#25752 — LLM-supplied enabled_toolsets was widening
     past config.toml's denylist).
     """
-    cron_cfg = (cfg or {}).get("cron") or {}
-    if cron_cfg.get("allow_agent_scheduling"):
-        disabled = ["messaging", "clarify"]
-    else:
-        disabled = ["cronjob", "messaging", "clarify"]
+    disabled = ["cronjob", "messaging", "clarify"]
     agent_cfg = (cfg or {}).get("agent") or {}
     from utils import parse_config_string_list
 
@@ -724,41 +717,6 @@ def release_running_job(job_id: str) -> None:
         _running_futures.pop(job_id, None)
 
 
-def _inflight_min_allowance_minutes() -> float:
-    """Floor for the stale in-flight allowance, in minutes.
-
-    Effective allowance per job is ``max(2 * interval, this)``, so a
-    slow-but-healthy long-interval job is never clipped by the sweep.
-    Reads ``cron.inflight_max_minutes`` from config.toml; the
-    ``SON_OF_ANTON_CRON_INFLIGHT_MAX_MINUTES`` env var is kept as an internal
-    escape hatch only.
-    """
-    try:
-        _ucfg = load_config() or {}
-        _cfg_val = (
-            _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
-        ).get("inflight_max_minutes")
-        if _cfg_val is not None:
-            val = float(_cfg_val)
-            if val > 0:
-                return val
-    except Exception:
-        pass
-    raw = os.getenv("SON_OF_ANTON_CRON_INFLIGHT_MAX_MINUTES", "").strip()
-    if raw:
-        try:
-            val = float(raw)
-            if val > 0:
-                return val
-        except (ValueError, TypeError):
-            logger.warning(
-                "Invalid SON_OF_ANTON_CRON_INFLIGHT_MAX_MINUTES=%r; using default %s",
-                raw,
-                _INFLIGHT_MIN_ALLOWANCE_MINUTES,
-            )
-    return _INFLIGHT_MIN_ALLOWANCE_MINUTES
-
-
 # Cache for cron expression interval computation (expression → minutes).
 # A cron expression's cadence never changes, so computing it once per expr
 # avoids repeated croniter evaluation on every 60s tick.
@@ -872,7 +830,7 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     global _forced_release_count
 
     by_id = {j.get("id"): j for j in (due_jobs or []) if isinstance(j, dict)}
-    floor_seconds = _inflight_min_allowance_minutes() * 60.0
+    floor_seconds = _INFLIGHT_MIN_ALLOWANCE_MINUTES * 60.0
     now = time.time()
     stale: list = []
 
@@ -1274,7 +1232,7 @@ _terminal_cwd_lock = _ReadWriteLock()
 
 # Ceiling on how long a cron job waits for the TERMINAL_CWD lock before
 # FAILING (fail-closed, #79768). Derived from the cron inactivity limit
-# (SON_OF_ANTON_CRON_TIMEOUT, default 600s): a wedged lock holder stops touching
+# (_CRON_INACTIVITY_SECONDS): a wedged lock holder stops touching
 # its activity clock, so the inactivity monitor usually reaps it and the
 # lock is released within roughly that limit. The bound is measured from
 # the WAITER's arrival, so a holder that wedges late (or hangs in pre-agent
@@ -1291,31 +1249,17 @@ _CWD_LOCK_TIMEOUT_FLOOR_SECONDS = 120.0
 _CWD_LOCK_TIMEOUT_MARGIN_SECONDS = 60.0
 
 
-def _cron_inactivity_seconds() -> float:
-    """Parse SON_OF_ANTON_CRON_TIMEOUT (seconds). 0 = unlimited; bad input = 600.
-
-    Shared by run_job's inactivity monitor (which maps 0 to "no limit") and
-    the cwd-lock bound below (which keeps the wait bounded regardless) so
-    the two sites cannot drift apart — the lock bound must stay at or above
-    the inactivity limit or waiters would fail while a healthy holder runs.
-    """
-    raw = os.getenv("SON_OF_ANTON_CRON_TIMEOUT", "").strip()
-    if not raw:
-        return 600.0
-    try:
-        return float(raw)
-    except (ValueError, TypeError):
-        logger.warning("Invalid SON_OF_ANTON_CRON_TIMEOUT=%r; using default 600s", raw)
-        return 600.0
+# Inactivity limit for a cron agent run (seconds). Shared by run_job's
+# inactivity monitor and the cwd-lock bound below so the two cannot drift
+# apart — the lock bound must stay at or above the inactivity limit or waiters
+# would fail while a healthy holder runs.
+_CRON_INACTIVITY_SECONDS = 600.0
 
 
 def _cwd_lock_timeout_seconds() -> float:
     """Bound for the TERMINAL_CWD lock wait: inactivity limit + margin."""
-    inactivity = _cron_inactivity_seconds()
-    if inactivity <= 0:  # 0 = unlimited job runtime; keep the wait bounded.
-        inactivity = 600.0
     return (
-        max(inactivity, _CWD_LOCK_TIMEOUT_FLOOR_SECONDS)
+        max(_CRON_INACTIVITY_SECONDS, _CWD_LOCK_TIMEOUT_FLOOR_SECONDS)
         + _CWD_LOCK_TIMEOUT_MARGIN_SECONDS
     )
 
@@ -1512,48 +1456,6 @@ def _reclaim_fds_best_effort() -> None:
         pass
 
 
-def _resolve_cron_surface_mode(pconfig, logical_platform_name: str) -> str:
-    """Resolve the continuable-cron delivery surface for a platform config.
-
-    Returns ``"in_channel"`` or ``"thread"`` (default). Two config shapes:
-
-    - Native adapter: the flat key ``platforms.<p>.extra.cron_continuable_surface``
-      (shipped shape, unchanged).
-    - Relay-fronted: ``platforms.relay.extra.<logical>.cron_continuable_surface``
-      — the same per-logical-platform sub-block the relay's documented Slack
-      knobs use (``reply_in_thread``, ``dm_top_level_threads_as_sessions``;
-      see RelayAdapter._relay_slack_extra). The sub-block wins over a flat
-      key when both exist, matching _relay_slack_extra precedence, and is
-      scoped to its logical platform so a ``slack:`` block cannot leak onto
-      another fronted platform.
-
-    Precedence nuance vs _relay_slack_extra: that helper is all-or-nothing
-    (a sub-dict REPLACES the flat extra entirely), while this one falls back
-    to the flat key when the sub-block exists but omits the knob. The
-    difference is deliberate — the flat key is the legacy staging shape and
-    must keep working — but note a flat ``cron_continuable_surface`` then
-    applies to EVERY platform this relay fronts; only the per-platform D6
-    capability gate contains it. Scope the knob under the sub-block on
-    multi-platform relays.
-
-    Field gap (2026-08-18): the scheduler read only the flat key, so on the
-    relay lane — where pconfig is platforms.relay — operators had NO working
-    location for the knob and briefs always threaded.
-    """
-    try:
-        extra = getattr(pconfig, "extra", None) or {}
-        sub = extra.get(str(logical_platform_name or "").lower())
-        if isinstance(sub, dict) and sub.get("cron_continuable_surface") is not None:
-            raw = sub.get("cron_continuable_surface")
-        else:
-            raw = extra.get("cron_continuable_surface")
-        if raw is not None and str(raw).strip().lower() == "in_channel":
-            return "in_channel"
-    except Exception:
-        pass
-    return "thread"
-
-
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
 
@@ -1576,27 +1478,13 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     return None
 
 
-def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool:
+def _cron_mirror_delivery_enabled(job: dict) -> bool:
     """Whether a cron delivery should also be mirrored into the target chat's
     gateway session transcript.
 
     Default OFF — preserves the historical isolation guarantee (cron deliveries
-    live only in the cron job's own session, never the target chat's history)
-    byte-for-byte for everyone who does not opt in.
-
-    CARVE-OUT: the ``in_channel`` continuable surface seeds its target
-    session independently of this knob (see ``_deliver_result`` /
-    ``_seed_cron_channel_session``). in_channel is itself opt-in
-    (``cron_continuable_surface: in_channel`` + the adapter capability bit),
-    and the seed IS the feature — a continuable flat brief without its seed
-    is a brief the next reply can't see. This knob keeps governing the
-    SEPARATE default/thread-surface transcript mirror only.
-
-    Precedence (first decisive value wins):
-      1. Per-job ``attach_to_session`` (bool) — set via the ``cronjob`` tool,
-         lets one briefing job opt in without flipping global behaviour.
-      2. Global ``cron.mirror_delivery`` (bool) in config.toml.
-      3. False.
+    live only in the cron job's own session, never the target chat's history).
+    A job opts in with ``attach_to_session`` (set via the ``cronjob`` tool).
 
     When enabled, the cron's final output is appended to the target session as
     an assistant turn via the existing ``gateway.mirror.mirror_to_session`` —
@@ -1605,15 +1493,7 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
     alternation- and cache-safe: the append lands at a turn boundary between
     user turns, never mid-loop, and never mutates the cached system prompt.
     """
-    per_job = job.get("attach_to_session")
-    if isinstance(per_job, bool):
-        return per_job
-    try:
-        if cfg is None:
-            cfg = load_config() or {}
-        return bool((cfg.get("cron", {}) or {}).get("mirror_delivery", False))
-    except Exception:
-        return False
+    return job.get("attach_to_session") is True
 
 
 def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
@@ -1717,274 +1597,6 @@ def _maybe_mirror_cron_delivery(
             "Job '%s': delivery mirror failed for %s:%s: %s",
             job.get("id", "?"), platform_name, chat_id, e,
         )
-
-
-def _open_continuable_cron_thread(
-    job: dict,
-    adapter,
-    chat_id: str,
-    loop,
-) -> Optional[str]:
-    """Open a dedicated thread for a continuable cron job (thread-preferred).
-
-    Returns the new ``thread_id`` on success, or ``None`` when the platform has
-    no thread primitive (Signal) or creation failed — the ``None``
-    return is the caller's signal to fall back to the origin-DM mirror. Reuses
-    the shipped ``adapter.create_handoff_thread``; no new adapter surface.
-    """
-    create_thread = getattr(adapter, "create_handoff_thread", None)
-    if not callable(create_thread) or loop is None:
-        return None
-    task_name = job.get("name") or job.get("id", "cron")
-    thread_name = f"Son of Anton — {task_name}"
-    try:
-        from agent.async_utils import safe_schedule_threadsafe
-
-        coro = create_thread(str(chat_id), thread_name)
-        future = safe_schedule_threadsafe(coro, loop)  # type: ignore[arg-type]
-        if future is None:
-            return None
-        new_thread_id = future.result(timeout=30)
-        return str(new_thread_id) if new_thread_id else None
-    except Exception as e:
-        logger.debug(
-            "Job '%s': create_handoff_thread failed on %s — falling back to "
-            "DM-session mirror: %s",
-            job.get("id", "?"), getattr(adapter, "name", "?"), e,
-        )
-        return None
-
-
-def _seed_cron_thread_session(
-    job: dict,
-    adapter,
-    platform_name: str,
-    chat_id: str,
-    thread_id: str,
-    mirror_text: str,
-    chat_name: Optional[str] = None,
-    is_dm: bool = False,
-    scope_id: Optional[str] = None,
-) -> None:
-    """Seed the freshly-opened cron thread's session with the brief.
-
-    Without this the brief is *visible* in the new thread but absent from any
-    transcript, so the user's first reply in-thread would hit a session with no
-    record of it ("what is Task #2?"). We create the thread-keyed session (the
-    same key the user's reply will resolve to — ``build_session_key`` keys
-    threads as participant-shared, so no ``user_id`` is needed) and append the
-    brief as an assistant turn via the shipped ``mirror_to_session``.
-
-    ``scope_id`` is the workspace/server scope (Slack team id).
-    ``build_session_key`` embeds it in every Slack key, so a scoped reply's
-    key carries it — the seed must reproduce it or the seeded row is
-    unreachable (the scope-less flat-seed sibling of the is_dm keying bug).
-    Best-effort None for platforms without scope.
-
-    ``is_dm`` selects the seeded ``chat_type``: a thread under a DM must seed
-    ``chat_type="dm"`` because the user's in-thread DM reply arrives with
-    chat_type="dm" and ``build_session_key`` routes DM threads through the DM
-    arm (``...:dm:<chat>:<thread>``) — a "thread"-typed seed lands in
-    ``...:thread:<chat>:<thread>``, a row no DM reply ever resolves to
-    (continuation amnesia, Alice live 2026-08-20, job 8e21a957b77b). Channel
-    threads keep ``chat_type="thread"`` (their replies really do arrive as
-    threads). Same sibling-lane class as the flat seed's ``is_dm``
-    (dcca9d8cfe).
-
-    Cron reaches the live ``SessionStore`` through the adapter's
-    ``_session_store`` handle rather than the gateway object. Best-effort — a
-    delivery that already succeeded is never failed by a seeding problem.
-    """
-    text = (mirror_text or "").strip()
-    if not text:
-        return
-    try:
-        from gateway.config import Platform
-        from gateway.session import SessionSource
-
-        seeded_session_id: Optional[str] = None
-        session_store = getattr(adapter, "_session_store", None)
-        if session_store is not None:
-            try:
-                platform_enum = Platform(platform_name.lower())
-            except (ValueError, KeyError):
-                platform_enum = None
-            if platform_enum is not None:
-                # Discord thread destinations must key on the thread's OWN id
-                # to match how the Discord adapter keys organic in-thread
-                # messages (chat_id == thread_id). Other platforms (Slack,
-                # Some adapters) use chat_id == parent_channel for thread messages,
-                # so the parent chat_id is correct for them.
-                if platform_enum == Platform.DISCORD:
-                    seed_chat_id = str(thread_id)
-                else:
-                    seed_chat_id = str(chat_id)
-                dest_source = SessionSource(
-                    platform=platform_enum,
-                    chat_id=seed_chat_id,
-                    chat_name=chat_name,
-                    # DM threads key through the DM arm (see docstring); the
-                    # reply's chat_type is what the seed must reproduce.
-                    chat_type="dm" if is_dm else "thread",
-                    user_id="system:cron",
-                    user_name="Cron",
-                    thread_id=str(thread_id),
-                    scope_id=str(scope_id) if scope_id else None,
-                )
-                # Ensure the thread-keyed session row exists so the mirror has
-                # a target and the user's later reply joins the same session.
-                # Capture the exact id — the mirror writes into THIS row, not
-                # an origin-heuristic rediscovery (which bails on populated
-                # chats; same class as the flat-seed live failure 2026-08-19).
-                _entry = session_store.get_or_create_session(dest_source)
-                seeded_session_id = getattr(_entry, "session_id", None)
-
-        from gateway.mirror import mirror_to_session
-
-        # User-role + labelled prefix (see _maybe_mirror_cron_delivery): the
-        # seeded brief must not read as an assistant turn, or the user's first
-        # in-thread reply produces assistant→user→... off a phantom assistant
-        # message. Pass the seed user_id so the mirror resolves the exact
-        # thread-keyed session row we just created.
-        ok = mirror_to_session(
-            platform_name,
-            str(chat_id),
-            f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}",
-            source_label="cron",
-            thread_id=str(thread_id),
-            user_id="system:cron",
-            role="user",
-            session_id=seeded_session_id,
-        )
-        if ok:
-            logger.info(
-                "Job '%s': opened continuable thread %s on %s:%s and seeded the brief",
-                job.get("id", "?"), thread_id, platform_name, chat_id,
-            )
-        else:
-            logger.warning(
-                "Job '%s': thread seed did NOT land on %s:%s thread=%s — an "
-                "in-thread reply will not see this brief",
-                job.get("id", "?"), platform_name, chat_id, thread_id,
-            )
-    except Exception as e:
-        # WARNING, not debug: a silent seed failure IS the continuation-
-        # amnesia bug (Alice 2026-08-19) — it must be visible in production.
-        logger.warning(
-            "Job '%s': seeding cron thread session failed for %s:%s:%s: %s",
-            job.get("id", "?"), platform_name, chat_id, thread_id, e,
-        )
-
-
-def _seed_cron_channel_session(
-    job: dict,
-    adapter,
-    platform_name: str,
-    chat_id: str,
-    mirror_text: str,
-    *,
-    is_dm: bool,
-    user_id: Optional[str],
-    chat_name: Optional[str] = None,
-    scope_id: Optional[str] = None,
-) -> bool:
-    """Seed the FLAT (thread_id=None) session for an ``in_channel`` cron delivery.
-
-    The ``in_channel`` surface (D1/D2) delivers the brief flat into the channel
-    with no thread, so the continuation surface is the whole-channel /
-    whole-DM session keyed ``thread_id=None`` — the same bucket
-    ``reply_in_thread: false`` routes an inbound plain reply to.
-
-    Unlike the thread path, the shipped delivery-mirror alone is NOT sufficient
-    here: ``mirror_to_session`` only APPENDS to a session that already EXISTS
-    (``_find_session_id`` → no-op when none matches), and a flat channel
-    ``(…, None)`` row is only created when a human posts a top-level message the
-    bot processes — a ``chat_postMessage`` cron delivery never goes through the
-    inbound handler, so the row is usually absent and the mirror silently drops
-    the brief (verified live: the brief never landed, the reply had no context).
-    So we CREATE the flat session row first, exactly like
-    ``_seed_cron_thread_session`` does for threads, then mirror into it.
-
-    The session KEY must match what the user's later inbound reply resolves to
-    (``build_session_key``):
-    - **Channel** (``chat_type="group"``): key is
-      ``…:group:<chat_id>:<user_id>`` — user-isolated — so the seed MUST carry
-      the **origin's real ``user_id``** (the member who scheduled the job), NOT
-      a synthetic ``system:cron`` id, or the reply keys to a different session.
-    - **1:1 DM** (``chat_type="dm"``): the key is ``…:dm:<chat_id>`` and does
-      NOT embed ``user_id``, so any ``user_id`` resolves to the same session.
-    ``chat_type`` mirrors the inbound handler's own choice
-    (``"dm" if is_dm else "group"``, ``adapter.py``), so the seeded key is
-    byte-identical to the reply's key.
-
-    Returns True if a seed row was created and the brief mirrored, else False
-    (caller falls back to the plain mirror). Best-effort — a delivery that
-    already succeeded is never failed by a seeding problem.
-    """
-    text = (mirror_text or "").strip()
-    if not text:
-        return False
-    try:
-        from gateway.config import Platform
-        from gateway.session import SessionSource
-
-        chat_type = "dm" if is_dm else "group"
-        session_store = getattr(adapter, "_session_store", None)
-        seeded_session_id: Optional[str] = None
-        if session_store is not None:
-            try:
-                platform_enum = Platform(platform_name.lower())
-            except (ValueError, KeyError):
-                platform_enum = None
-            if platform_enum is not None:
-                dest_source = SessionSource(
-                    platform=platform_enum,
-                    chat_id=str(chat_id),
-                    chat_name=chat_name,
-                    chat_type=chat_type,
-                    user_id=str(user_id) if user_id else None,
-                    thread_id=None,  # flat — the whole-channel/DM session
-                    # Workspace scope: build_session_key embeds it in every
-                    # Slack key, so a scoped reply only resolves to this row
-                    # when the seed carries it too (see thread-seed docstring).
-                    scope_id=str(scope_id) if scope_id else None,
-                )
-                # Create the flat session row so the mirror has a target and the
-                # user's later plain reply joins the SAME session. Capture the
-                # exact session id: the mirror must write into THIS row, not
-                # re-discover it via origin heuristics (which bail out on
-                # populated chats where the flat session coexists with
-                # per-message thread sessions — live failure, Alice 2026-08-19).
-                _entry = session_store.get_or_create_session(dest_source)
-                seeded_session_id = getattr(_entry, "session_id", None)
-
-        from gateway.mirror import mirror_to_session
-
-        ok = mirror_to_session(
-            platform_name,
-            str(chat_id),
-            f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}",
-            source_label="cron",
-            thread_id=None,
-            user_id=str(user_id) if user_id else None,
-            session_id=seeded_session_id,
-            role="user",
-        )
-        if ok:
-            logger.info(
-                "Job '%s': seeded flat in_channel session on %s:%s (chat_type=%s)",
-                job.get("id", "?"), platform_name, chat_id, chat_type,
-            )
-        return bool(ok)
-    except Exception as e:
-        # WARNING, not debug: a silent seed failure IS the "agent has no idea
-        # about its own brief" bug (Alice 2026-08-19) — it must be visible in
-        # production logs.
-        logger.warning(
-            "Job '%s': seeding in_channel session failed for %s:%s: %s",
-            job.get("id", "?"), platform_name, chat_id, e,
-        )
-        return False
 
 
 def _cron_job_origin_log_suffix(job: dict) -> str:
@@ -2151,60 +1763,6 @@ def _iter_home_target_platforms():
         pass
 
 
-def _relay_fronted_delivery_platforms(connected: set) -> set:
-    """Logical platforms deliverable through a connected relay connector.
-
-    ``get_connected_platforms()`` only sees NATIVELY configured platforms.
-    On a relay-fronted deployment (relay in ``config.platforms``, the real
-    platform credential living in the connector) the fronted platforms are
-    absent from that set although fire-time routing delivers to them via
-    ``resolve_delivery_transport`` + ``RelayAdapter.fronts_platform``. This
-    keeps validation symmetric with routing by consulting the same
-    env-derived deploy stamp (``GATEWAY_RELAY_PLATFORMS``) the live
-    adapter's identity set is seeded from. No relay connected -> empty set,
-    so native topologies keep the strict credential check unchanged.
-    """
-    if "relay" not in connected:
-        return set()
-    try:
-        from gateway.relay import relay_fronted_platforms
-
-        return relay_fronted_platforms()
-    except Exception:
-        logger.debug("relay fronted-platform lookup failed", exc_info=True)
-        return set()
-
-
-def _origin_thread_is_stale(origin: dict) -> bool:
-    """True when a Slack origin's thread is a stale creation-turn artifact.
-
-    Relay-fronted Slack in thread-per-message mode stamps each top-level
-    message's own id as the session thread (a session KEY, not a durable
-    location). Jobs persisted before origin capture learned to drop that
-    stamp carry it as ``origin.thread_id`` forever. Heuristic that repairs
-    them at fire time without touching genuine threads: when the origin
-    chat IS the configured Slack home chat (the ``/sethome`` conversation),
-    a pinned origin thread is the creation-message artifact — the user's
-    delivery expectation for their home conversation is top-level (or the
-    home target's own configured thread). Non-home chats keep their
-    threads: a job deliberately created inside a working thread stays there.
-    """
-    if str(origin.get("platform") or "").lower() != "slack":
-        return False
-    if not origin.get("thread_id"):
-        return False
-    home_chat = _get_home_target_chat_id("slack")
-    return bool(home_chat) and str(origin.get("chat_id")) == str(home_chat)
-
-
-def _origin_delivery_thread(origin: dict):
-    """The thread a deliver=origin job should use, stale stamps dropped."""
-    if _origin_thread_is_stale(origin):
-        home_thread = _get_home_target_thread_id("slack")
-        return home_thread if home_thread else None
-    return origin.get("thread_id")
-
-
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
     """Resolve one concrete auto-delivery target for a cron job."""
 
@@ -2218,7 +1776,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             return {
                 "platform": origin["platform"],
                 "chat_id": str(origin["chat_id"]),
-                "thread_id": _origin_delivery_thread(origin),
+                "thread_id": origin.get("thread_id"),
             }
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
@@ -2262,17 +1820,6 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                 resolution_error,
             )
             return None
-
-        if (
-            thread_id is None
-            and platform_key == "slack"
-            and origin
-            and str(origin.get("platform") or "").lower() == platform_key
-            and str(origin.get("chat_id")) == str(chat_id)
-            and origin.get("thread_id")
-            and not _origin_thread_is_stale(origin)
-        ):
-            thread_id = origin.get("thread_id")
 
         return {
             "platform": platform_name,
@@ -2467,7 +2014,7 @@ def _send_media_via_adapter(
                 # window. Configurable, matching the other cron timeouts
                 # (cron.media_send_timeout_seconds in config.toml, or the
                 # SON_OF_ANTON_CRON_MEDIA_SEND_TIMEOUT env override).
-                result = future.result(timeout=_get_media_send_timeout())
+                result = future.result(timeout=_MEDIA_SEND_TIMEOUT)
             except TimeoutError:
                 future.cancel()
                 raise
@@ -2547,29 +2094,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
-    # Optionally wrap the content with a header/footer so the user knows this
-    # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.toml for clean output.
-    wrap_response = True
     user_cfg = None
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     except Exception:
         pass
 
-    if wrap_response:
-        task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
-        )
-    else:
-        delivery_content = content
+    # Wrap the content with a header/footer so the user knows this is a cron
+    # delivery.
+    task_name = job.get("name", job["id"])
+    job_id = job.get("id", "")
+    delivery_content = (
+        f"Cronjob Response: {task_name}\n"
+        f"(job_id: {job_id})\n"
+        f"-------------\n\n"
+        f"{content}\n\n"
+        f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+    )
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
@@ -2607,15 +2148,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # transcript so a user reply in that chat sees the cron output in context.
     # Mirror the CLEAN, unwrapped output (not the cron header/footer).
     try:
-        mirror_enabled = _cron_mirror_delivery_enabled(job, user_cfg)
+        mirror_enabled = _cron_mirror_delivery_enabled(job)
     except Exception:
         mirror_enabled = False
-    # Keep the cleaned delivery text available independently of the optional
-    # transcript-mirror knob. Continuable surfaces (notably in_channel) must
-    # seed their target session even when attach_to_session=false and
-    # cron.mirror_delivery=false; gating this value on mirror_enabled makes
-    # the seed receive an empty string and return False, which is exactly the
-    # live failure reproduced three times on Alice (job ef7bd2869d15).
     _, mirror_text = BasePlatformAdapter.extract_media(content)
     mirror_text = (mirror_text or "").strip()
 
@@ -2655,9 +2190,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         mirror_this_target = mirror_enabled and origin_target
         # Pass the origin's user_id so a per-user-isolated group chat resolves to
         # the exact member who scheduled the job — parity with send_message.
-        # Resolved for ANY origin-matching target (not just mirror-enabled):
-        # the in_channel seed below needs it too, and it must not depend on
-        # the attach_to_session/mirror opt-in.
         origin_user_id = origin.get("user_id") if origin_target else None
 
         # Built-in names resolve to their enum member; plugin platform names
@@ -2682,33 +2214,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             pconfig = config.platforms.get(platform)
             runtime_adapter = None
 
-        if transport is not None and transport.is_relay:
-            # A relay transport carries the RELAY adapter's config, and
-            # resolve_delivery_transport already applied relay's enablement
-            # rule (config block absent OR enabled). The logical platform is
-            # deliberately NOT natively enabled in a relay-fronted deployment
-            # (its credential lives in the connector), so the native
-            # configured/enabled gate below must not apply — it used to
-            # reject exactly the targets the relay was resolved to serve.
-            if pconfig is None:
-                from gateway.config import PlatformConfig
-                pconfig = PlatformConfig(enabled=True)
-        elif not pconfig or not pconfig.enabled:
+        if not pconfig or not pconfig.enabled:
             msg = f"platform '{platform_name}' not configured/enabled"
             logger.warning("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)
             continue
 
-        # Prefer the resolved live transport when the gateway is running. This
-        # supports E2EE native adapters and relay-fronted logical platforms.
-        # The live-send path (which SEEDS the flat in_channel continuation
-        # session via _seed_cron_channel_session) needs not just a live adapter
-        # but a running event loop to schedule the async send onto. Compute that
-        # gate ONCE so the in_channel thread_id clear below stays in lockstep
-        # with the live-send/seed block further down (they used to drift): an
-        # adapter can be present while the loop is absent/not-running, in which
-        # case the live-send block is skipped and delivery falls through to the
-        # standalone path — which cannot seed the flat session (r3609147550).
+        # Prefer the resolved live transport when the gateway is running: the
+        # live send needs both a live adapter and a running event loop to
+        # schedule the async send onto.
         live_adapter_ready = (
             runtime_adapter is not None
             and loop is not None
@@ -2716,135 +2230,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         )
         delivered = False
         target_errors = []
-
-        # Continuable cron surface (D1/D2/D6): resolve the delivery surface for
-        # this platform generically from its config ``extra``. Default "thread"
-        # (today's behaviour, byte-identical). "in_channel" delivers the brief
-        # FLAT into the channel (no dedicated thread) so a plain channel reply
-        # continues the job in-context via the shared-channel session
-        # ``(platform, chat_id, None)`` — the same bucket ``reply_in_thread:
-        # false`` routes inbound channel messages to. The key is read
-        # generically here (any platform); the ``in_channel`` branch is gated on
-        # the adapter capability flag ``supports_inchannel_continuable`` so an
-        # unsupported platform fails SAFE to "thread" (Slack is the first
-        # consumer; "first consumer ≠ definition").
-        surface_mode = _resolve_cron_surface_mode(pconfig, platform_name)
-        in_channel_surface = surface_mode == "in_channel"
-        if in_channel_surface and runtime_adapter is not None:
-            # Per-platform capability first: one RelayAdapter fronts N
-            # platforms and the connector advertises the bit per platform at
-            # handshake — the scalar attr only carries the PRIMARY identity's
-            # bit. Native adapters (no per-platform query) keep the class
-            # attribute path unchanged.
-            per_platform_check = getattr(
-                runtime_adapter, "supports_inchannel_continuable_for_platform",
-                None,
-            )
-            if callable(per_platform_check):
-                try:
-                    surface_supported = bool(per_platform_check(platform_name))
-                except Exception:
-                    surface_supported = False
-            else:
-                surface_supported = bool(getattr(
-                    runtime_adapter, "supports_inchannel_continuable", False
-                ))
-            if not surface_supported:
-                # Fail safe (D6): platform has no in_channel continuation
-                # primitive.
-                logger.debug(
-                    "Job '%s': cron_continuable_surface=in_channel not supported on "
-                    "%s, using thread",
-                    job.get("id", "?"), platform_name,
-                )
-                in_channel_surface = False
-
-        if in_channel_surface and origin_target and live_adapter_ready:
-            # Force flat delivery (D2): the continuable-channel target must
-            # ignore any inherited origin/target thread_id, or the flat
-            # continuable session seeded below (thread_id=None, via
-            # _seed_cron_channel_session) never matches where the brief is
-            # actually delivered — route_thread_id further down in this loop
-            # reads `thread_id` and would otherwise route into the origin
-            # thread instead of flat into the channel.
-            #
-            # Gated on `origin_target`, NOT `mirror_this_target`: the seed
-            # below fires on origin-match alone (in_channel is the
-            # continuation surface, independent of the attach_to_session /
-            # mirror opt-in), so the flatten must use the SAME gate — with
-            # the default knobs off, a mirror-gated flatten kept delivering
-            # into the origin thread while the flat session got seeded,
-            # leaving the brief and its continuation surface in different
-            # places.
-            # Gated on `live_adapter_ready` (adapter present AND a running loop)
-            # so the clear fires ONLY on the live-send path that actually seeds
-            # the flat session — the SAME condition as the live-send block
-            # below. `runtime_adapter is not None` alone is broader than that
-            # path: an adapter can be present while the event loop is absent or
-            # not running, in which case the live-send/seed block is skipped and
-            # delivery falls through to the standalone path. Clearing thread_id
-            # there would flatten a brief into a channel with NO seeded
-            # continuable session behind it (and bypass the D6 capability
-            # check), so the standalone fallback must keep the origin thread
-            # (review r3609147550).
-            #
-            # Fan-out / broadcast / explicit-thread targets keep their thread_id
-            # (they are not continuable and are never seeded). Placed AFTER
-            # mirror_this_target / origin_user_id are computed above — those
-            # need the ORIGINAL thread_id to match the origin conversation.
-            thread_id = None
-
-        # For an in_channel delivery the flat continuation session is created
-        # explicitly below (the shipped mirror only APPENDS to an existing
-        # session, and the flat channel row is otherwise absent for a
-        # chat_postMessage delivery). ``is_dm`` selects the session chat_type so
-        # the seeded key matches the inbound reply's key: a 1:1 DM keys as
-        # ``dm`` (Slack DM channel ids start with "D"; or the origin says so),
-        # everything else as ``group`` (shared channel). ``inchannel_seeded``
-        # suppresses the generic mirror below so the brief is not double-written.
-        origin_chat_type = str(origin.get("chat_type") or "").lower()
-        is_dm_target = origin_chat_type == "dm" or (
-            not origin_chat_type and str(chat_id).startswith("D")
-        )
-        inchannel_seeded = False
-
-        # Continuable cron (thread-preferred): when mirroring is enabled for the
-        # origin target and the gateway is live, try to open a DEDICATED thread
-        # for this job and deliver the brief into it. On thread-capable
-        # platforms (Discord/Slack) the brief + the user's replies live
-        # in their own scrollback; the thread-keyed session is seeded so a reply
-        # continues with full context. On DM-only platforms (Signal)
-        # create_handoff_thread returns None and we fall back to mirroring into
-        # the origin DM session (handled after delivery).
-        #
-        # in_channel surface (D2): SKIP thread creation entirely — leave
-        # thread_id=None so the delivery posts flat, then
-        # ``_seed_cron_channel_session`` (below) CREATES the shared-channel
-        # session and mirrors the brief into it. The shipped mirror alone is
-        # NOT enough here: ``mirror_to_session`` only APPENDS to an existing
-        # session and a flat ``(platform, chat_id, None)`` row is otherwise
-        # absent for a ``chat_postMessage`` delivery, so the seed must create
-        # the row first (F5).
-        thread_seeded = False
-        opened_thread_id: Optional[str] = None
-        if (
-            mirror_this_target
-            and not in_channel_surface
-            and runtime_adapter is not None
-            and loop is not None
-            and not thread_id  # never override an explicit origin thread/topic
-        ):
-            new_thread_id = _open_continuable_cron_thread(
-                job, runtime_adapter, chat_id, loop,
-            )
-            if new_thread_id:
-                # Route THIS delivery into the new thread now (the send needs the
-                # thread_id), but defer seeding the thread session until the
-                # delivery actually succeeds — otherwise an open-succeeds /
-                # deliver-fails case leaves a seeded brief the user never saw,
-                # and (worse) suppresses the DM-fallback mirror via thread_seeded.
-                thread_id = new_thread_id
-                opened_thread_id = new_thread_id
 
         if live_adapter_ready:
             # Route threaded cron deliveries via ``thread_id`` in
@@ -2870,22 +2255,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 route_metadata["thread_id"] = route_thread_id
             media_metadata = {"thread_id": thread_id} if thread_id else None
 
-            # Relay egress needs a tenant discriminator on the frame: the
-            # connector's fail-closed guard resolves the workspace/guild from
-            # metadata.scope_id, and after a gateway restart the RelayAdapter's
-            # per-chat scope cache is COLD (learned only from inbound), while
-            # DeliveryRouter stamps scope only for the configured HOME channel
-            # (gateway/delivery.py). A scoped origin that is not the home chat
-            # therefore egressed with no scope_id at all and could be rejected
-            # before delivery — the delivery-leg sibling of the seed-key scope
-            # fix. Origin-matching targets only: a fan-out/broadcast target's
-            # tenant is NOT the origin's, and stamping the wrong scope is worse
-            # than none (the router/home path handles fan-out home targets).
-            if origin_target and origin.get("scope_id"):
-                route_metadata.setdefault("scope_id", str(origin["scope_id"]))
-                media_metadata = dict(media_metadata or {})
-                media_metadata.setdefault("scope_id", str(origin["scope_id"]))
-
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
                 # Route through the gateway's DeliveryRouter so the live send
@@ -2897,7 +2266,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
                 timed_out = False
-                delivered_message_id = None
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
 
@@ -2995,11 +2363,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             if isinstance(send_result, dict):
                                 send_success = bool(send_result.get("success", False))
                                 send_raw_response = send_result.get("raw_response")
-                                delivered_message_id = send_result.get("message_id")
                             else:
                                 send_success = _confirm_adapter_delivery(send_result)
                                 send_raw_response = getattr(send_result, "raw_response", None)
-                                delivered_message_id = getattr(send_result, "message_id", None)
 
                             if not send_success:
                                 if isinstance(send_result, dict):
@@ -3015,13 +2381,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                     f"live adapter send to {platform_name}:{chat_id} "
                                     f"returned unconfirmed result ({shape}, error={err})"
                                 )
-                                if transport is not None and transport.is_relay:
-                                    logger.warning("Job '%s': %s", job["id"], msg)
-                                else:
-                                    logger.warning(
-                                        "Job '%s': %s, falling back to standalone",
-                                        job["id"], msg,
-                                    )
+                                logger.warning(
+                                    "Job '%s': %s, falling back to standalone",
+                                    job["id"], msg,
+                                )
                                 target_errors.append(msg)
                                 adapter_ok = False  # fall through to standalone path
                             elif (
@@ -3047,20 +2410,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # skipped attachments so the drop is visible rather than silently
                 # lost.
                 if adapter_ok and not timed_out and media_files:
-                    routed_media_metadata = dict(media_metadata or {})
-                    if transport is not None and transport.is_relay:
-                        routed_media_metadata["_relay_logical_platform"] = platform.value
-                        logical_home = config.get_home_channel(platform)
-                        if logical_home is not None and logical_home.chat_id == chat_id:
-                            if logical_home.user_id:
-                                routed_media_metadata["user_id"] = logical_home.user_id
-                            if logical_home.scope_id:
-                                routed_media_metadata["scope_id"] = logical_home.scope_id
                     _media_errors = _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
                         media_files,
-                        routed_media_metadata or None,
+                        media_metadata,
                         loop,
                         job,
                         platform=platform,
@@ -3082,95 +2436,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
-                    # Seed the thread session only now that delivery into it
-                    # succeeded (deferred from thread-open above).
-                    if opened_thread_id and not thread_seeded:
-                        _seed_cron_thread_session(
-                            job, runtime_adapter, platform_name, chat_id,
-                            opened_thread_id, mirror_text,
-                            chat_name=origin.get("chat_name"),
-                            is_dm=is_dm_target,
-                            scope_id=origin.get("scope_id"),
-                        )
-                        thread_seeded = True
-                    # in_channel surface: CREATE + seed the flat channel/DM
-                    # session (the shipped mirror only appends to an existing
-                    # session — the flat row is otherwise absent for a
-                    # chat_postMessage delivery, so the brief would be lost).
-                    # Gated on ORIGIN-match only, NOT on the mirror opt-in:
-                    # in_channel IS the continuation surface — a continuable
-                    # flat cron without its seed is a brief the next reply
-                    # can't see (the bug Victor hit live 2026-08-19: agent had
-                    # "no idea about the delivery message"). attach_to_session
-                    # remains the knob for the SEPARATE thread/default-surface
-                    # mirror behavior; it must not be required here.
-                    if in_channel_surface and origin_target and not thread_seeded:
-                        inchannel_seeded = _seed_cron_channel_session(
-                            job, runtime_adapter, platform_name, chat_id,
-                            mirror_text, is_dm=is_dm_target,
-                            user_id=origin_user_id,
-                            chat_name=origin.get("chat_name"),
-                            scope_id=origin.get("scope_id"),
-                        )
-                        if not inchannel_seeded:
-                            logger.warning(
-                                "Job '%s': in_channel seed did NOT land on %s:%s "
-                                "— a plain reply will not see this brief",
-                                job["id"], platform_name, chat_id,
-                            )
-                        # Companion THREAD-surface seed (live gap, Alice
-                        # 2026-08-19): a flat brief is still a Slack message
-                        # the user can reply to IN ITS THREAD — the natural
-                        # mobile/desktop affordance — and that reply keys to
-                        # (chat, thread=<brief ts>), a session the flat seed
-                        # never touches. Seed it too so BOTH reply surfaces
-                        # continue the job. Uses the delivered message id as
-                        # the thread anchor; best-effort like every seed.
-                        if delivered_message_id:
-                            _seed_cron_thread_session(
-                                job, runtime_adapter, platform_name, chat_id,
-                                str(delivered_message_id), mirror_text,
-                                chat_name=origin.get("chat_name"),
-                                is_dm=is_dm_target,
-                                scope_id=origin.get("scope_id"),
-                            )
-                    elif in_channel_surface and not origin_target:
-                        logger.warning(
-                            "Job '%s': in_channel delivery to %s:%s is not the "
-                            "origin conversation (origin=%s:%s thread=%s) — seed "
-                            "skipped, brief not continuable here",
-                            job["id"], platform_name, chat_id,
-                            origin.get("platform"), origin.get("chat_id"),
-                            origin.get("thread_id"),
-                        )
                     _maybe_mirror_cron_delivery(
                         job, platform_name, chat_id, mirror_text,
                         thread_id=thread_id, user_id=origin_user_id,
-                        enabled=mirror_this_target and not thread_seeded and not inchannel_seeded,
+                        enabled=mirror_this_target,
                     )
             except Exception as e:
                 err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
                 if not any(err_msg in err for err in target_errors):
                     target_errors.append(err_msg)
-                if transport is not None and transport.is_relay:
-                    logger.warning("Job '%s': %s", job["id"], err_msg)
-                else:
-                    logger.warning(
-                        "Job '%s': %s, falling back to standalone",
-                        job["id"], err_msg,
-                    )
+                logger.warning(
+                    "Job '%s': %s, falling back to standalone",
+                    job["id"], err_msg,
+                )
 
         if not delivered:
-            if transport is not None and transport.is_relay:
-                # Relay owns the logical destination and its connector owns the
-                # platform credential. A native retry could duplicate delivery
-                # and cannot be authenticated correctly, so fail closed.
-                if not target_errors:
-                    target_errors.append(
-                        f"relay delivery to {platform_name}:{chat_id} failed"
-                    )
-                delivery_errors.extend(target_errors)
-                continue
             # If the interpreter is finalizing (gateway SIGTERM / restart /
             # OOM), scheduling any new delivery is futile — asyncio.run and a
             # fresh ThreadPoolExecutor both raise "cannot schedule new futures
@@ -3266,7 +2546,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             _maybe_mirror_cron_delivery(
                 job, platform_name, chat_id, mirror_text,
                 thread_id=thread_id, user_id=origin_user_id,
-                enabled=mirror_this_target and not thread_seeded,
+                enabled=mirror_this_target,
             )
 
     if policy_drop_errors:
@@ -3277,82 +2557,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     return None
 
 
-_DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
-# Backward-compatible module override used by tests and emergency monkeypatches.
-_SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
+_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS = _RUN_CLAIM_HEARTBEAT_SECONDS * 3
 
 
-def _get_script_timeout() -> int:
-    """Resolve cron pre-run script timeout from module/env/config with a safe default."""
-    if _SCRIPT_TIMEOUT != _DEFAULT_SCRIPT_TIMEOUT:
-        try:
-            timeout = int(float(_SCRIPT_TIMEOUT))
-            if timeout > 0:
-                return timeout
-        except Exception:
-            logger.warning("Invalid patched _SCRIPT_TIMEOUT=%r; using env/config/default", _SCRIPT_TIMEOUT)
-
-    env_value = os.getenv("SON_OF_ANTON_CRON_SCRIPT_TIMEOUT", "").strip()
-    if env_value:
-        try:
-            timeout = int(float(env_value))
-            if timeout > 0:
-                return timeout
-        except Exception:
-            logger.warning("Invalid SON_OF_ANTON_CRON_SCRIPT_TIMEOUT=%r; using config/default", env_value)
-
-    try:
-        cfg = load_config() or {}
-        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
-        configured = cron_cfg.get("script_timeout_seconds")
-        if configured is not None:
-            timeout = int(float(configured))
-            if timeout > 0:
-                return timeout
-    except Exception as exc:
-        logger.debug("Failed to load cron script timeout from config: %s", exc)
-
-    return _DEFAULT_SCRIPT_TIMEOUT
-
-
-_DEFAULT_MEDIA_SEND_TIMEOUT = 300
-
-
-def _get_media_send_timeout() -> int:
-    """Resolve the per-attachment media-send timeout from env/config.
-
-    Mirrors the ``script_timeout_seconds`` resolution pattern: the
-    SON_OF_ANTON_CRON_MEDIA_SEND_TIMEOUT env var wins, then
-    ``cron.media_send_timeout_seconds`` in config.toml, then the default
-    (300s — large attachments like long TTS audio can legitimately exceed
-    the old fixed 30s upload window).
-    """
-    env_value = os.getenv("SON_OF_ANTON_CRON_MEDIA_SEND_TIMEOUT", "").strip()
-    if env_value:
-        try:
-            timeout = int(float(env_value))
-            if timeout > 0:
-                return timeout
-        except Exception:
-            logger.warning(
-                "Invalid SON_OF_ANTON_CRON_MEDIA_SEND_TIMEOUT=%r; using config/default",
-                env_value,
-            )
-
-    try:
-        cfg = load_config() or {}
-        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
-        configured = cron_cfg.get("media_send_timeout_seconds")
-        if configured is not None:
-            timeout = int(float(configured))
-            if timeout > 0:
-                return timeout
-    except Exception as exc:
-        logger.debug("Failed to load cron media-send timeout from config: %s", exc)
-
-    return _DEFAULT_MEDIA_SEND_TIMEOUT
+# Per-attachment media-send timeout (seconds): large attachments can
+# legitimately exceed a short upload window.
+_MEDIA_SEND_TIMEOUT = 300
 
 
 def _terminate_cron_script_process(proc: subprocess.Popen) -> None:
@@ -3509,7 +2721,7 @@ def _run_job_script(
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
-    script_timeout = _get_script_timeout()
+    script_timeout = _SCRIPT_TIMEOUT
 
     # Pick an interpreter by extension.  Bash for .sh/.bash, Python for
     # everything else.  We deliberately do NOT honour the file's own
@@ -4100,18 +3312,6 @@ def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
     return False
 
 
-def _cron_preflight_enabled(cfg: dict) -> bool:
-    """Whether cron pre-dispatch configuration validation is enabled.
-
-    Default ON; only the literal boolean ``false`` under ``cron.preflight``
-    opts out (mirrors ``cron_model_drift_guard_enabled`` semantics).
-    """
-    cron_cfg = (cfg or {}).get("cron")
-    if not isinstance(cron_cfg, dict):
-        return True
-    return cron_cfg.get("preflight", True) is not False
-
-
 def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     """READ-ONLY probe: would provider resolution fail for lack of a key?
 
@@ -4198,7 +3398,6 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                 connected = {
                     p.value for p in gateway_config.get_connected_platforms()
                 }
-                connected |= _relay_fronted_delivery_platforms(connected)
             except Exception:
                 logger.debug(
                     "preflight: gateway config unavailable — skipping "
@@ -4245,24 +3444,6 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
     return None
 
 
-def _cron_cleanup_timeout_seconds() -> float:
-    """Return the wall-clock bound for cron post-run cleanup."""
-    default = 10.0
-    try:
-        from son_of_anton_cli.config import load_config
-
-        cfg = load_config() or {}
-        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
-        configured = cron_cfg.get("cleanup_timeout_seconds")
-        if configured is not None:
-            timeout = float(configured)
-            if timeout >= 0:
-                return timeout
-    except Exception as exc:
-        logger.debug("Failed to load cron cleanup timeout from config: %s", exc)
-    return default
-
-
 def _run_cron_cleanup_with_timeout(
     cleanup,
     *,
@@ -4272,7 +3453,7 @@ def _run_cron_cleanup_with_timeout(
 ) -> bool:
     """Run fallible post-run cleanup without permanently wedging a cron ID."""
     timeout = (
-        _cron_cleanup_timeout_seconds()
+        10.0
         if timeout_seconds is None
         else float(timeout_seconds)
     )
@@ -4599,55 +3780,24 @@ def run_job(
     try:
         from son_of_anton_state import SessionDB
 
-        # Resolve timeout: env override → config.toml → default 10s.
-        # Mirrors the script_timeout_seconds resolution pattern.
-        _session_db_timeout: float | None = None
-        _raw_env_timeout = os.getenv("SON_OF_ANTON_CRON_SESSION_DB_TIMEOUT", "").strip()
-        if _raw_env_timeout:
-            try:
-                _session_db_timeout = float(_raw_env_timeout)
-            except (ValueError, TypeError):
-                logger.warning(
-                    "Invalid SON_OF_ANTON_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
-                    _raw_env_timeout,
-                )
-        if _session_db_timeout is None:
-            try:
-                from son_of_anton_cli.config import load_config
-                _cfg = load_config() or {}
-                _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
-                _configured = _cron_cfg.get("session_db_timeout_seconds")
-                if _configured is not None:
-                    _session_db_timeout = float(_configured)
-            except Exception as exc:
-                logger.debug(
-                    "Failed to load cron.session_db_timeout_seconds from config: %s",
-                    exc,
-                )
-        if _session_db_timeout is None:
-            _session_db_timeout = 10.0
-
-        if _session_db_timeout > 0:
-            _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            _session_db_future = _session_db_pool.submit(SessionDB)
-            try:
-                _session_db = _session_db_future.result(timeout=_session_db_timeout)
-            except concurrent.futures.TimeoutError:
-                # The worker is abandoned (shutdown below doesn't wait for it).
-                # If SessionDB() later completes inside it, the future's result
-                # would be orphaned and its SQLite FDs (.db, WAL, SHM) leak
-                # until process exit.  Register a done-callback that retrieves
-                # and closes any eventual late result (#72782).
-                _session_db_future.add_done_callback(_close_late_session_db_result)
-                raise
-            finally:
-                # Don't wait for a wedged connect() to unwind — abandon the
-                # worker thread (same pattern as the agent inactivity timeout
-                # further down) rather than blocking shutdown on it too.
-                _session_db_pool.shutdown(wait=False)
-        else:
-            # 0 = unlimited (legacy behavior, opt-in for debugging)
-            _session_db = SessionDB()
+        _session_db_timeout = 10.0
+        _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        _session_db_future = _session_db_pool.submit(SessionDB)
+        try:
+            _session_db = _session_db_future.result(timeout=_session_db_timeout)
+        except concurrent.futures.TimeoutError:
+            # The worker is abandoned (shutdown below doesn't wait for it).
+            # If SessionDB() later completes inside it, the future's result
+            # would be orphaned and its SQLite FDs (.db, WAL, SHM) leak
+            # until process exit.  Register a done-callback that retrieves
+            # and closes any eventual late result (#72782).
+            _session_db_future.add_done_callback(_close_late_session_db_result)
+            raise
+        finally:
+            # Don't wait for a wedged connect() to unwind — abandon the
+            # worker thread (same pattern as the agent inactivity timeout
+            # further down) rather than blocking shutdown on it too.
+            _session_db_pool.shutdown(wait=False)
     except concurrent.futures.TimeoutError:
         logger.error(
             "Job '%s': SessionDB init did not return within %.0fs — proceeding "
@@ -4862,21 +4012,9 @@ def run_job(
 
         # Re-read .env and config.toml fresh every run so provider/key
         # changes take effect without a gateway restart. Route through
-        # load_son_of_anton_dotenv (not a bare load_dotenv) and reset the secret-
-        # source cache first: startup already applied external secrets and
-        # recorded this SON_OF_ANTON_HOME in _APPLIED_HOMES, so a naive reload would
-        # re-apply only the .env placeholder and never re-resolve a Bitwarden/
-        # BSM-backed secret — leaving cron jobs 401'ing on the placeholder
-        # (#33465). Clearing the cache forces the re-pull; the resolved secret
-        # overrides the placeholder only when secrets.bitwarden.override_existing
-        # is set (mirrors startup), and the Bitwarden value-cache keeps the
-        # forced re-pull off the network. load_son_of_anton_dotenv also handles the
-        # utf-8/latin-1 encoding fallback internally.
-        from son_of_anton_cli.env_loader import (
-            load_son_of_anton_dotenv,
-            reset_secret_source_cache,
-        )
-        reset_secret_source_cache()
+        # load_son_of_anton_dotenv (not a bare load_dotenv): it also handles
+        # the utf-8/latin-1 encoding fallback internally.
+        from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
         load_son_of_anton_dotenv(son_of_anton_home=_get_son_of_anton_home())
 
         delivery_target = _resolve_delivery_target(job)
@@ -4960,43 +4098,10 @@ def run_job(
                 "default with `son-of-anton model <name>`."
             )
 
-        # Apply IPv4 preference if configured.
-        try:
-            from son_of_anton_constants import apply_ipv4_preference
-            _net_cfg = _cfg.get("network", {})
-            if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
-                apply_ipv4_preference(force=True)
-        except Exception:
-            pass
-
         # Reasoning config is resolved after provider authentication so an auth
         # fallback can first replace the primary model with its configured model.
         # Resolution itself happens via _resolve_job_reasoning_config below
         # (per-job pin > agent.reasoning_overrides > agent.reasoning_effort).
-
-        # Prefill messages from env or config.toml. The top-level
-        # prefill_messages_file key is canonical; agent.prefill_messages_file is
-        # retained as a legacy fallback for older CLI/godmode configs.
-        prefill_messages = None
-        agent_cfg = _cfg.get("agent", {}) if isinstance(_cfg.get("agent", {}), dict) else {}
-        prefill_file = (
-            os.getenv("SON_OF_ANTON_PREFILL_MESSAGES_FILE", "")
-            or _cfg.get("prefill_messages_file", "")
-            or agent_cfg.get("prefill_messages_file", "")
-        )
-        if prefill_file:
-            pfpath = Path(prefill_file).expanduser()
-            if not pfpath.is_absolute():
-                pfpath = _get_son_of_anton_home() / pfpath
-            if pfpath.exists():
-                try:
-                    with open(pfpath, "r", encoding="utf-8") as _pf:
-                        prefill_messages = json.load(_pf)
-                    if not isinstance(prefill_messages, list):
-                        prefill_messages = None
-                except Exception as e:
-                    logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
-                    prefill_messages = None
 
         # Max iterations — resolved through resolve_turn_limit() so that
         # agent.max_turns: none / unlimited → sys.maxsize sentinel, and
@@ -5034,20 +4139,19 @@ def run_job(
         # alert exactly once (dedup persisted via the job's
         # `preflight_alerted` bit — the #73506 alert-once shape).
         # Runs after the wake-gate/prompt build so silent script ticks stay
-        # silent. Opt-out: `cron.preflight: false` in config.toml.
+        # silent.
         # ---------------------------------------------------------------
         _pf_reason = None
         try:
-            if _cron_preflight_enabled(_cfg):
-                _pf_reason = _preflight_job_config(job, _cfg)
-                if not _pf_reason and job.get("preflight_alerted"):
-                    # Configuration validates again — clear the alert-once
-                    # marker so a FUTURE config break re-alerts.
-                    try:
-                        from cron.jobs import clear_preflight_alerted
-                        clear_preflight_alerted(job_id)
-                    except Exception:
-                        pass
+            _pf_reason = _preflight_job_config(job, _cfg)
+            if not _pf_reason and job.get("preflight_alerted"):
+                # Configuration validates again — clear the alert-once
+                # marker so a FUTURE config break re-alerts.
+                try:
+                    from cron.jobs import clear_preflight_alerted
+                    clear_preflight_alerted(job_id)
+                except Exception:
+                    pass
         except Exception:
             # The validator must never take down a runnable job — fail open.
             logger.debug(
@@ -5341,7 +4445,6 @@ def run_job(
             acp_args=runtime.get("args"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
-            prefill_messages=prefill_messages,
             fallback_model=fallback_model,
             credential_pool=credential_pool,
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
@@ -5371,8 +4474,7 @@ def run_job(
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
-        _cron_timeout = _cron_inactivity_seconds()
-        _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+        _cron_inactivity_limit = _CRON_INACTIVITY_SECONDS
         _POLL_INTERVAL = 5.0
         # Keep the one-shot run_claim fresh while the run is alive (#62002):
         # the claim TTL is a dead-owner detector, but without a heartbeat a
@@ -6594,32 +5696,11 @@ def tick(
         # at-most-once — mark_job_run re-anchors at completion regardless).
         advance_next_runs([job["id"] for job in due_jobs])
 
-        # Resolve max parallel workers: env var > config.toml > unbounded.
-        # Set SON_OF_ANTON_CRON_MAX_PARALLEL=1 to restore old serial behaviour.
+        # Parallel workers are unbounded (limited only by thread count).
         _max_workers: Optional[int] = None
-        try:
-            _env_par = os.getenv("SON_OF_ANTON_CRON_MAX_PARALLEL", "").strip()
-            if _env_par:
-                _max_workers = int(_env_par) or None
-        except (ValueError, TypeError):
-            logger.warning("Invalid SON_OF_ANTON_CRON_MAX_PARALLEL value; defaulting to unbounded")
-        if _max_workers is None:
-            try:
-                _ucfg = load_config() or {}
-                _cfg_par = (
-                    _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
-                ).get("max_parallel_jobs")
-                if _cfg_par is not None:
-                    _max_workers = int(_cfg_par) or None
-            except Exception:
-                pass
 
         if verbose:
-            logger.info(
-                "Running %d job(s) in parallel (max_workers=%s)",
-                len(due_jobs),
-                _max_workers if _max_workers else "unbounded",
-            )
+            logger.info("Running %d job(s) in parallel", len(due_jobs))
 
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end. Thin wrapper around the shared

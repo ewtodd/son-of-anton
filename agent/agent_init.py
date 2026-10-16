@@ -425,10 +425,6 @@ def init_agent(
     run_budget_seconds: Optional[float] = None,
     fallback_model: Dict[str, Any] = None,
     credential_pool=None,
-    checkpoints_enabled: bool = False,
-    checkpoint_max_snapshots: int = 20,
-    checkpoint_max_total_size_mb: int = 500,
-    checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
     requested_provider: str = None,
 ):
@@ -1204,15 +1200,6 @@ def init_agent(
     # from the persisted string and is used only to place an early cache marker.
     agent._cached_system_prompt_static: Optional[str] = None
     
-    # Filesystem checkpoint manager (transparent — not a tool)
-    from tools.checkpoint_manager import CheckpointManager
-    agent._checkpoint_mgr = CheckpointManager(
-        enabled=checkpoints_enabled,
-        max_snapshots=checkpoint_max_snapshots,
-        max_total_size_mb=checkpoint_max_total_size_mb,
-        max_file_size_mb=checkpoint_max_file_size_mb,
-    )
-    
     # SQLite session store (optional -- provided by CLI or gateway)
     agent._session_db = session_db
     # Whether close() must also close that handle. Default False: a
@@ -1480,12 +1467,6 @@ def init_agent(
         agent._empty_guard_enabled,
         agent._empty_guard_cost_threshold_usd,
     ) = resolve_guard_settings(_agent_section.get("empty_response_guard"))
-
-    # Intent-ack continuation config: false/"off" (default — never),
-    # true/"always" (any ack + action verb), or a list of model-name
-    # substrings.  Resolved against the active model in the conversation
-    # loop's intent-ack block.
-    agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
 
     # Runtime anti-stall guards (identical-call loop-breaker notice on tool
     # results + continue-intent extension of the empty-response recovery).
