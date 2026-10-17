@@ -16,7 +16,6 @@ from typing import Dict, Optional
 from son_of_anton_constants import get_son_of_anton_home
 from son_of_anton_state_common import (
     DEFERRED_INDEX_SQL,
-    FTS_CJK_STALE_KEY,
     FTS_STALE_KEY,
     FTS_SQL,
     FTS_STORAGE_VERSION,
@@ -25,7 +24,6 @@ from son_of_anton_state_common import (
     LEGACY_FTS_TRIGRAM_SQL,
     SCHEMA_SQL,
     SCHEMA_VERSION,
-    _FTS_CJK_TRIGGERS,
     _FTS_TRIGGERS,
     _ephemeral_child_sql,
 )
@@ -93,14 +91,6 @@ class SessionSchemaMixin:
             self._warn_fts5_unavailable(exc)
             return False
 
-    def _drop_all_fts_triggers(self, cursor: sqlite3.Cursor) -> None:
-        self._drop_fts_triggers(cursor)
-        for trigger in _FTS_CJK_TRIGGERS:
-            try:
-                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
-            except sqlite3.OperationalError:
-                pass
-
     @staticmethod
     def _fts_trigger_count(cursor: sqlite3.Cursor) -> int:
         placeholders = ",".join("?" for _ in _FTS_TRIGGERS)
@@ -139,16 +129,11 @@ class SessionSchemaMixin:
 
         Returns the number of triggers dropped (0 when already converged).
         """
-        # CJK is a v23-only surface.  Decide the layout before selecting
-        # destructive candidates so the legacy branch never drops a trigger
-        # it does not recreate.
         legacy_layout = self._db_has_legacy_inline_fts(cursor)
         update_names = (
             "messages_fts_update",
             "messages_fts_trigram_update",
         )
-        if not legacy_layout and hasattr(self, "_ensure_fts_cjk_schema"):
-            update_names += ("messages_fts_cjk_update",)
         placeholders = ", ".join("?" for _ in update_names)
         rows = cursor.execute(
             "SELECT name, sql FROM sqlite_master "
@@ -181,27 +166,6 @@ class SessionSchemaMixin:
             self._ensure_fts_schema(
                 cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
             )
-            # CJK triggers live on the host SessionDB; only recreate one that
-            # this migration actually dropped. ``_ensure_fts_cjk_schema`` is
-            # documented never-raises and soft-fails OperationalError by
-            # clearing availability — raise-path handling alone is not
-            # enough. After ensure, require a narrowed CJK UPDATE trigger or
-            # durable quarantine (stale breadcrumb + unavailable).
-            if "messages_fts_cjk_update" in to_drop:
-                try:
-                    self._ensure_fts_cjk_schema(cursor)
-                except Exception:
-                    self._quarantine_cjk_after_update_of_migration(cursor)
-                    logger.exception(
-                        "CJK FTS re-ensure after UPDATE OF migration failed"
-                    )
-                    raise
-                if not self._cjk_update_trigger_is_narrowed(cursor):
-                    self._quarantine_cjk_after_update_of_migration(cursor)
-                    logger.warning(
-                        "CJK FTS UPDATE trigger missing or still broad after "
-                        "UPDATE OF migration; marked stale and unavailable"
-                    )
 
         logger.info(
             "Migrated %d broad FTS UPDATE trigger(s) to AFTER UPDATE OF "
@@ -209,44 +173,6 @@ class SessionSchemaMixin:
             len(to_drop),
         )
         return len(to_drop)
-
-    def _cjk_update_trigger_is_narrowed(self, cursor: sqlite3.Cursor) -> bool:
-        """True when messages_fts_cjk_update exists with AFTER UPDATE OF."""
-        row = cursor.execute(
-            "SELECT sql FROM sqlite_master "
-            "WHERE type = 'trigger' AND name = ?",
-            ("messages_fts_cjk_update",),
-        ).fetchone()
-        if not row:
-            return False
-        sql = row[0] if not isinstance(row, sqlite3.Row) else row["sql"]
-        return not self._fts_update_trigger_needs_narrowing(sql)
-
-    def _quarantine_cjk_after_update_of_migration(
-        self, cursor: sqlite3.Cursor
-    ) -> None:
-        """Fail-closed after dropping CJK UPDATE during OF migration.
-
-        Clears availability, persists ``fts_cjk_stale``, and drops any
-        residual broad/partial CJK UPDATE trigger so a later open cannot
-        ``CREATE TRIGGER IF NOT EXISTS`` a gap without rebuild.
-        """
-        self._fts_cjk_available = False
-        try:
-            self.set_meta(FTS_CJK_STALE_KEY, "1", cursor=cursor)
-        except Exception:
-            logger.debug(
-                "Could not persist CJK FTS stale breadcrumb",
-                exc_info=True,
-            )
-        try:
-            cursor.execute("DROP TRIGGER IF EXISTS messages_fts_cjk_update")
-        except Exception:
-            logger.debug(
-                "Could not drop residual CJK UPDATE trigger after quarantine",
-                exc_info=True,
-            )
-
 
     @staticmethod
     def _rebuild_fts_indexes(
@@ -397,7 +323,7 @@ class SessionSchemaMixin:
                 pass
             # Stale indexes must remain detached even on SQLite builds whose
             # DDL transaction behavior differs.
-            self._drop_all_fts_triggers(cursor)
+            self._drop_fts_triggers(cursor)
             self._conn.commit()
             logger.error(
                 "Automatic rebuild of stale FTS indexes failed (%s); "
@@ -844,7 +770,7 @@ class SessionSchemaMixin:
         if self._fts_stale:
             # A prior process deliberately detached FTS after corruption.
             # Keep every FTS writer detached until a full rebuild succeeds.
-            self._drop_all_fts_triggers(cursor)
+            self._drop_fts_triggers(cursor)
         if not fts5_available:
             # Existing FTS triggers can still fire on messages INSERT/UPDATE
             # even though the current sqlite runtime cannot read the virtual
@@ -1229,15 +1155,9 @@ class SessionSchemaMixin:
             # DBs have no legacy inline FTS, so they get the v23 DDL.
             legacy_fts = self._db_has_legacy_inline_fts(cursor)
             if self._fts_stale:
-                if self._recover_stale_fts(cursor, legacy=legacy_fts):
-                    # CJK was detached alongside the corrupt base indexes and
-                    # has its own stale marker. Its existing ensure path keeps
-                    # it offline until its dedicated rebuild.
-                    self._ensure_fts_cjk_schema(cursor)
-                else:
+                if not self._recover_stale_fts(cursor, legacy=legacy_fts):
                     self._fts_enabled = False
                     self._trigram_available = False
-                    self._fts_cjk_available = False
             elif legacy_fts:
                 triggers_need_repair = (
                     self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
@@ -1275,9 +1195,6 @@ class SessionSchemaMixin:
                             cursor,
                             include_trigram=trigram_enabled,
                         )
-                    # CJK-bigram index (cjk_unicode61). Strictly additive to
-                    # the surfaces above and gated on the loadable tokenizer:
-                    self._ensure_fts_cjk_schema(cursor)
 
             # Replace any pre-existing broad AFTER UPDATE triggers with
             # AFTER UPDATE OF variants. IF NOT EXISTS cannot rewrite them.

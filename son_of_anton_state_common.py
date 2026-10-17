@@ -745,20 +745,6 @@ END;
 """
 
 
-_FTS_CJK_TRIGGERS = (
-    "messages_fts_cjk_insert",
-    "messages_fts_cjk_delete",
-    "messages_fts_cjk_update",
-)
-
-
-# state_meta breadcrumb set when a tokenizer-less process had to drop the
-# cjk triggers to keep message writes alive: rows written from that moment
-# on are missing from the cjk index, so it must not serve reads until
-# `son-of-anton sessions optimize-storage` rebuilds it on a capable host.
-FTS_CJK_STALE_KEY = "fts_cjk_stale"
-
-
 # Durable breadcrumb for a base/trigram FTS index that was detached from the
 # canonical messages table after runtime corruption. While present, startup
 # must rebuild the complete index before reinstalling sync triggers: rows may

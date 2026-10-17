@@ -45,7 +45,6 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 from son_of_anton_state_common import (  # noqa: F401  (re-exported for back-compat)
     _BRANCH_CHILD_SQL,
     _COMPACTION_CHILD_SQL,
-    _FTS_CJK_TRIGGERS,
     _FTS_TRIGGERS,
     _LISTABLE_CHILD_SQL,
     _PREVIEW_RAW_SELECT,
@@ -58,7 +57,6 @@ from son_of_anton_state_common import (  # noqa: F401  (re-exported for back-com
     _sql_session_last_active_by_id,
     escape_like as _escape_like,
     DEFERRED_INDEX_SQL,
-    FTS_CJK_STALE_KEY,
     FTS_SQL,
     FTS_STALE_KEY,
     FTS_STORAGE_VERSION,
@@ -645,41 +643,6 @@ def _ensure_test_isolation(db_path: Path) -> None:
                 "its environment."
             )
 
-# ---------------------------------------------------------------------------
-# WAL-compatibility fallback
-# ---------------------------------------------------------------------------
-# SQLite's WAL mode requires shared-memory (mmap) coordination and fcntl
-# byte-range locks that don't reliably work on network filesystems (NFS,
-# SMB/CIFS, some FUSE mounts, WSL1).  Upstream documents this explicitly:
-# https://www.sqlite.org/wal.html#sometimes_queries_return_sqlite_busy_in_wal_mode
-#
-# On those filesystems ``PRAGMA journal_mode=WAL`` raises
-# ``sqlite3.OperationalError: locking protocol`` (SQLITE_PROTOCOL).  If we
-# propagate that, every feature backed by state.db / kanban.db breaks
-# silently — /resume, /title, /history, /branch, kanban dispatcher, etc.
-#
-# ZFS is a separate case: its COW + mmap semantics can corrupt the WAL
-# shared-memory (-shm) file under concurrent connection bursts, presenting
-# as ``disk I/O error`` rather than ``locking protocol``.
-#
-# Instead, fall back to ``journal_mode=DELETE`` (the pre-WAL default) which
-# works on NFS and ZFS.  Concurrency drops — concurrent readers are blocked
-# during a write — but the feature works.
-#
-# Separately, SQLite's WAL-reset bug can corrupt multi-process WAL databases
-# on unfixed library builds (issue #69784).  See:
-# https://sqlite.org/wal.html#walresetbug
-# Fixed in 3.51.3+ with backports 3.50.7 and 3.44.6.  On vulnerable builds we
-# refuse to *enable* WAL for fresh / non-WAL databases (prefer DELETE).  We do
-# NOT live-downgrade an on-disk WAL database — other gateway/cron/worker
-# connections may still hold it open, and flipping journal_mode under them is
-# unsafe (same invariant as the NFS path below).
-_WAL_INCOMPAT_MARKERS = (
-    "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
-    "not authorized",         # Some FUSE mounts block WAL pragma outright
-    "disk i/o error",         # ZFS SHM corruption under concurrent connections
-)
-
 # Upper bound for the write-ahead log. SQLite defaults to -1 (unlimited),
 # which lets state.db-wal keep the high-water mark of the largest-ever
 # transaction forever. See _apply_wal_size_limit().
@@ -688,22 +651,9 @@ _WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
 # related slash-command error strings so users know WHY the DB is
 # unavailable instead of getting a bare "Session database not available."
-# Only SessionDB.__init__ writes to this; kanban_db.connect() failures
-# do not update it (by design — kanban failures are reported via their
-# own caller's error handling, not via /resume-style slash commands).
 _last_init_error: Optional[str] = None
 _last_init_error_lock = threading.Lock()
 
-# Paths for which we've already logged a WAL-fallback WARNING.  Without
-# this, kanban_db.connect() (called on every kanban operation — see
-# son_of_anton_cli/kanban_db.py for ~30 call sites) would re-log the same
-# filesystem-incompat warning on every connection, filling errors.log.
-_wal_fallback_warned_paths: set[str] = set()
-_wal_fallback_warned_lock = threading.Lock()
-
-# Dedup WARNING for the WAL-reset vulnerability fallback (issue #69784).
-_wal_reset_bug_warned_paths: set[str] = set()
-_wal_reset_bug_warned_lock = threading.Lock()
 
 def _set_last_init_error(msg: Optional[str]) -> None:
     """Record (or clear) the most recent state.db init failure.
@@ -857,51 +807,7 @@ def format_session_db_unavailable(prefix: str = "Session database not available"
     cause = get_last_init_error()
     if not cause:
         return f"{prefix}."
-    hint = ""
-    if any(marker in cause.lower() for marker in _WAL_INCOMPAT_MARKERS):
-        hint = " (state.db may be on NFS/SMB/FUSE/ZFS — see https://www.sqlite.org/wal.html)"
-    return f"{prefix}: {cause}{hint}."
-
-
-def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
-    """Read the journal mode from the SQLite DB header on disk.
-
-    Returns the mode string (e.g. ``"wal"``, ``"delete"``), or ``None``
-    if the value cannot be determined (new DB, or PRAGMA read failed).
-
-    A PRAGMA read can fail transiently with ``disk i/o error`` on
-    virtualized block devices (XFS on cloud hosts).  Treating that as
-    "mode unknown" pushes callers onto their fail-closed unknown-mode
-    branch even though the on-disk mode is perfectly readable a few
-    milliseconds later.  Retry the read a few times before giving up:
-    transient EIO clears, deterministic unsupported-filesystem errors do
-    not.  ``None`` is still returned on final failure so the caller's
-    existing "unknown → refuse to downgrade" logic applies.
-    """
-    last_exc: Optional[Exception] = None
-    for _ in range(4):
-        try:
-            row = conn.execute("PRAGMA journal_mode").fetchone()
-        except sqlite3.OperationalError as exc:
-            last_exc = exc
-            if "disk i/o error" not in str(exc).lower():
-                return None
-            time.sleep(0.05)
-            continue
-        if row is None:
-            return None
-        mode = row[0]
-        if isinstance(mode, bytes):  # defensive: sqlite3 occasionally returns bytes
-            try:
-                mode = mode.decode("ascii")
-            except UnicodeDecodeError:
-                return None
-        return str(mode).strip().lower() if mode is not None else None
-    if last_exc is not None:
-        logger.debug(
-            "_on_disk_journal_mode: retries exhausted on disk read (%s)", last_exc
-        )
-    return None
+    return f"{prefix}: {cause}."
 
 
 def _apply_wal_size_limit(conn: sqlite3.Connection) -> None:
@@ -943,477 +849,30 @@ def _apply_wal_size_limit(conn: sqlite3.Connection) -> None:
         logger.debug("journal_size_limit not applied: %s", exc)
 
 
-def is_sqlite_wal_reset_vulnerable(
-    version_info: Optional[tuple] = None,
-) -> bool:
-    """Return True when the linked SQLite library has the WAL-reset bug.
-
-    Upstream documents the bug in versions 3.7.0 through 3.51.2, fixed in
-    3.51.3+, with backports 3.50.7 and 3.44.6:
-    https://sqlite.org/wal.html#walresetbug
-
-    Pre-WAL libraries (< 3.7.0) cannot hit the race and are treated as safe.
-    """
-    info = version_info if version_info is not None else sqlite3.sqlite_version_info
-    return _is_sqlite_wal_reset_vulnerable(info)
-
-
-
-def resolve_journal_mode() -> str:
-    """Return the configured journal mode (``wal`` or ``delete``).
-
-    ``database.journal_mode`` in config.toml is the canonical operator
-    setting. ``wal`` remains the default; use ``delete`` when the backing
-    filesystem does not provide WAL-safe durability (for example macOS
-    virtiofs, NFS, or SMB). Invalid or malformed values fail safely to the
-    existing default.
-    """
-    try:
-        from son_of_anton_cli.config import load_config_readonly
-
-        config = load_config_readonly() or {}
-        database = config.get("database", {})
-        if not isinstance(database, dict):
-            return "wal"
-        raw = database.get("journal_mode", "wal")
-    except Exception:
-        return "wal"
-
-    if not isinstance(raw, str):
-        return "wal"
-    mode = raw.strip().lower()
-    return mode if mode in ("wal", "delete") else "wal"
-
-
-class WalUnsupportedError(sqlite3.OperationalError):
-    """Raised by :func:`apply_wal_with_fallback` when ``require_wal=True`` and
-    the filesystem cannot provide WAL journal mode.
-
-    Covers both shapes of WAL refusal on network filesystems (NFS / SMB / FUSE
-    / the AgentFS NFS overlay): SQLite *raising* ``SQLITE_PROTOCOL`` ("locking
-    protocol"), and the quieter macOS-NFS case where ``PRAGMA journal_mode=WAL``
-    silently returns the still-effective mode without raising.  Subclasses
-    ``sqlite3.OperationalError`` so existing ``except sqlite3.OperationalError``
-    DB-init handling still catches it, while callers that specifically mandate
-    WAL can catch this narrower type.
-    """
-
-
 def apply_wal_with_fallback(
     conn: sqlite3.Connection,
     *,
     db_label: str = "state.db",
-    require_wal: bool = False,
 ) -> str:
-    """Set ``journal_mode=WAL`` on ``conn``, falling back to DELETE on failure.
+    """Put ``conn``'s database in WAL mode and bound its WAL.
 
-    Returns the journal mode actually set (``"wal"`` or ``"delete"``).
-
-    On WAL-incompatible filesystems (NFS, SMB, some FUSE, ZFS), SQLite either
-    raises ``OperationalError("locking protocol")`` /
-    ``OperationalError("disk I/O error")`` or — on macOS NFS / SMB /
-    the AgentFS NFS overlay — silently refuses the switch and leaves the DB in
-    DELETE.  Either way the degradation is logged at ERROR level (it is a real
-    loss of concurrency — a write blocks concurrent readers — not a cosmetic
-    warning) and, by default, the function falls back to DELETE (the pre-WAL
-    default, which works on NFS and ZFS) so the feature keeps working.
-
-    On SQLite builds that still contain the WAL-reset corruption bug
-    (issue #69784), refuse to enable WAL on fresh / non-WAL databases
-    (prefer DELETE).  If the on-disk DB is already WAL, keep WAL and warn
-    — never live-downgrade under possible concurrent openers.
-
-    This gate (#70055) is deliberately RETAINED. An earlier revision of the
-    lock-cancellation fix (#71724) reverted it on the theory that DELETE was
-    "the mode that corrupts", but that comparison was confounded: the clean
-    WAL result came from SQLite 3.53.1, which carries BOTH the WAL-reset fix
-    AND 3.51.0's defenses against close()-broken POSIX locks, so it says
-    nothing about 3.50.4.  Re-measured on the actually-bundled 3.50.4 with
-    the lock fix in place, WAL and DELETE are both clean (0/3 each) — i.e.
-    there is no evidence that WAL is safer here, and upstream still documents
-    the WAL-reset bug as real through 3.51.2 with serious consequences.  Until
-    a fixed runtime is delivered, keep new databases out of WAL.
-
-    Callers that genuinely require WAL concurrency (and would rather fail loudly
-    than run silently degraded) pass ``require_wal=True``; the function then
-    raises :class:`WalUnsupportedError` instead of returning ``"delete"``.  All
-    current callers deliberately keep the default ``require_wal=False`` so
-    NFS-homed installs keep working.
-
-    The ERROR is deduplicated per ``db_label``: repeated connections to the
-    same underlying DB (e.g. kanban_db.connect() which is called on every
-    kanban operation) log once per process, not once per call.  Different
-    db_labels log independently, so state.db and kanban.db each get one error
-    on the same NFS mount.
-
-    Shared by :class:`SessionDB` and ``son_of_anton_cli.kanban_db.connect`` so
-    both databases get identical fallback behavior.
-
-    Never downgrades to DELETE if the on-disk DB header reports WAL — see
-    _on_disk_journal_mode.  That holds for both the NFS path and the
-    WAL-reset vulnerability path.
+    Returns the journal mode SQLite reports (``"wal"`` normally). A database
+    that is already WAL on disk skips the set-pragma, so a new opener never
+    re-initialises WAL files other connections hold open.
     """
-    configured = resolve_journal_mode()
-
-    # Vulnerable SQLite: do not enable WAL on new/non-WAL files. Resolve the
-    # operator setting first so an explicit DELETE request still verifies that
-    # SQLite actually accepted DELETE rather than silently returning MEMORY or
-    # another connection-specific mode.
-    if is_sqlite_wal_reset_vulnerable():
-        return _apply_delete_for_wal_reset_bug(
-            conn,
-            db_label=db_label,
-            require_delete=configured == "delete",
-        )
-
-    # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
-    # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
-    current_mode = _on_disk_journal_mode(conn)
-    if current_mode == "wal":
-        _apply_wal_size_limit(conn)
-        return "wal"
-
-    # #68545: honor the canonical database.journal_mode setting. Existing
-    # on-disk WAL databases were returned above and are never live-downgraded.
-    if configured == "delete":
-        if current_mode is None:
-            # The mode probe failed (database locked / busy): another
-            # process may hold this DB open in WAL. Ownership is not
-            # provably exclusive, so flipping journal modes here could
-            # destroy committed-but-uncheckpointed WAL transactions of a
-            # concurrent writer. Fail loudly instead of downgrading — the
-            # operator explicitly requested DELETE and we cannot verify it.
-            raise sqlite3.OperationalError(
-                "could not verify journal mode before applying configured "
-                "journal_mode=delete (database is locked — possible "
-                "concurrent openers); refusing to downgrade a database "
-                "this process does not exclusively own"
-            )
-        actual = _set_journal_mode_no_wait(conn, "DELETE")
-        if actual != "delete":
-            raise sqlite3.OperationalError(
-                f"could not set configured journal_mode=delete (got {actual or 'no result'})"
-            )
-        return actual
-
     try:
-        # ``PRAGMA journal_mode=WAL`` is a query-that-sets: it RETURNS the
-        # resulting journal mode. Network filesystems that refuse WAL by
-        # *raising* SQLITE_PROTOCOL ("locking protocol") are handled in the
-        # except branch below. But macOS NFS — and SMB/CIFS, and the AgentFS
-        # NFS overlay — refuse the switch WITHOUT raising: the pragma simply
-        # returns the still-effective mode (e.g. ``delete``). Trust the
-        # returned row, not the mere absence of an exception; otherwise we
-        # report a false ``"wal"`` AND skip the fallback WARNING, leaving the
-        # DB silently in DELETE (reader-blocks-writer) with no signal.
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+    except sqlite3.OperationalError:
+        row = None
+    mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
+    if mode != "wal":
         row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
         mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
-        if mode == "wal":
-            _apply_wal_size_limit(conn)
-            return "wal"
-        # Silent refusal (macOS NFS / SMB / AgentFS overlay): WAL was not
-        # honored, but nothing raised.
-        silent_exc = WalUnsupportedError(
-            f"journal_mode=WAL refused without raising (still {mode!r})"
-        )
-        if require_wal:
-            raise silent_exc
-        _log_wal_fallback_once(db_label, silent_exc)
-        return mode or "delete"
-    except sqlite3.OperationalError as exc:
-        # The require_wal silent-refusal raise above is a WalUnsupportedError
-        # (an OperationalError subclass) and lands here — propagate it
-        # unchanged rather than re-running it through the marker logic.
-        if isinstance(exc, WalUnsupportedError):
-            raise
-        msg = str(exc).lower()
-        if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
-            # Unrelated OperationalError — don't silently swallow.
-            raise
-        # ``disk i/o error`` is ambiguous: on ZFS / APFS-CoW it is a
-        # deterministic WAL-incompatibility (SHM corruption under concurrent
-        # connection bursts — #55305, #71498), but it can also be a one-shot
-        # transient EIO (page-cache pressure, brief lock contention).
-        # Treating a transient EIO as a permanent downgrade signal produced
-        # the mixed-journal-mode corruption pattern fixed in 5c49cd0ed0
-        # (process A downgrades to DELETE while sibling processes set WAL).
-        # Disambiguate by retrying the pragma a couple of times: transient
-        # EIO clears and we return "wal"; the deterministic filesystem cases
-        # keep failing and fall through to the guarded DELETE fallback.
-        if "disk i/o error" in msg:
-            for _ in range(2):
-                time.sleep(0.05)
-                try:
-                    row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
-                except sqlite3.OperationalError as retry_exc:
-                    if "disk i/o error" not in str(retry_exc).lower():
-                        raise
-                    exc = retry_exc
-                    continue
-                mode = (
-                    str(row[0]).strip().lower()
-                    if row and row[0] is not None
-                    else ""
-                )
-                if mode == "wal":
-                    _apply_wal_size_limit(conn)
-                    return "wal"
-                break
-        # Don't downgrade if another process already set WAL on disk, or if
-        # the mode cannot be verified at all (probe blocked by a concurrent
-        # opener's locks) — ownership is not provably exclusive either way.
-        existing = _on_disk_journal_mode(conn)
-        if existing == "wal" or existing is None:
-            raise
-        if require_wal:
-            # Caller mandates WAL — fail loudly instead of degrading to DELETE.
-            raise WalUnsupportedError(str(exc)) from exc
-        _log_wal_fallback_once(db_label, exc)
-        _set_journal_mode_no_wait(conn, "DELETE")
-        return "delete"
-
-
-def _set_journal_mode_no_wait(conn: sqlite3.Connection, mode: str) -> str:
-    """Execute ``PRAGMA journal_mode=<mode>`` without waiting on other openers.
-
-    This is the ONLY place a journal-mode switch pragma may be issued for a
-    non-WAL target.  It temporarily forces ``busy_timeout=0`` so SQLite's own
-    exclusivity requirement becomes a concurrent-opener detector: leaving WAL
-    mode requires exclusive access to the database, so if ANY other connection
-    (this process or another) holds the DB open, the pragma fails immediately
-    with ``database is locked`` instead of waiting out a busy timeout and
-    sneaking the flip in between a concurrent writer's transactions — which is
-    exactly how committed-but-uncheckpointed WAL transactions get destroyed.
-
-    Callers must treat a raised ``OperationalError`` as "not exclusively
-    owned: leave the journal mode alone", never as a retryable condition.
-
-    Returns the resulting journal mode as reported by SQLite (lowercase), or
-    ``""`` when SQLite returned no row.
-    """
-    previous_timeout = 0
-    try:
-        row = conn.execute("PRAGMA busy_timeout").fetchone()
-        if row and row[0] is not None:
-            previous_timeout = int(row[0])
-    except (sqlite3.OperationalError, TypeError, ValueError):
-        previous_timeout = 0
-    conn.execute("PRAGMA busy_timeout=0")
-    try:
-        row = conn.execute(f"PRAGMA journal_mode={mode}").fetchone()
-        return str(row[0]).strip().lower() if row and row[0] is not None else ""
-    finally:
-        try:
-            conn.execute(f"PRAGMA busy_timeout={previous_timeout}")
-        except sqlite3.OperationalError:
-            pass
-
-
-def _apply_delete_for_wal_reset_bug(
-    conn: sqlite3.Connection,
-    *,
-    db_label: str,
-    require_delete: bool = False,
-) -> str:
-    """Avoid enabling WAL when the linked SQLite has the WAL-reset bug.
-
-    - Already-WAL on disk: leave WAL alone (no live downgrade) and warn.
-    - Mode unreadable (probe blocked by a concurrent opener's locks):
-      ownership is not provably exclusive — leave the journal mode alone
-      and warn.  Never treat "could not read the mode" as "not WAL": that
-      exact confusion let a vulnerable-SQLite process flip a live WAL
-      state.db to DELETE under a concurrent WAL writer, destroying its
-      committed-but-uncheckpointed transactions.
-    - Otherwise: set DELETE (refusing to wait out concurrent openers) and
-      warn.
-    - For an explicit operator request, verify SQLite accepted DELETE.
-    """
-    current = _on_disk_journal_mode(conn)
-
-    if current == "wal":
-        # Do not TRUNCATE / journal_mode=DELETE while other processes may
-        # still hold this WAL DB open — same safety rule as the NFS path.
-        _log_wal_reset_bug_once(db_label, kept_wal=True)
+    if mode == "wal":
         _apply_wal_size_limit(conn)
-        return "wal"
-
-    if current is None:
-        # The mode probe itself failed — another opener's locks are the
-        # most likely cause, and the DB may well be in WAL under a live
-        # writer.  Never flip a journal mode we cannot even read.
-        if require_delete:
-            raise sqlite3.OperationalError(
-                "could not verify journal mode before applying configured "
-                "journal_mode=delete (database is locked — possible "
-                "concurrent openers); refusing to downgrade a database "
-                "this process does not exclusively own"
-            )
-        _log_wal_reset_bug_once(db_label, kept_wal=True, indeterminate=True)
-        return "wal"
-
-    actual = ""
-    try:
-        actual = _set_journal_mode_no_wait(conn, "DELETE")
-    except sqlite3.OperationalError as exc:
-        if require_delete:
-            raise
-        lowered = str(exc).lower()
-        if "locked" in lowered or "busy" in lowered:
-            # A concurrent opener appeared between the probe and the flip
-            # (or already held the DB): SQLite refused the exclusive lock.
-            # Leave the journal mode exactly as it is.
-            _log_wal_reset_bug_once(db_label, kept_wal=True, indeterminate=True)
-            return current or "delete"
-        # Best-effort for the automatic vulnerable-runtime fallback: DELETE is
-        # normally already the default for new file-backed databases.
-    if require_delete and actual != "delete":
-        raise sqlite3.OperationalError(
-            "could not set configured journal_mode=delete "
-            f"(got {actual or 'no result'})"
-        )
-    _log_wal_reset_bug_once(db_label, kept_wal=False)
-    return "delete"
-
-
-def _wal_reset_repair_hint() -> str:
-    """Return a hint for repairing the SQLite runtime."""
-    return (
-        "install a Python build bundled with SQLite 3.51.3+ "
-        "(or backports 3.50.7 / 3.44.6) and restart Son of Anton"
-    )
-
-
-def _log_wal_reset_bug_once(
-    db_label: str,
-    *,
-    kept_wal: bool,
-    indeterminate: bool = False,
-) -> None:
-    """Log once per (process, db_label) about the WAL-reset vulnerability path."""
-    with _wal_reset_bug_warned_lock:
-        if db_label in _wal_reset_bug_warned_paths:
-            return
-        _wal_reset_bug_warned_paths.add(db_label)
-    if indeterminate:
-        action = (
-            "journal mode could not be verified or exclusively switched "
-            "(database is locked — possible concurrent openers); leaving the "
-            "journal mode untouched (no live downgrade under concurrent "
-            "openers)"
-        )
-    elif kept_wal:
-        action = (
-            "is already in WAL mode — leaving WAL in place (no live "
-            "downgrade under concurrent openers)"
-        )
     else:
-        action = "using journal_mode=DELETE instead of enabling WAL"
-    # Check whether this is a Son of Anton-managed install (uv-managed venv)
-    # so the warning doesn't promise a repair path that doesn't exist
-    # for git/pip/system Python installs (#75153).
-    repair_hint = _wal_reset_repair_hint()
-    logger.warning(
-        "%s: linked SQLite %s is vulnerable to the WAL-reset corruption "
-        "bug (https://sqlite.org/wal.html#walresetbug) — %s. "
-        "Upgrade to SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6); "
-        "%s. See `son-of-anton doctor`. This warning fires once per "
-        "process per database.",
-        db_label,
-        sqlite3.sqlite_version,
-        action,
-        repair_hint,
-    )
-
-
-def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
-    """Log a single ERROR per (process, db_label) about WAL fallback.
-
-    ERROR (not WARNING): a DB silently dropped to DELETE means a real loss of
-    concurrency — under the kanban dispatcher + workers a write blocks readers,
-    surfacing as SQLITE_BUSY/lock contention — so it must be loud, not cosmetic.
-
-    Without this dedup, NFS users running kanban (which opens a fresh
-    connection on every operation — see son_of_anton_cli/kanban_db.py) would
-    fill errors.log with hundreds of identical errors per hour.
-    """
-    with _wal_fallback_warned_lock:
-        if db_label in _wal_fallback_warned_paths:
-            return
-        _wal_fallback_warned_paths.add(db_label)
-    logger.error(
-        "%s: WAL journal_mode unsupported on this filesystem (%s) — "
-        "falling back to journal_mode=DELETE (slower rollback-journal "
-        "mode; reduces concurrency but works on NFS/SMB/FUSE/ZFS). See "
-        "https://www.sqlite.org/wal.html for details. This message "
-        "fires once per process per database.",
-        db_label,
-        exc,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Config-driven database pragmas
-# ---------------------------------------------------------------------------
-def apply_database_pragmas(
-    conn: sqlite3.Connection,
-    *,
-    db_label: str = "state.db",
-) -> None:
-    """Apply optional performance and WAL-sizing PRAGMAs from ``config.toml``.
-
-    Reads the ``database:`` section and applies configurable PRAGMAs when set
-    to integer values.  The journal mode itself is NOT handled here —
-    ``database.journal_mode`` is owned by :func:`resolve_journal_mode` inside
-    :func:`apply_wal_with_fallback`, which layers the operator setting under
-    all the safety guards (never live-downgrading an on-disk WAL DB,
-    filesystem fallback, WAL-reset-bug gating).
-
-    Supported keys under ``database:`` in config.toml:
-
-    * ``cache_size`` — negative value = KiB, positive = pages
-      (e.g. ``-262144`` = 256 MB page cache)
-    * ``mmap_size`` — max bytes for memory-mapped I/O (0 = disabled)
-    * ``temp_store`` — 0=DEFAULT(file), 1=FILE, 2=MEMORY, 3=ALWAYS
-    * ``wal_autocheckpoint`` — WAL auto-checkpoint threshold in pages
-    * ``journal_size_limit`` — max journal/WAL size in bytes
-
-    Best-effort: config load or pragma failures are ignored so DB init
-    never breaks on a malformed ``database:`` section.
-    """
-    try:
-        # Local import avoids a circular import with son_of_anton_cli.config.
-        from son_of_anton_cli.config import cfg_get, load_config_readonly
-
-        cfg = load_config_readonly()
-    except Exception:
-        return
-
-    # Performance PRAGMAs (applied to ALL connection types: writer, read_only,
-    # and WAL per-thread readers).
-    for pragma_name in (
-        "cache_size",
-        "mmap_size",
-        "temp_store",
-        "wal_autocheckpoint",
-        "journal_size_limit",
-    ):
-        raw_value = cfg_get(cfg, "database", pragma_name, default=None)
-        if raw_value is None:
-            continue
-        try:
-            value = int(str(raw_value).strip())
-        except (TypeError, ValueError):
-            logger.warning(
-                "%s: ignoring non-integer database.%s=%r",
-                db_label,
-                pragma_name,
-                raw_value,
-            )
-            continue
-        try:
-            conn.execute(f"PRAGMA {pragma_name}={value}")
-        except sqlite3.OperationalError:
-            pass
+        logger.warning("%s: journal_mode=WAL refused (still %r)", db_label, mode)
+    return mode
 
 
 # ---------------------------------------------------------------------------
@@ -2046,13 +1505,6 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     """
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     try:
-        # Best-effort tokenizer load: a DB carrying the messages_fts_cjk
-        # index needs the cjk_unicode61 extension before any statement can
-        # touch that table — including the trigger-driven write probe below.
-        # Without it, this probe sees the DB exactly as a tokenizer-less
-        # SessionDB open would (which drops the cjk triggers to keep writes
-        # working), so tokenizer absence must never classify as corruption.
-        False
         conn.execute("PRAGMA journal_mode").fetchone()
         rows = conn.execute("PRAGMA integrity_check").fetchall()
         problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
@@ -2074,7 +1526,7 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         # Catch the full sqlite3 exception hierarchy (not just
         # OperationalError) so the malformed-shadow-table class is reported
         # rather than letting it crash the caller.
-        for fts_table in ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"):
+        for fts_table in ("messages_fts", "messages_fts_trigram"):
             try:
                 # No-op queries against the actual FTS5 APIs the search
                 # tools use. The trigram table is included because it backs
@@ -2144,12 +1596,6 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                 pass
             msg = str(exc).lower()
             if "no such table" in msg or "no such column" in msg:
-                return None
-            if "no such tokenizer: cjk_unicode61" in msg:
-                # This probe process couldn't load the cjk extension while
-                # the DB carries the cjk index — capability gap, not
-                # corruption. A tokenizer-capable SessionDB serves it fine;
-                # a tokenizer-less one self-heals by dropping the triggers.
                 return None
             return str(exc)
         return None
@@ -2289,19 +1735,13 @@ def _repair_state_db_schema_locked(
     try:
         conn = sqlite3.connect(str(db_path), isolation_level=None)
         try:
-            # The cjk index can only be rebuilt with its tokenizer loaded;
-            # best-effort (a tokenizer-less host skips it at the probe below).
-            False
-            for table_name in (
-                "messages_fts", "messages_fts_trigram", "messages_fts_cjk"
-            ):
+            for table_name in ("messages_fts", "messages_fts_trigram"):
                 try:
                     conn.execute(
                         f"INSERT INTO {table_name}({table_name}) VALUES('rebuild')"
                     )
                 except sqlite3.OperationalError:
-                    # Table absent (FTS disabled / trigram off / cjk not
-                    # present or tokenizer unavailable) — skip it.
+                    # Table absent (FTS disabled / trigram off) — skip it.
                     continue
         finally:
             conn.close()
@@ -2404,99 +1844,6 @@ def _repair_state_db_schema_locked(
         )
     return report
 
-
-# ── CJK-bigram FTS index (replaces the trigram index when available) ────
-#
-# The trigram tokenizer needs >=3 chars per query term, so 1-2 char CJK
-# terms (ubiquitous in Korean/Chinese: 일본, 구글, 项目, ...) fall through
-# to a LIKE full-table scan — measured 3-6s CPU per query on multi-GB
-# installs and the dominant base cost of session_search on CJK workloads.
-#
-# ``cjk_unicode61`` (native/fts5_cjk/, a ~250-line loadable FTS5 tokenizer
-# with no dependencies) wraps unicode61: maximal CJK runs are re-emitted as
-# overlapping character bigrams (Lucene CJKAnalyzer semantics), everything
-# else passes through unchanged. FTS5 phrase semantics turn a query term's
-# consecutive bigrams into exact substring matching down to 2 chars at
-# index speed. Contributed by Soju06 (PR #65544).
-#
-# Same v23 storage discipline as the trigram table it replaces:
-# external-content over a tool-row-excluding view (zero inline text
-# copies; tool rows stay searchable via ``messages_fts``), triggers gated
-# on a DEDICATED marker pair (``fts_cjk_rebuild_high_water`` /
-# ``fts_cjk_rebuild_progress``) so a cjk-only backfill — e.g. the
-# trigram→cjk upgrade on an already-optimized DB — never gates the
-# complete ``messages_fts`` index's triggers.
-#
-# The table exists ONLY when the loadable tokenizer is available
-# (``~/.son-of-anton/lib/libfts5_cjk.so``, built by ``native/fts5_cjk/build.sh``).
-# A process that cannot load it self-heals by dropping the cjk triggers
-# (message writes keep working; the index goes stale and is rebuilt by the
-# next ``son-of-anton sessions optimize-storage`` on a capable host).
-#
-# Split DDL: the table/view part is safe to ensure any time; the triggers
-# are created ONLY while the index is complete-or-marker-gated. A stale
-# index (trigger gap of unknown extent) must keep its triggers DROPPED —
-# an external-content 'delete' op for a rowid the index never held is the
-# canonical FTS5 index-corruption hazard the v23 marker gating exists to
-# prevent.
-FTS_CJK_TABLE_SQL = """
-CREATE VIEW IF NOT EXISTS messages_fts_cjk_src AS
-    SELECT id, role, content, tool_name, tool_calls
-    FROM messages
-    WHERE role <> 'tool';
-
-CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_cjk USING fts5(
-    content,
-    tool_name,
-    tool_calls,
-    content='messages_fts_cjk_src',
-    content_rowid='id',
-    tokenize='cjk_unicode61'
-);
-"""
-
-FTS_CJK_TRIGGER_SQL = """
-CREATE TRIGGER IF NOT EXISTS messages_fts_cjk_insert AFTER INSERT ON messages
-WHEN new.role <> 'tool'
-   AND (new.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                           WHERE key = 'fts_cjk_rebuild_high_water'), -1)
-     OR new.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                            WHERE key = 'fts_cjk_rebuild_progress'), -1))
-BEGIN
-    INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls)
-    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_cjk_delete AFTER DELETE ON messages
-WHEN old.role <> 'tool'
-   AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                           WHERE key = 'fts_cjk_rebuild_high_water'), -1)
-     OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                            WHERE key = 'fts_cjk_rebuild_progress'), -1))
-BEGIN
-    INSERT INTO messages_fts_cjk(messages_fts_cjk, rowid, content, tool_name, tool_calls)
-    VALUES ('delete', old.id, old.content, old.tool_name, old.tool_calls);
-END;
-
-CREATE TRIGGER IF NOT EXISTS messages_fts_cjk_update
-AFTER UPDATE OF content, tool_name, tool_calls, role ON messages
-WHEN (old.content IS NOT new.content
-    OR old.tool_name IS NOT new.tool_name
-    OR old.tool_calls IS NOT new.tool_calls
-    OR old.role IS NOT new.role)
-   AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                           WHERE key = 'fts_cjk_rebuild_high_water'), -1)
-     OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
-                            WHERE key = 'fts_cjk_rebuild_progress'), -1))
-BEGIN
-    INSERT INTO messages_fts_cjk(messages_fts_cjk, rowid, content, tool_name, tool_calls)
-    SELECT 'delete', old.id, old.content, old.tool_name, old.tool_calls
-    WHERE old.role <> 'tool';
-    INSERT INTO messages_fts_cjk(rowid, content, tool_name, tool_calls)
-    SELECT new.id, new.content, new.tool_name, new.tool_calls
-    WHERE new.role <> 'tool';
-END;
-"""
 
 class CompactionSessionClosedError(RuntimeError):
     """A durable write targeted a parent already closed by compaction."""
@@ -2871,13 +2218,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         except Exception:
             logger.debug("Could not close a SessionDB connection", exc_info=True)
 
-    def __init__(self, db_path: Path = None, read_only: bool = False):
+    def __init__(self, db_path: Path = None):
         self.db_path = db_path or _default_db_path()
         # Fail hard (before any connection/pragma/mkdir) if a pytest-context
         # process resolved the developer's production state.db — see the
         # live-DB test-isolation guard block near _default_db_path().
         _ensure_test_isolation(self.db_path)
-        self.read_only = read_only
 
         self._lock = threading.Lock()
         # Read-path split (WAL only): recall/browse queries borrow a
@@ -2952,12 +2298,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._fts_enabled = False
         self._fts_stale = False
         self._trigram_available = False
-        # CJK-bigram index (cjk_unicode61 loadable tokenizer). _fts_cjk_loaded:
-        # extension present on the writer connection; _fts_cjk_available: the
-        # messages_fts_cjk table is queryable AND not marked stale. Set during
-        # _init_schema / _probe_fts_cjk.
-        self._fts_cjk_loaded = False
-        self._fts_cjk_available = False
         self._fts_unavailable_warned = False
         self._conn = None
         # Async token accounting (see queue_token_counts). The condition
@@ -2971,76 +2311,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._token_atexit_hook: Optional[Callable[[], None]] = None
         initialization_complete = False
         try:
-            if read_only:
-                # Read-only attach for cross-profile aggregation: SELECT-only,
-                # so we skip schema init entirely (no DDL, no FTS probe, no
-                # column reconcile). Crucially this takes NO write lock, so
-                # polling another profile's live DB on every sidebar refresh
-                # never contends with that profile's running backend. The DB
-                # must already exist + be initialised (callers guard on
-                # db_path.exists()); a SELECT against an empty file raises and
-                # the caller degrades per-profile.
-                self._conn = _connect_tracked_db(
-                    f"file:{self.db_path}?mode=ro",
-                    tracking_path=self.db_path,
-                    uri=True,
-                    check_same_thread=False,
-                    timeout=1.0,
-                    isolation_level=None,
-                )
-                self._conn.row_factory = sqlite3.Row
-                # FTS capability flags normally come from writable schema
-                # initialisation. Probe existing virtual tables with SELECTs
-                # only so read-only search keeps its FTS and trigram paths.
-                # Close the connection on ANY probe failure (e.g. malformed
-                # schema raises DatabaseError, not the OperationalError the
-                # probe handles). The constructor's outer finally also covers
-                # failures before this probe and BaseException paths, so a
-                # leaked tracked connection cannot block _backup_db_file's
-                # raw-copy for the rest of the process — the writable heal
-                # that follows would then repair WITHOUT its forensic backup.
-                try:
-                    apply_database_pragmas(self._conn, db_label="state.db")
-                    cursor = self._conn.cursor()
-                    self._fts_enabled = (
-                        self._fts_table_probe(cursor, "messages_fts") is True
-                    )
-                    if self._fts_enabled:
-                        self._trigram_available = (
-                            self._fts_table_probe(
-                                cursor,
-                                "messages_fts_trigram",
-                            )
-                            is True
-                        )
-                except BaseException:
-                    conn, self._conn = self._conn, None
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-                    raise
-                initialization_complete = True
-                return
-
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Read-only file/sidecar preflight (port of kilocode#12508):
             # repair-or-refuse BEFORE the first connection so users get an
             # actionable message instead of an opaque "attempt to write a
             # readonly database" from deep inside _init_schema.
-            if not read_only:
-                preflight_db_writability(self.db_path, db_label="state.db")
+            preflight_db_writability(self.db_path, db_label="state.db")
 
             # #68474: zeroed state.db (size>0, all-NUL header) used to fail as a
             # generic "file is not a database" with no recovery path. Quarantine
             # the bytes (do not delete) and continue so a fresh DB can open;
             # point the operator at pre-update snapshots.
-            if (
-                not read_only
-                and self.db_path.exists()
-                and is_zeroed_state_db(self.db_path)
-            ):
+            if self.db_path.exists() and is_zeroed_state_db(self.db_path):
                 try:
                     zsize = self.db_path.stat().st_size
                 except OSError:
@@ -3080,7 +2363,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
                 apply_database_pragmas(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
-                self._fts_cjk_loaded = False
                 self._init_schema()
 
             def _connect_and_init_with_lock_patience():
@@ -3193,7 +2475,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         query observes everything committed so far — read-your-writes holds
         for the flush-then-search patterns in a turn.
         """
-        if not self._wal_active or self.read_only:
+        if not self._wal_active:
             return None
         with self._read_conns_lock:
             if self._read_conns_closed:
@@ -3239,15 +2521,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             conn.row_factory = sqlite3.Row
             apply_database_pragmas(conn, db_label="state.db")
-            # Load the CJK tokenizer extension on this connection so
-            # messages_fts_cjk queries work on the read path. The .so
-            # registers the tokenizer in the connection's in-memory
-            # registry, not the database file, so mode=ro is fine.
-            if self._fts_cjk_loaded:
-                False
         except sqlite3.Error:
             # A partially-constructed connection — _connect_tracked_db
-            # succeeded, the CJK extension load did not — must be closed here.
+            # succeeded, a pragma did not — must be closed here.
             # Dropping it on the floor still open leaves a live descriptor the
             # tracking registry still counts: the same leak shape this pool
             # exists to fix, one level further down.
@@ -3313,7 +2589,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def _checkout_read_conn(self) -> Optional[sqlite3.Connection]:
         """Borrow a read connection from the pool, opening one on a miss.
 
-        The single acquisition seam for the read path: the WAL/read_only gate,
+        The single acquisition seam for the read path: the WAL gate,
         the pool checkout and the open-on-miss all live here, so there is
         exactly one place to exercise (and one place for a caller to bypass by
         accident). Returns None when the read path is unavailable and the
@@ -3324,7 +2600,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         take a permit, so peak live connections is bounded by _READ_POOL_MAX no
         matter how many threads miss simultaneously.
         """
-        if not self._wal_active or self.read_only:
+        if not self._wal_active:
             return None
         try:
             return self._read_pool.get_nowait()
@@ -3389,25 +2665,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # Scope to trigram specifically to avoid masking unrelated tokenizer errors.
         if "no such tokenizer: trigram" in err:
             return True
-        # The cjk_unicode61 tokenizer is a loadable extension — a process
-        # that couldn't load it sees the same capability-error shape.
-        if "no such tokenizer: cjk_unicode61" in err:
-            return True
         return False
 
     @staticmethod
     def _is_trigram_unavailable_error(exc: sqlite3.OperationalError) -> bool:
-        """True when only an optional tokenizer is missing (FTS5 itself works).
-
-        Covers the built-in trigram tokenizer (needs SQLite >= 3.34) and the
-        loadable cjk_unicode61 tokenizer — both mean "this one index can't be
-        served here", never "disable FTS".
-        """
-        err = str(exc).lower()
-        return (
-            "no such tokenizer: trigram" in err
-            or "no such tokenizer: cjk_unicode61" in err
-        )
+        """True when only the optional trigram tokenizer is missing (FTS5
+        itself works): "this one index can't be served here", never
+        "disable FTS"."""
+        return "no such tokenizer: trigram" in str(exc).lower()
 
     @staticmethod
     def _db_has_legacy_inline_fts(cursor: sqlite3.Cursor) -> bool:
@@ -3462,123 +2727,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self.db_path,
             exc,
         )
-
-    def _ensure_fts_cjk_schema(self, cursor) -> None:
-        """Create / repair / self-heal the CJK-bigram index surface.
-
-        ``cursor`` may be a Cursor or a Connection (both expose execute /
-        executescript). Called only for v23-shape DBs with the base FTS
-        surface healthy. Sets ``self._fts_cjk_available``. Never raises;
-        every failure mode degrades to "no cjk index" (trigram/LIKE routing
-        keeps working).
-
-        Cases:
-          tokenizer loaded, table absent  → create. Empty DB: index is
-              complete by construction (triggers cover everything). Populated
-              DB: set the cjk backfill markers so the id-gated triggers stay
-              correct and `optimize-storage` can backfill; the index is NOT
-              served until the backfill completes.
-          tokenizer loaded, table present → ensure triggers (recreates any
-              dropped by a tokenizer-less process), honour the stale
-              breadcrumb (serve only when absent and no backfill pending).
-          tokenizer NOT loaded, table present with live triggers → drop the
-              cjk triggers so message INSERTs don't fail at trigger time,
-              and leave the stale breadcrumb (#self-heal). The table itself
-              stays for a later capable open to rebuild.
-        """
-        cjk_present = bool(cursor.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-            "AND name = 'messages_fts_cjk'"
-        ).fetchone())
-
-        if not self._fts_cjk_loaded:
-            if cjk_present:
-                live = [
-                    r[0] for r in cursor.execute(
-                        "SELECT name FROM sqlite_master WHERE type = 'trigger' "
-                        f"AND name IN ({','.join('?' for _ in _FTS_CJK_TRIGGERS)})",
-                        _FTS_CJK_TRIGGERS,
-                    ).fetchall()
-                ]
-                if live:
-                    # Self-heal: this process cannot tokenize, so every
-                    # message INSERT would die inside the cjk trigger.
-                    # Breadcrumb FIRST (crash between the two statements is
-                    # merely conservative), then drop.
-                    logger.warning(
-                        "messages_fts_cjk triggers present but the "
-                        "cjk_unicode61 tokenizer is unavailable — "
-                        "dropping the cjk triggers so message writes keep "
-                        "working. CJK search falls back to trigram/LIKE; "
-                        "run `son-of-anton sessions optimize-storage` on a host "
-                        "with the extension to rebuild.",
-                    )
-                    cursor.execute(
-                        "INSERT INTO state_meta (key, value) VALUES (?, '1') "
-                        "ON CONFLICT(key) DO UPDATE SET value = '1'",
-                        (FTS_CJK_STALE_KEY,),
-                    )
-                    for trig in live:
-                        cursor.execute(f"DROP TRIGGER IF EXISTS {trig}")
-            self._fts_cjk_available = False
-            return
-
-        try:
-            cursor.executescript(FTS_CJK_TABLE_SQL)
-            if not cjk_present:
-                # Freshly created. An empty DB's index is complete by
-                # construction (triggers will cover every future row); a
-                # populated DB (e.g. a v23 install predating the cjk index)
-                # gets the dedicated marker pair so the id-gated triggers
-                # keep NEW rows indexed while old rows await the
-                # `optimize-storage` backfill. Either way any old stale
-                # breadcrumb refers to a table that no longer exists.
-                cursor.execute(
-                    "DELETE FROM state_meta WHERE key = ?",
-                    (FTS_CJK_STALE_KEY,),
-                )
-                n_msgs = cursor.execute(
-                    "SELECT COUNT(*) FROM messages WHERE role <> 'tool'"
-                ).fetchone()[0]
-                if n_msgs > 0:
-                    hw = cursor.execute(
-                        "SELECT COALESCE(MAX(id), 0) FROM messages"
-                    ).fetchone()[0]
-                    for k, v in (
-                        ("fts_cjk_rebuild_high_water", str(hw)),
-                        ("fts_cjk_rebuild_progress", "0"),
-                    ):
-                        cursor.execute(
-                            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
-                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                            (k, v),
-                        )
-            stale = cursor.execute(
-                "SELECT 1 FROM state_meta WHERE key = ?",
-                (FTS_CJK_STALE_KEY,),
-            ).fetchone()
-            if stale:
-                # A tokenizer-less process dropped the triggers at some
-                # unknown point — the index has a gap of unknown extent.
-                # Do NOT reinstall triggers (an external-content 'delete'
-                # for an unindexed rowid corrupts the index); the next
-                # `optimize-storage` run rebuilds from scratch.
-                self._fts_cjk_available = False
-                return
-            cursor.executescript(FTS_CJK_TRIGGER_SQL)
-            backfill_pending = cursor.execute(
-                "SELECT 1 FROM state_meta "
-                "WHERE key = 'fts_cjk_rebuild_high_water' LIMIT 1"
-            ).fetchone()
-            self._fts_cjk_available = not backfill_pending
-        except sqlite3.OperationalError:
-            # Includes "no such tokenizer: cjk_unicode61" if the extension
-            # loaded but registration failed — degrade to trigram/LIKE.
-            logger.warning(
-                "messages_fts_cjk ensure failed; CJK search stays on "
-                "trigram/LIKE", exc_info=True,
-            )
-            self._fts_cjk_available = False
 
     @staticmethod
     def _drop_fts_triggers(cursor: sqlite3.Cursor) -> None:
@@ -3831,7 +2979,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
                 apply_database_pragmas(new_conn, db_label="state.db")
                 new_conn.execute("PRAGMA foreign_keys=ON")
-                self._fts_cjk_loaded = False
                 self._init_schema()
         except Exception as exc:
             logger.error(
@@ -3930,19 +3077,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                         (FTS_STALE_KEY,),
                     )
-                    cjk_triggers_present = self._conn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' "
-                        f"AND name IN ({','.join('?' for _ in _FTS_CJK_TRIGGERS)}) "
-                        "LIMIT 1",
-                        _FTS_CJK_TRIGGERS,
-                    ).fetchone()
-                    if cjk_triggers_present:
-                        self._conn.execute(
-                            "INSERT INTO state_meta (key, value) VALUES (?, '1') "
-                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                            (FTS_CJK_STALE_KEY,),
-                        )
-                    self._drop_all_fts_triggers(self._conn.cursor())
+                    self._drop_fts_triggers(self._conn.cursor())
                     self._conn.commit()
                 except BaseException:
                     self._conn.rollback()
@@ -3958,7 +3093,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._fts_stale = True
         self._fts_enabled = False
         self._trigram_available = False
-        self._fts_cjk_available = False
         logger.error(
             "state.db FTS indexes remain corrupt (%s); disabled FTS sync and "
             "retrying the canonical write. Search temporarily uses LIKE until "
@@ -4063,21 +3197,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._close_read_conn(conn)
         with self._lock:
             if self._conn:
-                if not self.read_only:
-                    # PASSIVE, not TRUNCATE. Every cron run_agent opens+closes a
-                    # transient SessionDB, so a TRUNCATE here fires a full WAL
-                    # reset many times/hour, racing the gateway's long-lived
-                    # writer on large WAL databases and tearing hot B-tree
-                    # pages -- the #45383 corruption this class's own periodic
-                    # checkpoint was already made PASSIVE to avoid. TRUNCATE
-                    # belongs only on a sole-opener/quiescent connection.
-                    try:
-                        self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                    except Exception as exc:
-                        logger.debug(
-                            "WAL checkpoint (PASSIVE) at close failed: %s",
-                            exc,
-                        )
+                # PASSIVE, not TRUNCATE. Every cron run_agent opens+closes a
+                # transient SessionDB, so a TRUNCATE here fires a full WAL
+                # reset many times/hour, racing the gateway's long-lived
+                # writer on large WAL databases and tearing hot B-tree
+                # pages -- the #45383 corruption this class's own periodic
+                # checkpoint was already made PASSIVE to avoid. TRUNCATE
+                # belongs only on a sole-opener/quiescent connection.
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except Exception as exc:
+                    logger.debug(
+                        "WAL checkpoint (PASSIVE) at close failed: %s",
+                        exc,
+                    )
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
 
@@ -4139,13 +3272,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # orphaned shadow tables — now plain tables — to fts_v22_trash_*; the
     # worker empties them in bounded chunks, then drops them cheaply).
     _FTS_TRASH_PREFIX = "fts_v22_trash_"
-
-    # ── CJK-bigram index backfill (dedicated marker pair) ──
-    #
-    # Same chunk engine as the main deferred rebuild, but on the
-    # ``fts_cjk_rebuild_*`` markers so a cjk-only backfill (the common case:
-    # an already-optimized v23 DB gaining the cjk index) never gates the
-    # complete ``messages_fts`` / trigram triggers.
 
     # ── Opt-in v23 FTS storage optimization (`son-of-anton sessions optimize-storage`) ──
     #
@@ -11098,10 +10224,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # ── Space reclamation ──
 
     # FTS5 virtual tables whose b-tree segments we merge on optimize. The
-    # trigram table is created lazily / may be disabled, and the cjk-bigram
-    # table only exists (and is only queryable) when the loadable tokenizer
-    # is present — so we probe each before touching it (see optimize_fts).
-    _FTS_TABLES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
+    # trigram table is created lazily / may be disabled, so we probe each
+    # before touching it (see optimize_fts).
+    _FTS_TABLES = ("messages_fts", "messages_fts_trigram")
 
     def logical_size_bytes(self) -> Optional[int]:
         """Database size in bytes as SQLite itself accounts for it.
