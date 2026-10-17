@@ -1339,13 +1339,6 @@ DEFAULT_CONFIG = {
         "timeout": 0,
         "cron_mode": "deny",
         "single_query_mode": "deny",
-        # Operator-customizable policy text for smart approvals. When
-        # non-empty, this is appended to the smart-approval guardian's
-        # SYSTEM prompt (trusted channel) as additional rules — e.g.
-        # "Always ESCALATE commands touching /etc" or "APPROVE docker
-        # compose restarts under ~/deploys". Inspired by ChatGPT Work's
-        # customizable auto-review guardian policy.
-        "smart_policy": "",
         # Consecutive-denial circuit breaker for smart approvals: after this
         # many guardian DENY verdicts in a row within one session, the deny
         # message returned to the model escalates to a hard-stop instruction
@@ -1353,16 +1346,6 @@ DEFAULT_CONFIG = {
         # plain "Do NOT retry". Any approval resets the count. 0 disables.
         # Inspired by ChatGPT Work's auto-review circuit breaker.
         "denial_breaker_threshold": 3,
-        # User-defined deny rules: fnmatch globs matched against terminal
-        # commands. A match blocks the command unconditionally — BEFORE the
-        # --yolo / /yolo / mode=off bypass — making this the user-editable
-        # counterpart to the code-shipped hardline blocklist. Patterns are
-        # case-insensitive and must be quoted in TOML when they start with
-        # * or contain {}/!/: sequences. Example:
-        #   deny:
-        #     - "git push --force*"
-        #     - "*curl*|*sh*"
-        "deny": [],
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system
@@ -1420,16 +1403,6 @@ DEFAULT_CONFIG = {
         # lets the vendor train on prompts/completions. The startup guard still
         # prints the full warning on every run and never bypasses cost guards.
         "allow_data_training_tiers_noninteractive": False,
-        # Human approval presentation transport. "builtin" preserves the
-        # current CLI/TUI/gateway/ACP surfaces. A plugin transport is used only
-        # when named explicitly here. Transport timeout/error/invalid response
-        # denies unless transport_fallback is explicitly set to "builtin".
-        # This is presentation only: plugins cannot detect, suppress, or
-        # auto-approve commands outside a correlated human response.
-        "approval": {
-            "transport": "builtin",
-            "transport_fallback": "deny",
-        },
         # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/
         # .cursorrules, project-local .son-of-anton config) always require human
         # approval — even under auto-approve/yolo. Extra patterns are
