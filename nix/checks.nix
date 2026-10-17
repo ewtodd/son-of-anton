@@ -286,8 +286,6 @@ import son_of_anton_cli.commands
 import tools.terminal_tool
 import tools.approval
 import tools.web_tools
-import plugins.web.firecrawl.provider
-import plugins.web.tavily.provider
 import agent.system_prompt
 import agent.prompt_builder
 import plugins.platforms.discord.adapter
