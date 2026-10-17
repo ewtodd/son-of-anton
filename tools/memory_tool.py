@@ -24,6 +24,7 @@ Design:
 """
 
 import copy
+import fcntl
 import json
 import logging
 import time
@@ -34,29 +35,20 @@ from son_of_anton_constants import get_son_of_anton_home
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_write_text, is_truthy_value
-from tools.registry import no_cache_check_fn
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - fcntl is always present on supported platforms
-    fcntl = None
+from tools.registry import no_cache_check_fn, registry, tool_error
 
 logger = logging.getLogger(__name__)
 
 # One tool-definition pass must use one config decision for both availability
-# and the dynamic target schema. ContextVar keeps concurrent profile/session
-# builds isolated while allowing the check_fn result to flow to the immediately
+# and the dynamic target schema. ContextVar keeps concurrent session builds
+# isolated while allowing the check_fn result to flow to the immediately
 # following dynamic_schema_overrides call in ToolRegistry.get_definitions().
 _memory_surface_flags: ContextVar[Optional[Tuple[bool, bool]]] = ContextVar(
     "memory_surface_flags", default=None
 )
 
-# Where memory files live — resolved dynamically so profile overrides
-# (SON_OF_ANTON_HOME env var changes) are always respected.  The old module-level
-# constant was cached at import time and could go stale if a profile switch
-# happened after the first import.
 def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
+    """Return the memories directory (resolved per call, honoring home overrides)."""
     return get_son_of_anton_home() / "memories"
 
 # Stable header prefixes for the system-prompt memory blocks rendered by
@@ -76,9 +68,8 @@ ENTRY_DELIMITER = "\n§\n"
 # TUI session from carrying the user's personal/health/media context.
 MEMORY_SCOPES: Tuple[str, ...] = ("shared", "cli", "gateway")
 
-# agent.platform values that map to the gateway (messaging) scope. Only the
-# surfaces this fork ships: signal is built-in; discord/slack are plugins.
-_GATEWAY_PLATFORMS = frozenset({"signal", "discord", "slack"})
+# agent.platform values that map to the gateway (messaging) scope.
+_GATEWAY_PLATFORMS = frozenset({"signal"})
 
 
 def _memory_filename(target: str, scope: str) -> str:
@@ -212,7 +203,7 @@ class MemoryStore:
     # After this many failed consolidation attempts (overflow / zero-match) in
     # ONE turn, stop instructing the model to "retry in this turn" and return a
     # terminal "save skipped" result so a fragile replace/add can't loop the
-    # turn to budget exhaustion and suppress the user's reply (issue #42405).
+    # turn to budget exhaustion and suppress the user's reply.
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
     def __init__(
@@ -238,7 +229,7 @@ class MemoryStore:
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         # Per-turn counter of failed at-capacity consolidation attempts; reset
-        # at each turn boundary by reset_consolidation_failures() (#42405).
+        # at each turn boundary by reset_consolidation_failures().
         self._consolidation_failures = 0
 
     def target_enabled(self, target: str) -> bool:
@@ -256,7 +247,7 @@ class MemoryStore:
         the model how to self-correct + retry in this turn). Once the cap is
         exceeded, drop the retry instruction and return a TERMINAL result so the
         model stops looping memory calls and proceeds to answer the user — a
-        failed memory side effect must never block the turn's reply (#42405).
+        failed memory side effect must never block the turn's reply.
         """
         self._consolidation_failures += 1
         if self._consolidation_failures <= self._MAX_CONSOLIDATION_FAILURES_PER_TURN:
@@ -283,8 +274,8 @@ class MemoryStore:
         the system prompt.
 
         The live ``memory_entries`` / ``user_entries`` lists keep the
-        original text so the user can still SEE poisoned entries via
-        see poisoned entries by inspecting the source files directly, and remove them — silently dropping them would hide the attack from the user.
+        original text so the user can still see and remove poisoned entries —
+        silently dropping them would hide the attack from the user.
 
         Scanning is deterministic from disk bytes, so the snapshot remains
         stable for the entire session (prefix-cache invariant holds).
@@ -359,11 +350,6 @@ class MemoryStore:
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if fcntl is None:
-            yield
-            return
-
         fd = open(lock_path, "a+", encoding="utf-8")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -463,7 +449,7 @@ class MemoryStore:
             # clobbers existing content, so round-trip mismatches from prior
             # tool-written entries in the same session are harmless.  The drift
             # guard remains active for replace/remove where full-file rewrite
-            # would discard un-roundtrippable content (issue #26045).
+            # would discard un-roundtrippable content.
             #
             # But "append never clobbers" only holds when the reload actually
             # read the file. add rewrites the WHOLE file from the parsed
@@ -761,7 +747,7 @@ class MemoryStore:
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
         # A successful write means the consolidation loop made progress, so the
         # per-turn failure budget resets (the cap counts consecutive failures,
-        # not lifetime ones within a turn) (#42405).
+        # not lifetime ones within a turn).
         self._consolidation_failures = 0
         entries = self._entries_for(target)
         current = self._char_count(target)
@@ -797,12 +783,9 @@ class MemoryStore:
         current = len(content)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
-        if target == "user":
-            scope_suffix = "" if self.scope == "shared" else f" [scope: {self.scope}]"
-            header = f"{MEMORY_BLOCK_HEADERS['user']}{scope_suffix} [{pct}% — {current:,}/{limit:,} chars]"
-        else:
-            scope_suffix = "" if self.scope == "shared" else f" [scope: {self.scope}]"
-            header = f"{MEMORY_BLOCK_HEADERS['memory']}{scope_suffix} [{pct}% — {current:,}/{limit:,} chars]"
+        title = MEMORY_BLOCK_HEADERS["user" if target == "user" else "memory"]
+        scope_suffix = "" if self.scope == "shared" else f" [scope: {self.scope}]"
+        header = f"{title}{scope_suffix} [{pct}% — {current:,}/{limit:,} chars]"
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
@@ -818,8 +801,7 @@ class MemoryStore:
         it just like a failed read. Read-modify-write callers must treat
         ``read_ok=False`` as "abort" rather than "empty store", or a transient
         read failure would let them persist over — and wipe — the on-disk
-        memory (issue #26045 is about the same class: never rewrite a file
-        from a view that isn't the real one).
+        memory.
 
         No file locking needed: _write_file uses atomic rename, so readers
         always see either the previous complete file or the new complete file.
@@ -827,10 +809,8 @@ class MemoryStore:
         if not path.exists():
             return "", True
         try:
-            # utf-8-sig strips a leading UTF-8 BOM (Notepad-edited memory
-            # files on Windows) and is byte-identical to utf-8 otherwise.
-            # Plain utf-8 kept U+FEFF glued to the first entry, corrupting
-            # matching/dedup for that entry forever (#10878 / PR #10888).
+            # utf-8-sig strips a leading UTF-8 BOM (plain utf-8 would glue
+            # U+FEFF to the first entry and break its matching/dedup).
             # Decode errors stay STRICT on purpose: errors="replace" would
             # hand read-modify-write callers a lossy view that a subsequent
             # save persists over the real bytes — the wipe class documented
@@ -850,28 +830,16 @@ class MemoryStore:
         return [e for e in entries if e]
 
     @staticmethod
-    def _read_entries_checked(path: Path) -> Tuple[List[str], bool]:
-        """Read + parse a memory file, distinguishing unreadable from empty.
-
-        Returns ``(entries, read_ok)`` — see ``_read_raw_checked`` for the
-        ``read_ok`` contract.
-        """
-        raw, read_ok = MemoryStore._read_raw_checked(path)
-        if not read_ok:
-            return [], False
-        return MemoryStore._parse_entries(raw), True
-
-    @staticmethod
     def _read_file(path: Path) -> List[str]:
         """Read a memory file and split into entries (empty list on any error).
 
-        Retained for read-only callers (``load_from_disk``) that build in-memory
-        state without persisting; a failed read degrading to ``[]`` there is
-        harmless because nothing is written back. Read-modify-write paths use
-        ``_read_raw_checked`` so they can refuse to overwrite an unreadable
-        file — see ``_reload_target``.
+        Only for read-only callers (``load_from_disk``): a failed read
+        degrading to ``[]`` is harmless when nothing is written back.
+        Read-modify-write paths use ``_read_raw_checked`` so they can refuse
+        to overwrite an unreadable file — see ``_reload_target``.
         """
-        return MemoryStore._read_entries_checked(path)[0]
+        raw, read_ok = MemoryStore._read_raw_checked(path)
+        return MemoryStore._parse_entries(raw) if read_ok else []
 
     def _detect_external_drift(self, target: str, raw: str) -> Optional[str]:
         """Return a backup-path string if on-disk content shows external drift.
@@ -896,7 +864,7 @@ class MemoryStore:
            (patch tool, shell append, manual edit, sister session) appended
            free-form content into what the tool will treat as one entry.
            Flushing would then truncate that entry to the model's new
-           content, discarding the appended bytes — issue #26045.
+           content, discarding the appended bytes.
 
         Returns the absolute path of the .bak file when drift was found and
         backed up; returns None when the file looks tool-shaped.
@@ -1024,9 +992,9 @@ def load_on_disk_store() -> "ScopedMemoryStore":
     Approved writes route to the store named by the staged payload's
     ``scope`` (the active scope is ``shared`` when there is no live agent).
 
-    Use this from any context that has no live agent (the messaging gateway, the
-    Desktop GUI, the bare CLI ``/memory`` handler) but still needs to read or
-    apply approved memory writes. Mirrors how the live agent constructs its store
+    Use this from any context that has no live agent (the messaging gateway,
+    the CLI ``/memory`` handler) but still needs to read or apply approved
+    memory writes. Mirrors how the live agent constructs its store
     in ``agent/agent_init.py`` — including the user's ``memory.memory_char_limit``
     / ``memory.user_char_limit`` overrides — so an approval applied without a live
     agent enforces the SAME caps as one applied with one.
@@ -1060,106 +1028,26 @@ def load_on_disk_store() -> "ScopedMemoryStore":
     return store
 
 
-def _apply_write_gate(action: str, target: str, content: Optional[str],
-                      old_text: Optional[str],
-                      scope: Optional[str] = None) -> Optional[str]:
-    """Evaluate the memory write gate. Returns a JSON tool-result string when
-    the write should NOT proceed normally (blocked or staged), or None when the
-    caller should perform the real write.
-
-    Only the mutating actions (add/replace/remove) are gated.
-    """
-    if action not in {"add", "replace", "remove"}:
-        return None
-
-    try:
-        from tools import write_approval as wa
-    except Exception:
-        # If the gate module can't load, fail open (current behaviour) rather
-        # than blocking all memory writes.
-        return None
-
-    # Build a small inline summary/detail for the foreground approval prompt.
+def _store_label(target: str, scope: Optional[str]) -> str:
     label = "user profile" if target == "user" else "memory"
-    if scope and scope != "shared":
-        label = f"{label} ({scope})"
-    if action == "add":
-        summary = f"add to {label}"
-        detail = content or ""
-    elif action == "replace":
-        summary = f"replace in {label}"
-        detail = f"old: {old_text}\nnew: {content}"
-    else:  # remove
-        summary = f"remove from {label}"
-        detail = old_text or ""
+    return f"{label} ({scope})" if scope and scope != "shared" else label
+
+
+def _write_gate(summary: str, detail: str, payload: Dict[str, Any],
+                scope: Optional[str]) -> Optional[str]:
+    """Evaluate the memory write gate for one write (or one whole batch).
+
+    Returns a JSON tool-result string when the write should NOT proceed
+    (blocked or staged for approval), or None when the caller should perform
+    the real write.
+    """
+    from tools import write_approval as wa
 
     decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
-
     if decision.allow:
         return None
-
     if decision.blocked:
         return tool_error(decision.message, success=False)
-
-    # stage
-    payload = {
-        "action": action,
-        "target": target,
-        "content": content,
-        "old_text": old_text,
-    }
-    if scope:
-        payload["scope"] = scope
-    record = wa.stage_write(
-        wa.MEMORY, payload,
-        summary=f"{summary}: {detail[:120]}",
-    )
-    return json.dumps(
-        {"success": True, "staged": True, "pending_id": record["id"],
-         "message": decision.message},
-        ensure_ascii=False,
-    )
-
-
-def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]],
-                            scope: Optional[str] = None) -> Optional[str]:
-    """Evaluate the write gate for a batch of memory operations.
-
-    Returns a JSON tool-result string when the batch should NOT proceed
-    (blocked or staged), or None when the caller should perform the real
-    batch write. The whole batch is gated as a single unit.
-    """
-    try:
-        from tools import write_approval as wa
-    except Exception:
-        return None
-
-    label = "user profile" if target == "user" else "memory"
-    if scope and scope != "shared":
-        label = f"{label} ({scope})"
-    summary = f"apply {len(operations)} op(s) to {label}"
-    detail_lines = []
-    for op in operations:
-        op = op or {}
-        act = op.get("action", "?")
-        _op_content = op.get("content") or op.get("new_text") or ""
-        if act == "remove":
-            detail_lines.append(f"- remove: {op.get('old_text', '')}")
-        elif act == "replace":
-            detail_lines.append(f"- replace: {op.get('old_text', '')} -> {_op_content}")
-        else:
-            detail_lines.append(f"- {act}: {_op_content}")
-    detail = "\n".join(detail_lines)
-
-    decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
-
-    if decision.allow:
-        return None
-
-    if decision.blocked:
-        return tool_error(decision.message, success=False)
-
-    payload = {"action": "batch", "target": target, "operations": operations}
     if scope:
         payload["scope"] = scope
     record = wa.stage_write(
@@ -1174,18 +1062,12 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]],
 
 
 def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> str:
-    """Build a recoverable error for a replace/remove call that arrived without
-    ``old_text``.
+    """Build a recoverable error for a replace/remove call without ``old_text``.
 
-    ``replace``/``remove`` are inherently targeted -- without ``old_text`` there
-    is no entry to act on, so we cannot fulfil the call. But returning a bare
-    "old_text is required" is a dead-end: some structured-output clients omit the
-    optional ``old_text`` field (it isn't, and can't be, schema-required without
-    a top-level combinator the Codex backend rejects -- see
-    tests/tools/test_memory_tool_schema.py). So instead we return the current
-    entry inventory plus an explicit retry instruction, letting the model reissue
-    the call with ``old_text`` set to a unique substring of the entry it means.
-    Mirrors the batch path's ``_batch_error`` shape. (issues #43412, #49466)
+    Some structured-output clients omit the optional ``old_text`` field (it
+    can't be schema-required without a top-level combinator), so instead of a
+    dead-end "old_text is required" this returns the current entry inventory
+    plus a retry instruction. Mirrors the batch path's ``_batch_error`` shape.
     """
     entries = store._entries_for(target)
     current = store._char_count(target)
@@ -1230,29 +1112,25 @@ def memory_tool(
     which silently left ``content`` empty and errored. Coalescing here removes
     that trap.
 
-    ``scope`` selects one of the scoped stores when the agent has a
-    :class:`ScopedMemoryStore` (``shared``, ``cli``, or ``gateway``);
-    omitted/null/``current`` writes to the session's active scope.
+    ``scope`` selects one of the :class:`ScopedMemoryStore`'s stores
+    (``shared``, ``cli``, or ``gateway``); omitted/null/``current`` writes to
+    the session's active scope.
 
     Returns JSON string with results.
     """
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
-    # Scoped facade: resolve the destination store once, before the gate, so
-    # an unknown scope fails loudly instead of staging an unroutable write.
-    resolved_scope: Optional[str] = None
-    if isinstance(store, ScopedMemoryStore):
-        try:
-            concrete = store.for_scope(scope)
-        except KeyError:
-            return tool_error(
-                f"Unknown memory scope '{scope}'. Use one of: {', '.join(MEMORY_SCOPES)}.",
-                success=False,
-            )
-        resolved_scope = concrete.scope
-    else:
-        concrete = store
+    # Resolve the destination store once, before the gate, so an unknown
+    # scope fails loudly instead of staging an unroutable write.
+    try:
+        concrete = store.for_scope(scope)
+    except KeyError:
+        return tool_error(
+            f"Unknown memory scope '{scope}'. Use one of: {', '.join(MEMORY_SCOPES)}.",
+            success=False,
+        )
+    resolved_scope = concrete.scope
 
     # Accept new_text as an alias for content (single-op path). See docstring.
     if content is None and new_text is not None:
@@ -1272,7 +1150,23 @@ def memory_tool(
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        gate_result = _apply_batch_write_gate(target, operations, resolved_scope)
+        detail_lines = []
+        for op in operations:
+            op = op or {}
+            act = op.get("action", "?")
+            _op_content = op.get("content") or op.get("new_text") or ""
+            if act == "remove":
+                detail_lines.append(f"- remove: {op.get('old_text', '')}")
+            elif act == "replace":
+                detail_lines.append(f"- replace: {op.get('old_text', '')} -> {_op_content}")
+            else:
+                detail_lines.append(f"- {act}: {_op_content}")
+        gate_result = _write_gate(
+            f"apply {len(operations)} op(s) to {_store_label(target, resolved_scope)}",
+            "\n".join(detail_lines),
+            {"action": "batch", "target": target, "operations": operations},
+            resolved_scope,
+        )
         if gate_result is not None:
             return gate_result
         result = concrete.apply_batch(target, operations)
@@ -1286,10 +1180,6 @@ def memory_tool(
     if action == "replace" and (not old_text or not content):
         missing = "old_text" if not old_text else "content"
         if not old_text:
-            # The client/model omitted old_text. Replace is inherently targeted
-            # -- we can't guess which entry. Return the current inventory plus a
-            # retry instruction so the model can reissue with old_text set,
-            # instead of hitting a dead-end error. (issues #43412, #49466)
             return _missing_old_text_error(concrete, target, "replace")
         return tool_error(f"{missing} is required for 'replace' action.", success=False)
     if action == "remove" and not old_text:
@@ -1297,9 +1187,21 @@ def memory_tool(
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
-    gate_result = _apply_write_gate(action, target, content, old_text, resolved_scope)
-    if gate_result is not None:
-        return gate_result
+    if action in {"add", "replace", "remove"}:
+        label = _store_label(target, resolved_scope)
+        if action == "add":
+            summary, detail = f"add to {label}", content or ""
+        elif action == "replace":
+            summary, detail = f"replace in {label}", f"old: {old_text}\nnew: {content}"
+        else:
+            summary, detail = f"remove from {label}", old_text or ""
+        gate_result = _write_gate(
+            summary, detail,
+            {"action": action, "target": target, "content": content, "old_text": old_text},
+            resolved_scope,
+        )
+        if gate_result is not None:
+            return gate_result
 
     if action == "add":
         result = concrete.add(target, content)
@@ -1380,21 +1282,18 @@ def apply_memory_pending(payload: Dict[str, Any], store: "ScopedMemoryStore") ->
     """Replay a staged memory write directly against the store, bypassing the
     write gate. Called by the /memory approve handler.
 
-    A staged payload's ``scope`` selects its destination store; legacy
-    payloads without one land in the active scope.
+    A staged payload's ``scope`` selects its destination store; payloads
+    without one land in the active scope.
 
     Returns the store's result dict.
     """
-    if isinstance(store, ScopedMemoryStore):
-        try:
-            concrete = store.for_scope(payload.get("scope"))
-        except KeyError:
-            return {
-                "success": False,
-                "error": f"Unknown staged memory scope '{payload.get('scope')}'.",
-            }
-    else:
-        concrete = store
+    try:
+        concrete = store.for_scope(payload.get("scope"))
+    except KeyError:
+        return {
+            "success": False,
+            "error": f"Unknown staged memory scope '{payload.get('scope')}'.",
+        }
     action = payload.get("action")
     target = payload.get("target", "memory")
     target_error = _memory_target_error(concrete, target)
@@ -1411,8 +1310,8 @@ def apply_memory_pending(payload: Dict[str, Any], store: "ScopedMemoryStore") ->
     if action == "remove":
         return concrete.remove(target, old_text)
     return {"success": False, "error": f"Unknown staged action '{action}'."}
-# OpenAI Function-Calling Schema
-# =============================================================================
+
+
 
 MEMORY_SCHEMA = {
     "name": "memory",
@@ -1539,9 +1438,6 @@ def _build_memory_schema_overrides() -> Dict[str, Any]:
     return {"description": description, "parameters": parameters}
 
 
-# --- Registry ---
-from tools.registry import registry, tool_error
-
 registry.register(
     name="memory",
     toolset="memory",
@@ -1559,7 +1455,3 @@ registry.register(
     emoji="🧠",
     dynamic_schema_overrides=_build_memory_schema_overrides,
 )
-
-
-
-
