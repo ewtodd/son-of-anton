@@ -77,14 +77,5 @@ def test_non_dict_gateway_section_is_ignored() -> None:
     )
 
 
-def test_scalar_model_section_still_supported() -> None:
-    """The legacy ``model: <str>`` shorthand keeps working."""
-    assert _resolve_gateway_model({"model": "shorthand"}) == "shorthand"
-    assert (
-        _resolve_gateway_model({"model": "shorthand", "gateway": {"model": "pinned"}})
-        == "pinned"
-    )
-
-
 def test_empty_config_returns_empty_string() -> None:
     assert _resolve_gateway_model({}) == ""

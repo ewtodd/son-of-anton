@@ -39,14 +39,6 @@ if TYPE_CHECKING:
     from agent.session_activity import ActivityProvenance
 
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
-from agent.conversation_compaction import (
-    COMPACTION_STATUS,
-    COMPACTION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
-    COMPACTION_RETRY_MESSAGES_STATUS_TEMPLATE,
-    COMPACTION_RETRY_TOKENS_STATUS_TEMPLATE,
-    COMPACTION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
-    IDLE_COMPACTION_STATUS_TEMPLATE,
-)
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
@@ -283,83 +275,6 @@ def _record_hygiene_cooldown(
         logger.debug("session hygiene cooldown persist failed: %s", exc)
 
 
-def _status_template_to_regex(template: str) -> str:
-    """Compile a compaction status template constant into a regex source.
-
-    Literal text is escaped verbatim (so wording drift in
-    agent/conversation_compaction.py cannot silently diverge from this
-    matcher — the constants ARE the wording) and each ``{field}`` format
-    placeholder is replaced with a numeric-ish pattern covering every value
-    the emit sites format in (ints, ``{:,}`` thousands separators).
-    """
-    parts = re.split(r"\{[^{}]*\}", template)
-    return r"[\d,]+".join(re.escape(part) for part in parts)
-
-
-# ROUTINE compaction progress statuses, derived from the SAME template
-# constants the emit sites format (agent/conversation_compaction.py, #69550)
-# — never re-inlined wording. Used ONLY by the opt-in
-# ``compaction.progress_notices`` gate below (#52995) to decide which of the
-# noisy statuses matched by _NOISY_STATUS_RE are compaction
-# progress (deliverable when the user opted in) versus unrelated aux/retry
-# chatter (always suppressed on chat surfaces). Failure notices and manual
-# /compact feedback never match _NOISY_STATUS_RE in the first
-# place, so they are unaffected by this gate.
-_COMPACTION_PROGRESS_STATUS_RE = re.compile(
-    "|".join(
-        _status_template_to_regex(_template)
-        for _template in (
-            COMPACTION_STATUS,
-            IDLE_COMPACTION_STATUS_TEMPLATE,
-            COMPACTION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
-            COMPACTION_RETRY_MESSAGES_STATUS_TEMPLATE,
-            COMPACTION_RETRY_TOKENS_STATUS_TEMPLATE,
-            COMPACTION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
-        )
-    ),
-    re.IGNORECASE,
-)
-
-
-def _gateway_compaction_progress_notices_enabled() -> bool:
-    """True when the user opted into routine compaction progress notices.
-
-    Reads ``compaction.progress_notices`` from the gateway's raw TOML config
-    (#52995). Default False — routine compaction stays silent-by-design on
-    chat platforms unless explicitly enabled. Read live (mtime-cached) so a
-    config edit on a running gateway takes effect on the next status.
-    Fail-closed: any config read error keeps the silent default.
-    """
-    try:
-        config = _load_gateway_config()
-        compaction_cfg = config.get("compaction") if isinstance(config, dict) else None
-        if isinstance(compaction_cfg, dict):
-            return str(compaction_cfg.get("progress_notices", False)).strip().lower() in {
-                "true",
-                "1",
-                "yes",
-                "on",
-            }
-    except Exception:
-        pass
-    return False
-
-# Surfaces that consume gateway text programmatically (CLI/TUI "local"
-# diagnostics) and therefore must keep RAW status/error text. EVERY other
-# platform is a human-facing chat surface where operational
-# lifecycle/provider-error noise (and any secrets in it) must be suppressed
-# or sanitized. Widens the original platform-only filter to all chat
-# gateways (#39293). Fail-closed: unknown/empty platform -> chat.
-_GATEWAY_RAW_TEXT_PLATFORMS = frozenset(
-    {"local"}
-)
-
-
-def _gateway_surface_passes_raw_text(platform: Any) -> bool:
-    """True only for programmatic/local surfaces that must keep raw text."""
-    return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
-
-
 _GATEWAY_PROVIDER_POLICY_RE = re.compile(
     r"("  # raw provider policy/safety bodies are noisy and may be sensitive
     r"cybersecurity\s+risk"
@@ -393,7 +308,6 @@ _GATEWAY_CONNECTION_ERROR_RE = re.compile(
     r"|connection\s+reset"
     r"|connection\s+aborted"
     r"|actively\s+refused"
-    r"|winerror\s+10061"
     r"|errno\s+111"
     r"|no\s+route\s+to\s+host"
     r"|network\s+is\s+unreachable"
@@ -414,10 +328,6 @@ _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
 )
 
-
-def _gateway_platform_value(platform: Any) -> str:
-    """Return a normalized gateway platform value for enums or raw strings."""
-    return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
 def _seed_hygiene_system_prompt(
@@ -636,7 +546,6 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"|connection\s+reset"
     r"|connection\s+aborted"
     r"|actively\s+refused"
-    r"|winerror\s+10061"
     r"|errno\s+111"
     r"|all\s+connection\s+attempts\s+failed"
     r")",
@@ -667,29 +576,22 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
-def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
-    """Sanitize final gateway replies before sending them to chat surfaces.
+def _sanitize_gateway_final_response(text: str) -> str:
+    """Sanitize final gateway replies before sending them to Signal.
 
-    Every human-facing chat surface (Signal) should receive concise, safe
-    provider failure categories with secrets redacted instead of raw HTTP
-    bodies, request IDs, leaked credentials, or policy text. Only programmatic
-    surfaces in ``_GATEWAY_RAW_TEXT_PLATFORMS`` (CLI/TUI ``local``
-    diagnostics) keep the raw text unchanged.
+    The chat should receive concise, safe provider failure categories with
+    secrets redacted instead of raw HTTP bodies, request IDs, leaked
+    credentials, or policy text.
     """
     if not text:
         return text
-    if _gateway_surface_passes_raw_text(platform):
-        return text
 
-    # Lone UTF-16 surrogates (U+D800–U+DFFF) in model output crash chat
-    # surfaces downstream: the UTF-16 length check and Signal
-    # formatting both ``.encode()`` the reply and raise UnicodeEncodeError
-    # before any send (#55143, #55309). The stored-history copy is already
-    # sanitized by ``build_assistant_message`` and ``finalize_turn`` scrubs
-    # the returned ``final_response``, but this boundary is the last line of
-    # defense for every legacy/plugin delivery path that hands us raw text.
-    # Raw-text/programmatic surfaces above keep passthrough — their JSON
-    # consumers escape surrogates safely.
+    # Lone UTF-16 surrogates (U+D800–U+DFFF) in model output crash the
+    # UTF-16 length check and Signal formatting downstream: both
+    # ``.encode()`` the reply and raise UnicodeEncodeError before any send.
+    # The stored-history copy is already sanitized by
+    # ``build_assistant_message`` and ``finalize_turn`` scrubs the returned
+    # ``final_response``; this boundary is the last line of defense.
     from agent.message_sanitization import _sanitize_surrogates
 
     text = _sanitize_surrogates(str(text))
@@ -705,31 +607,18 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+def _prepare_gateway_status_message(message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
-    Local/CLI sessions keep the raw diagnostic stream. Messaging gateway
-    surfaces should not receive transient auxiliary/compaction chatter.
+    The chat should not receive transient auxiliary/compaction chatter.
     """
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_surface_passes_raw_text(platform):
-        return text
 
     text = _redact_gateway_user_facing_secrets(text)
     if _NOISY_STATUS_RE.search(text):
-        # Opt-in #52995: `compaction.progress_notices: true` lets ROUTINE
-        # compaction progress statuses through to chat platforms. The
-        # membership check is derived from the #69550 template constants, so
-        # non-compaction noise (aux failures, provider retry chatter, ...)
-        # stays suppressed even when the gate is open. Default False keeps
-        # the silent-by-design behavior byte-identical.
-        if not (
-            _gateway_compaction_progress_notices_enabled()
-            and _COMPACTION_PROGRESS_STATUS_RE.search(text)
-        ):
-            return None
+        return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text
@@ -1221,45 +1110,8 @@ def _build_replay_entry(
     return entry
 
 
-def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
-    """True when gateway.message_timestamps.enabled is opted in.
-
-    Default OFF: injecting a ``[Tue 2026-04-28 13:40:53 CEST]`` prefix onto
-    every user message changes what the model sees for all gateway users, so
-    it must be explicitly enabled in config.toml under
-    ``gateway.message_timestamps.enabled``.
-    """
-    if not isinstance(user_config, dict):
-        return False
-    gw = user_config.get("gateway")
-    if not isinstance(gw, dict):
-        return False
-    mt = gw.get("message_timestamps")
-    if isinstance(mt, dict):
-        return bool(mt.get("enabled", False))
-    # Allow a bare ``message_timestamps: true`` shorthand.
-    return bool(mt)
-
-
-def _build_gateway_agent_history(
-    history: List[Dict[str, Any]],
-    *,
-    channel_prompt: Optional[str] = None,
-    inject_timestamps: bool = False,
-) -> tuple[List[Dict[str, Any]], Optional[str]]:
-    """Convert stored gateway transcript rows into agent replay messages.
-
-    When ``inject_timestamps`` is True (gateway.message_timestamps.enabled),
-    each replayed user message is rendered with a single human-readable
-    timestamp prefix from its stored metadata.
-    """
-
-    from son_of_anton_time import get_timezone as _get_msg_tz
-    from gateway.message_timestamps import (
-        render_user_content_with_timestamp as _render_msg_ts,
-    )
-
-    _msg_tz = _get_msg_tz()
+def _build_gateway_agent_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convert stored gateway transcript rows into agent replay messages."""
     agent_history: List[Dict[str, Any]] = []
 
     for msg in history or []:
@@ -1277,8 +1129,6 @@ def _build_gateway_agent_history(
             continue
 
         content = msg.get("content")
-        if inject_timestamps and role == "user" and isinstance(content, str):
-            content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
 
         # Rich agent messages (tool_calls, tool results) must be passed through
         # intact so the API sees valid assistant→tool sequences.
@@ -1327,11 +1177,7 @@ def _build_gateway_agent_history(
     # is older than the expiry window must not be replayed to the model,
     # otherwise an unrelated follow-up message can be interpreted as a
     # fresh confirmation and trigger the destructive action a second time.
-    agent_history = strip_stale_dangerous_confirmations(
-        agent_history, now=time.time()
-    )
-
-    return agent_history, None
+    return strip_stale_dangerous_confirmations(agent_history, now=time.time())
 
 
 def _select_cached_agent_history(
@@ -2113,49 +1959,9 @@ def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
     Provider is read from ``config.toml`` ``model.provider`` (the single
-    source of truth). ``resolve_runtime_provider()`` falls through to env
-    var lookups internally for legacy compatibility, but the gateway does
-    not consult environment variables for behavioral config — config.toml
-    is authoritative.
+    source of truth).
     """
-    from son_of_anton_cli.runtime_provider import (
-        resolve_runtime_provider,
-        format_runtime_provider_error,
-        _get_model_config,
-    )
-    try:
-        runtime = resolve_runtime_provider()
-    except Exception as exc:
-        raise RuntimeError(format_runtime_provider_error(exc)) from exc
-
-    model_cfg = _get_model_config()
-    max_tokens = None
-    _env_mt = os.environ.get("SON_OF_ANTON_MAX_TOKENS")
-    if _env_mt:
-        try:
-            max_tokens = int(_env_mt)
-        except (ValueError, TypeError):
-            max_tokens = None
-    elif isinstance(model_cfg, dict):
-        mt = model_cfg.get("max_tokens")
-        if isinstance(mt, int):
-            max_tokens = mt
-    # Fall back to a per-provider output cap (custom_providers max_output_tokens)
-    # only when the documented global model.max_tokens isn't set, so the global
-    # key always wins.
-    if max_tokens is None:
-        _runtime_mot = runtime.get("max_output_tokens")
-        if isinstance(_runtime_mot, int) and _runtime_mot > 0:
-            max_tokens = _runtime_mot
-
-    return {
-        "api_key": runtime.get("api_key"),
-        "base_url": runtime.get("base_url"),
-        "provider": runtime.get("provider"),
-        "requested_provider": runtime.get("requested_provider"),
-        "api_mode": runtime.get("api_mode"),
-        "max_tokens": max_tokens,
-    }
+    return _resolve_runtime_agent_kwargs_for_provider(None)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2207,31 +2013,18 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
     from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
 
     resolved_model = model or _resolve_gateway_model()
-    config_context_length = None
     provider = None
     base_url = None
     api_key = None
     custom_providers = None
-    configured_model = None
-    configured_provider = None
-    configured_base_url = None
 
     try:
         data = _load_gateway_config()
         if data:
             model_cfg = data.get("model", {})
             if isinstance(model_cfg, dict):
-                configured_model = model_cfg.get("default") or model_cfg.get("model")
-                raw_ctx = model_cfg.get("context_length")
-                if raw_ctx is not None:
-                    try:
-                        config_context_length = int(raw_ctx)
-                    except (TypeError, ValueError):
-                        pass
                 provider = model_cfg.get("provider") or None
                 base_url = model_cfg.get("base_url") or None
-                configured_provider = provider
-                configured_base_url = base_url
             try:
                 from son_of_anton_cli.config import get_compatible_custom_providers
 
@@ -2249,47 +2042,14 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
     except Exception:
         pass
 
-    if config_context_length is not None:
-        try:
-            from son_of_anton_cli.route_identity import should_clear_context_pin
-
-            if should_clear_context_pin(
-                configured_model,
-                resolved_model,
-                configured_base_url,
-                base_url,
-                configured_provider,
-                provider,
-            ):
-                config_context_length = None
-        except Exception:
-            config_context_length = None
-
-    if config_context_length is None and custom_providers and base_url:
-        try:
-            from son_of_anton_cli.config import get_custom_provider_context_length
-
-            custom_ctx = get_custom_provider_context_length(
-                model=resolved_model,
-                base_url=base_url,
-                custom_providers=custom_providers,
-            )
-            if custom_ctx:
-                config_context_length = custom_ctx
-        except Exception:
-            pass
-
     context_length = get_model_context_length(
         resolved_model,
         base_url=base_url or "",
         api_key=api_key or "",
-        config_context_length=config_context_length,
         provider=provider or "",
         custom_providers=custom_providers,
     )
-    if config_context_length is not None:
-        context_source = "config"
-    elif context_length == DEFAULT_FALLBACK_CONTEXT:
+    if context_length == DEFAULT_FALLBACK_CONTEXT:
         context_source = "default"
     else:
         context_source = "detected"
@@ -2303,8 +2063,8 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
     )
 
 
-def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
-    """Resolve runtime credentials for a specific provider (e.g. from channel override)."""
+def _resolve_runtime_agent_kwargs_for_provider(provider: Optional[str]) -> dict:
+    """Resolve runtime credentials for ``provider`` (None: the configured one)."""
     from son_of_anton_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
@@ -2805,10 +2565,8 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
             return gateway_model.strip()
 
     model_cfg = cfg.get("model", {})
-    if isinstance(model_cfg, str):
-        return model_cfg
-    elif isinstance(model_cfg, dict):
-        return model_cfg.get("default") or model_cfg.get("model") or ""
+    if isinstance(model_cfg, dict):
+        return model_cfg.get("default") or ""
     return ""
 
 
@@ -3420,11 +3178,7 @@ class TurnRunner:
         ctx = self._ctx
         if not ctx._status_adapter or not ctx._run_still_current():
             return
-        prepared_message = _prepare_gateway_status_message(
-            ctx.source.platform,
-            event_type,
-            message,
-        )
+        prepared_message = _prepare_gateway_status_message(message)
         if prepared_message is None:
             logger.debug(
                 "status_callback suppressed for %s/%s: %s",
@@ -4009,14 +3763,7 @@ class TurnRunner:
         #      that may include tool_calls, tool_call_id, reasoning, etc.
         #      - These must be passed through intact so the API sees valid
         #        assistant→tool sequences (dropping tool_calls causes 500 errors)
-        #
-        # The second tuple element (observed-context sidecar) is reserved for
-        # future use; it is always None for the current platform set.
-        agent_history, observed_group_context = _build_gateway_agent_history(
-            ctx.history,
-            channel_prompt=ctx.channel_prompt,
-            inject_timestamps=_message_timestamps_enabled(ctx.user_config),
-        )
+        agent_history = _build_gateway_agent_history(ctx.history)
 
         # FTS write-corruption guard (#50502): when message persistence
         # fails silently through corrupt FTS triggers, the reloaded
@@ -4475,7 +4222,7 @@ class TurnRunner:
             final_response = _normalize_empty_agent_response(
                 result, final_response or "", history_len=len(agent_history),
             )
-            final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
+            final_response = _sanitize_gateway_final_response(final_response)
             if not final_response:
                 final_response = result['error'] if result.get("error") else ""
             return {
@@ -5320,9 +5067,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
-        Priority (highest first): session ``/model`` → ``channel_overrides`` →
-        global config/env (``_resolve_gateway_model(user_config)`` and default
-        provider resolution).
+        Priority (highest first): session ``/model`` → global config
+        (``_resolve_gateway_model(user_config)`` and default provider
+        resolution).
         """
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
@@ -5349,7 +5096,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 "api_key": override.get("api_key"),
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
-                "max_tokens": override.get("max_tokens"),
             }
             if override_runtime.get("api_key"):
                 logger.debug(
@@ -5376,45 +5122,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        runtime_model = runtime_kwargs.pop("model", None)
-        if runtime_model:
-            logger.info(
-                "Runtime provider supplied explicit model override: %s -> %s",
-                model,
-                runtime_model,
-            )
-            model = runtime_model
-
-        cfg = getattr(self, "config", None)
-        if cfg and source is not None:
-            chat_id = str(source.chat_id) if source.chat_id else ""
-            thread_id = (
-                str(source.thread_id) if getattr(source, "thread_id", None) else None
-            )
-            parent_id = (
-                str(source.parent_chat_id)
-                if getattr(source, "parent_chat_id", None)
-                else None
-            )
-            ch = _get_channel_override(
-                cfg,
-                source.platform,
-                chat_id,
-                thread_id=thread_id,
-                parent_id=parent_id,
-            )
-            if ch:
-                if ch.model:
-                    model = ch.model
-                if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
-                        ch.provider
-                    )
-                    ch_runtime_model = runtime_kwargs.pop("model", None)
-                    # Only adopt the provider's bundled model when the override
-                    # did not specify an explicit model.
-                    if ch_runtime_model and not ch.model:
-                        model = ch_runtime_model
 
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
@@ -5469,7 +5176,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             "provider": runtime_kwargs.get("provider"),
             "requested_provider": runtime_kwargs.get("requested_provider"),
             "api_mode": runtime_kwargs.get("api_mode"),
-            "max_tokens": runtime_kwargs.get("max_tokens"),
         }
         route = {
             "model": model,
@@ -6089,58 +5795,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if agent is not _AGENT_PENDING_SENTINEL
         }
 
-    def _get_max_concurrent_sessions(self) -> Optional[int]:
-        """Return the configured active chat session cap, if enabled."""
-        try:
-            from son_of_anton_cli.active_sessions import resolve_max_concurrent_sessions
-
-            return resolve_max_concurrent_sessions(getattr(self, "config", None))
-        except Exception:
-            return None
-
-    def _active_session_limit_message(self, session_key: str) -> Optional[str]:
-        """Return a user-facing rejection when starting a new session exceeds the cap."""
-        max_sessions = self._get_max_concurrent_sessions()
-        if max_sessions is None:
-            return None
-        if self._is_session_running(session_key):
-            return None
-        active_count = self._running_agent_count()
-        if active_count < max_sessions:
-            return None
-        from son_of_anton_cli.active_sessions import active_session_limit_message
-
-        return active_session_limit_message(active_count, max_sessions)
-
-    def _claim_active_session_slot(
-        self,
-        session_key: str,
-        source: SessionSource,
-    ) -> tuple[Any, Optional[str]]:
-        """Claim a cross-process active-session slot for a new gateway turn."""
-        if self._is_session_running(session_key):
-            return None, None
-        local_limit_message = self._active_session_limit_message(session_key)
-        if local_limit_message is not None:
-            return None, local_limit_message
-        try:
-            from son_of_anton_cli.active_sessions import try_acquire_active_session
-
-            platform = source.platform.value if source and source.platform else "gateway"
-            return try_acquire_active_session(
-                session_id=session_key,
-                surface=f"gateway:{platform}",
-                config=getattr(self, "config", None),
-                metadata={
-                    "platform": platform,
-                    "chat_id": getattr(source, "chat_id", "") or "",
-                    "user_id": getattr(source, "user_id", "") or "",
-                },
-            )
-        except Exception as exc:
-            logger.warning("Failed to claim active session slot: %s", exc)
-            return None, None
-
     # Hard cap on per-session pending follow-ups. Without a cap, a stuck agent
     # plus a rapid-fire user could grow the overflow list unboundedly.  32 turns
     # of queued follow-ups is far beyond any realistic conversational backlog
@@ -6340,7 +5994,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return False
 
         _busy_state = self._peek_session_state(session_key)
-        running_agent = _busy_state.turn.agent if _busy_state else None
 
         # One behavior: a message that arrives mid-run queues for its own next
         # turn. /sendnow and /sendall are explicit slash commands (dispatched
@@ -6354,62 +6007,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # merge semantics for media.
         self._queue_or_replace_pending_event(session_key, event)
 
-        # Check if busy ack is disabled — skip sending but still process the input.
-        # Placed before debounce so we don't stamp a "last ack" timestamp that was
-        # never actually delivered.
-        busy_ack_enabled = os.environ.get("SON_OF_ANTON_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
-        if not busy_ack_enabled:
-            logger.debug("Busy ack suppressed for session %s", session_key)
-            return True  # input still processed, just no ack sent
-
-        # Debounce before consulting config-heavy display settings. Rapid
-        # follow-ups should be processed but should not trigger another config
-        # read just to discover that no ack will be sent.
+        # Debounce: rapid follow-ups are queued, but only one ack per window.
         _BUSY_ACK_COOLDOWN = 30
         now = time.time()
         last_ack = _busy_state.turn.busy_ack_ts if _busy_state else 0
         if now - last_ack < _BUSY_ACK_COOLDOWN:
             return True  # message queued; ack already delivered recently
 
-        from gateway.display_config import resolve_display_setting
-
         self._session_state(session_key).turn.busy_ack_ts = now
-
-        # Build a status-rich acknowledgment. Mobile chat defaults keep this
-        # terse; detailed iteration/tool state is still available in logs and
-        # can be opted in per platform via display.platforms.<platform>.busy_ack_detail.
-        status_parts = []
-        busy_ack_detail_enabled = bool(
-            resolve_display_setting(
-                _load_gateway_config(),
-                _platform_config_key(event.source.platform),
-                "busy_ack_detail",
-                True,
-            )
-        )
-
-        if busy_ack_detail_enabled and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            try:
-                summary = running_agent.get_activity_summary()
-                iteration = summary.get("api_call_count", 0)
-                max_iter = summary.get("max_iterations", 0)
-                current_tool = summary.get("current_tool")
-                start_ts = _busy_state.turn.started_ts if _busy_state else 0
-                if start_ts:
-                    elapsed_min = int((now - start_ts) / 60)
-                    if elapsed_min > 0:
-                        status_parts.append(f"{elapsed_min} min elapsed")
-                if max_iter:
-                    status_parts.append(f"iteration {iteration}/{max_iter}")
-                if current_tool:
-                    status_parts.append(f"running: {current_tool}")
-            except Exception:
-                pass
-
-        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
         message = (
-            f"Queued for the next turn{status_detail}. "
-            f"I'll respond once the current task finishes."
+            "Queued for the next turn. "
+            "I'll respond once the current task finishes."
         )
 
         # First-touch onboarding: the very first time a user sends a message
@@ -11910,19 +11518,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # message arriving during any of those yields would pass the
         # "already running" guard and spin up a duplicate agent for the
         # same session — corrupting the transcript.
-        _active_session_lease, _limit_message = self._claim_active_session_slot(
-            _quick_key,
-            source,
-        )
-        if _limit_message is not None:
-            logger.info(
-                "Rejecting new active session %s: max_concurrent_sessions reached",
-                _quick_key,
-            )
-            return _limit_message
         _claim_state = self._session_state(_quick_key)
-        if _active_session_lease is not None:
-            _claim_state.turn.lease = _active_session_lease
         _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
         _claim_state.turn.started_ts = time.time()
         self._persist_active_agents()
@@ -13745,16 +13341,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return
 
         # Capture the platform event time as message metadata and keep the
-        # persisted transcript clean (strip any leading timestamp prefix).
-        # This runs regardless of the toggle so storage stays clean and the
-        # send-time is preserved. Only the in-context RENDER (prepending the
-        # human-readable prefix the model sees) is gated behind
-        # gateway.message_timestamps.enabled — default OFF.
+        # persisted transcript and the model's copy clean (strip any leading
+        # timestamp prefix).
         try:
             from son_of_anton_time import get_timezone as _get_evt_tz
             from gateway.message_timestamps import (
                 coerce_message_timestamp as _coerce_msg_ts,
-                render_user_content_with_timestamp as _render_msg_ts,
                 strip_leading_message_timestamps as _strip_msg_ts,
             )
             _evt_tz = _get_evt_tz()
@@ -13767,16 +13359,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 persist_user_timestamp = (
                     _event_epoch if _event_epoch is not None else _embedded_ts
                 )
-                if _message_timestamps_enabled(_load_gateway_config()):
-                    message_text = _render_msg_ts(
-                        _clean_message_text,
-                        persist_user_timestamp,
-                        tz=_evt_tz,
-                    )
-                else:
-                    # Toggle off: model sees the clean message; the timestamp
-                    # is still stored as metadata for later opt-in.
-                    message_text = _clean_message_text
+                message_text = _clean_message_text
         except Exception as _ts_err:
             logger.debug("Message timestamp injection failed (non-fatal): %s", _ts_err)
 
@@ -13938,7 +13521,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )
-                response = _sanitize_gateway_final_response(source.platform, response)
+                response = _sanitize_gateway_final_response(response)
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compaction.py; propagate to SessionEntry + _save().
@@ -17880,9 +17463,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     # Add more here as new baked-at-construction config settings are added.
     _CACHE_BUSTING_CONFIG_KEYS: tuple = (
         ("model", "context_length"),
-        ("model", "max_tokens"),
         ("compaction", "enabled"),
-        ("compaction", "progress_notices"),
         ("compaction", "threshold"),
         ("compaction", "model_thresholds"),
         ("compaction", "threshold_tokens"),
@@ -17899,49 +17480,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     def _custom_provider_context_windows(cls, config: dict) -> list:
         """Flatten per-model context windows declared by custom providers.
 
-        ``custom_providers[].models.<id>.context_length`` (list or keyed-dict
-        form, plus the newer ``providers`` schema) is baked into AIAgent and
-        its context compactor at construction, but it is nested — it cannot be
-        expressed as a ``(section, key)`` pair like ``model.context_length``.
-        The flattened ``(section, provider, model, window)`` list feeds the
-        cached-agent signature so editing one window rebuilds the agent on the
-        next turn, while unrelated custom-provider edits (headers, timeouts)
-        do not bust the prompt cache.
+        ``custom_providers.<name>.models.<id>.context_length`` is baked into
+        AIAgent and its context compactor at construction, but it is nested —
+        it cannot be expressed as a ``(section, key)`` pair like
+        ``model.context_length``. The flattened ``(section, provider, model,
+        window)`` list feeds the cached-agent signature so editing one window
+        rebuilds the agent on the next turn, while unrelated custom-provider
+        edits (headers, timeouts) do not bust the prompt cache.
         """
         windows: List[tuple] = []
-        if not isinstance(config, dict):
+        entries = config.get("custom_providers") if isinstance(config, dict) else None
+        if not isinstance(entries, dict):
             return windows
-        for section in ("custom_providers", "providers"):
-            entries = config.get(section)
-            if isinstance(entries, dict):
-                providers = entries.items()
-            elif isinstance(entries, list):
-                providers = enumerate(entries)
-            else:
+        for provider_key, entry in entries.items():
+            models = entry.get("models") if isinstance(entry, dict) else None
+            if not isinstance(models, dict):
                 continue
-            for provider_key, entry in providers:
-                if not isinstance(entry, dict):
+            for model_id, model_config in models.items():
+                if not isinstance(model_config, dict):
                     continue
-                models = entry.get("models")
-                if isinstance(models, dict):
-                    model_entries = models.items()
-                elif isinstance(models, list):
-                    model_entries = [
-                        (item.get("id") or item.get("name") or "", item)
-                        for item in models
-                        if isinstance(item, dict)
-                    ]
-                else:
+                window = model_config.get("context_length")
+                if window is None:
                     continue
-                for model_id, model_config in model_entries:
-                    if not isinstance(model_config, dict):
-                        continue
-                    window = model_config.get("context_length")
-                    if window is None:
-                        continue
-                    windows.append(
-                        (section, str(provider_key), str(model_id), str(window))
-                    )
+                windows.append(
+                    ("custom_providers", str(provider_key), str(model_id), str(window))
+                )
         windows.sort()
         return windows
 
@@ -18361,16 +17924,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return False
         state = self._peek_session_state(session_key)
         if state is not None:
-            lease = state.turn.lease
-            if lease is not None:
-                try:
-                    lease.release()
-                except Exception:
-                    logger.debug(
-                        "Failed to release active session slot", exc_info=True
-                    )
             # One structured reset instead of the old drifting pop-list
-            # (agent / started_ts / lease / busy_ack_ts).  Turn-lease tokens
+            # (agent / started_ts / busy_ack_ts).  Turn-lease tokens
             # are deliberately NOT cleared here — _release_turn_lease owns
             # them (#64934).
             state.turn.clear()

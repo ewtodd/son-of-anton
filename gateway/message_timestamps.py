@@ -1,8 +1,8 @@
-"""Helpers for rendering gateway message timestamps exactly once.
+"""Helpers that keep gateway message timestamps out of message content.
 
-Gateway messages need timestamps in the LLM context for temporal awareness, but
-persisted message content should stay clean so replay does not accumulate
-``[timestamp] [timestamp] ...`` prefixes across turns.
+The platform send time is stored as row metadata; persisted message content
+stays clean so replay never accumulates ``[timestamp] [timestamp] ...``
+prefixes across turns.
 """
 
 from __future__ import annotations
@@ -73,18 +73,6 @@ def coerce_message_timestamp(ts_value: Any, tz=None) -> Optional[float]:
     return None
 
 
-def format_message_timestamp(ts_value: Any, tz=None) -> str:
-    """Format a timestamp value as ``[Tue 2026-04-28 13:40:53 CEST]``."""
-    epoch = coerce_message_timestamp(ts_value, tz=tz)
-    if epoch is None:
-        return ""
-    if tz is not None:
-        dt = datetime.fromtimestamp(epoch, tz=tz)
-    else:
-        dt = datetime.fromtimestamp(epoch).astimezone()
-    return "[" + dt.strftime("%a %Y-%m-%d %H:%M:%S %Z") + "]"
-
-
 def strip_leading_message_timestamps(content: str, tz=None) -> Tuple[str, Optional[float]]:
     """Strip one or more leading gateway timestamp prefixes from ``content``.
 
@@ -110,23 +98,6 @@ def strip_leading_message_timestamps(content: str, tz=None) -> Tuple[str, Option
 
     return text, embedded_epoch
 
-
-def render_user_content_with_timestamp(content: str, ts_value: Any = None, tz=None) -> str:
-    """Render a user message for LLM context with exactly one timestamp prefix.
-
-    Existing leading timestamp prefixes are removed first.  If such a prefix was
-    present, its parsed time wins over ``ts_value``; otherwise ``ts_value`` is
-    formatted and prepended.  If no timestamp is available, the cleaned content is
-    returned unchanged.
-    """
-    clean_content, embedded_epoch = strip_leading_message_timestamps(content, tz=tz)
-    effective_ts = embedded_epoch if embedded_epoch is not None else ts_value
-    prefix = format_message_timestamp(effective_ts, tz=tz)
-    if not prefix:
-        return clean_content
-    if clean_content:
-        return f"{prefix} {clean_content}"
-    return prefix
 
 
 def _parse_timestamp_prefix(text: str, tz=None) -> Optional[float]:
