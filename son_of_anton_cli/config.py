@@ -2166,29 +2166,9 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
     return node
 
 
-# Back-compat alias — canonical set lives in son_of_anton_cli.personality.
-from son_of_anton_cli.personality import NEUTRAL_PERSONALITY_NAMES as _NEUTRAL_PERSONALITY_NAMES  # noqa: F401
-
-
-def render_personality_prompt(value: Any) -> str:
-    """Render a string or structured personality definition to a prompt."""
-    from son_of_anton_cli.personality import render_personality_prompt as _render
-
-    return _render(value)
-
-
 def resolve_ephemeral_system_prompt_from_config(cfg: Optional[Dict[str, Any]]) -> str:
-    """Resolve the session overlay from config.toml.
-
-    ``display.personality`` is the selected named personality and wins when set.
-    Otherwise fall back to the user-owned ``agent.system_prompt``. Callers should
-    still prefer ``SON_OF_ANTON_EPHEMERAL_SYSTEM_PROMPT`` when that env var is set.
-
-    Delegates to :mod:`son_of_anton_cli.personality` (single owner).
-    """
-    from son_of_anton_cli.personality import resolve_ephemeral_system_prompt
-
-    return resolve_ephemeral_system_prompt(cfg)
+    """The user-owned ``agent.system_prompt`` overlay from config.toml ('' when unset)."""
+    return str(cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
 
 
 def read_raw_config() -> Dict[str, Any]:
@@ -3265,19 +3245,8 @@ def show_config():
     print()
     print(color("◆ Display", Colors.CYAN, Colors.BOLD))
     display = config.get('display', {})
-    try:
-        from son_of_anton_cli.personality import active_personality_name
-
-        _active_personality = active_personality_name(config) or 'none'
-    except Exception:
-        _active_personality = display.get('personality') or 'none'
-    print(f"  Personality:  {_active_personality}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', True) else 'off'}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
-    ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}
-    ump_first = ump.get('first_lines', 2)
-    ump_last = ump.get('last_lines', 2)
-    print(f"  User preview: first {ump_first} line(s), last {ump_last} line(s)")
 
     # Terminal
     print()

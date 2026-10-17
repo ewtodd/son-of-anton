@@ -257,7 +257,6 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
         self._interrupt_queue = queue.Queue()
         self._last_turn_interrupted = False
         self._should_exit = False
-        self._last_ctrl_c_time = 0
 
         try:
             from son_of_anton_cli.plugins import get_plugin_manager
@@ -279,19 +278,14 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
-        self._clarify_multi_base = None
-        self._clarify_prefill = ""
         self._sudo_state = None
         self._sudo_deadline = 0
-        self._modal_input_snapshot = None
         self._approval_state = None
         self._approval_deadline = 0
         self._approval_lock = threading.Lock()
         self._slash_confirm_state = None
-        self._slash_confirm_deadline = 0
         self._command_running = False
         self._command_blocks_input = False
-        self._command_status = ""
         self._attached_images = []
         self._image_counter = 0
         self._model_picker_state = getattr(self, "_model_picker_state", None)
@@ -483,7 +477,6 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
             self._interactive_turn = False
             self._spinner_text = ""
             self._tool_start_time = 0.0
-            self._last_scrollback_tool = ""
             try:
                 self._pending_tool_info.clear()
             except Exception:
@@ -954,14 +947,12 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
             "selected": 0,
             "response_queue": response_queue,
         }
-        self._slash_confirm_deadline = time.monotonic() + timeout
         try:
             ok, result = self._wait_for_queue(
                 response_queue, timeout, still_open=lambda: self._slash_confirm_state is not None
             )
         finally:
             self._slash_confirm_state = None
-            self._slash_confirm_deadline = 0
             self.emit("refresh")
         return result if ok else None
 

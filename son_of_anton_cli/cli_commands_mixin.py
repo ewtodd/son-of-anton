@@ -1622,7 +1622,6 @@ class CLICommandsMixin:
         """Print the dim post-turn recovery line and reset the counter."""
         count = int(getattr(self, "_focus_hidden_lines", 0) or 0)
         self._focus_hidden_lines = 0
-        self._focus_last_counted_tool = None
         if not getattr(self, "_focus_view_enabled", False):
             return
         from son_of_anton_cli.focus_view import format_hidden_line

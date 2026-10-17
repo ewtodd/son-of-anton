@@ -5850,7 +5850,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """Load ephemeral system prompt from config or env var.
 
         Checks SON_OF_ANTON_EPHEMERAL_SYSTEM_PROMPT env var first, then
-        ``display.personality`` / ``agent.system_prompt`` in config.toml.
+        ``agent.system_prompt`` in config.toml.
         """
         from son_of_anton_cli.config import resolve_ephemeral_system_prompt_from_config
 
