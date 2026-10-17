@@ -8553,7 +8553,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return True  # message queued; ack already delivered recently
 
         from gateway.display_config import resolve_display_setting
-        platform_key = _platform_config_key(event.source.platform)
 
         self._session_state(session_key).turn.busy_ack_ts = now
 

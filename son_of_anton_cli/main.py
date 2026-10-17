@@ -229,7 +229,6 @@ if _try_ultrafast_version():
     raise SystemExit(0)
 
 import re
-import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -344,7 +343,6 @@ if _FORCE_IPV4_EARLY:
         pass  # best-effort — don't crash if son_of_anton_constants not importable yet
 
 import logging
-import time as _time
 from datetime import datetime
 
 
