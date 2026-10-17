@@ -1417,9 +1417,6 @@ DEFAULT_CONFIG = {
         # without weakening the guard for the rest of /etc/.
         "sensitive_path_exceptions": [],
         "tirith_enabled": True,
-        "tirith_path": "tirith",
-        "tirith_timeout": 5,
-        "tirith_fail_open": True,
         # Acknowledged supply-chain security advisories. Each entry is the
         # ID of an advisory the user has read and acted on (uninstalled the
         # compromised package, rotated credentials). Acked advisories no
