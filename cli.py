@@ -4641,10 +4641,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return
         self._tirith_security_checked = True
         try:
-            from tools.tirith_security import ensure_installed, is_platform_supported
+            from tools.tirith_security import ensure_installed
 
-            tirith_path = ensure_installed(log_failures=False)
-            if tirith_path is None and is_platform_supported():
+            tirith_path = ensure_installed()
+            if tirith_path is None:
                 security_cfg = self.config.get("security", {}) or {}
                 tirith_enabled = security_cfg.get("tirith_enabled", True)
                 if tirith_enabled:

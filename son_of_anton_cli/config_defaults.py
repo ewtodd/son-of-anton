@@ -1240,13 +1240,6 @@ DEFAULT_CONFIG = {
         "timeout": 0,
         "cron_mode": "deny",
         "single_query_mode": "deny",
-        # Operator-customizable policy text for smart approvals. When
-        # non-empty, this is appended to the smart-approval guardian's
-        # SYSTEM prompt (trusted channel) as additional rules — e.g.
-        # "Always ESCALATE commands touching /etc" or "APPROVE docker
-        # compose restarts under ~/deploys". Inspired by ChatGPT Work's
-        # customizable auto-review guardian policy.
-        "smart_policy": "",
         # Consecutive-denial circuit breaker for smart approvals: after this
         # many guardian DENY verdicts in a row within one session, the deny
         # message returned to the model escalates to a hard-stop instruction
@@ -1254,16 +1247,6 @@ DEFAULT_CONFIG = {
         # plain "Do NOT retry". Any approval resets the count. 0 disables.
         # Inspired by ChatGPT Work's auto-review circuit breaker.
         "denial_breaker_threshold": 3,
-        # User-defined deny rules: fnmatch globs matched against terminal
-        # commands. A match blocks the command unconditionally — BEFORE the
-        # --yolo / /yolo / mode=off bypass — making this the user-editable
-        # counterpart to the code-shipped hardline blocklist. Patterns are
-        # case-insensitive and must be quoted in TOML when they start with
-        # * or contain {}/!/: sequences. Example:
-        #   deny:
-        #     - "git push --force*"
-        #     - "*curl*|*sh*"
-        "deny": [],
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
         # the provider prompt cache (tool schemas are baked into the system
@@ -1311,7 +1294,6 @@ DEFAULT_CONFIG = {
 
     # Pre-exec security scanning via tirith
     "security": {
-        "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
         # Lockdown permission mode (temple-style): every terminal command and
         # every file write outside the session directory requires explicit
@@ -1335,9 +1317,6 @@ DEFAULT_CONFIG = {
         # without weakening the guard for the rest of /etc/.
         "sensitive_path_exceptions": [],
         "tirith_enabled": True,
-        "tirith_path": "tirith",
-        "tirith_timeout": 5,
-        "tirith_fail_open": True,
         # Acknowledged supply-chain security advisories. Each entry is the
         # ID of an advisory the user has read and acted on (uninstalled the
         # compromised package, rotated credentials). Acked advisories no
