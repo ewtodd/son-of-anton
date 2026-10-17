@@ -327,20 +327,6 @@ def test_an_undetectable_window_resolves_to_unknown_not_256k(monkeypatch) -> Non
     assert llm.resolve_context_window(config) == 0
 
 
-def test_a_known_model_family_still_resolves(monkeypatch) -> None:
-    from autophysicist import llm
-    from autophysicist.core.config import Config
-    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
-
-    llm._CONTEXT_WINDOWS.clear()
-    monkeypatch.setattr(
-        llm, "_resolve_endpoint", _endpoint("http://127.0.0.1:1/v1", "qwen3-coder-30b")
-    )
-    config = Config()
-    config.context_length = 0
-    assert llm.resolve_context_window(config) == DEFAULT_CONTEXT_LENGTHS["qwen3-coder"]
-
-
 def test_an_unknown_window_still_bounds_memory_but_never_stops_the_run(
     monkeypatch, tmp_path
 ) -> None:

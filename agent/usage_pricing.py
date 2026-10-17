@@ -1,30 +1,26 @@
+"""Token accounting and cost estimation.
+
+Pricing comes only from the endpoint's own OpenAI-compatible ``/models``
+listing (a ``pricing`` block per model); without one the cost is unknown.
+"""
+
 from __future__ import annotations
 
-import logging
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
-from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
-from utils import base_url_host_matches, base_url_hostname
-
-logger = logging.getLogger(__name__)
+from agent.model_metadata import fetch_endpoint_model_metadata
+from utils import base_url_hostname
 
 
 _ZERO = Decimal("0")
 _ONE_MILLION = Decimal("1000000")
-_NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 
 # Sub-cent cost threshold: below $0.01, render at 4 decimal places so
-# the display is non-zero (e.g. $0.0046 instead of $0.00). See #79220.
+# the display is non-zero (e.g. $0.0046 instead of $0.00).
 _SUBCENT_THRESHOLD = Decimal("0.01")
-
-# Attached to every CostResult with status="included" so consumers can
-# distinguish "free because subscription" from "free because $0 pricing".
-_INCLUDED_NOTE = "subscription-included; no provider invoice for usage"
-
 
 def format_cost_label(amount: Decimal) -> str:
     """Format a cost amount as a display label.
@@ -37,10 +33,6 @@ def format_cost_label(amount: Decimal) -> str:
       as zero)
     - Normal → "~$1.23" (2 dp)
 
-    This fixes #79220 where sub-cent per-turn costs on cheap models
-    (DeepSeek, etc.) rendered as "$0.00" despite amount_usd carrying
-    full Decimal precision.
-
     Shared by per-response cost labels (estimate_usage_cost) and the
     insights cost-bucket formatters — keep both surfaces on this one
     implementation so sub-cent honesty can't regress on one of them.
@@ -50,23 +42,14 @@ def format_cost_label(amount: Decimal) -> str:
     if amount < _SUBCENT_THRESHOLD:
         label = f"~${amount:.4f}"
         # A positive amount that rounds to 0.0000 at 4 dp would render
-        # "~$0.0000" — a zero-looking label, the exact #79220 dishonesty.
-        # Comparing the rendered label checks the truth directly (a naive
-        # `< 0.00005` threshold misses the exact boundary under
-        # ROUND_HALF_EVEN).
+        # "~$0.0000" — a zero-looking label. Comparing the rendered label
+        # checks the truth directly (a naive `< 0.00005` threshold misses
+        # the exact boundary under ROUND_HALF_EVEN).
         return label if label != "~$0.0000" else "~$<0.0001"
     return f"~${amount:.2f}"
 
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
-CostSource = Literal[
-    "provider_cost_api",
-    "provider_generation_api",
-    "provider_models_api",
-    "official_docs_snapshot",
-    "user_override",
-    "custom_contract",
-    "none",
-]
+CostSource = Literal["provider_models_api", "none"]
 
 
 @dataclass(frozen=True)
@@ -142,753 +125,6 @@ class CostResult:
 _UTC_NOW = lambda: datetime.now(timezone.utc)
 
 
-# Official docs snapshot entries. Models whose published pricing and cache
-# semantics are stable enough to encode exactly.
-_OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
-    # ── OpenAI GPT-5.6 series (Sol/Terra/Luna) ───────────────────────────
-    # Announced in limited preview 2026-06-26; GA 2026-07-09 at the same
-    # rates (Sol $5/$30, Terra $2.50/$15, Luna $1/$6 per 1M in/out). Cache
-    # writes are billed at 1.25x the uncached input rate; cache reads get the
-    # standard 90% discount (0.10x input, confirmed: Sol $0.50/M cached).
-    # Note: "Sol Fast mode" ($12.5/$75, up to 750 tok/s via Cerebras) is a
-    # separate serving tier, not covered by these entries. The "-pro"
-    # variants (high-effort modes, GA alongside base tiers) bill at the
-    # SAME per-token rates and are aliased onto these entries below the
-    # dict (they cost more per task by consuming more tokens, not by a
-    # higher rate — verified against OpenRouter's live pricing 2026-07-09).
-    # Source: https://openai.com/index/previewing-gpt-5-6-sol/
-    (
-        "openai",
-        "gpt-5.6-sol",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("5.00"),
-        output_cost_per_million=Decimal("30.00"),
-        cache_read_cost_per_million=Decimal("0.50"),
-        cache_write_cost_per_million=Decimal("6.25"),
-        source="official_docs_snapshot",
-        source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
-        pricing_version="openai-gpt-5.6-2026-07",
-    ),
-    (
-        "openai",
-        "gpt-5.6-terra",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("2.50"),
-        output_cost_per_million=Decimal("15.00"),
-        cache_read_cost_per_million=Decimal("0.25"),
-        cache_write_cost_per_million=Decimal("3.125"),
-        source="official_docs_snapshot",
-        source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
-        pricing_version="openai-gpt-5.6-2026-07",
-    ),
-    (
-        "openai",
-        "gpt-5.6-luna",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("1.00"),
-        output_cost_per_million=Decimal("6.00"),
-        cache_read_cost_per_million=Decimal("0.10"),
-        cache_write_cost_per_million=Decimal("1.25"),
-        source="official_docs_snapshot",
-        source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
-        pricing_version="openai-gpt-5.6-2026-07",
-    ),
-    # ── Anthropic Claude 4.8 ─────────────────────────────────────────────
-    # Same $5/$25 base pricing as 4.6/4.7.  Fast-mode variant is a separate
-    # model ID with 2x premium (vs the 6x premium on older Opus generations).
-    # Source: https://openrouter.ai/anthropic/claude-opus-4.8
-    (
-        "anthropic",
-        "claude-opus-4-8",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("5.00"),
-        output_cost_per_million=Decimal("25.00"),
-        cache_read_cost_per_million=Decimal("0.50"),
-        cache_write_cost_per_million=Decimal("6.25"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    (
-        "anthropic",
-        "claude-opus-4-8-fast",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("10.00"),
-        output_cost_per_million=Decimal("50.00"),
-        cache_read_cost_per_million=Decimal("1.00"),
-        cache_write_cost_per_million=Decimal("12.50"),
-        source="official_docs_snapshot",
-        source_url="https://openrouter.ai/anthropic/claude-opus-4.8-fast",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    # ── Anthropic Claude Sonnet 5 ────────────────────────────────────────
-    # Launched 2026-06-30. Introductory pricing ($2/$10 per MTok) runs
-    # through 2026-08-31, after which it reverts to $3/$15 (matching
-    # Sonnet 4.6). Update this entry when the intro window closes.
-    # Source: https://platform.claude.com/docs/en/about-claude/pricing
-    (
-        "anthropic",
-        "claude-sonnet-5",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("2.00"),
-        output_cost_per_million=Decimal("10.00"),
-        cache_read_cost_per_million=Decimal("0.20"),
-        cache_write_cost_per_million=Decimal("2.50"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-06-intro",
-    ),
-    # ── Anthropic Claude 4.7 ─────────────────────────────────────────────
-    # Opus 4.5/4.6/4.7 share $5/$25 pricing (new tokenizer, up to 35% more
-    # tokens for the same text).
-    # Source: https://platform.claude.com/docs/en/about-claude/pricing
-    (
-        "anthropic",
-        "claude-opus-4-7",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("5.00"),
-        output_cost_per_million=Decimal("25.00"),
-        cache_read_cost_per_million=Decimal("0.50"),
-        cache_write_cost_per_million=Decimal("6.25"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    (
-        "anthropic",
-        "claude-opus-4-7-20250507",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("5.00"),
-        output_cost_per_million=Decimal("25.00"),
-        cache_read_cost_per_million=Decimal("0.50"),
-        cache_write_cost_per_million=Decimal("6.25"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    # ── Anthropic Claude 4.6 ─────────────────────────────────────────────
-    (
-        "anthropic",
-        "claude-opus-4-6",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("5.00"),
-        output_cost_per_million=Decimal("25.00"),
-        cache_read_cost_per_million=Decimal("0.50"),
-        cache_write_cost_per_million=Decimal("6.25"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    (
-        "anthropic",
-        "claude-opus-4-6-20250414",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("5.00"),
-        output_cost_per_million=Decimal("25.00"),
-        cache_read_cost_per_million=Decimal("0.50"),
-        cache_write_cost_per_million=Decimal("6.25"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    (
-        "anthropic",
-        "claude-sonnet-4-6",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("3.00"),
-        output_cost_per_million=Decimal("15.00"),
-        cache_read_cost_per_million=Decimal("0.30"),
-        cache_write_cost_per_million=Decimal("3.75"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    (
-        "anthropic",
-        "claude-sonnet-4-6-20250414",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("3.00"),
-        output_cost_per_million=Decimal("15.00"),
-        cache_read_cost_per_million=Decimal("0.30"),
-        cache_write_cost_per_million=Decimal("3.75"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    # ── Anthropic Claude 4.5 ─────────────────────────────────────────────
-    (
-        "anthropic",
-        "claude-opus-4-5",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("5.00"),
-        output_cost_per_million=Decimal("25.00"),
-        cache_read_cost_per_million=Decimal("0.50"),
-        cache_write_cost_per_million=Decimal("6.25"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    (
-        "anthropic",
-        "claude-sonnet-4-5",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("3.00"),
-        output_cost_per_million=Decimal("15.00"),
-        cache_read_cost_per_million=Decimal("0.30"),
-        cache_write_cost_per_million=Decimal("3.75"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    (
-        "anthropic",
-        "claude-haiku-4-5",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("1.00"),
-        output_cost_per_million=Decimal("5.00"),
-        cache_read_cost_per_million=Decimal("0.10"),
-        cache_write_cost_per_million=Decimal("1.25"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    # ── Anthropic Claude 4 / 4.1 ─────────────────────────────────────────
-    (
-        "anthropic",
-        "claude-opus-4-20250514",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("15.00"),
-        output_cost_per_million=Decimal("75.00"),
-        cache_read_cost_per_million=Decimal("1.50"),
-        cache_write_cost_per_million=Decimal("18.75"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    (
-        "anthropic",
-        "claude-sonnet-4-20250514",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("3.00"),
-        output_cost_per_million=Decimal("15.00"),
-        cache_read_cost_per_million=Decimal("0.30"),
-        cache_write_cost_per_million=Decimal("3.75"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    # OpenAI
-    (
-        "openai",
-        "gpt-4o",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("2.50"),
-        output_cost_per_million=Decimal("10.00"),
-        cache_read_cost_per_million=Decimal("1.25"),
-        source="official_docs_snapshot",
-        source_url="https://openai.com/api/pricing/",
-        pricing_version="openai-pricing-2026-03-16",
-    ),
-    (
-        "openai",
-        "gpt-4o-mini",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.15"),
-        output_cost_per_million=Decimal("0.60"),
-        cache_read_cost_per_million=Decimal("0.075"),
-        source="official_docs_snapshot",
-        source_url="https://openai.com/api/pricing/",
-        pricing_version="openai-pricing-2026-03-16",
-    ),
-    (
-        "openai",
-        "gpt-4.1",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("2.00"),
-        output_cost_per_million=Decimal("8.00"),
-        cache_read_cost_per_million=Decimal("0.50"),
-        source="official_docs_snapshot",
-        source_url="https://openai.com/api/pricing/",
-        pricing_version="openai-pricing-2026-03-16",
-    ),
-    (
-        "openai",
-        "gpt-4.1-mini",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.40"),
-        output_cost_per_million=Decimal("1.60"),
-        cache_read_cost_per_million=Decimal("0.10"),
-        source="official_docs_snapshot",
-        source_url="https://openai.com/api/pricing/",
-        pricing_version="openai-pricing-2026-03-16",
-    ),
-    (
-        "openai",
-        "gpt-4.1-nano",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.10"),
-        output_cost_per_million=Decimal("0.40"),
-        cache_read_cost_per_million=Decimal("0.025"),
-        source="official_docs_snapshot",
-        source_url="https://openai.com/api/pricing/",
-        pricing_version="openai-pricing-2026-03-16",
-    ),
-    (
-        "openai",
-        "o3",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("10.00"),
-        output_cost_per_million=Decimal("40.00"),
-        cache_read_cost_per_million=Decimal("2.50"),
-        source="official_docs_snapshot",
-        source_url="https://openai.com/api/pricing/",
-        pricing_version="openai-pricing-2026-03-16",
-    ),
-    (
-        "openai",
-        "o3-mini",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("1.10"),
-        output_cost_per_million=Decimal("4.40"),
-        cache_read_cost_per_million=Decimal("0.55"),
-        source="official_docs_snapshot",
-        source_url="https://openai.com/api/pricing/",
-        pricing_version="openai-pricing-2026-03-16",
-    ),
-    # ── Anthropic older models (pre-4.5 generation) ────────────────────────
-    (
-        "anthropic",
-        "claude-3-5-sonnet-20241022",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("3.00"),
-        output_cost_per_million=Decimal("15.00"),
-        cache_read_cost_per_million=Decimal("0.30"),
-        cache_write_cost_per_million=Decimal("3.75"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    (
-        "anthropic",
-        "claude-3-5-haiku-20241022",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.80"),
-        output_cost_per_million=Decimal("4.00"),
-        cache_read_cost_per_million=Decimal("0.08"),
-        cache_write_cost_per_million=Decimal("1.00"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    (
-        "anthropic",
-        "claude-3-opus-20240229",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("15.00"),
-        output_cost_per_million=Decimal("75.00"),
-        cache_read_cost_per_million=Decimal("1.50"),
-        cache_write_cost_per_million=Decimal("18.75"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    (
-        "anthropic",
-        "claude-3-haiku-20240307",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.25"),
-        output_cost_per_million=Decimal("1.25"),
-        cache_read_cost_per_million=Decimal("0.03"),
-        cache_write_cost_per_million=Decimal("0.30"),
-        source="official_docs_snapshot",
-        source_url="https://platform.claude.com/docs/en/about-claude/pricing",
-        pricing_version="anthropic-pricing-2026-05",
-    ),
-    # DeepSeek
-    # Snapshot of https://api-docs.deepseek.com/quick_start/pricing (2026-07).
-    # deepseek-chat / deepseek-reasoner are deprecated 2026-07-24 and now alias
-    # deepseek-v4-flash's non-thinking / thinking modes — same rates.
-    (
-        "deepseek",
-        "deepseek-chat",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.14"),
-        output_cost_per_million=Decimal("0.28"),
-        cache_read_cost_per_million=Decimal("0.0028"),
-        source="official_docs_snapshot",
-        source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-07",
-    ),
-    (
-        "deepseek",
-        "deepseek-reasoner",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.14"),
-        output_cost_per_million=Decimal("0.28"),
-        cache_read_cost_per_million=Decimal("0.0028"),
-        source="official_docs_snapshot",
-        source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-07",
-    ),
-    (
-        "deepseek",
-        "deepseek-v4-pro",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.435"),
-        output_cost_per_million=Decimal("0.87"),
-        cache_read_cost_per_million=Decimal("0.003625"),
-        source="official_docs_snapshot",
-        source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-07",
-    ),
-    (
-        "deepseek",
-        "deepseek-v4-flash",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.14"),
-        output_cost_per_million=Decimal("0.28"),
-        cache_read_cost_per_million=Decimal("0.0028"),
-        source="official_docs_snapshot",
-        source_url="https://api-docs.deepseek.com/quick_start/pricing",
-        pricing_version="deepseek-pricing-2026-07",
-    ),
-    # Google Gemini
-    (
-        "google",
-        "gemini-3.6-flash",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("1.50"),
-        output_cost_per_million=Decimal("7.50"),
-        cache_read_cost_per_million=Decimal("0.15"),
-        source="official_docs_snapshot",
-        source_url="https://ai.google.dev/gemini-api/docs/pricing",
-        pricing_version="google-pricing-2026-07-28",
-    ),
-    (
-        "google",
-        "gemini-3.5-flash",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("1.50"),
-        output_cost_per_million=Decimal("9.00"),
-        cache_read_cost_per_million=Decimal("0.15"),
-        source="official_docs_snapshot",
-        source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-07-07",
-    ),
-    (
-        "google",
-        "gemini-3.5-flash-lite",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.30"),
-        output_cost_per_million=Decimal("2.50"),
-        cache_read_cost_per_million=Decimal("0.03"),
-        source="official_docs_snapshot",
-        source_url="https://ai.google.dev/gemini-api/docs/pricing",
-        pricing_version="google-pricing-2026-07-28",
-    ),
-    (
-        "google",
-        "gemini-3.1-pro",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("2.00"),
-        output_cost_per_million=Decimal("12.00"),
-        cache_read_cost_per_million=Decimal("0.20"),
-        source="official_docs_snapshot",
-        source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-07-07",
-    ),
-    (
-        "google",
-        "gemini-3.1-flash-lite",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.25"),
-        output_cost_per_million=Decimal("1.50"),
-        cache_read_cost_per_million=Decimal("0.025"),
-        source="official_docs_snapshot",
-        source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-07-07",
-    ),
-    (
-        "google",
-        "gemini-3-pro-preview",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("2.00"),
-        output_cost_per_million=Decimal("12.00"),
-        cache_read_cost_per_million=Decimal("0.20"),
-        source="official_docs_snapshot",
-        source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-07-07",
-    ),
-    (
-        "google",
-        "gemini-3-flash-preview",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.50"),
-        output_cost_per_million=Decimal("3.00"),
-        cache_read_cost_per_million=Decimal("0.05"),
-        source="official_docs_snapshot",
-        source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-07-07",
-    ),
-    (
-        "google",
-        "gemini-2.5-pro",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("1.25"),
-        output_cost_per_million=Decimal("10.00"),
-        cache_read_cost_per_million=Decimal("0.125"),
-        source="official_docs_snapshot",
-        source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-07-07",
-    ),
-    (
-        "google",
-        "gemini-2.5-flash",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.15"),
-        output_cost_per_million=Decimal("0.60"),
-        cache_read_cost_per_million=Decimal("0.015"),
-        source="official_docs_snapshot",
-        source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-07-07",
-    ),
-    (
-        "google",
-        "gemini-2.0-flash",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.10"),
-        output_cost_per_million=Decimal("0.40"),
-        cache_read_cost_per_million=Decimal("0.01"),
-        source="official_docs_snapshot",
-        source_url="https://ai.google.dev/pricing",
-        pricing_version="google-pricing-2026-07-07",
-    ),
-    # MiniMax
-    (
-        "minimax",
-        "minimax-m2.7",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.30"),
-        output_cost_per_million=Decimal("1.20"),
-        source="official_docs_snapshot",
-        pricing_version="minimax-pricing-2026-04",
-    ),
-    (
-        "minimax-cn",
-        "minimax-m2.7",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.30"),
-        output_cost_per_million=Decimal("1.20"),
-        source="official_docs_snapshot",
-        pricing_version="minimax-pricing-2026-04",
-    ),
-    # Fireworks AI — serverless pricing for the models son-of-anton typically routes
-    # through when configured with provider="fireworks". Fireworks publishes a
-    # cached_input rate per model alongside input/output, which maps to
-    # cache_read_cost_per_million. No separately published cache_write rate.
-    # Snapshot of https://docs.fireworks.ai/serverless/pricing (Standard tier).
-    (
-        "fireworks",
-        "kimi-k2p6",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.95"),
-        output_cost_per_million=Decimal("4.00"),
-        cache_read_cost_per_million=Decimal("0.16"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "kimi-k2p7-code",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.95"),
-        output_cost_per_million=Decimal("4.00"),
-        cache_read_cost_per_million=Decimal("0.19"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "glm-5p2",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("1.40"),
-        output_cost_per_million=Decimal("4.40"),
-        cache_read_cost_per_million=Decimal("0.14"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "deepseek-v4-pro",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("1.74"),
-        output_cost_per_million=Decimal("3.48"),
-        cache_read_cost_per_million=Decimal("0.145"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "deepseek-v4-flash",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.14"),
-        output_cost_per_million=Decimal("0.28"),
-        cache_read_cost_per_million=Decimal("0.028"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "qwen3p7-plus",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.40"),
-        output_cost_per_million=Decimal("1.60"),
-        cache_read_cost_per_million=Decimal("0.08"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "minimax-m3",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.30"),
-        output_cost_per_million=Decimal("1.20"),
-        cache_read_cost_per_million=Decimal("0.06"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "gpt-oss-120b",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.15"),
-        output_cost_per_million=Decimal("0.60"),
-        cache_read_cost_per_million=Decimal("0.015"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "gpt-oss-20b",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.07"),
-        output_cost_per_million=Decimal("0.30"),
-        cache_read_cost_per_million=Decimal("0.035"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "glm-5p1",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("1.40"),
-        output_cost_per_million=Decimal("4.40"),
-        cache_read_cost_per_million=Decimal("0.26"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "minimax-m2p7",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("0.30"),
-        output_cost_per_million=Decimal("1.20"),
-        cache_read_cost_per_million=Decimal("0.06"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    # Fast/turbo serving tiers — exposed as accounts/fireworks/routers/<name>,
-    # so rsplit("/", 1) yields these distinct ids with their own (higher) rates.
-    (
-        "fireworks",
-        "kimi-k2p6-fast",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("2.00"),
-        output_cost_per_million=Decimal("8.00"),
-        cache_read_cost_per_million=Decimal("0.30"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "kimi-k2p6-turbo",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("2.00"),
-        output_cost_per_million=Decimal("8.00"),
-        cache_read_cost_per_million=Decimal("0.30"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "kimi-k2p7-code-fast",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("1.90"),
-        output_cost_per_million=Decimal("8.00"),
-        cache_read_cost_per_million=Decimal("0.38"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "glm-5p2-fast",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("2.10"),
-        output_cost_per_million=Decimal("6.60"),
-        cache_read_cost_per_million=Decimal("0.21"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-    (
-        "fireworks",
-        "glm-5p1-fast",
-    ): PricingEntry(
-        input_cost_per_million=Decimal("2.80"),
-        output_cost_per_million=Decimal("8.80"),
-        cache_read_cost_per_million=Decimal("0.52"),
-        source="official_docs_snapshot",
-        source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-07",
-    ),
-}
-
-# GPT-5.6 "-pro" high-effort variants bill at the same per-token rates as
-# their base tiers (more tokens per task, not a higher rate). Alias them
-# onto the base entries so the snapshot stays single-source.
-for _base_56 in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
-    _OFFICIAL_DOCS_PRICING[("openai", f"{_base_56}-pro")] = _OFFICIAL_DOCS_PRICING[
-        ("openai", _base_56)
-    ]
-del _base_56
-
-# The direct Gemini provider currently exposes preview IDs for these two
-# models. Keep the official snapshot keyed by both their documented stable
-# names and the provider's emitted IDs so a catalog selection is billable.
-for _alias, _canonical in {
-    "gemini-3.1-pro-preview": "gemini-3.1-pro",
-    "gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite",
-}.items():
-    _OFFICIAL_DOCS_PRICING[("google", _alias)] = _OFFICIAL_DOCS_PRICING[
-        ("google", _canonical)
-    ]
-del _alias, _canonical
-
-
 def _to_decimal(value: Any) -> Optional[Decimal]:
     if value is None:
         return None
@@ -908,10 +144,9 @@ def _to_int(value: Any) -> int:
 def _usage_get(obj: Any, name: str, default: Any = 0) -> Any:
     """Read a field from a usage object that may be a dict or an attribute object.
 
-    The Responses API can return usage as either a typed SDK object (accessible
-    via ``getattr``) or a plain ``dict`` (from JSON deserialisation).  Using
-    ``getattr`` on a dict silently yields the default, zeroing out all token
-    counts.  This helper normalises access so both shapes work transparently.
+    Usage arrives either as a typed SDK object (accessible via ``getattr``)
+    or a plain ``dict`` (from JSON deserialisation).  Using ``getattr`` on a
+    dict silently yields the default, zeroing out all token counts.
     """
     if isinstance(obj, dict):
         return obj.get(name, default)
@@ -922,7 +157,7 @@ def _usage_count(value: Any) -> int:
     """Coerce a usage counter to a non-negative integer.
 
     Providers occasionally emit malformed negative counters; clamp them to 0
-    so a bad field cannot corrupt session accounting (#85706).
+    so a bad field cannot corrupt session accounting.
     """
     return max(0, _to_int(value))
 
@@ -935,86 +170,9 @@ def resolve_billing_route(
     provider_name = (provider or "").strip().lower()
     base = (base_url or "").strip().lower()
     model = (model_name or "").strip()
-    if not provider_name and "/" in model:
-        inferred_provider, bare_model = model.split("/", 1)
-        if inferred_provider in {"anthropic", "openai", "google"}:
-            provider_name = inferred_provider
-            model = bare_model
-
-    if provider_name == "openrouter" or base_url_host_matches(base_url or "", "openrouter.ai"):
-        return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
-    if provider_name == "nous" or base_url_host_matches(base_url or "", "inference-api.nousresearch.com"):
-        return BillingRoute(provider="nous", model=model, base_url=base_url or _NOUS_DEFAULT_BASE_URL, billing_mode="official_models_api")
-    if provider_name == "anthropic":
-        return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
-    # "openai-api" is the picker/registry slug for direct api.openai.com; it
-    # bills identically to bare "openai", so normalize it here — otherwise the
-    # ("openai", <model>) _OFFICIAL_DOCS_PRICING keys are unreachable from the
-    # openai-api provider path.
-    if provider_name in {"openai", "openai-api"}:
-        return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
-    if provider_name in {"minimax", "minimax-cn"}:
-        return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
-    # Google AI Studio (Gemini) and Vertex AI host the same Gemini models.
-    # Price them off the official docs snapshot — the pricing keys are
-    # keyed on provider='google', so normalize every Google-flavored
-    # provider name/host onto it. Strip the "google/" vendor prefix the
-    # Vertex OpenAI-compat endpoint requires so the pricing key matches.
-    if (
-        provider_name in {"google", "gemini", "google-gemini", "google-ai-studio"}
-        or base_url_host_matches(base_url or "", "aiplatform.googleapis.com")
-        or base_url_host_matches(base_url or "", "generativelanguage.googleapis.com")
-    ):
-        return BillingRoute(provider="google", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
-    if provider_name == "fireworks" or base_url_host_matches(base_url or "", "api.fireworks.ai"):
-        # Fireworks model ids look like accounts/fireworks/models/<name>;
-        # rsplit("/", 1)[-1] yields just <name> which is what the dict keys on.
-        return BillingRoute(provider="fireworks", model=model.rsplit("/", 1)[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
-
-
-def _normalize_anthropic_model_name(model: str) -> str:
-    """Normalize Anthropic model name variants to canonical form.
-
-    Handles:
-      - Dot notation: claude-opus-4.7 → claude-opus-4-7
-      - Short aliases: claude-opus-4.7 → claude-opus-4-7
-      - Strips anthropic/ prefix if present
-    """
-    name = model.lower().strip()
-    if name.startswith("anthropic/"):
-        name = name[len("anthropic/"):]
-    # Normalize dots to dashes in version numbers (e.g. 4.7 → 4-7, 4.6 → 4-6)
-    # But preserve the rest of the name structure
-    name = re.sub(r"(\d+)\.(\d+)", r"\1-\2", name)
-    return name
-
-
-def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
-    model = route.model.lower()
-    # Direct lookup first
-    entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))
-    if entry:
-        return entry
-    # Try normalized name for Anthropic (handles dot-notation like opus-4.7)
-    if route.provider == "anthropic":
-        normalized = _normalize_anthropic_model_name(model)
-        if normalized != model:
-            entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
-            if entry:
-                return entry
-    return None
-
-
-def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
-    return _pricing_entry_from_metadata(
-        fetch_model_metadata(),
-        route.model,
-        source_url="https://openrouter.ai/docs/api/api-reference/models/get-models",
-        pricing_version="openrouter-models-api",
-    )
 
 
 def _pricing_entry_from_metadata(
@@ -1068,27 +226,14 @@ def get_pricing_entry(
     api_key: Optional[str] = None,
 ) -> Optional[PricingEntry]:
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
-    if route.billing_mode == "subscription_included":
-        return PricingEntry(
-            input_cost_per_million=_ZERO,
-            output_cost_per_million=_ZERO,
-            cache_read_cost_per_million=_ZERO,
-            cache_write_cost_per_million=_ZERO,
-            source="none",
-            pricing_version="included-route",
-        )
-    if route.provider == "openrouter":
-        return _openrouter_pricing_entry(route)
-    if route.base_url:
-        entry = _pricing_entry_from_metadata(
-            fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),
-            route.model,
-            source_url=f"{route.base_url.rstrip('/')}/models",
-            pricing_version="openai-compatible-models-api",
-        )
-        if entry:
-            return entry
-    return _lookup_official_docs_pricing(route)
+    if not route.base_url:
+        return None
+    return _pricing_entry_from_metadata(
+        fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),
+        route.model,
+        source_url=f"{route.base_url.rstrip('/')}/models",
+        pricing_version="openai-compatible-models-api",
+    )
 
 
 def normalize_usage(
@@ -1097,99 +242,72 @@ def normalize_usage(
     provider: Optional[str] = None,
     api_mode: Optional[str] = None,
 ) -> CanonicalUsage:
-    """Normalize raw API response usage into canonical token buckets.
+    """Normalize raw Chat Completions usage into canonical token buckets.
 
-    Handles three API shapes:
-    - Anthropic: input_tokens/output_tokens/cache_read_input_tokens/cache_creation_input_tokens
-    - Codex Responses: input_tokens includes cache tokens; input_tokens_details.cached_tokens separates them
-    - OpenAI Chat Completions: prompt_tokens includes cache tokens; prompt_tokens_details.cached_tokens separates them
-
-    In both Codex and OpenAI modes, input_tokens is derived by subtracting cache
-    tokens from the total — the API contract is that input/prompt totals include
-    cached tokens and the details object breaks them out.
+    ``prompt_tokens`` includes cache tokens; ``prompt_tokens_details``
+    separates them, so input_tokens is derived by subtracting cache tokens
+    from the total.
     """
     if not response_usage:
         return CanonicalUsage()
 
-    provider_name = (provider or "").strip().lower()
-    mode = (api_mode or "").strip().lower()
-
-    if provider_name == "anthropic":
-        input_tokens = _usage_count(_usage_get(response_usage, "input_tokens", 0))
-        output_tokens = _usage_count(_usage_get(response_usage, "output_tokens", 0))
-        cache_read_tokens = _usage_count(_usage_get(response_usage, "cache_read_input_tokens", 0))
+    # OpenAI-style names first; fall back to Anthropic-style
+    # (input_tokens/output_tokens). Local OpenAI-compatible servers like
+    # mlx_vlm.server emit the Anthropic names in chat_completions responses,
+    # and the OpenAI Python client preserves them as extra attributes.
+    prompt_total = _usage_count(
+        _usage_get(response_usage, "prompt_tokens", 0)
+    ) or _usage_count(_usage_get(response_usage, "input_tokens", 0))
+    output_tokens = _usage_count(
+        _usage_get(response_usage, "completion_tokens", 0)
+    ) or _usage_count(_usage_get(response_usage, "output_tokens", 0))
+    details = _usage_get(response_usage, "prompt_tokens_details", None)
+    # Primary: OpenAI-style prompt_tokens_details. Fallback: Anthropic-style
+    # top-level fields that some OpenAI-compatible proxies expose — without
+    # this fallback, cache writes are undercounted as 0 and cache reads can be
+    # missed when the proxy only surfaces them at the top level.
+    cache_read_tokens = _usage_count(
+        _usage_get(details, "cached_tokens", 0) if details else 0
+    )
+    if not cache_read_tokens:
+        cache_read_tokens = _usage_count(
+            _usage_get(response_usage, "cache_read_input_tokens", 0)
+        )
+    if not cache_read_tokens:
+        # DeepSeek's native API reports context-cache hits as top-level
+        # prompt_cache_hit_tokens (+ the complementary
+        # prompt_cache_miss_tokens; prompt_tokens = hit + miss), not the
+        # OpenAI nested shape.
+        cache_read_tokens = _usage_count(
+            _usage_get(response_usage, "prompt_cache_hit_tokens", 0)
+        )
+    if not cache_read_tokens:
+        # Some servers report cache hits as a top-level usage.cached_tokens.
+        cache_read_tokens = _usage_count(
+            _usage_get(response_usage, "cached_tokens", 0)
+        )
+    cache_write_tokens = _usage_count(
+        _usage_get(details, "cache_write_tokens", 0) if details else 0
+    )
+    if not cache_write_tokens:
+        cache_write_tokens = _usage_count(
+            _usage_get(details, "cache_creation_input_tokens", 0)
+            if details else 0
+        )
+    if not cache_write_tokens:
         cache_write_tokens = _usage_count(
             _usage_get(response_usage, "cache_creation_input_tokens", 0)
         )
-    else:
-        # OpenAI-style names first; fall back to Anthropic-style
-        # (input_tokens/output_tokens). Local OpenAI-compatible servers like
-        # mlx_vlm.server emit the Anthropic names in chat_completions responses,
-        # and the OpenAI Python client preserves them as extra attributes.
-        prompt_total = _usage_count(
-            _usage_get(response_usage, "prompt_tokens", 0)
-        ) or _usage_count(_usage_get(response_usage, "input_tokens", 0))
-        output_tokens = _usage_count(
-            _usage_get(response_usage, "completion_tokens", 0)
-        ) or _usage_count(_usage_get(response_usage, "output_tokens", 0))
-        details = _usage_get(response_usage, "prompt_tokens_details", None)
-        # Primary: OpenAI-style prompt_tokens_details. Fallback: Anthropic-style
-        # top-level fields that some OpenAI-compatible proxies (OpenRouter, Vercel
-        # AI Gateway, Cline) expose when routing Claude models — without this
-        # fallback, cache writes are undercounted as 0 and cache reads can be
-        # missed when the proxy only surfaces them at the top level.
-        # Port of cline/cline#10266.
-        cache_read_tokens = _usage_count(
-            _usage_get(details, "cached_tokens", 0) if details else 0
-        )
-        if not cache_read_tokens:
-            cache_read_tokens = _usage_count(
-                _usage_get(response_usage, "cache_read_input_tokens", 0)
-            )
-        if not cache_read_tokens:
-            # DeepSeek's native API (api.deepseek.com) reports context-cache
-            # hits as top-level prompt_cache_hit_tokens (+ the complementary
-            # prompt_cache_miss_tokens; prompt_tokens = hit + miss), not the
-            # OpenAI nested shape. Without this, direct DeepSeek sessions
-            # always showed 0 cache-hit tokens (#61871).
-            cache_read_tokens = _usage_count(
-                _usage_get(response_usage, "prompt_cache_hit_tokens", 0)
-            )
-        if not cache_read_tokens:
-            # Kimi/Moonshot's native API (api.moonshot.cn / .ai) reports
-            # context-cache hits as a top-level usage.cached_tokens, not the
-            # OpenAI nested prompt_tokens_details.cached_tokens shape. Without
-            # this, direct Kimi sessions always showed 0 cache-hit tokens and
-            # the hits were billed at the full input rate (#65722).
-            cache_read_tokens = _usage_count(
-                _usage_get(response_usage, "cached_tokens", 0)
-            )
+    if not cache_write_tokens:
         cache_write_tokens = _usage_count(
-            _usage_get(details, "cache_write_tokens", 0) if details else 0
+            _usage_get(response_usage, "cache_write_tokens", 0)
         )
-        if not cache_write_tokens:
-            cache_write_tokens = _usage_count(
-                _usage_get(details, "cache_creation_input_tokens", 0)
-                if details else 0
-            )
-        if not cache_write_tokens:
-            cache_write_tokens = _usage_count(
-                _usage_get(response_usage, "cache_creation_input_tokens", 0)
-            )
-        if not cache_write_tokens:
-            cache_write_tokens = _usage_count(
-                _usage_get(response_usage, "cache_write_tokens", 0)
-            )
-        input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
+    input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
 
     reasoning_tokens = 0
-    # Responses API shape: output_tokens_details.reasoning_tokens.
-    # Chat Completions shape (OpenAI, OpenRouter, DeepSeek, etc.):
-    # completion_tokens_details.reasoning_tokens. Reading only the former
-    # left reasoning_tokens=0 for every chat_completions reasoning model —
-    # hidden thinking was invisible in session accounting even though it
-    # dominates output spend on models like deepseek-v4-flash (measured:
-    # single calls burning 21K reasoning tokens to emit 500 visible tokens).
+    # Responses-style output_tokens_details.reasoning_tokens, then the Chat
+    # Completions completion_tokens_details.reasoning_tokens — reading only the
+    # former left hidden thinking invisible in session accounting.
     output_details = _usage_get(response_usage, "output_tokens_details", None)
     if output_details:
         reasoning_tokens = _usage_count(_usage_get(output_details, "reasoning_tokens", 0))
@@ -1199,24 +317,6 @@ def normalize_usage(
             reasoning_tokens = _usage_count(
                 _usage_get(completion_details, "reasoning_tokens", 0)
             )
-
-    # Cache observability for MiniMax's Anthropic wire: on MiniMax-M3,
-    # usage.cache_read_input_tokens carries a constant +128 floor and
-    # cache_creation_input_tokens is always 0, so cache_read is NOT a
-    # reliable hit signal — the signal that survives is the input_tokens
-    # drop between consecutive calls. Standard level-gated logger.debug;
-    # enable via logging config to confirm cache behavior.
-    # Docs: https://platform.minimax.io/docs/api-reference/text-prompt-caching
-    if provider_name in {"minimax", "minimax-cn"}:
-        logger.debug(
-            "cache_observability provider=%s mode=%s input_tokens=%s "
-            "output_tokens=%s cache_read_tokens=%s cache_write_tokens=%s "
-            "(note: on MiniMax-M3 cache_read carries a +128 constant "
-            "floor and is not a reliable hit signal — track input_tokens "
-            "drops across calls instead)",
-            provider_name, mode, input_tokens, output_tokens,
-            cache_read_tokens, cache_write_tokens,
-        )
 
     return CanonicalUsage(
         input_tokens=input_tokens,
@@ -1235,22 +335,10 @@ def estimate_usage_cost(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> CostResult:
-    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
-    if route.billing_mode == "subscription_included":
-        return CostResult(
-            amount_usd=_ZERO,
-            status="included",
-            source="none",
-            label="included",
-            pricing_version="included-route",
-            notes=(_INCLUDED_NOTE,),
-        )
-
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
     if not entry:
         return CostResult(amount_usd=None, status="unknown", source="none", label="n/a")
 
-    notes: list[str] = []
     amount = _ZERO
 
     if usage.input_tokens and entry.input_cost_per_million is None:
@@ -1287,24 +375,13 @@ def estimate_usage_cost(
     if entry.request_cost is not None and usage.request_count:
         amount += Decimal(usage.request_count) * entry.request_cost
 
-    status: CostStatus = "estimated"
-    label = format_cost_label(amount)
-    if entry.source == "none" and amount == _ZERO:
-        status = "included"
-        label = "included"
-        notes.append(_INCLUDED_NOTE)
-
-    if route.provider == "openrouter":
-        notes.append("OpenRouter cost is estimated from the models API until reconciled.")
-
     return CostResult(
         amount_usd=amount,
-        status=status,
+        status="estimated",
         source=entry.source,
-        label=label,
+        label=format_cost_label(amount),
         fetched_at=entry.fetched_at,
         pricing_version=entry.pricing_version,
-        notes=tuple(notes),
     )
 
 
@@ -1314,16 +391,8 @@ def has_known_pricing(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> bool:
-    """Check whether we have pricing data for this model+route.
-
-    Uses direct lookup instead of routing through the full estimation
-    pipeline — avoids creating dummy usage objects just to check status.
-    """
-    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
-    if route.billing_mode == "subscription_included":
-        return True
-    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
-    return entry is not None
+    """Check whether we have pricing data for this model+route."""
+    return get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key) is not None
 
 
 def format_duration_compact(seconds: float) -> str:
@@ -1338,26 +407,3 @@ def format_duration_compact(seconds: float) -> str:
         return f"{int(hours)}h {remaining_min}m" if remaining_min else f"{int(hours)}h"
     days = hours / 24
     return f"{days:.1f}d"
-
-
-def format_token_count_compact(value: int) -> str:
-    abs_value = abs(int(value))
-    if abs_value < 1_000:
-        return str(int(value))
-
-    sign = "-" if value < 0 else ""
-    units = ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K"))
-    for threshold, suffix in units:
-        if abs_value >= threshold:
-            scaled = abs_value / threshold
-            if scaled < 10:
-                text = f"{scaled:.2f}"
-            elif scaled < 100:
-                text = f"{scaled:.1f}"
-            else:
-                text = f"{scaled:.0f}"
-            if "." in text:
-                text = text.rstrip("0").rstrip(".")
-            return f"{sign}{text}{suffix}"
-
-    return f"{value:,}"
