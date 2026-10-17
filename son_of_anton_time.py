@@ -63,13 +63,6 @@ def _resolve_timezone_name() -> str:
             else:
                 cfg = {}
         if cfg:
-            # Managed scope: an administrator can pin ``timezone`` too. Overlay
-            # via the shared helper (fail-open) since this reads config.toml directly.
-            try:
-                from son_of_anton_cli import managed_scope
-                cfg = managed_scope.apply_managed_overlay(cfg)
-            except Exception:
-                pass
             tz_cfg = cfg.get("timezone", "")
             if isinstance(tz_cfg, str) and tz_cfg.strip():
                 return tz_cfg.strip()

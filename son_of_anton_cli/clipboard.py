@@ -1,19 +1,13 @@
-"""Clipboard image extraction for macOS and Linux.
+"""Clipboard image extraction and text write.
 
-Provides a single function `save_clipboard_image(dest)` that checks the
-system clipboard for image data, saves it to *dest* as PNG, and returns
-True on success.  No external Python dependencies — uses only OS-level
-CLI tools that ship with the platform (or are commonly installed).
-
-Platform support:
-  macOS   — osascript (always available), pngpaste (if installed)
-  Linux   — wl-paste (Wayland), xclip (X11)
+`save_clipboard_image(dest)` checks the system clipboard for image data,
+saves it to *dest* as PNG, and returns True on success: wl-paste (Wayland),
+then xclip (X11) — both on the package's PATH.
 """
 
 import logging
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -26,8 +20,6 @@ def save_clipboard_image(dest: Path) -> bool:
     Returns True if an image was found and saved, False otherwise.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if sys.platform == "darwin":
-        return _macos_save(dest)
     return _linux_save(dest)
 
 
@@ -36,20 +28,16 @@ def has_clipboard_image() -> bool:
 
     Lighter than save_clipboard_image — doesn't extract or write anything.
     """
-    if sys.platform == "darwin":
-        return _macos_has_image()
     # Match _linux_save fallthrough order: Wayland → X11
     if os.environ.get("WAYLAND_DISPLAY") and _wayland_has_image():
         return True
     return _xclip_has_image()
 
 
-# ── Text write (native tools, mirrors ui-tui/src/lib/clipboard.ts) ──────
+# ── Text write ───────────────────────────────────────────────────────────
 
 def _write_clipboard_commands() -> list:
-    """Return (cmd_argv, use_stdin) candidates in platform fallback order."""
-    if sys.platform == "darwin":
-        return [(["pbcopy"], True)]
+    """Return (cmd_argv, use_stdin) candidates in fallback order."""
     attempts = []
     if os.environ.get("WAYLAND_DISPLAY"):
         attempts.append((["wl-copy", "--type", "text/plain"], True))
@@ -61,8 +49,7 @@ def _write_clipboard_commands() -> list:
 def is_remote_shell_session(env=None) -> bool:
     """True when running inside an SSH session.
 
-    Mirrors ui-tui/src/lib/terminalSetup.ts isRemoteShellSession().  Over
-    SSH, native clipboard tools write the REMOTE machine's clipboard (or
+    Over SSH, native clipboard tools write the REMOTE machine's clipboard (or
     an X-forwarded one), which is almost never what the user wants —
     OSC 52 reaches the LOCAL terminal emulator instead.
     """
@@ -75,8 +62,7 @@ def is_remote_shell_session(env=None) -> bool:
 def write_clipboard_text(text: str) -> bool:
     """Write *text* to the system clipboard via native platform tools.
 
-    Fallback order matches the TUI (ui-tui/src/lib/clipboard.ts):
-    macOS pbcopy → wl-copy → xclip → xsel.  Returns True if any backend
+    Fallback order: wl-copy → xclip → xsel.  Returns True if any backend
     succeeded; callers should fall back to OSC 52 on False.
     """
     for argv, use_stdin in _write_clipboard_commands():
@@ -90,69 +76,6 @@ def write_clipboard_text(text: str) -> bool:
                 return True
         except (OSError, subprocess.SubprocessError):
             continue
-    return False
-
-
-# ── macOS ────────────────────────────────────────────────────────────────
-
-def _macos_save(dest: Path) -> bool:
-    """Try pngpaste first (fast, handles more formats), fall back to osascript."""
-    return _macos_pngpaste(dest) or _macos_osascript(dest)
-
-
-def _macos_has_image() -> bool:
-    """Check if macOS clipboard contains image data."""
-    try:
-        info = subprocess.run(
-            ["osascript", "-e", "clipboard info"],
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=3,
-        )
-        return "«class PNGf»" in info.stdout or "«class TIFF»" in info.stdout
-    except Exception:
-        return False
-
-
-def _macos_pngpaste(dest: Path) -> bool:
-    """Use pngpaste (brew install pngpaste) — fastest, cleanest."""
-    try:
-        r = subprocess.run(
-            ["pngpaste", str(dest)],
-            capture_output=True, timeout=3,
-        )
-        if r.returncode == 0 and dest.exists() and dest.stat().st_size > 0:
-            return True
-    except FileNotFoundError:
-        pass  # pngpaste not installed
-    except Exception as e:
-        logger.debug("pngpaste failed: %s", e)
-    return False
-
-
-def _macos_osascript(dest: Path) -> bool:
-    """Use osascript to extract PNG data from clipboard (always available)."""
-    if not _macos_has_image():
-        return False
-
-    # Extract as PNG
-    script = (
-        'try\n'
-        '  set imgData to the clipboard as «class PNGf»\n'
-        f'  set f to open for access POSIX file "{dest}" with write permission\n'
-        '  write imgData to f\n'
-        '  close access f\n'
-        'on error\n'
-        '  return "fail"\n'
-        'end try\n'
-    )
-    try:
-        r = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
-        )
-        if r.returncode == 0 and "fail" not in r.stdout and dest.exists() and dest.stat().st_size > 0:
-            return True
-    except Exception as e:
-        logger.debug("osascript clipboard extract failed: %s", e)
     return False
 
 

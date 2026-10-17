@@ -7,22 +7,16 @@ Config files are stored in ~/.son-of-anton/ for easy access:
 
 This module provides:
 - son-of-anton config          - Show current configuration
-- son-of-anton config edit     - Open config in editor
 - son-of-anton config get      - Print a resolved configuration value
-- son-of-anton config set      - Set a specific value
-- son-of-anton config unset    - Remove a user configuration value
-- son-of-anton config wizard   - Re-run setup wizard
 """
 
 import copy
-from son_of_anton_cli.cli_output import line_input
 import json
 import logging
 import os
 import re
 import shutil
 import stat
-import subprocess
 import sys
 import tempfile
 import threading
@@ -33,7 +27,6 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
 
 from son_of_anton_cli.route_identity import normalize_route_base_url
-from son_of_anton_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -237,15 +230,13 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # load_config() returns a deepcopy of the cached value when the file
 # hasn't changed since the last load, skipping the TOML parse +
 # _deep_merge + _normalize_* + _expand_env_vars (~13 ms/call).
-# save_config() + migrate_config() write via atomic_toml_write which
+# save_config() writes via atomic_toml_write which
 # produces a fresh inode, so stat() sees a new mtime_ns and the next
 # load repopulates automatically — no explicit invalidation hook.
-# Cached tuple is (user_mtime_ns, user_size, managed_mtime_ns, managed_size,
-# merged_value, env_ref_snapshot) — the managed-file signature is folded in so
-# editing the managed-scope config.toml invalidates the cache (see
-# managed_scope), and the env snapshot invalidates it when a referenced ${VAR}
-# changes value (late .env load, in-process rotation — #58514).
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
+# Cached tuple is (user_mtime_ns, user_size, merged_value, env_ref_snapshot) —
+# the env snapshot invalidates it when a referenced ${VAR} changes value
+# (late .env load, in-process rotation — #58514).
+_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any], Dict[str, Optional[str]]]] = {}
 # (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
@@ -306,20 +297,9 @@ from son_of_anton_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_so
 # =============================================================================
 
 _MANAGED_TRUE_VALUES = ("true", "1", "yes")
-_NIX_MANAGED_SYSTEMS = {"nixos", "home-manager"}
 # Only the NixOS module ever wrote a bare "true" or an empty marker, so both
 # legacy signals name that system.
 _LEGACY_MANAGED_SYSTEM = "nixos"
-# The Nix store root. Used by detect_install_method to identify installs
-# from `nix run` / `nix profile install` (which don't set SON_OF_ANTON_MANAGED).
-# A module-level constant so tests can patch it without creating files
-# under the real /nix/store.
-_NIX_STORE = Path("/nix/store")
-# Values that used to signal a Homebrew-managed install. Homebrew is no
-# longer a supported distribution method, so these are explicitly ignored
-# rather than treated as a managed system — they fall through to git/unknown
-# detection instead of blocking config writes.
-_IGNORED_MANAGED_VALUES = frozenset({"brew", "homebrew"})
 
 
 def get_managed_system() -> Optional[str]:
@@ -349,9 +329,6 @@ def get_managed_system() -> Optional[str]:
     if marker is None:
         return None
 
-    if marker in _IGNORED_MANAGED_VALUES:
-        return None
-
     if marker == "" or marker in _MANAGED_TRUE_VALUES:
         return _LEGACY_MANAGED_SYSTEM
 
@@ -366,149 +343,6 @@ def is_managed() -> bool:
     script, so interactive shells also see it).
     """
     return get_managed_system() is not None
-
-
-# Nix installs arrive by several routes (nix run, nix profile, a system flake,
-# home-manager), and the running process cannot tell which one. Thus this text
-# names the routes instead of one command.
-_NIX_UPDATE_MSG = (
-    "Update Son of Anton through the Nix source that installed it "
-    "(e.g. nix profile upgrade, or update your flake input and rebuild with nixos-rebuild or home-manager switch)"
-)
-
-
-def get_managed_update_command() -> Optional[str]:
-    """Return the preferred upgrade command for a managed install."""
-    managed_system = get_managed_system()
-    if managed_system in _NIX_MANAGED_SYSTEMS:
-        return _NIX_UPDATE_MSG
-    return None
-
-
-def _install_method_project_root(project_root: Optional[Path] = None) -> Path:
-    """Resolve the directory that holds the *running code* (the install tree).
-
-    This is the parent of ``son_of_anton_cli/`` — i.e. the git checkout for source
-    installs, ``/opt/son-of-anton`` inside the published image. It is a property of
-    the running interpreter, NOT of ``$SON_OF_ANTON_HOME``, which is why a
-    code-scoped stamp here is immune to two installs sharing one data
-    directory.
-    """
-    if project_root is not None:
-        return project_root
-    return Path(__file__).parent.parent.resolve()
-
-
-def detect_install_method(project_root: Optional[Path] = None) -> str:
-    """Detect how Son of Anton was installed: 'nix', 'nixos', 'home-manager',
-    'git', or 'unknown'.
-
-    Resolution order:
-    1. Code-scoped stamp ``<install tree>/.install_method`` (next to the
-       running code) — the authoritative marker.
-    2. Legacy home-scoped stamp ``$SON_OF_ANTON_HOME/.install_method`` — read for
-       backward compatibility.
-    3. SON_OF_ANTON_MANAGED env / .managed marker (NixOS managed mode)
-    4. /nix/store/ path detection -> 'nix' (nix run / nix profile install)
-    5. .git directory presence -> 'git'
-    6. Fallback -> 'unknown'
-
-    Why the stamp is code-scoped, not home-scoped (issue: shared ``~/.son-of-anton``)
-    --------------------------------------------------------------------------
-    The install method describes *the binary that is running*, but
-    ``$SON_OF_ANTON_HOME`` is a shared DATA directory, so a home-scoped stamp is a
-    single slot describing two different installs. Scoping the stamp to the
-    install tree gives each install its own truthful marker.
-
-    Note: only Nix distributions (nix run / nix profile / NixOS / home-manager)
-    and git checkouts (dev workflow) are recognized. Docker, apt/Termux, and
-    Homebrew are no longer supported distribution methods.
-    """
-    root = _install_method_project_root(project_root)
-    # "home-manager" is here because step 3 can return it. A stamp must name
-    # every method that this function returns. Without it, the stamp of a
-    # home-manager install gives "unknown".
-    supported_methods = {"nix", "nixos", "home-manager", "git", "unknown"}
-
-    # 1. Code-scoped stamp — authoritative, immune to shared $SON_OF_ANTON_HOME.
-    try:
-        method = (root / ".install_method").read_text(encoding="utf-8").strip().lower()
-        if method in supported_methods:
-            return method
-    except OSError:
-        pass
-
-    # 2. Legacy home-scoped stamp — back-compat.
-    try:
-        method = (
-            (get_son_of_anton_home() / ".install_method")
-            .read_text(encoding="utf-8")
-            .strip()
-            .lower()
-        )
-        if method in supported_methods:
-            return method
-    except OSError:
-        pass
-
-    managed = get_managed_system()
-    if managed:
-        return managed.lower().replace(" ", "-")
-
-    # detect Nix installs that don't set SON_OF_ANTON_MANAGED (e.g. ``nix run``,
-    # ``nix profile install``). The code lives under /nix/store/ which is the
-    # hallmark of a nix-built install — no other supported install path puts
-    # code there.
-    try:
-        resolved = root.resolve()
-        if resolved != _NIX_STORE and _NIX_STORE in resolved.parents:
-            return "nix"
-    except OSError:
-        pass
-
-    # detect git repo installs (normal installer, development env)
-    git_path = root / ".git"
-    if git_path.is_dir():
-        return "git"
-
-    # detect git repo installs from worktrees
-    if git_path.is_file():
-        try:
-            content = git_path.read_text(encoding="utf-8").strip()
-            if content.startswith("gitdir:"):
-                return "git"
-        except OSError:
-            pass
-    return "unknown"
-
-
-def is_nix_install_method(method: str) -> bool:
-    """Return True for every install method that Nix owns.
-
-    The callers that branch on the install method must treat "nix",
-    "nixos" and "home-manager" the same way. One helper keeps the three
-    names in one place, so a new Nix shape cannot miss a call site.
-    """
-    return method == "nix" or method in _NIX_MANAGED_SYSTEMS
-
-
-def recommended_update_command_for_method(method: str) -> str:
-    """Return the update command or guidance for a given install method."""
-    if is_nix_install_method(method):
-        return _NIX_UPDATE_MSG
-    return "son-of-anton update"
-
-
-def recommended_update_command() -> str:
-    """Return the best update command for the current installation."""
-    # The managed state wins over the code-scoped stamp. A managed install
-    # can carry a stale stamp from an earlier install shape, and the stamp
-    # then names an update path that the managed guard refuses.
-    managed_cmd = get_managed_update_command()
-    if managed_cmd:
-        return managed_cmd
-    method = detect_install_method(get_project_root())
-    return recommended_update_command_for_method(method)
 
 
 def format_managed_message(action: str = "modify this Son of Anton installation") -> str:
@@ -694,44 +528,8 @@ from son_of_anton_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS  
 # Config Migration System
 # =============================================================================
 
-# Track which env vars were introduced in each config version.
-# Migration only mentions vars new since the user's previous version.
-ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
-    3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
-    4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
-    10: ["TAVILY_API_KEY"],
-}
-
-# Required environment variables with metadata for migration prompts.
-# LLM provider is required but handled in the setup wizard's provider
-# selection step (Nous Portal / OpenRouter / Custom endpoint), so this
-# dict is intentionally empty — no single env var is universally required.
-REQUIRED_ENV_VARS = {}
-
 # Tool Gateway env vars are always visible — they're useful for
 # self-hosted / custom gateway setups regardless of subscription state.
-
-
-def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
-    """
-    Check which environment variables are missing.
-    
-    Returns list of dicts with var info for missing variables.
-    """
-    missing = []
-    
-    # Check required vars
-    for var_name, info in REQUIRED_ENV_VARS.items():
-        if not get_env_value(var_name):
-            missing.append({"name": var_name, **info, "is_required": True})
-    
-    # Check optional vars (if not required_only)
-    if not required_only:
-        for var_name, info in OPTIONAL_ENV_VARS.items():
-            if not get_env_value(var_name):
-                missing.append({"name": var_name, **info, "is_required": False})
-    
-    return missing
 
 
 def _set_nested(config, dotted_key: str, value):
@@ -833,67 +631,6 @@ def _get_nested(config, dotted_key: str):
     return current
 
 
-def _unset_nested(config, dotted_key: str) -> bool:
-    """Remove a dotted-path value from nested dict/list config data."""
-    parts = dotted_key.split(".")
-    if not parts:
-        return False
-
-    parents = []
-    current = config
-    for part in parts[:-1]:
-        parents.append((current, part))
-        if isinstance(current, list):
-            try:
-                current = current[int(part)]
-            except (TypeError, ValueError, IndexError):
-                return False
-        elif isinstance(current, dict):
-            if part not in current:
-                return False
-            current = current[part]
-        else:
-            return False
-
-    last = parts[-1]
-    removed = False
-    if isinstance(current, list):
-        try:
-            current.pop(int(last))
-            removed = True
-        except (TypeError, ValueError, IndexError):
-            return False
-    elif isinstance(current, dict):
-        if last not in current:
-            return False
-        del current[last]
-        removed = True
-    else:
-        return False
-
-    # Drop empty dict containers left behind by the deletion while preserving
-    # user-authored empty lists and non-empty sibling branches.
-    for parent, part in reversed(parents):
-        if current != {}:
-            break
-        if isinstance(parent, list):
-            try:
-                idx = int(part)
-            except (TypeError, ValueError):
-                break
-            if 0 <= idx < len(parent) and parent[idx] == {}:
-                parent.pop(idx)
-                current = parent
-                continue
-        elif isinstance(parent, dict) and parent.get(part) == {}:
-            del parent[part]
-            current = parent
-            continue
-        break
-
-    return removed
-
-
 def _is_env_config_key(key: str) -> bool:
     """Return whether `son-of-anton config set` routes this key to .env."""
     if "." in key:
@@ -931,34 +668,6 @@ def _format_config_get_value(value, *, as_json: bool) -> str:
     if isinstance(value, list):
         return json.dumps(value, ensure_ascii=False)
     return str(value)
-
-
-def get_missing_config_fields() -> List[Dict[str, Any]]:
-    """
-    Check which config fields are missing or outdated (recursive).
-    
-    Walks the DEFAULT_CONFIG tree at arbitrary depth and reports any keys
-    present in defaults but absent from the user's loaded config.
-    """
-    config = load_config()
-    missing = []
-
-    def _check(defaults: dict, current: dict, prefix: str = ""):
-        for key, default_value in defaults.items():
-            if key.startswith('_'):
-                continue
-            full_key = key if not prefix else f"{prefix}.{key}"
-            if key not in current:
-                missing.append({
-                    "key": full_key,
-                    "default": default_value,
-                    "description": f"New config option: {full_key}",
-                })
-            elif isinstance(default_value, dict) and isinstance(current.get(key), dict):
-                _check(default_value, current[key], full_key)
-
-    _check(DEFAULT_CONFIG, config)
-    return missing
 
 
 # ``_normalize_custom_provider_entry`` runs on every ``load_picker_context()``
@@ -1217,46 +926,6 @@ def _normalize_custom_provider_entry(
         normalized["ssl_verify"] = ssl_verify.strip()
 
     return normalized
-
-
-def _custom_provider_entry_to_provider_config(
-    entry: Any,
-    *,
-    provider_key: str = "",
-) -> Optional[Dict[str, Any]]:
-    """Translate a legacy custom provider entry to the v12 providers shape."""
-    normalized = _normalize_custom_provider_entry(
-        dict(entry) if isinstance(entry, dict) else entry,
-        provider_key=provider_key,
-    )
-    if normalized is None:
-        return None
-
-    provider_entry: Dict[str, Any] = {"api": normalized["base_url"]}
-
-    for field in (
-        "name",
-        "api_key",
-        "key_env",
-        "models",
-        "models_discovered",
-        "context_length",
-        "rate_limit_delay",
-        "discover_models",
-        "extra_body",
-        "extra_headers",
-        "ssl_ca_cert",
-        "ssl_verify",
-    ):
-        if field in normalized:
-            provider_entry[field] = normalized[field]
-
-    if "model" in normalized:
-        provider_entry["default_model"] = normalized["model"]
-    if "api_mode" in normalized:
-        provider_entry["transport"] = normalized["api_mode"]
-
-    return provider_entry
 
 
 def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, Any]]:
@@ -1705,68 +1374,6 @@ def get_custom_provider_model_capability(
     return None
 
 
-def _coerce_config_version(value: Any) -> int:
-    """Return a safe integer config version, treating invalid values as legacy."""
-    if isinstance(value, bool):
-        return 0
-    try:
-        version = int(value)
-    except (TypeError, ValueError):
-        return 0
-    return max(version, 0)
-
-
-def _raw_config_has_explicit_version() -> bool:
-    """True when config.toml exists, parses, and carries a ``_config_version`` key.
-
-    Distinguishes an ANCIENT config (explicit old version → refused by the
-    v12 support floor) from a fresh minimal/hand-written/cloned config with
-    no version key at all (→ migrated + stamped normally). Missing or
-    unparseable files return False so they never trip the floor gate.
-    """
-    config_path = get_config_path()
-    if not config_path.exists():
-        return False
-    try:
-        with open(config_path, encoding="utf-8") as f:
-            raw = fast_toml_load(f) or {}
-    except Exception:
-        return False
-    return isinstance(raw, dict) and "_config_version" in raw
-
-
-def check_config_version() -> Tuple[int, int]:
-    """
-    Check the raw on-disk config schema version.
-
-    ``load_config()`` deliberately starts from ``DEFAULT_CONFIG`` and deep-merges
-    the user's file, which is correct for runtime reads but wrong for deciding
-    whether the user's persisted schema has been migrated. A config file with no
-    raw ``_config_version`` must remain visible as legacy instead of inheriting
-    the latest default version in memory.
-
-    Returns (current_version, latest_version).
-    """
-    latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
-    config_path = get_config_path()
-    if not config_path.exists():
-        return latest, latest
-
-    try:
-        with open(config_path, encoding="utf-8") as f:
-            config = fast_toml_load(f) or {}
-    except Exception as e:
-        # Invalid TOML needs a parse warning, not an automatic schema rewrite
-        # that could replace the user's broken file with defaults.
-        _warn_config_parse_failure(config_path, e)
-        return latest, latest
-
-    if not isinstance(config, dict):
-        config = {}
-    current = _coerce_config_version(config.get("_config_version"))
-    return current, latest
-
-
 # =============================================================================
 # Config structure validation
 # =============================================================================
@@ -2013,255 +1620,6 @@ def warn_deprecated_cwd_env_vars() -> None:
         sys.stderr.write("\n".join(lines) + "\n\n")
 
 
-def _persist_migration(config: Dict[str, Any]) -> None:
-    """Persist a migrated config under the migration write invariant.
-
-    THE INVARIANT (single source of truth for the whole migration pipeline):
-    a migration may only persist values that DIFFER from the current schema
-    default, plus explicit removals/renames of user data. Pure schema defaults
-    are never materialised to disk — ``load_config()``'s deep-merge supplies
-    them at read time, so writing them adds nothing and actively shadows future
-    default changes (see ``save_config``'s docstring). Materialising defaults on
-    every version bump is what rewrote hand-curated configs into full
-    DEFAULT_CONFIG dumps (the "son-of-anton update / son-of-anton -p blows up my config"
-    reports).
-
-    Every migration step MUST route its write through this helper instead of
-    calling ``save_config`` directly. It is a thin wrapper over
-    ``save_config(config)`` (default-stripping ON, no ``merge_existing``);
-    centralising the call makes the invariant impossible to regress one
-    migration at a time. Callers must pass the full raw config returned by
-    ``read_raw_config()`` after in-place mutations (including key removals);
-    deep-merging the on-disk file back in would resurrect keys the migration
-    just deleted. Partial-save preservation for unrelated top-level sections
-    belongs on ``save_config(..., merge_existing=True)``, not here.
-    """
-    save_config(config)
-
-
-def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, Any]:
-    """
-    Migrate config to latest version, prompting for new required fields.
-    
-    Args:
-        interactive: If True, prompt user for missing values
-        quiet: If True, suppress output
-        
-    Returns:
-        Dict with migration results: {"env_added": [...], "config_added": [...], "warnings": [...]}
-    """
-    results = {"env_added": [], "config_added": [], "warnings": []}
-
-    # ── Always: normalize safe .env line formatting ──
-    try:
-        fixes = sanitize_env_file()
-        if fixes and not quiet:
-            print(f"  ✓ Normalized .env line formatting ({fixes} line(s) changed)")
-    except Exception:
-        pass  # best-effort; don't block migration on sanitize failure
-
-    # Check config version
-    current_ver, latest_ver = check_config_version()
-
-    # ── Auto-migration support floor (policy: v12, July 2026) ──
-    # A config with an EXPLICIT on-disk ``_config_version`` below the floor is
-    # NOT auto-migrated and NOT rewritten: we surface a clear, actionable
-    # message and leave the file byte-for-byte untouched. This matches the
-    # fail-safe posture for unparseable configs (warn on stderr, continue —
-    # load_config() deep-merges defaults at read time), so the CLI never
-    # crashes on an ancient config. The floor gate lives here in the wrapper
-    # (not in run_migrations) so the registry driver stays a pure mechanism
-    # that tests can exercise directly.
-    #
-    # A config with NO ``_config_version`` key at all is NOT floor-refused:
-    # that shape is a fresh minimal config (profile clones write bare keys;
-    # users hand-write two-line configs), not an ancient install. Those get
-    # the normal ladder (the retired <12 steps were no-ops for configs
-    # lacking the legacy keys they migrated) and a fresh version stamp —
-    # the historical behavior.
-    from son_of_anton_cli.config_migrations import (
-        SUPPORT_FLOOR_VERSION,
-        run_migrations,
-        support_floor_message,
-    )
-
-    _explicit_version = _raw_config_has_explicit_version()
-    floor_refused = (
-        _explicit_version
-        and current_ver < SUPPORT_FLOOR_VERSION
-        and current_ver < latest_ver
-    )
-    if floor_refused:
-        msg = support_floor_message()
-        results["warnings"].append(msg)
-        # stderr so it is visible even on quiet startup paths, matching the
-        # corrupt-config warning posture in _warn_config_parse_failure().
-        sys.stderr.write(f"⚠ son-of-anton config: {msg}\n")
-        if not quiet:
-            print(f"  ⚠ {msg}")
-    else:
-        # ── Versioned migration ladder (table-driven) ──
-        # The per-version steps live in son_of_anton_cli.config_migrations as a
-        # (target_version, fn) registry; the driver applies every step whose
-        # target exceeds current_ver, in strict ascending order, preserving the
-        # original sequential if-block semantics byte-for-byte. Imported lazily
-        # to avoid a module-level import cycle (the steps call back into this
-        # module for read_raw_config/_persist_migration/etc. at call time).
-        run_migrations(current_ver, results, quiet)
-
-    # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
-    # Users can hand-edit mcp_servers, and older installs may already contain a
-    # malicious entry. Preserve the stanza for auditability but mark it
-    # disabled so the next startup will not spawn it. (#45620)
-    config = read_raw_config()
-    raw_mcp_servers = config.get("mcp_servers")
-    if isinstance(raw_mcp_servers, dict):
-        try:
-            from son_of_anton_cli.mcp_security import validate_mcp_server_entry as _validate_mcp_server_entry
-        except Exception:
-            _validate_mcp_server_entry = None
-        if _validate_mcp_server_entry:
-            mcp_touched = False
-            for server_name, entry in raw_mcp_servers.items():
-                if not isinstance(entry, dict):
-                    continue
-                issues = _validate_mcp_server_entry(server_name, entry)
-                if not issues:
-                    continue
-                entry["enabled"] = False
-                mcp_touched = True
-                results["warnings"].append(
-                    f"Disabled suspicious MCP server '{server_name}'"
-                )
-                if not quiet:
-                    for issue in issues:
-                        print(f"  ⚠ {issue}")
-                    print(f"  ⚠ Disabled MCP server '{server_name}' pending review")
-            if mcp_touched:
-                config["mcp_servers"] = raw_mcp_servers
-                _persist_migration(config)
-
-    # ── Always: validate platform_toolsets after migration ──
-    # A migration (or hand-edit) that leaves an invalid toolset name in
-    # platform_toolsets silently disables the affected tools — resolve_toolset()
-    # returns [] for an unknown name, so the agent quietly loses tools with no
-    # error or warning. Surface it loudly instead. See #38798.
-    try:
-        from toolsets import validate_toolset
-        from son_of_anton_cli.toolset_validation import validate_platform_toolsets
-
-        ts_warnings = validate_platform_toolsets(
-            read_raw_config().get("platform_toolsets"), validate_toolset
-        )
-        for w in ts_warnings:
-            results["warnings"].append(w)
-            if not quiet:
-                print(f"  ⚠ {w}")
-    except Exception as _ts_val_err:
-        # best-effort; never block migration on validation
-        logger.debug("platform_toolsets validation skipped: %s", _ts_val_err)
-
-    if current_ver < latest_ver and not quiet and not floor_refused:
-        print(f"Config version: {current_ver} → {latest_ver}")
-
-    # Check for missing required env vars
-    missing_env = get_missing_env_vars(required_only=True)
-    
-    if missing_env and not quiet:
-        print("\n⚠️  Missing required environment variables:")
-        for var in missing_env:
-            print(f"   • {var['name']}: {var['description']}")
-    
-    if interactive and missing_env:
-        print("\nLet's configure them now:\n")
-        for var in missing_env:
-            if var.get("url"):
-                print(f"  Get your key at: {var['url']}")
-            
-            if var.get("password"):
-                value = masked_secret_prompt(f"  {var['prompt']}: ")
-            else:
-                value = line_input(f"  {var['prompt']}: ").strip()
-            
-            if value:
-                save_env_value(var["name"], value)
-                results["env_added"].append(var["name"])
-                print(f"  ✓ Saved {var['name']}")
-            else:
-                results["warnings"].append(f"Skipped {var['name']} - some features may not work")
-            print()
-    
-    # Check for missing optional env vars and offer to configure interactively
-    # Skip "advanced" vars (like OPENAI_BASE_URL) -- those are for power users
-    missing_optional = get_missing_env_vars(required_only=False)
-    required_names = {v["name"] for v in missing_env} if missing_env else set()
-    missing_optional = [
-        v for v in missing_optional
-        if v["name"] not in required_names and not v.get("advanced")
-    ]
-    
-    # Only offer to configure env vars that are NEW since the user's previous version
-    new_var_names = set()
-    for ver in range(current_ver + 1, latest_ver + 1):
-        new_var_names.update(ENV_VARS_BY_VERSION.get(ver, []))
-
-    if new_var_names and interactive and not quiet:
-        new_and_unset = [
-            (name, OPTIONAL_ENV_VARS[name])
-            for name in sorted(new_var_names)
-            if not get_env_value(name) and name in OPTIONAL_ENV_VARS
-        ]
-        if new_and_unset:
-            print(f"\n  {len(new_and_unset)} new optional key(s) in this update:")
-            for name, info in new_and_unset:
-                print(f"    • {name} — {info.get('description', '')}")
-            print()
-            try:
-                answer = input("  Configure new keys? [y/N]: ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                answer = "n"
-
-            if answer in {"y", "yes"}:
-                print()
-                for name, info in new_and_unset:
-                    if info.get("url"):
-                        print(f"  {info.get('description', name)}")
-                        print(f"  Get your key at: {info['url']}")
-                    else:
-                        print(f"  {info.get('description', name)}")
-                    if info.get("password"):
-                        value = masked_secret_prompt(
-                            f"  {info.get('prompt', name)} (Enter to skip): "
-                        )
-                    else:
-                        value = line_input(f"  {info.get('prompt', name)} (Enter to skip): ").strip()
-                    if value:
-                        save_env_value(name, value)
-                        results["env_added"].append(name)
-                        print(f"  ✓ Saved {name}")
-                    print()
-            else:
-                print("  Set later with: son-of-anton config set <key> <value>")
-    
-    # Check for missing config fields.
-    #
-    # New default keys are NOT materialised to disk: load_config() deep-merges
-    # DEFAULT_CONFIG at read time, so a missing key already takes effect with
-    # its default (see _persist_migration's invariant). We surface the list for
-    # the informational "N new config option(s) available" display in
-    # `son-of-anton update`, but only the version bump is persisted.
-    missing_config = get_missing_config_fields()
-    if missing_config:
-        results["config_added"].extend(field["key"] for field in missing_config)
-
-    if current_ver < latest_ver and not floor_refused:
-        config = read_raw_config()
-        config["_config_version"] = latest_ver
-        _persist_migration(config)
-
-    return results
-
-
 def _merge_partial_save(raw: dict, override: dict) -> dict:
     """Merge *override* over *raw* for partial ``save_config`` writes.
 
@@ -2307,29 +1665,6 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             result[key] = value
     return result
-
-
-def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
-    """Remove the given dotted leaf keys from a nested config dict.
-
-    Returns ``(pruned_cfg, set_of_stripped_keys_that_were_present)``. Used by
-    ``save_config`` to drop managed-scope leaves before persisting, so a bulk
-    write never writes a user value that would lose to the managed layer on the
-    next load. Only keys actually present in ``cfg`` are reported as stripped.
-    """
-    stripped: set = set()
-    for dotted in dotted_keys:
-        parts = dotted.split(".")
-        node = cfg
-        for p in parts[:-1]:
-            if not isinstance(node, dict) or p not in node:
-                node = None
-                break
-            node = node[p]
-        if isinstance(node, dict) and parts[-1] in node:
-            del node[parts[-1]]
-            stripped.add(dotted)
-    return cfg, stripped
 
 
 def _env_expand_match(m: re.Match) -> str:
@@ -2560,7 +1895,7 @@ def _strip_default_values(
     default-only subtrees (e.g. ``gateway``) never bloat ``config.toml``
     when the user has nothing to say about them.
     """
-    preserve_keys = {("_config_version",)} | set(preserve_keys or ())
+    preserve_keys = set(preserve_keys or ())
 
     def _strip(value: Any, default: Any, path: Tuple[str, ...]) -> Any:
         if path in preserve_keys:
@@ -2990,8 +2325,7 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
         export a key when the user explicitly set it): a defaults merge
         would make every key "present" and bridge the entire DEFAULT_CONFIG
         into the environment. These sites must still apply
-        ``managed_scope.apply_managed_overlay`` + ``_expand_env_vars``
-        inline, which they do.
+        ``_expand_env_vars`` inline, which they do.
 
     Semantics (deliberately mirrors the bare ``open()+TOML parse``
     pattern this replaces, so migrated sites keep their exact failure
@@ -3167,14 +2501,6 @@ def _terminal_env_value(value: Any) -> str:
     return str(value)
 
 
-def terminal_config_env_var_for_key(key: str) -> Optional[str]:
-    """Return the env var mirrored by a ``terminal.*`` config key."""
-    prefix = "terminal."
-    if not key.startswith(prefix):
-        return None
-    return TERMINAL_CONFIG_ENV_MAP.get(key[len(prefix):])
-
-
 def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
     """Return whether the remote SSH shell must expand *cwd* itself.
 
@@ -3271,44 +2597,18 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             user_sig: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
         except FileNotFoundError:
             user_sig = None
-
-        # Managed scope: fold the managed config file's (mtime, size) into the
-        # cache signature so editing /etc/son-of-anton/config.toml invalidates the
-        # cached merged result. (0, 0) means "no managed config file".
-        from son_of_anton_cli import managed_scope
-
-        managed_dir = managed_scope.get_managed_dir()
-        managed_cfg_path = (managed_dir / "config.toml") if managed_dir else None
-        try:
-            mst = managed_cfg_path.stat() if managed_cfg_path else None
-            managed_sig = (mst.st_mtime_ns, mst.st_size) if mst else (0, 0)
-        except OSError:
-            managed_sig = (0, 0)
-
-        # Combined cache signature: user file + managed file. None only when the
-        # user config is absent AND no managed file exists (nothing to cache on).
-        if user_sig is not None:
-            cache_sig: Optional[Tuple[int, int, int, int]] = (
-                user_sig[0],
-                user_sig[1],
-                managed_sig[0],
-                managed_sig[1],
-            )
-        elif managed_sig != (0, 0):
-            cache_sig = (0, 0, managed_sig[0], managed_sig[1])
-        else:
-            cache_sig = None
+        cache_sig = user_sig
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
+        if cached is not None and cache_sig is not None and cached[:2] == cache_sig:
             # File signatures match, but the cached expansion is only valid if
             # every ${VAR} it was expanded against still has the same value.
             # Without this, a load_config() that ran before load_son_of_anton_dotenv()
             # pins unexpanded literals (e.g. auxiliary.<task>.api_key) for the
             # life of the process (#58514).
-            env_snapshot = cached[5] if len(cached) > 5 else {}
+            env_snapshot = cached[3]
             if all(os.environ.get(k) == v for k, v in env_snapshot.items()):
-                return copy.deepcopy(cached[4]) if want_deepcopy else cached[4]
+                return copy.deepcopy(cached[2]) if want_deepcopy else cached[2]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -3360,48 +2660,24 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                         # signature and triggers a normal reload.
                         _empty_env: Dict[str, Optional[str]] = {}
                         _LOAD_CONFIG_CACHE[path_key] = (
-                            cache_sig[0], cache_sig[1],
-                            cache_sig[2], cache_sig[3],
-                            lkg_copy, _empty_env,
+                            cache_sig[0], cache_sig[1], lkg_copy, _empty_env,
                         )
                     return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
 
         normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         expanded = _expand_env_vars(normalized)
-        # Managed scope wins at the leaf. Applied AFTER user expansion so a user
-        # ${VAR} cannot shadow a managed literal: managed values are expanded only
-        # against the process environment, never against user-config-defined refs.
-        # This deliberately inverts the usual env-over-config precedence for the
-        # keys the managed layer pins — see docs/design/managed-scope.md §4.1.
-        managed_config = managed_scope.load_managed_config()
-        if managed_config:
-            # Normalize the managed overlay through the same canonicalization as
-            # the user config BEFORE merging (parity with
-            # managed_scope.apply_managed_overlay): a dict-valued
-            # ``model.default`` (``{provider: ..., model: ...}``) or a bare
-            # ``model: <string>`` must be flattened to a string ``default``
-            # paired with ``provider`` so the merged result never exposes a
-            # nested dict to status/fallback/runtime readers.
-            managed_normalized = _normalize_root_model_keys(managed_config)
-            if isinstance(managed_normalized.get("model"), str):
-                managed_normalized = dict(managed_normalized)
-                managed_normalized["model"] = {"default": managed_normalized["model"]}
-            managed_expanded = _expand_env_vars(managed_normalized)
-            expanded = _deep_merge(expanded, managed_expanded)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
             # Cache stores a separate deepcopy so subsequent ``load_config()``
             # (deepcopy=True) callers can mutate freely without affecting the
             # cached value, and ``load_config_readonly()`` (deepcopy=False)
             # callers all see the same stable cached object. The cached tuple is
-            # (user_mtime, user_size, managed_mtime, managed_size, value,
-            # env_ref_snapshot). The snapshot records the environment values
-            # this expansion was made against so later loads can detect env
-            # drift (late .env load, in-process rotation) — see cache hit above.
+            # (user_mtime, user_size, value, env_ref_snapshot). The snapshot
+            # records the environment values this expansion was made against so
+            # later loads can detect env drift (late .env load, in-process
+            # rotation) — see cache hit above.
             cached_copy = copy.deepcopy(expanded)
             env_snapshot = _env_ref_snapshot(normalized)
-            if managed_config:
-                _env_ref_snapshot(managed_config, env_snapshot)
             _LOAD_CONFIG_CACHE[path_key] = (*cache_sig, cached_copy, env_snapshot)
             # On the readonly path return the same cached object subsequent
             # calls will see — keeps "two readonly calls return the same
@@ -3483,22 +2759,6 @@ def save_config(
         if is_managed():
             managed_error("save configuration")
             return
-        # Managed scope: strip any leaf the managed layer pins, so a bulk write
-        # (wizard / programmatic save) never persists a user value that would
-        # silently lose to managed on the next load. Single-key `config set`
-        # hard-rejects (see set_config_value); this is the mechanical safety net
-        # for bulk writes so the unmanaged remainder still lands.
-        from son_of_anton_cli import managed_scope
-
-        managed_keys = managed_scope.managed_config_keys()
-        if managed_keys:
-            config, _stripped = _strip_dotted_keys(copy.deepcopy(config), managed_keys)
-            if _stripped:
-                print(
-                    f"Note: {len(_stripped)} managed setting(s) were not saved "
-                    f"(managed by your administrator): {', '.join(sorted(_stripped))}",
-                    file=sys.stderr,
-                )
         from utils import atomic_toml_write
 
         ensure_son_of_anton_home()
@@ -3533,7 +2793,7 @@ def save_config(
         # Strip schema-default values so the user's custom settings are not
         # silently reset on every save.  Keys the user explicitly set (paths
         # from the raw pre-normalisation config) are always preserved.
-        effective_preserve_keys: Set[Tuple[str, ...]] = {("_config_version",)}
+        effective_preserve_keys: Set[Tuple[str, ...]] = set()
         if explicit_raw_paths:
             effective_preserve_keys.update(explicit_raw_paths)
         if preserve_keys:
@@ -3697,51 +2957,6 @@ def _sanitize_env_lines(lines: list) -> list:
     return sanitized
 
 
-def sanitize_env_file() -> int:
-    """Read, sanitize, and rewrite ~/.son-of-anton/.env in place.
-
-    Returns the number of lines whose safe formatting was normalized. Returns
-    0 when no changes are needed.
-    """
-    env_path = get_env_path()
-    if not env_path.exists():
-        return 0
-
-    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-    write_kw = {"encoding": "utf-8"}
-
-    with open(env_path, **read_kw) as f:
-        original_lines = f.readlines()
-
-    sanitized = _sanitize_env_lines(original_lines)
-
-    if sanitized == original_lines:
-        return 0
-
-    # Count lines whose normalized representation differs.
-    fixes = abs(len(sanitized) - len(original_lines))
-    if fixes == 0:
-        fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
-        fixes += abs(len(sanitized) - len(original_lines))
-
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
-    try:
-        with os.fdopen(fd, "w", **write_kw) as f:
-            f.writelines(sanitized)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, env_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    _secure_file(env_path)
-    invalidate_env_cache()
-    return fixes
-
-
 def _check_non_ascii_credential(key: str, value: str) -> str:
     """Warn and strip non-ASCII characters from credential values.
 
@@ -3822,19 +3037,6 @@ def save_env_value(key: str, value: str):
     if is_managed():
         managed_error(f"set {key}")
         return
-    # Managed scope guard: a managed env key can't be set by the user — the
-    # managed .env wins at load anyway. Distinct from is_managed() above.
-    from son_of_anton_cli import managed_scope
-
-    if managed_scope.is_env_managed(key):
-        managed_dir = managed_scope.get_managed_dir()
-        src = (managed_dir / ".env") if managed_dir else "the managed scope"
-        print(
-            f"Cannot set {key}: it is managed by your administrator ({src}) "
-            f"and cannot be changed.",
-            file=sys.stderr,
-        )
-        return
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     _reject_denylisted_env_var(key)
@@ -3909,25 +3111,6 @@ def save_env_value(key: str, value: str):
     invalidate_env_cache()
 
 
-def custom_endpoint_key_env(identity: str) -> str:
-    """Env var name holding a custom endpoint's API key.
-
-    ``identity`` is whatever names the endpoint on the calling path — the
-    Desktop panel's endpoint id, or ``host:port`` for the CLI setup flow.
-    Two properties matter:
-
-    - It keys off the endpoint's own identity, not just its hostname, so two
-      endpoints on one host (``127.0.0.1:8000`` and ``:8001``) get separate
-      slots instead of the second save clobbering the first's credential.
-    - The fixed ``SON_OF_ANTON_CUSTOM_`` prefix keeps the result a valid POSIX name
-      even when the slug starts with a digit, which every IP-based local
-      endpoint does (``127.0.0.1`` → ``127_0_0_1``). ``save_env_value``
-      rejects digit-leading names outright.
-    """
-    slug = re.sub(r"[^A-Z0-9]+", "_", str(identity or "").upper()).strip("_")
-    return f"SON_OF_ANTON_CUSTOM_{slug}_API_KEY" if slug else "SON_OF_ANTON_CUSTOM_API_KEY"
-
-
 def remove_env_value(key: str) -> bool:
     """Remove a key from ~/.son-of-anton/.env and os.environ.
 
@@ -3935,18 +3118,6 @@ def remove_env_value(key: str) -> bool:
     """
     if is_managed():
         managed_error(f"remove {key}")
-        return False
-    # Managed scope guard: a managed env key can't be removed by the user.
-    from son_of_anton_cli import managed_scope
-
-    if managed_scope.is_env_managed(key):
-        managed_dir = managed_scope.get_managed_dir()
-        src = (managed_dir / ".env") if managed_dir else "the managed scope"
-        print(
-            f"Cannot remove {key}: it is managed by your administrator ({src}) "
-            f"and cannot be changed.",
-            file=sys.stderr,
-        )
         return False
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
@@ -4153,32 +3324,6 @@ def show_config():
     print(color("│              ⚛ Son of Anton Configuration                    │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
 
-    # Managed scope: surface that some settings are administrator-pinned so the
-    # user understands why their config.toml value may not be the effective one.
-    from son_of_anton_cli import managed_scope
-
-    _managed_keys = managed_scope.managed_config_keys()
-    _managed_env = managed_scope.load_managed_env()
-    if _managed_keys or _managed_env:
-        _managed_dir = managed_scope.get_managed_dir()
-        print()
-        print(color(
-            f"  ⚷ Some settings are managed by your administrator ({_managed_dir}) "
-            f"and cannot be changed",
-            Colors.YELLOW,
-            Colors.BOLD,
-        ))
-        if _managed_keys:
-            print(color(
-                f"    Managed config keys: {', '.join(sorted(_managed_keys))}",
-                Colors.YELLOW,
-            ))
-        if _managed_env:
-            print(color(
-                f"    Managed env keys: {', '.join(sorted(_managed_env))}",
-                Colors.YELLOW,
-            ))
-
     # Paths
     print()
     print(color("◆ Paths", Colors.CYAN, Colors.BOLD))
@@ -4311,43 +3456,8 @@ def show_config():
     
     print()
     print(color("─" * 60, Colors.DIM))
-    print(color("  son-of-anton config edit     # Edit config file", Colors.DIM))
-    print(color("  son-of-anton config set <key> <value>", Colors.DIM))
+    print(color("  Configuration is declared in config.toml (the Nix module's settings)", Colors.DIM))
     print()
-
-
-def edit_config():
-    """Open config file in user's editor."""
-    if is_managed():
-        managed_error("edit configuration")
-        return
-    config_path = get_config_path()
-    
-    # Ensure config exists
-    if not config_path.exists():
-        save_config(DEFAULT_CONFIG, strip_defaults=False)
-        print(f"Created {config_path}")
-    
-    # Find editor
-    editor = os.getenv('EDITOR') or os.getenv('VISUAL')
-
-    if not editor:
-        # Try common editors — order is platform-aware so we land on a
-        # working editor (nano/vim) even on headless / server systems.
-        import shutil
-        candidates = ['nano', 'vim', 'vi', 'code', 'notepad']
-        for cmd in candidates:
-            if shutil.which(cmd):
-                editor = cmd
-                break
-    
-    if not editor:
-        print("No editor found. Config file is at:")
-        print(f"  {config_path}")
-        return
-    
-    print(f"Opening {config_path} in {editor}...")
-    subprocess.run([editor, str(config_path)])
 
 
 def _cron_model_drift_axis_for_config_key(key: str) -> Optional[str]:
@@ -4638,528 +3748,34 @@ def _default_value_for_key(dotted_key: str):
     return node if not isinstance(node, dict) else None
 
 
-# Known top-level config keys that intentionally accept arbitrary user-supplied
-# child keys ("dictionary-shaped" config: the schema declares the dict but the
-# user populates its keys). Schema validation accepts ANY path below these
-# without deep checking, so users can set e.g. ``mcp_servers.my-server.command``
-# or ``providers.openrouter.api_key`` without us needing to know server names.
-_OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
-    "providers",
-    "credential_pool_strategies",
-    "mcp_servers",
-    "quick_commands",
-    "personalities",
-    "command_allowlist",
-    "model_catalog",
-    "channel_prompts",
-    "server_actions",
-    "goals",
-    "loops",
-})
+def set_config_value(key: str, value: str):
+    """Persist one dotted config key (the ``/perm`` and ``/approvals`` writer).
 
-# Top-level keys whose sub-keys are partially schema-defined (e.g. on a
-# PlatformConfig dataclass) but where users may legitimately add fields
-# that DEFAULT_CONFIG doesn't enumerate (extras, per-channel overrides,
-# etc.). For these we validate the FIRST segment but accept anything below.
-_SCHEMA_DEFINED_DICT_KEYS = frozenset({
-    # Platform configs — PlatformConfig dataclass + dynamic extras
-    "signal",
-    # MCP server template / dynamic auth dicts
-    "sessions", "checkpoints",
-    # Plugin settings — enable/disable lists plus index_url override
-    # (son_of_anton_cli/plugins_cmd.py, son_of_anton_cli/plugin_index.py). Absent from
-    # DEFAULT_CONFIG (written only when used), so listed here for
-    # `son-of-anton config set plugins.index_url ...` validation.
-    "plugins",
-})
-
-# Top-level keys that can be ANY user-supplied name (platform/provider dict
-# shapes where the outer key IS user-defined).
-_DYNAMIC_TOP_LEVEL_KEYS = frozenset({
-    "custom_providers",  # list-shaped, but indexed by position
-})
-
-# Container keys whose immediate child IS a user-supplied platform name
-# (``platforms.<name>.<field>``).  These appear both at the top level and
-# nested under ``gateway`` — current docs configure platforms under
-# ``gateway.platforms.<name>`` (website/docs/developer-guide/
-# adding-platform-adapters.md) and ``gateway/config.py`` also resolves a
-# top-level ``platforms`` map.  Anything below the platform-name segment is
-# accepted because ``PlatformConfig`` carries an open ``extra`` mapping.
-_PLATFORM_CONTAINER_KEYS = frozenset({"platforms"})
-
-
-def _known_top_level_keys() -> set[str]:
-    """Return the union of known top-level config keys for validation.
-
-    Combines :data:`DEFAULT_CONFIG` with the dynamic categories that
-    accept user-supplied child keys.  Used by :func:`_validate_config_key`
-    to decide whether a ``son-of-anton config set`` invocation is targeting a
-    known shape.
-    """
-    keys = set(DEFAULT_CONFIG.keys())
-    keys.update(_OPEN_DICT_TOP_LEVEL_KEYS)
-    keys.update(_DYNAMIC_TOP_LEVEL_KEYS)
-    keys.update(_SCHEMA_DEFINED_DICT_KEYS)
-    return keys
-
-
-def _suggest_closest_key(key: str, candidates: set[str], cutoff: float = 0.6) -> Optional[str]:
-    """Return the closest valid key name from ``candidates`` if any are
-    similar enough to ``key``, else None.  Used by ``son-of-anton config set``
-    to point users at the right path when they've typo'd a top-level key.
-
-    Uses :func:`difflib.get_close_matches` with a conservative cutoff so
-    we only suggest when there's a strong match — we'd rather say nothing
-    than mislead a user toward a wrong-but-similar key.
-    """
-    import difflib
-    matches = difflib.get_close_matches(key, sorted(candidates), n=1, cutoff=cutoff)
-    return matches[0] if matches else None
-
-
-def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
-    """Validate a dotted config-key path against the known schema.
-
-    Returns ``(is_known, suggested_alternative_or_None)``.  Known keys
-    return ``(True, None)``.  Unknown keys return ``(False, <suggestion>)``
-    where ``<suggestion>`` may be ``None`` if no close match was found.
-
-    Validates as deep as DEFAULT_CONFIG can be safely walked, then stops
-    at any segment that hits an open-dict container (mcp_servers,
-    providers, hooks, etc.) where users define the inner keys themselves.
-
-    Headline case from #34067: ``gateway.signal.gateway_restart_notification``
-    was silently written, even though ``gateway`` only has 4 known sub-keys
-    (``strict``, ``media_delivery_allow_dirs``, ``trust_recent_files``,
-    ``trust_recent_files_seconds``). The correct path is
-    ``signal.gateway_restart_notification`` (platform configs live at the
-    top level, not under a ``platforms`` namespace).
-    """
-    if not key:
-        return False, None
-
-    segments = key.split(".")
-    top = segments[0]
-
-    # ── Underscore-prefixed keys are internal/test markers ───────────
-    # A leading underscore on the top-level segment (e.g. ``_test.shim_marker``)
-    # signals an intentionally non-schema, internal key. Test harnesses and
-    # tooling use these to write a deterministic marker into config.toml
-    # without polluting the user-facing schema (a shim test writes
-    # ``_test.shim_marker`` to probe file ownership).
-    # Python's own convention treats a leading underscore as "private"; we
-    # honour that here so schema validation never blocks deliberately-internal
-    # keys. This is narrow: only the FIRST segment is checked, so a real typo
-    # like ``agent._max_turns`` still gets caught at the sub-key level.
-    if top.startswith("_"):
-        return True, None
-
-    known = _known_top_level_keys()
-
-    # ── First-segment validation ─────────────────────────────────────
-    # Top-level ``platforms.<name>.<field>`` is a valid current shape:
-    # ``gateway/config.py`` resolves a top-level ``platforms`` map in
-    # addition to ``gateway.platforms``.  Accept anything below it.
-    if top in _PLATFORM_CONTAINER_KEYS:
-        return True, None
-
-    if top not in known:
-        suggestion = _suggest_closest_key(top, known)
-        if suggestion is not None:
-            rest = ".".join(segments[1:])
-            suggested_full = f"{suggestion}.{rest}" if rest else suggestion
-            return False, suggested_full
-
-        return False, None
-
-    # ── Deeper validation ────────────────────────────────────────────
-    # Walk DEFAULT_CONFIG along the user's segments. Stop at:
-    #   - An open-dict container (user-defined inner keys are OK below it)
-    #   - A schema-defined-but-extensible dict (accept anything below)
-    #   - A leaf scalar (the user's key is fully consumed and valid)
-    #   - An unknown sub-key (return False with a same-level suggestion)
-    if top in _OPEN_DICT_TOP_LEVEL_KEYS or top in _DYNAMIC_TOP_LEVEL_KEYS or top in _SCHEMA_DEFINED_DICT_KEYS:
-        # Any path below these is accepted — the user defines the inner
-        # shape themselves (mcp_servers.<name>.command, signal.<extras>,
-        # providers.<name>.api_key, etc.).
-        return True, None
-
-    node: Any = DEFAULT_CONFIG.get(top)
-    consumed = [top]
-    for seg in segments[1:]:
-        # ``gateway.platforms.<name>.<field>`` (and any other nested
-        # ``platforms`` container) — the segment after ``platforms`` is a
-        # user-supplied platform name, so accept everything below it.
-        if seg in _PLATFORM_CONTAINER_KEYS:
-            return True, None
-        if not isinstance(node, dict):
-            # We hit a scalar leaf before consuming the user's full path —
-            # they're trying to set ``foo.bar`` where ``foo`` is a string.
-            # Accept it (set_config_value's coercion will replace the
-            # leaf with a dict, matching pre-existing behavior).
-            return True, None
-        if seg not in node:
-            # Suggest the closest sibling at this depth.
-            sibling_suggestion = _suggest_closest_key(seg, set(node.keys()))
-            if sibling_suggestion is not None:
-                fixed_path = ".".join(consumed + [sibling_suggestion])
-                return False, fixed_path
-            return False, None
-        consumed.append(seg)
-        node = node[seg]
-
-    # Walked the entire user-supplied path without hitting an unknown
-    # segment — it's known.
-    return True, None
-
-
-def _looks_structured_value(value: str) -> bool:
-    """Return True when *value* plausibly encodes a TOML/JSON list or mapping.
-
-    Used by :func:`set_config_value` to decide whether to attempt a
-    structured TOML parse. Deliberately conservative so plain
-    scalars are never mangled:
-
-    - Flow style: the value starts with ``[`` or ``{`` (JSON is close enough
-      to TOML inline syntax that both ``'["a","b"]'`` and ``'{a = 1}'``
-      qualify).
-    - Block style: the value spans multiple lines AND at least one line is
-      shaped like a TOML sequence item (``- item``) or mapping entry
-      (``key: value``).
-
-    A bare leading ``-`` is NOT a trigger on its own: ``-5``, ``--flag`` and
-    other dash-prefixed single-line scalars must remain strings.
-    """
-    stripped = value.lstrip()
-    if stripped[:1] in ('[', '{'):
-        return True
-    if '\n' not in value:
-        return False
-    for line in value.splitlines():
-        item = line.strip()
-        if item == '-' or item.startswith('- '):
-            return True
-        # ``key: value`` / ``key:`` mapping-entry shape (no whitespace in the
-        # key, colon followed by a space or end-of-line).
-        head, sep, _rest = item.partition(': ')
-        if sep and head and ' ' not in head and not head.startswith('#'):
-            return True
-        if item.endswith(':') and ' ' not in item[:-1] and item[:-1]:
-            return True
-    return False
-
-
-def _coerce_int(value: str):
-    """Return int(value) for a clean integer literal, else None.
-
-    Uses ``int()`` so signs, surrounding whitespace, and underscores parse —
-    unlike ``str.isdigit()`` which rejects "-5"/" 5 ". Rejects float-looking
-    strings (that's ``_coerce_float``'s job) and bools masquerading as ints.
-    """
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _coerce_float(value: str):
-    """Return float(value) for a clean float literal, else None."""
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return None
-    # Reject NaN/inf spellings — they are almost never intended config values
-    # and round-trip confusingly through TOML.
-    if f != f or f in (float("inf"), float("-inf")):
-        return None
-    return f
-
-
-def set_config_value(key: str, value: str, force: bool = False):
-    """Set a configuration value.
-
-    Args:
-        key: Dotted config path (e.g. ``terminal.backend``).
-        value: String value (auto-coerced to bool/int/float when matching).
-        force: When True, skip the unknown-key warning — useful for scripted
-            writes of keys the running version doesn't recognize yet — AND
-            authorize destructive replacement of a mapping section by a
-            scalar (e.g. ``--force model gpt-x`` replaces the whole ``model:``
-            mapping). Without --force, scalar writes over mapping sections are
-            refused (bare ``model`` is redirected to ``model.default``). The
-            CLI exposes this via ``son-of-anton config set --force``.
+    Refused on a Nix-managed install, whose module settings own config.toml.
+    String-typed settings keep the literal value (``approvals.mode = "off"``
+    must not become a TOML boolean); other values coerce true/false.
     """
     if is_managed():
         managed_error("set configuration values")
         return
-    # Reject malformed dotted keys with empty segments (leading/trailing/
-    # double dots). ``"agent."`` split to ["agent", ""] and _set_nested wrote
-    # config["agent"][""] = ..., polluting a live schema section with a
-    # garbage empty-string key that round-tripped through get (CFG-04).
-    if key != key.strip() or not key.strip():
-        print(f"✗ Invalid config key: {key!r} (empty or surrounding whitespace).",
-              file=sys.stderr)
-        sys.exit(1)
-    if any(seg == "" for seg in key.split(".")):
-        print(
-            f"✗ Invalid config key: {key!r} — contains an empty path segment "
-            "(leading, trailing, or doubled '.').",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    # Managed scope guard (D2): a key pinned by the managed layer cannot be set by
-    # the user — the next load would override it anyway. Hard-reject and name the
-    # source. Distinct from is_managed() above (the package-manager write-lock).
-    # Env-shaped keys (API keys / tokens) route to save_env_value below, which has
-    # its own managed-env-key guard; this catches the config.toml keys.
-    from son_of_anton_cli import managed_scope
-
-    if managed_scope.is_key_managed(key):
-        managed_dir = managed_scope.get_managed_dir()
-        src = (managed_dir / "config.toml") if managed_dir else "the managed scope"
-        print(
-            f"Cannot set '{key}': it is managed by your administrator ({src}) "
-            f"and cannot be changed. Contact your administrator to modify it.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    # Check if it's an API key (goes to .env)
-    if _is_env_config_key(key):
-        # Unified lifecycle: also rotates any config.toml mirror of the old
-        # value so a stale higher-precedence copy can't win (#62269).
-        from son_of_anton_cli.credential_lifecycle import save_provider_env_credential
-
-        save_provider_env_credential(key.upper(), value)
-        print(f"✓ Set {key} in {get_env_path()}")
-        return
-
-    # Unknown-key notice (#34067): the key is still written (arbitrary keys
-    # are supported — top-level scalars are bridged into os.environ for
-    # external apps), but a plausible-but-wrong dotted path like
-    # ``gateway.signal.gateway_restart_notification`` previously reported
-    # bare success and left the user debugging behavior that never changed.
-    # Warn after the write so the user gets immediate feedback plus a
-    # "did you mean" hint, without blocking legitimate unknown keys.
-    is_known, suggestion = _validate_config_key(key)
-
-    # Otherwise it goes to config.toml
-    # Read the raw user config (not merged with defaults) to avoid
-    # dumping all default values back to the file
+    coerced: Any = value
+    if not isinstance(_default_value_for_key(key), str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "on"}:
+            coerced = True
+        elif lowered in {"false", "no", "off"}:
+            coerced = False
     config_path = get_config_path()
     require_readable_config_before_write(config_path)
     user_config = {}
     if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = fast_toml_load(f) or {}
-        except Exception as exc:
-            print(
-                f"✗ Cannot parse {config_path}: {exc}\n"
-                f"  The file contains a TOML syntax error. Fix the error\n"
-                f"  in your config file first, then retry.\n"
-                f"  (son-of-anton config edit will open it in your editor.)",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-    
-    # Handle nested keys (e.g., "tts.provider") including numeric list
-    # indices (e.g., "custom_providers.0.api_key").  Delegates to
-    # _set_nested which preserves list-typed nodes; before #17876 the
-    # inline navigation here silently overwrote lists with dicts.
-
-    # Preserve values for string-typed settings.  In particular, enum members
-    # such as approvals.mode="off" must not become TOML booleans.  Unknown keys
-    # retain the historical best-effort coercion behavior.
-    coerced_value: Any = value
-    if not isinstance(_default_value_for_key(key), str):
-        _stripped = value.strip()
-        _lower = _stripped.lower()
-        if _lower in {'true', 'yes', 'on'}:
-            coerced_value = True
-        elif _lower in {'false', 'no', 'off'}:
-            coerced_value = False
-        elif _lower in {'null', 'none', '~'}:
-            # TOML null / "off" state. Many DEFAULT_CONFIG leaves default to
-            # None and are documented as "null/absent = off"; without this,
-            # ``config set X null`` stored the truthy string "null" and the
-            # feature could never be cleared via set (CFG-05).
-            coerced_value = None
-        elif _coerce_int(_stripped) is not None:
-            # int() handles signs, surrounding whitespace, and underscores —
-            # unlike the old ``value.isdigit()`` which rejected "-5" and " 5 "
-            # and silently stored them as strings on int-typed keys (CFG-02).
-            coerced_value = _coerce_int(_stripped)
-        elif _coerce_float(_stripped) is not None:
-            coerced_value = _coerce_float(_stripped)
-        elif _looks_structured_value(value):
-            # List/mapping literals -- e.g.
-            #   son-of-anton config set platform_toolsets.line '["file","web"]'
-            # or a multi-line TOML block:
-            #   son-of-anton config set custom_providers '- name: foo
-            #     base_url: https://...'
-            # Without this, such values were stored as a raw STRING, and every
-            # reader that gates on isinstance(..., list) (``_get_platform_tools``,
-            # ``_get_enabled_set``, ...) silently ignored them and fell back to
-            # its default -- the setting looked saved but never took effect.
-            # Folded INSIDE the string-typed guard so a genuinely string-typed
-            # setting whose value merely starts with '[' or '{' is left intact
-            # (preserves the guard added in e4ea0a0ed).  The trigger is
-            # deliberately conservative (see _looks_structured_value): plain
-            # scalars like '-5' or '--flag' never reach the TOML parser.
-            try:
-                # Parse the CLI token as a TOML value expression so arrays and
-                # inline tables keep working after the YAML removal.
-                import tomllib
-
-                parsed = tomllib.loads("value = " + value).get("value")
-                if isinstance(parsed, (list, dict)):
-                    coerced_value = parsed
-                else:
-                    print(
-                        f"Warning: value for '{key}' looks like a list/mapping but "
-                        f"parsed as {type(parsed).__name__}; storing as string.",
-                        file=sys.stderr,
-                    )
-            except Exception:
-                print(
-                    f"Warning: value for '{key}' looks like a list/mapping but is "
-                    f"not a valid TOML value expression; storing as string. Most "
-                    f"isinstance-gated readers will ignore a string here.",
-                    file=sys.stderr,
-                )
-
-    value = coerced_value
-    # Normalize a scalar ``model`` key before writing sub-keys so that
-    # ``son-of-anton config set model.provider openai`` doesn't silently
-    # destroy the model id when ``model`` is a bare string shorthand
-    # (e.g. ``model: gpt-4o``).  Without this _set_nested replaces the
-    # scalar with an empty dict, dropping the model id permanently.
-    _model_key = key.strip().lower()
-    if _model_key.startswith("model."):
-        _model_val = user_config.get("model")
-        if isinstance(_model_val, str) and _model_val:
-            user_config["model"] = {"default": _model_val}
-    # Guard against #74995: a single-segment key that names an existing
-    # mapping would silently overwrite the entire section with a scalar
-    # (e.g. ``son-of-anton config set model gpt-5.6-sol`` when model already
-    # contains default/provider/context_length).  Bare ``model`` is a
-    # documented shorthand — redirect to ``model.default`` and preserve
-    # siblings.  All other mapping sections are rejected unless --force.
-    if "." not in key:
-        _existing = user_config.get(key)
-        if isinstance(_existing, dict):
-            if key == "model":
-                if force:
-                    # --force: allow destructive section overwrite.
-                    print(
-                        f"⚠ Replacing entire 'model' section with a scalar "
-                        f"(discarding {len(_existing)} existing sub-key(s))"
-                    )
-                else:
-                    # Redirect bare-model shorthand to model.default while
-                    # keeping every sibling mapping key intact.
-                    key = "model.default"
-                    print(
-                        f"✓ Redirecting bare 'model' to 'model.default' "
-                        f"(preserving {len(_existing)} existing model sub-key(s))"
-                    )
-                    # value was already coerced above; proceed to _set_nested
-            elif not force:
-                _sub = [k for k in _existing if isinstance(k, str)]
-                print(
-                    f"✗ Cannot set '{key}' to a scalar — '{key}' is a "
-                    f"configuration section with {len(_sub)} sub-key(s).",
-                    file=sys.stderr,
-                )
-                if _sub:
-                    _sub_list = ", ".join(_sub[:8])
-                    print(f"  Sub-keys: {_sub_list}", file=sys.stderr)
-                    if len(_sub) > 8:
-                        print(
-                            f"  ... and {len(_sub) - 8} more",
-                            file=sys.stderr,
-                        )
-                print(
-                    "  Use a dotted path to set a specific leaf key:",
-                    file=sys.stderr,
-                )
-                print(
-                    f"    son-of-anton config set {key}.<sub-key> <value>",
-                    file=sys.stderr,
-                )
-                print(
-                    "  Or use --force to replace the entire section:",
-                    file=sys.stderr,
-                )
-                print(
-                    f"    son-of-anton config set --force {key} {value!r}",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-    _set_nested(user_config, key, value)
-    # Normalize the api_base → base_url alias at set-time too (issue #8919),
-    # so a fresh `son-of-anton config set model.api_base ...` lands on the canonical
-    # key the runtime resolver actually reads, instead of being silently
-    # ignored. Mirrors the load-time migration in _normalize_root_model_keys.
-    _alias_norm = key.strip().lower()
-    if _alias_norm in ("model.api_base", "api_base"):
-        user_config = _normalize_root_model_keys(user_config)
-        key = "model.base_url"
-        print("  (note: 'api_base' is an alias — saved as model.base_url)")
-    # Write only user config back (not the full merged defaults)
+        with open(config_path, encoding="utf-8") as f:
+            user_config = fast_toml_load(f) or {}
+    _set_nested(user_config, key, coerced)
     ensure_son_of_anton_home()
     from utils import atomic_toml_write
     atomic_toml_write(config_path, user_config, sort_keys=False)
-    
-    # Keep .env in sync for keys that terminal_tool reads directly from env vars.
-    # config.toml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
-    env_var = terminal_config_env_var_for_key(key)
-    if env_var and key != "terminal.cwd":
-        save_env_value(env_var, _terminal_env_value(value))
-
-    # Setting display.skin is an explicit "apply NOW" — bump the skin file's
-    # mtime so the gateway watcher's (name, mtime) signature moves even when the
-    # name is unchanged (re-affirming the active skin after a surface missed the
-    # original activation). Built-ins have no file; a name switch already moves
-    # their signature.
-    if key == "display.skin" and isinstance(value, str) and value:
-        try:
-            skin_file = get_son_of_anton_home() / "skins" / f"{value}.toml"
-            if skin_file.exists():
-                skin_file.touch()
-        except Exception:
-            pass  # best-effort: the config write above already succeeded
-
-    # Mask the echoed value when the (possibly nested) key is credential-shaped
-    # — e.g. `son-of-anton config set model.api_key cfut_...` routes to config.toml
-    # (lowercase, so it misses the .env api_keys list above) and would otherwise
-    # print the raw secret to the terminal.
-    _leaf_key = key.rsplit(".", 1)[-1].lower()
-    if _leaf_key in _SECRET_CONFIG_KEYS and isinstance(value, str) and value:
-        from agent.redact import mask_secret
-        _display_value = mask_secret(value)
-    else:
-        _display_value = value
-    print(f"✓ Set {key} = {_display_value} in {config_path}")
-    warn_unpinned_cron_jobs_after_model_config_change(key, value, user_config)
-
-    # Post-write unknown-key notice (#34067): value IS saved, but tell the
-    # user the runtime may never read it and suggest the likely-intended path.
-    if not is_known and not force:
-        print(color(
-            f"⚠ '{key}' is not a recognized config key — it was saved anyway, "
-            "but Son of Anton may not read it.",
-            Colors.YELLOW,
-        ))
-        if suggestion:
-            print(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
-        print(color(
-            "  (Custom top-level keys are supported and bridged to the "
-            "environment for external tools. Use --force to skip "
-            "this notice.)",
-            Colors.DIM,
-        ))
+    print(f"✓ Set {key} = {coerced} in {config_path}")
 
 
 def get_config_value(key: str, *, as_json: bool = False):
@@ -5177,240 +3793,25 @@ def get_config_value(key: str, *, as_json: bool = False):
     print(_format_config_get_value(value, as_json=as_json))
 
 
-def unset_config_value(key: str):
-    """Remove a user-set configuration or .env value."""
-    if is_managed():
-        managed_error("unset configuration values")
-        return
-    # Managed scope guard: a key pinned by the managed layer cannot be unset by
-    # the user — the next load would reinstate it anyway (mirrors set_config_value).
-    from son_of_anton_cli import managed_scope
-
-    if managed_scope.is_key_managed(key):
-        managed_dir = managed_scope.get_managed_dir()
-        src = (managed_dir / "config.toml") if managed_dir else "the managed scope"
-        print(
-            f"Cannot unset '{key}': it is managed by your administrator ({src}) "
-            f"and cannot be changed. Contact your administrator to modify it.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    if _is_env_config_key(key):
-        # Unified lifecycle: prune env-seeded credential_pool entries and
-        # model-cache rows too, so `son-of-anton config unset <KEY>` fully removes
-        # the provider instead of leaving it resurrectable (#51071 family).
-        from son_of_anton_cli.credential_lifecycle import remove_provider_env_credential
-
-        if not remove_provider_env_credential(key.upper()).get("found"):
-            print(f"Config key not set: {key}", file=sys.stderr)
-            sys.exit(1)
-        print(f"✓ Unset {key} from {get_env_path()}")
-        return
-
-    config_path = get_config_path()
-    require_readable_config_before_write(config_path)
-    user_config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = fast_toml_load(f) or {}
-        except Exception as exc:
-            print(
-                f"✗ Cannot parse {config_path}: {exc}\n"
-                f"  The file contains a TOML syntax error. Fix the error\n"
-                f"  in your config file first, then retry.\n"
-                f"  (son-of-anton config edit will open it in your editor.)",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    removed = _unset_nested(user_config, key)
-
-    # Keep .env in sync for keys that terminal_tool reads directly from env vars.
-    env_var = terminal_config_env_var_for_key(key)
-    if env_var and key != "terminal.cwd":
-        removed = remove_env_value(env_var) or removed
-
-    if not removed:
-        print(f"Config key not set: {key}", file=sys.stderr)
-        sys.exit(1)
-
-    ensure_son_of_anton_home()
-    from utils import atomic_toml_write
-    atomic_toml_write(config_path, user_config, sort_keys=False)
-    print(f"✓ Unset {key} from {config_path}")
-
-
 # =============================================================================
 # Command handler
 # =============================================================================
 
 def config_command(args):
-    """Handle config subcommands."""
+    """Handle the read-only config subcommands (show, get, path, env-path)."""
     subcmd = getattr(args, 'config_command', None)
-    
     if subcmd is None or subcmd == "show":
         show_config()
-    
-    elif subcmd == "edit":
-        edit_config()
-    
     elif subcmd == "get":
         key = getattr(args, 'key', None)
         if not key:
             print("Usage: son-of-anton config get <key> [--json]")
-            print()
-            print("Examples:")
-            print("  son-of-anton config get model")
-            print("  son-of-anton config get terminal.backend")
-            print("  son-of-anton config get memory --json")
             sys.exit(1)
         get_config_value(key, as_json=getattr(args, 'json', False))
-
-    elif subcmd == "set":
-        key = getattr(args, 'key', None)
-        value = getattr(args, 'value', None)
-        force = bool(getattr(args, 'force', False))
-        if not key or value is None:
-            print("Usage: son-of-anton config set [--force] <key> <value>")
-            print()
-            print("Examples:")
-            print("  son-of-anton config set model anthropic/claude-sonnet-4")
-            print("  son-of-anton config set terminal.backend ssh")
-            print("  son-of-anton config set OPENROUTER_API_KEY sk-or-...")
-            print()
-            print("  --force: skip the unknown-key notice for unrecognized keys,")
-            print("           and allow a scalar to replace a whole mapping section")
-            sys.exit(1)
-        set_config_value(key, value, force=force)
-
-    elif subcmd == "unset":
-        key = getattr(args, 'key', None)
-        if not key:
-            print("Usage: son-of-anton config unset <key>")
-            print()
-            print("Examples:")
-            print("  son-of-anton config unset model")
-            print("  son-of-anton config unset terminal.backend")
-            print("  son-of-anton config unset OPENROUTER_API_KEY")
-            sys.exit(1)
-        unset_config_value(key)
-    
     elif subcmd == "path":
         print(get_config_path())
-    
     elif subcmd == "env-path":
         print(get_env_path())
-    
-    elif subcmd == "migrate":
-        print()
-        print(color("🔄 Checking configuration for updates...", Colors.CYAN, Colors.BOLD))
-        print()
-        
-        # Check what's missing
-        missing_env = get_missing_env_vars(required_only=False)
-        missing_config = get_missing_config_fields()
-        current_ver, latest_ver = check_config_version()
-        
-        if not missing_env and not missing_config and current_ver >= latest_ver:
-            print(color("✓ Configuration is up to date!", Colors.GREEN))
-            print()
-            return
-        
-        # Show what needs to be updated
-        if current_ver < latest_ver:
-            print(f"  Config version: {current_ver} → {latest_ver}")
-        
-        if missing_config:
-            print(f"\n  {len(missing_config)} new config option(s) will be added with defaults")
-        
-        required_missing = [v for v in missing_env if v.get("is_required")]
-        optional_missing = [
-            v for v in missing_env
-            if not v.get("is_required") and not v.get("advanced")
-        ]
-        
-        if required_missing:
-            print(f"\n  ⚠️  {len(required_missing)} required API key(s) missing:")
-            for var in required_missing:
-                print(f"     • {var['name']}")
-        
-        if optional_missing:
-            print(f"\n  ℹ️  {len(optional_missing)} optional API key(s) not configured:")
-            for var in optional_missing:
-                tools = var.get("tools", [])
-                tools_str = f" (enables: {', '.join(tools[:2])})" if tools else ""
-                print(f"     • {var['name']}{tools_str}")
-        
-        print()
-        
-        # Run migration
-        results = migrate_config(interactive=True, quiet=False)
-        
-        print()
-        if results["env_added"] or results["config_added"]:
-            print(color("✓ Configuration updated!", Colors.GREEN))
-        
-        if results["warnings"]:
-            print()
-            for warning in results["warnings"]:
-                print(color(f"  ⚠️  {warning}", Colors.YELLOW))
-        
-        print()
-    
-    elif subcmd == "check":
-        # Non-interactive check for what's missing
-        print()
-        print(color("📋 Configuration Status", Colors.CYAN, Colors.BOLD))
-        print()
-        
-        current_ver, latest_ver = check_config_version()
-        if current_ver >= latest_ver:
-            print(f"  Config version: {current_ver} ✓")
-        else:
-            print(color(f"  Config version: {current_ver} → {latest_ver} (update available)", Colors.YELLOW))
-        
-        print()
-        print(color("  Required:", Colors.BOLD))
-        for var_name in REQUIRED_ENV_VARS:
-            if get_env_value(var_name):
-                print(f"    ✓ {var_name}")
-            else:
-                print(color(f"    ✗ {var_name} (missing)", Colors.RED))
-        
-        print()
-        print(color("  Optional:", Colors.BOLD))
-        for var_name, info in OPTIONAL_ENV_VARS.items():
-            if get_env_value(var_name):
-                print(f"    ✓ {var_name}")
-            else:
-                tools = info.get("tools", [])
-                tools_str = f" → {', '.join(tools[:2])}" if tools else ""
-                print(color(f"    ○ {var_name}{tools_str}", Colors.DIM))
-        
-        missing_config = get_missing_config_fields()
-        if missing_config:
-            print()
-            print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
-            print("    Run 'son-of-anton config migrate' to add them")
-        
-        print()
-    
-    else:
-        print(f"Unknown config command: {subcmd}")
-        print()
-        print("Available commands:")
-        print("  son-of-anton config           Show current configuration")
-        print("  son-of-anton config edit      Open config in editor")
-        print("  son-of-anton config get <key>          Print a resolved config value")
-        print("  son-of-anton config set <key> <value>   Set a config value")
-        print("  son-of-anton config unset <key>        Remove a config value")
-        print("  son-of-anton config check     Check for missing/outdated config")
-        print("  son-of-anton config migrate   Update config with new options")
-        print("  son-of-anton config path      Show config file path")
-        print("  son-of-anton config env-path  Show .env file path")
-        sys.exit(1)
 
 
 # ── Profile-driven env var injection ─────────────────────────────────────────

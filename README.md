@@ -670,24 +670,22 @@ md2pdf = pkgs.writeShellApplication {
 <!---->
 ### Home Manager
 <!---->
-There is also a Home Manager module, if you would rather run the gateway as a
-user service. Enable linger or it stops when you log out.
+There is also a Home Manager module for a CLI/TUI-only install: it puts the
+package on the profile, exports `SON_OF_ANTON_HOME`, and merges `settings` and
+`environmentFiles` into that home. Gateways run from the NixOS module.
 <!---->
 ```nix
 imports = [ son-of-anton.homeManagerModules.default ];
 services.son-of-anton = {
   enable = true;
-  gateway.enable = true;
   environmentFiles = [ config.age.secrets."son-of-anton-env".path ];
 };
-users.users.YOUR-ACCOUNT.linger = true;
 ```
 <!---->
 ## What `settings` does to config.toml
 <!---->
-Son of Anton writes `config.toml` at runtime too — `son-of-anton config set`,
-the settings panes, `/model` — so activation merges into it rather than
-replacing it. The merge is three-way: it records what it wrote in
+Son of Anton writes `config.toml` at runtime too — `/skin`, `/perm` — so
+activation merges into it rather than replacing it. The merge is three-way: it records what it wrote in
 `~/.son-of-anton/.nix-managed.json`, so the next activation can tell a key you
 have *dropped from Nix* from a key something wrote at runtime. Dropping a
 setting removes it from disk; runtime keys are never touched. Removals are
@@ -700,27 +698,14 @@ settings, `pruneUnmanagedSettings = true` for one rebuild clears them. Leave it
 on if you want `config.toml` purely declarative and are willing to lose runtime
 edits on every rebuild.
 <!---->
-## Shell completions
-<!---->
-The Nix package installs bash, zsh and fish completions — generated at build
-time by walking the live command tree, so they cannot go stale against the CLI
-they complete. On NixOS they are picked up from the package automatically.
-<!---->
-Outside Nix, or to regenerate after a local change:
-<!---->
-```bash
-son-of-anton completion bash > ~/.local/share/bash-completion/completions/son-of-anton
-son-of-anton completion zsh  > ~/.zsh/completions/_son-of-anton
-son-of-anton completion fish > ~/.config/fish/completions/son-of-anton.fish
-```
-<!---->
 ## No installation commands
 <!---->
 This is not an imperative program. There is no `setup`, `update`, `uninstall`,
-`login`/`logout`, `doctor`, or `gateway install|start|stop`: the deployment is
-declared by the NixOS or Home Manager module, `systemctl` runs the service, and
-that module's `settings` owns `config.toml`. `gateway` has two actions, `run`
-and `status`.
+`model`, `login`/`logout`, `doctor`, `config set`, or `gateway install|start|stop`:
+the deployment is declared by the NixOS or Home Manager module, `systemctl` runs
+the service, and that module's `settings` owns `config.toml`. `config` only
+shows (`show`, `get`, `path`, `env-path`); `gateway` has two actions, `run` and
+`status`.
 <!---->
 MCP servers are declared under `mcp_servers` in that same `settings`; nothing
 installs or adds one at runtime.
@@ -753,8 +738,7 @@ author_email = "12345+some-bot@users.noreply.github.com"
 <!---->
 On the command line, `son-of-anton -c [name]` continues this directory's most
 recent session (see [Sessions](#sessions)); `son-of-anton problem create` builds
-a physics problem spec and `son-of-anton problem run` runs one;
-`son-of-anton completion <shell>` prints a completion script.
+a physics problem spec and `son-of-anton problem run` runs one.
 <!---->
 `/help` lists the rest.
 <!---->

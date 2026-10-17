@@ -912,14 +912,6 @@ def load_gateway_config() -> GatewayConfig:
             with open(config_toml_path, encoding="utf-8") as f:
                 toml_cfg = tomllib.loads(f.read()) or {}
 
-            # Managed scope: overlay administrator-pinned values so the gateway
-            # honors them too. This loader builds its own dict instead of going
-            # through son_of_anton_cli.config.load_config, so without this a managed
-            # session_reset / quick_commands / stt / model would be ignored by
-            # the messaging gateway. Fail-open via the shared helper.
-            from son_of_anton_cli import managed_scope
-            toml_cfg = managed_scope.apply_managed_overlay(toml_cfg)
-
             # Shared nested-fallback source: settings meant to be top-level
             # keys are also accepted when a user nests them under `gateway:`
             # (e.g. via `son-of-anton config set gateway.<key> ...`, which naturally

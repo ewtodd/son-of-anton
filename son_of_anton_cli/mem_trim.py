@@ -11,7 +11,6 @@ import ctypes
 import gc
 import logging
 import platform
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -94,9 +93,7 @@ def _nonnegative_float(value: Any, default: float) -> float:
 
 
 def _read_proc_status() -> str | None:
-    """Read Linux process status without making non-Linux callers special-case."""
-    if sys.platform != "linux":
-        return None
+    """Read this process's /proc status."""
     try:
         return Path("/proc/self/status").read_text(encoding="utf-8")
     except OSError:
@@ -151,8 +148,6 @@ def _probe_glibc_malloc_trim() -> Callable[[int], int] | None:
     if _probe_done:
         return _malloc_trim
     _probe_done = True
-    if sys.platform != "linux":
-        return None
     try:
         if platform.libc_ver()[0].lower() != "glibc":
             return None

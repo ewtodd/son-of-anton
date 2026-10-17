@@ -2104,8 +2104,6 @@ DEFAULT_CONFIG = {
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
 
-    # Config schema version - bump this when adding new required fields
-    "_config_version": 39,
 }
 
 # Optional environment variables that enhance functionality

@@ -162,8 +162,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("perm", "Set the permission mode: default, ask, lockdown, or yolo", "Configuration",
                args_hint="[default|ask|lockdown|yolo]", busy_policy="reject", busy_handler="perm"),
 
-    CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
-               cli_only=True, aliases=("sb",)),
     CommandDef("timestamps", "Toggle [HH:MM] timestamps on messages and /history", "Configuration",
                cli_only=True, args_hint="[on|off|status]",
                subcommands=("on", "off", "status"), aliases=("ts",)),
@@ -215,8 +213,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                execute="gateway_commands"),
     CommandDef("help", "Show available commands (/help <text> filters)", "Info", busy_policy="dispatch",
                execute="gateway_help", args_hint="[<filter>]"),
-    CommandDef("palette", "Open the fuzzy command palette (also Ctrl+P)", "Info",
-               cli_only=True, busy_policy="dispatch"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True, busy_policy="dispatch"),
     CommandDef("usage", "Show token usage and rate limits for this session", "Info"),

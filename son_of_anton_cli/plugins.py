@@ -1376,19 +1376,6 @@ class PluginContext:
             raise PermissionError(
                 "Plugin settings cannot be changed in a managed install"
             )
-        from son_of_anton_cli import managed_scope
-
-        dotted_path = ".".join((
-            "plugins",
-            "entries",
-            self.plugin_id,
-            "settings",
-            *segments,
-        ))
-        if managed_scope.is_key_managed(dotted_path):
-            raise PermissionError(
-                f"Plugin setting {dotted_path!r} is administrator-managed"
-            )
         partial = {
             "plugins": {
                 "entries": {

@@ -79,10 +79,6 @@ def test_optional_env_vars_do_not_carry_removed_providers() -> None:
     assert not (removed & set(OPTIONAL_ENV_VARS))
 
 
-def test_config_version_is_an_int() -> None:
-    assert isinstance(DEFAULT_CONFIG.get("_config_version"), int)
-
-
 def test_terminal_cwd_not_bridged_for_local_backend(son_of_anton_home) -> None:
     # The local backend's contract is the process's launch directory: a
     # configured terminal.cwd (a gateway/daemon setting) must not redirect

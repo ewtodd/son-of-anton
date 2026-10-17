@@ -286,7 +286,6 @@ py-modules = [
   "toolsets",
   "cli",
   "mcp_serve",
-  "son_of_anton_bootstrap",
   "son_of_anton_constants",
   "son_of_anton_state",
   "son_of_anton_state_common",

@@ -6,7 +6,6 @@
   uv2nix,
   pyproject-nix,
   pyproject-build-systems,
-  stdenv,
   # Filtered Python source (see son-of-anton.nix pythonSrc) — keeps
   # plugins/nix/JS edits from invalidating the venv derivation.
   pythonSrc,
@@ -14,41 +13,10 @@
 }:
 let
   workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = pythonSrc; };
-  hacks = callPackage pyproject-nix.build.hacks { };
 
   overlay = workspace.mkPyprojectOverlay {
     sourcePreference = "wheel";
   };
-
-  isAarch64Darwin = stdenv.hostPlatform.system == "aarch64-darwin";
-
-  # Supply wheel-heavy packages from nixpkgs on aarch64-darwin so wheel-only
-  # transitive artifacts do not break evaluation.
-  mkPrebuiltPassthru = dependencies: {
-    inherit dependencies;
-    optional-dependencies = { };
-    dependency-groups = { };
-  };
-
-  mkPrebuiltOverride =
-    final: from: dependencies:
-    hacks.nixpkgsPrebuilt {
-      inherit from;
-      prev = {
-        nativeBuildInputs = [ final.pyprojectHook ];
-        passthru = mkPrebuiltPassthru dependencies;
-      };
-    };
-
-  pythonPackageOverrides =
-    final: _prev:
-    if isAarch64Darwin then
-      {
-        numpy = mkPrebuiltOverride final python312.pkgs.numpy { };
-        pyarrow = mkPrebuiltOverride final python312.pkgs.pyarrow { };
-      }
-    else
-      { };
 
   pythonSet =
     (callPackage pyproject-nix.build.packages {
@@ -58,16 +26,6 @@ let
         lib.composeManyExtensions [
           pyproject-build-systems.overlays.default
           overlay
-          pythonPackageOverrides
-          # ``setup.py`` permits wheel/sdist creation only from the sealed
-          # Son of Anton derivation. This is deliberately a derivation environment
-          # variable, not a devShell variable: ``nix develop -c uv build``
-          # must remain blocked.
-          (final: prev: {
-            son-of-anton = prev.son-of-anton.overrideAttrs (_old: {
-              SON_OF_ANTON_NIX_BUILD = "1";
-            });
-          })
         ]
       );
 

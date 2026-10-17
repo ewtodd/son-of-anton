@@ -18,7 +18,6 @@ import json
 import os
 import sys
 import threading
-import time
 import uuid
 from datetime import datetime
 
@@ -337,36 +336,7 @@ class CLICommandsMixin:
         from cli import _ACCENT, _DIM, _RST, _cprint
         import shlex
         from argparse import Namespace
-        from contextlib import redirect_stdout
-        from io import StringIO
         from son_of_anton_cli.tools_config import tools_disable_enable_command
-
-        def _run_capture(ns: Namespace) -> None:
-            """Run tools_disable_enable_command, routing its ANSI-colored
-            print() output through _cprint when inside the interactive TUI
-            so escapes aren't mangled by patch_stdout's StdoutProxy into
-            garbled '?[32m...?[0m' text.
-
-            Outside the TUI (standalone mode, tests), call straight through
-            so real stdout / pytest capture works as expected.
-            """
-            # Standalone/tests, run as usual
-            if getattr(self, "_app", None) is None:
-                tools_disable_enable_command(ns)
-                return
-
-            # Buffer reports isatty()=True so color() in son_of_anton_cli/colors.py
-            # still emits ANSI escapes. StringIO.isatty() is False, which
-            # would otherwise strip all colors before we re-render them.
-            class _TTYBuf(StringIO):
-                def isatty(self) -> bool:
-                    return True
-
-            buf = _TTYBuf()
-            with redirect_stdout(buf):
-                tools_disable_enable_command(ns)
-            for line in buf.getvalue().splitlines():
-                _cprint(line)
 
         try:
             parts = shlex.split(cmd)
@@ -379,7 +349,7 @@ class CLICommandsMixin:
             return
 
         if subcommand == "list":
-            _run_capture(Namespace(tools_action="list", platform="cli"))
+            tools_disable_enable_command(Namespace(tools_action="list", platform="cli"))
             return
 
         names = parts[2:]
@@ -396,7 +366,7 @@ class CLICommandsMixin:
         label = ", ".join(names)
         _cprint(f"{_ACCENT}{verb} {label}...{_RST}")
 
-        _run_capture(Namespace(tools_action=subcommand, names=names, platform="cli"))
+        tools_disable_enable_command(Namespace(tools_action=subcommand, names=names, platform="cli"))
 
         # Reset session so the new tool config is picked up from a clean state
         from son_of_anton_cli.tools_config import _get_platform_tools
@@ -1087,8 +1057,6 @@ class CLICommandsMixin:
                     # Concurrent bg tasks may race on _spinner_text; acceptable for best-effort UI.
                     if not self._agent_running:
                         self._spinner_text = text
-                        if self._app:
-                            self._app.invalidate()
 
                 bg_agent.thinking_callback = _bg_thinking
 
@@ -1101,12 +1069,6 @@ class CLICommandsMixin:
                 if not response and result and result.get("error"):
                     response = f"Error: {result['error']}"
 
-                # Display result in the CLI (thread-safe via patch_stdout).
-                # Force a TUI refresh first so spinner/status bar don't overlap
-                # with the output (fixes #2718).
-                if self._app:
-                    self._app.invalidate()
-                    time.sleep(0.05)  # brief pause for refresh
                 print()
                 ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 _cprint(f"  ✅ Background task #{task_num} complete")
@@ -1144,10 +1106,6 @@ class CLICommandsMixin:
                     sys.stdout.flush()
 
             except Exception as e:
-                # Same TUI refresh pattern as success path (#2718)
-                if self._app:
-                    self._app.invalidate()
-                    time.sleep(0.05)
                 print()
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
             finally:
@@ -1160,8 +1118,6 @@ class CLICommandsMixin:
                 # Clear spinner only if no foreground agent owns it
                 if not self._agent_running:
                     self._spinner_text = ""
-                if self._app:
-                    self._invalidate(min_interval=0)
 
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
@@ -1683,24 +1639,6 @@ class CLICommandsMixin:
                 agent.tool_progress_mode = normalized
             except Exception:
                 pass
-
-    def _note_focus_hidden_line(self, function_name: str) -> None:
-        """Count one tool line that focus view is suppressing this turn.
-
-        Counted against the mode the user had BEFORE focus snapped things to
-        "off", so a user who already ran ``/verbose off`` is never told that
-        focus hid lines it did not hide.
-        """
-        if not getattr(self, "_focus_view_enabled", False):
-            return
-        from son_of_anton_cli.focus_view import would_display_tool_line
-
-        saved = getattr(self, "_focus_saved_tool_progress", None)
-        last = getattr(self, "_focus_last_counted_tool", None)
-        if not would_display_tool_line(saved, function_name, last):
-            return
-        self._focus_last_counted_tool = function_name
-        self._focus_hidden_lines = int(getattr(self, "_focus_hidden_lines", 0)) + 1
 
     def _emit_focus_recovery_line(self) -> None:
         """Print the dim post-turn recovery line and reset the counter."""

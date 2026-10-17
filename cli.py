@@ -1,24 +1,9 @@
-#!/usr/bin/env python3
 """
-Son of Anton Agent CLI - Interactive Terminal Interface
+Son of Anton Agent CLI — SonOfAntonCLI, the session/agent half behind the
+Textual TUI (son_of_anton_tui.backend.TextualBackend) and single-query mode.
 
-A beautiful command-line interface for the Son of Anton Agent, inspired by Claude Code.
-Features ASCII art branding, interactive REPL, toolset selection, and rich formatting.
-
-Usage:
-    python cli.py                          # Start interactive mode with all tools
-    python cli.py --toolsets web,terminal  # Start with specific toolsets
-    python cli.py --list-tools             # List available tools and exit
+Entered through ``son-of-anton`` (son_of_anton_cli.main), never directly.
 """
-
-# IMPORTANT: son_of_anton_bootstrap must be the very first import.  No-op on
-# POSIX.
-try:
-    import son_of_anton_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    # Graceful fallback when son_of_anton_bootstrap isn't registered in an
-    # editable dev venv built before it existed.
-    pass
 
 import logging
 import copy
@@ -30,10 +15,8 @@ import re
 import concurrent.futures
 import base64
 import atexit
-import errno
 import time
 import uuid
-import textwrap
 from collections import deque
 from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
@@ -167,7 +150,6 @@ def realign_markdown_tables(*args, **kwargs):
     from agent.markdown_tables import realign_markdown_tables as _realign_markdown_tables
 
     return _realign_markdown_tables(*args, **kwargs)
-from son_of_anton_cli.banner import format_banner_version_label
 
 
 # Load .env from ~/.son-of-anton/.env first, then project root as dev fallback.
@@ -358,34 +340,18 @@ def _parse_service_tier_config(raw: str) -> str | None:
 
 def load_cli_config() -> Dict[str, Any]:
     """
-    Load CLI configuration from config files.
-    
-    Config lookup order:
-    1. ~/.son-of-anton/config.toml (user config - preferred)
-    2. ./cli-config.toml (project config - fallback)
-    
+    Load CLI configuration from ~/.son-of-anton/config.toml over built-in defaults.
+
     Environment variables take precedence over config file values.
     Returns default values if no config file exists.
 
     If SON_OF_ANTON_IGNORE_USER_CONFIG=1 is set (via ``son-of-anton chat --ignore-user-config``),
-    the user config at ``~/.son-of-anton/config.toml`` is skipped entirely and only the
-    built-in defaults plus the project-level ``cli-config.toml`` (if any) are used.
+    the user config is skipped entirely and only the built-in defaults are used.
     Credentials in ``.env`` are still loaded — this flag only suppresses
     behavioral/config settings.
     """
-    # Check user config first ({SON_OF_ANTON_HOME}/config.toml)
-    user_config_path = _son_of_anton_home / 'config.toml'
-    project_config_path = Path(__file__).parent / 'cli-config.toml'
-
-    # --ignore-user-config: force-skip the user config.toml (still honor project
-    # config as a fallback so defaults stay sensible).
+    config_path = _son_of_anton_home / 'config.toml'
     ignore_user_config = os.environ.get("SON_OF_ANTON_IGNORE_USER_CONFIG") == "1"
-
-    # Use user config if it exists, otherwise project config
-    if user_config_path.exists() and not ignore_user_config:
-        config_path = user_config_path
-    else:
-        config_path = project_config_path
 
     # Default configuration
     defaults = {
@@ -491,7 +457,7 @@ def load_cli_config() -> Dict[str, Any]:
     _file_has_terminal_config = False
 
     # Load from file if exists
-    if config_path.exists():
+    if config_path.exists() and not ignore_user_config:
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 from son_of_anton_cli.config import _normalize_root_model_keys
@@ -545,23 +511,11 @@ def load_cli_config() -> Dict[str, Any]:
             ):
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
         except Exception as e:
-            logger.warning("Failed to load cli-config.toml: %s", e)
+            logger.warning("Failed to load config.toml: %s", e)
 
     # Expand ${ENV_VAR} references in config values before bridging to env vars.
     from son_of_anton_cli.config import _expand_env_vars
     defaults = _expand_env_vars(defaults)
-
-    # Managed scope: overlay administrator-pinned values LAST so they win over
-    # the user's config here too. cli.py builds its config independently of
-    # son_of_anton_cli.config._load_config_impl (which has its own managed merge), so
-    # without this the entire interactive CLI/TUI surface — skin, display prefs,
-    # etc. read from CLI_CONFIG — would silently ignore managed scope while
-    # `son-of-anton config`/`doctor`/guards (which use load_config) honor it. The
-    # shared helper mirrors _load_config_impl (env-only expansion, root-model
-    # normalization, leaf-merge) and is fail-open.
-    from son_of_anton_cli import managed_scope
-
-    defaults = managed_scope.apply_managed_overlay(defaults)
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
@@ -1410,9 +1364,7 @@ def _maintain_pack_health(repo_root: str) -> None:
         if packs < _PACK_SPRAWL_THRESHOLD:
             return
         logger.info("git pack sprawl (%d packs) — repacking in background", packs)
-        cmd = ["git", "repack", "-a", "-d", "--quiet"]
-        if os.name == "posix":
-            cmd = ["nice", "-n", "19", *cmd]
+        cmd = ["nice", "-n", "19", "git", "repack", "-a", "-d", "--quiet"]
         subprocess.run(
             cmd,
             capture_output=True, text=True, timeout=1800, cwd=repo_root, check=False,
@@ -2645,10 +2597,6 @@ def _prune_orphaned_branches(repo_root: str) -> None:
 # ANSI building blocks for conversation display
 _BOLD = "\033[1m"
 _RST = "\033[0m"
-_STREAM_PAD = ""  # No indent for streamed response text — leading whitespace pollutes
-# terminal copy/paste (every selected line carried 4 spaces).  Matches the
-# response Panel's flush-left padding.
-_STREAM_PARTIAL_PREVIEW_LEN = 60  # tail of an unfinished logical line mirrored
 # into the spinner while streaming (TTFT perception without hard-wrapping)
 
 
@@ -3082,15 +3030,6 @@ _THINKING = _SkinAwareAnsi("ui_thinking", "default")
 _DIM = "\x1b[2;3m"
 
 
-def _b(s: str) -> str:
-    """Bold if stdout is a real TTY; plain text otherwise (slash-worker safe)."""
-    import sys as _sys
-    try:
-        return f"\x1b[1m{s}\x1b[0m" if _sys.stdout.isatty() else str(s)
-    except Exception:
-        return str(s)
-
-
 def _d(s: str) -> str:
     """Dim-italic if stdout is a real TTY; plain text otherwise."""
     import sys as _sys
@@ -3148,46 +3087,6 @@ def _strip_markdown_syntax(text: str) -> str:
     return plain.strip("\n")
 
 
-_WINDOWS_PATH_WITH_DOT_SEGMENT_RE = re.compile(
-    r"(?i)(?:\b[a-z]:\\|\\\\)[^\s`]*\\\.[^\s`]*"
-)
-
-
-def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
-    r"""Keep Windows path separators before hidden directories in Markdown.
-
-    CommonMark treats ``\.`` as an escaped literal dot, so Rich Markdown would
-    render ``D:\repo\.ai`` as ``D:\repo.ai``.  Doubling only that separator
-    inside Windows path-looking tokens preserves the path without changing
-    ordinary markdown escapes like ``1\. not a list``.
-    """
-    if "\\." not in text:
-        return text
-    def _protect(match: re.Match[str]) -> str:
-        return re.sub(r"(?<!\\)\\(?=\.)", r"\\\\", match.group(0))
-
-    return _WINDOWS_PATH_WITH_DOT_SEGMENT_RE.sub(_protect, text)
-
-
-def _terminal_width_for_streaming() -> int:
-    """Display cells available inside the streamed response box.
-
-    The streaming path prefixes every line with ``_STREAM_PAD`` (now
-    empty — flush-left so copy/paste stays clean) inside an open
-    response panel.  The realigner uses this number as its budget when
-    deciding whether to keep a horizontal table or fall back to
-    vertical key-value rendering.  We subtract a small safety margin
-    so terminal-resize races don't push a borderline table into
-    mid-cell soft-wrap.
-    """
-
-    try:
-        cols = shutil.get_terminal_size((80, 24)).columns
-    except Exception:
-        cols = 80
-    return max(20, cols - len(_STREAM_PAD) - 2)
-
-
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
@@ -3221,7 +3120,6 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     # normalise model-emitted under-padded tables so that mid-render fallbacks
     # (narrow panels, etc.) at least see consistent input.
     plain = _rich_text_from_ansi(text or "").plain
-    plain = _preserve_windows_dot_segments_for_markdown(plain)
     plain = realign_markdown_tables(plain, panel_width)
     return Markdown(plain)
 
@@ -3589,26 +3487,6 @@ def _detect_file_drop(user_input: str) -> "dict | None":
 # stripping them is better than sending corrupted prompts.
 
 
-def _status_bar_visible_from_display_config(display_config: object) -> bool:
-    """Return the initial classic-CLI status-bar visibility from display config.
-
-    ``display.tui_statusbar`` is the persisted user-facing setting toggled by
-    the TUI/statusbar controls. TOML parses bare ``off`` as ``False``, while
-    older config snapshots or hand edits may use strings such as ``"off"`` or
-    ``"hidden"``. Treat those values consistently so a new CLI process does not
-    re-enable a status bar that the user deliberately disabled.
-    """
-    if not isinstance(display_config, dict):
-        display_config = {}
-    statusbar_config = display_config.get(
-        "statusbar",
-        display_config.get("tui_statusbar", "top"),
-    )
-    if isinstance(statusbar_config, str):
-        return statusbar_config.strip().lower() not in {"0", "false", "hidden", "no", "off"}
-    return statusbar_config is not False
-
-
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
     """Collect local image attachments for single-query CLI flows."""
     message = query or ""
@@ -3695,55 +3573,6 @@ class ChatConsole:
 # ASCII Art - Son of Anton nucleus (compact, fits in left panel)
 
 
-def _build_compact_banner() -> str:
-    """Build a compact banner that fits the current terminal width."""
-    try:
-        from son_of_anton_cli.skin_engine import get_active_skin
-        _skin = get_active_skin()
-    except Exception:
-        _skin = None
-
-    skin_name = getattr(_skin, "name", "default") if _skin else "default"
-    border_color = _skin.get_color("banner_border", "bold yellow") if _skin else "bold yellow"
-    title_color = _skin.get_color("banner_title", "bold yellow") if _skin else "bold yellow"
-    dim_color = _skin.get_color("banner_dim", "dim yellow") if _skin else "dim yellow"
-
-    if skin_name == "default":
-        line1 = "⚛ SON OF ANTON - AI Agent Framework"
-        tiny_line = "⚛ SON OF ANTON"
-    else:
-        agent_name = _skin.get_branding("agent_name", "Son of Anton Agent") if _skin else "Son of Anton Agent"
-        line1 = f"{agent_name} - AI Agent Framework"
-        tiny_line = agent_name
-
-    if os.environ.get("SON_OF_ANTON_FAST_STARTUP_BANNER") == "1":
-        from son_of_anton_cli import __release_date__ as _release_date
-        from son_of_anton_cli import __version__ as _version
-
-        version_line = f"Son of Anton Agent v{_version} ({_release_date})"
-    else:
-        version_line = format_banner_version_label()
-
-    w = min(shutil.get_terminal_size().columns - 2, 88)
-    if w < 30:
-        return f"\n[{title_color}]{tiny_line}\n"
-
-    inner = w - 2  # inside the box border
-    bar = "═" * w
-    content_width = inner - 2
-
-    # Truncate and pad to fit
-    line1 = line1[:content_width].ljust(content_width)
-    line2 = version_line[:content_width].ljust(content_width)
-
-    return (
-        f"\n[{border_color}]╔{bar}╗\n"
-        f"[{border_color}]║ [{title_color}]{line1} [{border_color}]║\n"
-        f"[{border_color}]║ [{dim_color}]{line2} [{border_color}]║\n"
-        f"[{border_color}]╚{bar}╝\n"
-    )
-
-
 # ============================================================================
 # Slash-command detection helper
 # ============================================================================
@@ -3777,12 +3606,8 @@ def _get_plugin_cmd_handler_names() -> set:
 
 def save_config_value(key_path: str, value: any) -> bool:
     """
-    Save a value to the active config file at the specified key path.
-    
-    Respects the same lookup order as load_cli_config():
-    1. ~/.son-of-anton/config.toml (user config - preferred, used if it exists)
-    2. ./cli-config.toml (project config - fallback)
-    
+    Save a value to ~/.son-of-anton/config.toml at the specified key path.
+
     Args:
         key_path: Dot-separated path like "agent.system_prompt"
         value: Value to save
@@ -3790,19 +3615,8 @@ def save_config_value(key_path: str, value: any) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    # Runtime persistence ALWAYS targets the user's SON_OF_ANTON_HOME config.toml,
-    # creating it if needed. Resolve SON_OF_ANTON_HOME live (not the import-time
-    # _son_of_anton_home constant) so profile switches and test isolation land right.
-    #
-    # We deliberately do NOT fall back to the repo's project cli-config.toml:
-    # that file is a shipped default/template, and most config readers
-    # (load_config → get_son_of_anton_home()/config.toml, including
-    # load_wake_word_config) never read it. Writing a user setting there means
-    # the reader never sees it. This was the "wake-word ear reverts to disabled
-    # after restart" bug — the toggle's persist wrote to cli-config.toml (which
-    # exists in the checkout) while startup read SON_OF_ANTON_HOME/config.toml, so the
-    # setting silently vanished every restart on any install whose
-    # SON_OF_ANTON_HOME/config.toml didn't exist yet.
+    # Resolve SON_OF_ANTON_HOME live (not the import-time _son_of_anton_home
+    # constant) so test isolation lands right.
     config_path = get_son_of_anton_home() / 'config.toml'
     
     try:
@@ -4210,7 +4024,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.agent: Optional[Any] = None
         self._tool_callbacks_installed = False
         self._tirith_security_checked = False
-        self._app = None  # prompt_toolkit Application (set in run())
         
         # Conversation state
         self.conversation_history: List[Dict[str, Any]] = []
@@ -4284,8 +4097,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         
         # History file for persistent input recall across sessions
         self._history_file = _son_of_anton_home / ".son_of_anton_history"
-        self._last_invalidate: float = 0.0  # throttle UI repaints
-        self._app = None
 
         # State shared by interactive run() and single-query chat mode.
         # These must exist before any direct chat() call because single-query
@@ -4308,11 +4119,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # process_command() when the user runs /exit --delete or /quit --delete.
         # Ported from google-gemini/gemini-cli#19332.
         self._delete_session_on_exit = False
-        # /update: when set, run() executes relaunch() after prompt_toolkit
-        # has fully exited and cleaned up terminal modes.  Set by
-        # _handle_update_command() so the relaunch happens on the main thread,
-        # not the background process_loop thread.
-        self._pending_relaunch: list[str] | None = None
         self._last_ctrl_c_time = 0
         self._clarify_state = None
         self._clarify_freetext = False
@@ -4328,17 +4134,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
         self._model_picker_state = None
-        # Rotating task-oriented composer placeholder (C-09), chosen once per
-        # session so it stays stable while the empty input box is on screen.
-        try:
-            from son_of_anton_cli.composer_placeholders import (
-                get_random_composer_placeholder,
-            )
-
-            self._composer_placeholder = get_random_composer_placeholder()
-        except Exception:
-            self._composer_placeholder = ""
-        self._command_palette_state = None
         # Armed when a bare `/resume` prints the recent-sessions list so the
         # very next bare numeric input (e.g. `3`) resolves to that session.
         # Holds the exact list used for index resolution; one-shot (cleared on
@@ -4358,35 +4153,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._command_status = ""
         self._attached_images: list[Path] = []
         self._image_counter = 0
-        # Ctrl+S prompt stash — park a half-written draft, send something
-        # else, bring the draft back.  Session-scoped and in-memory only:
-        # drafts routinely contain secrets, so nothing is written to disk.
-        from son_of_anton_cli.prompt_stash import PromptStash as _PromptStash
-        self._prompt_stash = _PromptStash()
         self._active_session_lease = None
-
-        # Status bar visibility (toggled via /statusbar)
-        self._status_bar_visible = _status_bar_visible_from_display_config(
-            CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else None
-        )
-        # When True, the input separator rules and the dynamic status bar are
-        # hidden until the next user input. Set by _recover_after_resize() so a
-        # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
-        # the terminal just reflowed into scrollback — the cause of duplicated
-        # bars / "blank line flooding" reports (#19280, #22976).
-        self._status_bar_suppressed_after_resize = False
-        self._resize_recovery_lock = threading.Lock()
-        self._resize_recovery_timer = None
-        self._resize_recovery_pending = False
-        # Debounced timer that clears the post-resize suppression once the
-        # terminal reflow settles, so the status bar returns during idle
-        # without waiting for the next submitted input.
-        self._status_bar_unsuppress_timer = None
-        # Last terminal width seen by the resize handler. Used to distinguish a
-        # width change (column reflow → possible ghost chrome, needs a viewport
-        # clear) from a rows-only change (no reflow). None until the first
-        # resize fires.
-        self._last_resize_width = None
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
@@ -4430,92 +4197,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             logger.debug("Failed to release active session slot", exc_info=True)
         finally:
             self._active_session_lease = None
-
-    def _mark_terminal_io_broken(self, reason: str = "") -> None:
-        """Stop UI paints after the PTY/stdout becomes unusable (#81521)."""
-        if getattr(self, "_terminal_io_broken", False):
-            return
-        self._terminal_io_broken = True
-        logger.warning(
-            "Terminal I/O broken%s — freezing UI paints to avoid redraw storm (#81521)",
-            f" ({reason})" if reason else "",
-        )
-
-    def _force_full_redraw(self) -> None:
-        """Repaint the interactive front-end. No-op without one (``-q``)."""
-        return None
-
-    def _apply_tui_skin_style(self) -> bool:
-        """Re-apply the active skin to a live front-end. False without one."""
-        return False
-
-    def _invalidate(self, min_interval: float = 0.25) -> None:
-        """Throttled UI repaint for high-frequency background updates.
-
-        Use this for spinner frames, streaming token flushes, and other
-        repaints that can fire many times per second — the throttle prevents
-        terminal blinking on slow/SSH connections, and the resize-recovery
-        guard avoids stamping footer/status-bar chrome into scrollback while a
-        SIGWINCH reflow is in flight.
-
-        Do NOT use this for user-blocking modal prompts (approval / clarify /
-        sudo). Those are rare, one-shot, user-blocking events that must paint
-        immediately; route them through ``self._app.invalidate()`` directly, the
-        same way the modal key-binding handlers already do. Sending a modal's
-        entry paint through this throttle lets an unrelated background repaint
-        within the 250ms window — or an in-flight resize — silently drop it, so
-        the prompt never renders and times out unseen (#41098).
-        """
-        if getattr(self, "_terminal_io_broken", False):
-            return
-        if getattr(self, "_resize_recovery_pending", False):
-            return
-        now = time.monotonic()
-        if hasattr(self, "_app") and self._app and (now - getattr(self, "_last_invalidate", 0.0)) >= min_interval:
-            self._last_invalidate = now
-            try:
-                self._app.invalidate()
-            except OSError as exc:
-                if getattr(exc, "errno", None) == errno.EIO:
-                    self._mark_terminal_io_broken("invalidate")
-                    return
-                raise
-
-    def _paint_now(self) -> None:
-        """Immediate, unthrottled repaint for user-blocking modal prompts.
-
-        Background-thread callbacks (approval / clarify / sudo) set their modal
-        state then call this to make the panel visible at once. It deliberately
-        bypasses the ``_invalidate`` throttle and resize-recovery guard — a
-        modal the user is actively waiting on must never be dropped — mirroring
-        the direct ``event.app.invalidate()`` the modal key-binding handlers
-        already use. See ``_invalidate`` for why the throttle must not gate
-        these paints (#41098).
-        """
-        if getattr(self, "_terminal_io_broken", False):
-            return
-        app = getattr(self, "_app", None)
-        if app is not None:
-            try:
-                app.invalidate()
-            except OSError as exc:
-                if getattr(exc, "errno", None) == errno.EIO:
-                    self._mark_terminal_io_broken("paint_now")
-                    return
-                raise
-            except Exception:
-                pass
-
-
-    @staticmethod
-    def _compaction_count_style(count: int) -> str:
-        """Return a style class reflecting context compaction pressure."""
-        if count >= 10:
-            return "class:status-bar-bad"
-        if count >= 5:
-            return "class:status-bar-warn"
-        return "class:status-bar-dim"
-
 
     @staticmethod
     def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
@@ -4767,111 +4448,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return title
 
     @staticmethod
-    def _status_bar_display_width(text: str) -> int:
-        """Return terminal cell width for status-bar text.
-
-        len() is not enough for prompt_toolkit layout decisions because some
-        glyphs can render wider than one Python codepoint. Keeping the status
-        bar within the real display width prevents it from wrapping onto a
-        second line and leaving behind duplicate rows.
-        """
-        from rich.cells import cell_len
-
-        return cell_len(text or "")
-
-    @classmethod
-    def _trim_status_bar_text(cls, text: str, max_width: int) -> str:
-        """Trim status-bar text to a single terminal row."""
-        if max_width <= 0:
-            return ""
-        from rich.cells import cell_len as get_cwidth
-
-        if cls._status_bar_display_width(text) <= max_width:
-            return text
-
-        ellipsis = "..."
-        ellipsis_width = cls._status_bar_display_width(ellipsis)
-        if max_width <= ellipsis_width:
-            return ellipsis[:max_width]
-
-        out = []
-        width = 0
-        for ch in text:
-            ch_width = get_cwidth(ch)
-            if width + ch_width + ellipsis_width > max_width:
-                break
-            out.append(ch)
-            width += ch_width
-        return "".join(out).rstrip() + ellipsis
-
-    @classmethod
-    def _right_align_status_title(cls, text: str, title: str, width: int) -> str:
-        """Pin a bounded session-title badge to the far-right status-bar edge."""
-        title = str(title or "").strip()
-        if not title or width < 24:
-            return cls._trim_status_bar_text(text, width)
-
-        title_width = max(6, min(30, width // 3))
-        badge = f" {cls._trim_status_bar_text(title, title_width - 2)} "
-        suffix = f" ─{badge}"
-        left_width = max(0, width - cls._status_bar_display_width(suffix))
-        left = cls._trim_status_bar_text(text.rstrip(), left_width)
-        padding = " " * max(0, left_width - cls._status_bar_display_width(left))
-        return f"{left}{padding}{suffix}"
-
-    @classmethod
-    def _right_align_status_title_fragments(cls, frags, title: str, width: int):
-        """Styled counterpart to :meth:`_right_align_status_title`."""
-        title = str(title or "").strip()
-        if not title or width < 24:
-            return frags
-
-        title_width = max(6, min(30, width // 3))
-        badge = f" {cls._trim_status_bar_text(title, title_width - 2)} "
-        suffix_width = cls._status_bar_display_width(" ─") + cls._status_bar_display_width(badge)
-        left_width = max(0, width - suffix_width)
-        trimmed = []
-        used = 0
-        for style, value in frags:
-            remaining = left_width - used
-            if remaining <= 0:
-                break
-            value_width = cls._status_bar_display_width(value)
-            if value_width <= remaining:
-                trimmed.append((style, value))
-                used += value_width
-                continue
-            clipped = cls._trim_status_bar_text(value, remaining)
-            if clipped:
-                trimmed.append((style, clipped))
-                used += cls._status_bar_display_width(clipped)
-            break
-
-        if used < left_width:
-            trimmed.append(("class:status-bar-dim", " " * (left_width - used)))
-        trimmed.extend([
-            ("class:status-bar-dim", " ─"),
-            ("class:status-bar-session-title", badge),
-        ])
-        return trimmed
-
-    @staticmethod
-    def _get_tui_terminal_width(default: tuple[int, int] = (80, 24)) -> int:
-        """Return the live prompt_toolkit width, falling back to ``shutil``.
-
-        The TUI layout can be narrower than ``shutil.get_terminal_size()`` reports,
-        especially on narrow/mobile shells, so prefer prompt_toolkit's width
-        whenever an app is active.
-        """
-        return shutil.get_terminal_size(default).columns
-
-    def _use_minimal_tui_chrome(self, width: Optional[int] = None) -> bool:
-        """Hide low-value chrome on narrow/mobile terminals to preserve rows."""
-        if width is None:
-            width = self._get_tui_terminal_width()
-        return width < 64
-
-    @staticmethod
     def _scrollback_box_width(width: Optional[int] = None) -> int:
         """Return the full viewport width for printed scrollback box rules.
 
@@ -5007,36 +4583,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             logger.debug("Turn summary render failed", exc_info=True)
 
-    @staticmethod
-    def _status_bar_goal_segment(snapshot: Dict[str, Any]) -> str:
-        """Return the ``⊙ goal 3/20`` segment, or ``""`` when no goal is active.
-
-        Active-goal-only by design: paused/done goals don't occupy status-bar
-        real estate (they already print their own glyph lines in the thread).
-        """
-        if not snapshot.get("goal_active"):
-            return ""
-        used = snapshot.get("goal_turns_used") or 0
-        max_turns = snapshot.get("goal_max_turns") or 0
-        if max_turns:
-            return f"⊙ goal {used}/{max_turns}"
-        return "⊙ goal"
-
-
-    @staticmethod
-    def _fmt_stash_age(stashed_at: float) -> str:
-        """Return human-readable age string for a stash entry."""
-        import time as _t
-        secs = int(_t.monotonic() - stashed_at)
-        if secs < 10:
-            return "just now"
-        if secs < 90:
-            return f"{secs}s ago"
-        mins = secs // 60
-        if mins < 60:
-            return f"{mins} min ago"
-        return f"{mins // 60}h ago"
-
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
@@ -5109,14 +4655,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         return changed
 
-    def _on_thinking(self, text: str) -> None:
-        """Called by agent when thinking starts/stops. Updates TUI spinner."""
-        if not text:
-            self._flush_reasoning_preview(force=True)
-        self._spinner_text = text or ""
-        self._tool_start_time = 0.0  # clear tool timer when switching to thinking
-        self._invalidate()
-
     def _on_notice(self, notice) -> None:
         """Queue an out-of-band AgentNotice for rendering at the next clean boundary.
 
@@ -5173,41 +4711,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return self._on_reasoning
         return None
 
-    def _emit_reasoning_preview(self, reasoning_text: str) -> None:
-        """Render a buffered reasoning preview as a single [thinking] block."""
-        preview_text = reasoning_text.strip()
-        if not preview_text:
-            return
-
-        try:
-            term_width = shutil.get_terminal_size().columns
-        except Exception:
-            term_width = 80
-        prefix = "  [thinking] "
-        wrap_width = max(30, term_width - len(prefix) - 2)
-
-        paragraphs = []
-        raw_paragraphs = re.split(r"\n\s*\n+", preview_text.replace("\r\n", "\n"))
-        for paragraph in raw_paragraphs:
-            compact = " ".join(line.strip() for line in paragraph.splitlines() if line.strip())
-            if compact:
-                paragraphs.append(textwrap.fill(compact, width=wrap_width))
-        preview_text = "\n".join(paragraphs)
-        if not preview_text:
-            return
-
-        if self.verbose:
-            _cprint(f"  {_DIM}[thinking] {preview_text}{_RST}")
-            return
-
-        lines = preview_text.splitlines()
-        if len(lines) > 5:
-            preview = "\n".join(lines[:5])
-            preview += f"\n  ... ({len(lines) - 5} more lines)"
-        else:
-            preview = preview_text
-        _cprint(f"  {_DIM}[thinking] {preview}{_RST}")
-
     def _flush_reasoning_preview(self, *, force: bool = False) -> None:
         """Flush buffered reasoning text at natural boundaries.
 
@@ -5257,81 +4760,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if flush_text:
             self._emit_reasoning_preview(flush_text)
 
-
-    def _expand_paste_references(self, text: str | None) -> str:
-        """Expand [Pasted text #N -> file] placeholders into file contents."""
-        if not isinstance(text, str) or "[Pasted text #" not in text:
-            return text or ""
-        paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
-
-        def _expand_ref(match):
-            path = Path(match.group(1))
-            # Use try/except instead of path.exists() to avoid TOCTOU race:
-            # the paste file may be deleted between check and read, causing
-            # the input to be silently dropped (#17666).
-            try:
-                return path.read_text(encoding="utf-8")
-            except (OSError, IOError):
-                logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
-                return match.group(0)
-
-        return paste_ref_re.sub(_expand_ref, text)
-
-
-    def _stream_reasoning_delta(self, text: str) -> None:
-        """Stream reasoning/thinking tokens into a dim box above the response.
-
-        Opens a dim reasoning box on first token, streams line-by-line.
-        The box is closed automatically when content tokens start arriving
-        (via _stream_delta → _emit_stream_text).
-
-        Once the response box is open, suppress any further reasoning
-        rendering — a late thinking block (e.g. after an interrupt) would
-        otherwise draw a reasoning box inside the response box.
-        """
-        if not text:
-            return
-        self._reasoning_shown_this_turn = True
-        if getattr(self, "_stream_box_opened", False):
-            return
-
-        # Open reasoning box on first reasoning token
-        if not getattr(self, "_reasoning_box_opened", False):
-            self._reasoning_box_opened = True
-            w = self._scrollback_box_width()
-            r_label = " Reasoning "
-            label_w = len(r_label)
-            side = max((w - 2 - label_w) // 2, 0)
-            _cprint(f"\n{_DIM}┌{'─' * side}{r_label}{'─' * (w - 2 - label_w - side)}┐{_RST}")
-
-        self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
-
-        # Emit complete lines, and force-flush long partial lines so
-        # reasoning is visible in real-time even without newlines.
-        while "\n" in self._reasoning_buf:
-            line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            _cprint(f"{_THINKING}{line}{_RST}")
-        if len(self._reasoning_buf) > 80:
-            _cprint(f"{_THINKING}{self._reasoning_buf}{_RST}")
-            self._reasoning_buf = ""
-
-    def _close_reasoning_box(self) -> None:
-        """Close the live reasoning box if it's open."""
-        if getattr(self, "_reasoning_box_opened", False):
-            # Flush remaining reasoning buffer
-            buf = getattr(self, "_reasoning_buf", "")
-            if buf:
-                _cprint(f"{_THINKING}{buf}{_RST}")
-                self._reasoning_buf = ""
-            w = self._scrollback_box_width()
-            _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
-            self._reasoning_box_opened = False
-
-            # Flush any content that was deferred while reasoning was rendering.
-            deferred = getattr(self, "_deferred_content", "")
-            if deferred:
-                self._deferred_content = ""
-                self._emit_stream_text(deferred)
 
     def _stream_delta(self, text) -> None:
         """Line-buffered streaming callback for real-time token rendering.
@@ -5487,177 +4915,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._stream_prefilt = self._stream_prefilt[-max_tag_len:]
             return
 
-    def _emit_stream_text(self, text: str) -> None:
-        """Emit filtered text to the streaming display."""
-        if not text:
-            return
-
-        # When show_reasoning is on and reasoning is still rendering,
-        # defer content until the reasoning box closes.  This ensures the
-        # reasoning block always appears BEFORE the response in the terminal.
-        if self.show_reasoning and getattr(self, "_reasoning_box_opened", False):
-            self._deferred_content = getattr(self, "_deferred_content", "") + text
-            return
-
-        # Close the live reasoning box before opening the response box
-        self._close_reasoning_box()
-
-        # Open the response box header on the very first visible text
-        if not self._stream_box_opened:
-            # Strip leading whitespace/newlines before first visible content
-            text = text.lstrip("\n")
-            if not text:
-                return
-            self._stream_box_opened = True
-            try:
-                from son_of_anton_cli.skin_engine import get_active_skin
-                _skin = get_active_skin()
-                label = _skin.get_branding("response_label", "⚛ Son of Anton")
-                _text_hex = _skin.get_color("banner_text", "default")
-            except Exception:
-                label = "⚛ Son of Anton"
-                _text_hex = "default"
-            # Build a palette-respecting ANSI escape for the response text
-            # color so streamed content matches the Rich Panel appearance.
-            self._stream_text_ansi = _hex_to_ansi(_text_hex)
-            if self.show_timestamps:
-                label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
-            w = self._scrollback_box_width()
-            # Centre the label in the box top so the run of dashes is
-            # symmetric instead of one short dash + a long tail.
-            label_w = SonOfAntonCLI._status_bar_display_width(label)
-            side = max((w - 2 - label_w) // 2, 0)
-            _cprint(f"\n{_ACCENT}╭{'─' * side}{label}{'─' * (w - 2 - label_w - side)}╮{_RST}")
-
-        self._stream_buf += text
-
-        # Emit complete lines, keep partial remainder in buffer
-        _tc = getattr(self, "_stream_text_ansi", "")
-
-        def _emit_one(printed_line: str) -> None:
-            _cprint(f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}", strip=False)
-
-        def _flush_table_buf() -> None:
-            buf = self._stream_table_buf
-            self._stream_table_buf = []
-            self._in_stream_table = False
-            if not buf:
-                return
-            # Strip cell-level markdown (`code`, **bold**, ~~strike~~) FIRST
-            # so the realigner pads to the final visible cell width, not
-            # the marker-decorated source width.  Otherwise a body row
-            # like `` | Bold | `**bold**` | `` lands narrower than its
-            # header column once the markers are removed.
-            joined = "\n".join(buf)
-            if self.final_response_markdown == "strip":
-                joined = _strip_markdown_syntax(joined)
-            block = realign_markdown_tables(joined, _terminal_width_for_streaming())
-            for ln in block.split("\n"):
-                _emit_one(ln)
-
-        while "\n" in self._stream_buf:
-            line, self._stream_buf = self._stream_buf.split("\n", 1)
-
-            # Hold table-shaped lines in a side-buffer so we can re-pad
-            # the whole block once it ends.  Streaming line-by-line, we
-            # cannot re-align mid-table without reflowing already-printed
-            # rows; the cost is that the user sees the table appear in a
-            # single batch when the block closes instead of row-by-row.
-            if self._in_stream_table:
-                if looks_like_table_row(line) or is_table_divider(line):
-                    self._stream_table_buf.append(line)
-                    continue
-                # Block ended — flush the realigned table, then fall
-                # through to print the current (non-table) line.
-                _flush_table_buf()
-            elif looks_like_table_row(line):
-                self._stream_table_buf.append(line)
-                self._in_stream_table = True
-                continue
-
-            if self.final_response_markdown == "strip":
-                line = _strip_markdown_syntax(line)
-            _emit_one(line)
-
-        # Long partial lines are emitted ONLY at real newlines — we no
-        # longer hard-wrap paragraphs at terminal width ourselves.  Each
-        # logical line lands in scrollback as one line; the TERMINAL
-        # soft-wraps it visually, and emulators (iTerm2/kitty/VTE/
-        # xterm.js/Windows Terminal) rejoin soft-wrapped rows on copy,
-        # so highlight-copy yields the original unwrapped text — same
-        # outcome as the TUI's selection copy.  (The pre-July-2026 chunk
-        # emitter baked real '\n's into every long paragraph, which is
-        # exactly what polluted copy/paste.)
-        #
-        # TTFT perception: while a long opening paragraph accumulates
-        # without a newline, mirror its tail into the status-bar spinner
-        # line so the user sees tokens arriving instead of a blank box.
-        if (
-            self._stream_buf
-            and not self._in_stream_table
-            and not self._stream_buf.lstrip().startswith("|")
-            and len(self._stream_buf) >= 80
-        ):
-            preview = self._stream_buf[-int(_STREAM_PARTIAL_PREVIEW_LEN):]
-            cut = preview.find(" ")
-            if 0 < cut < len(preview) - 1:
-                preview = preview[cut + 1:]
-            try:
-                self._spinner_text = f"… {preview}"
-                self._invalidate()
-            except Exception:
-                pass
-
-    def _flush_stream(self) -> None:
-        """Emit any remaining partial line from the stream buffer and close the box."""
-        # If we're still inside a "reasoning block" at end-of-stream, it was
-        # a false positive — the model mentioned a tag like <think> in prose
-        # but never closed it.  Recover the buffered content as regular text.
-        if getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
-            self._in_reasoning_block = False
-            self._emit_stream_text(self._stream_prefilt)
-            self._stream_prefilt = ""
-
-        # Close reasoning box if still open (in case no content tokens arrived)
-        self._close_reasoning_box()
-
-        _tc = getattr(self, "_stream_text_ansi", "")
-
-        # If the stream buffer has a trailing partial line that looks like
-        # a table row, fold it into the table buffer so the whole block
-        # gets re-aligned together.  Otherwise the final row prints raw
-        # (with the model's original under-padded spacing) while the rows
-        # above it are aligned.
-        if (
-            self._stream_buf
-            and getattr(self, "_in_stream_table", False)
-            and (looks_like_table_row(self._stream_buf) or is_table_divider(self._stream_buf))
-        ):
-            self._stream_table_buf.append(self._stream_buf)
-            self._stream_buf = ""
-
-        # Flush any buffered table rows first so their padding is
-        # finalised before the stream remainder lands.
-        if getattr(self, "_stream_table_buf", None):
-            joined = "\n".join(self._stream_table_buf)
-            self._stream_table_buf = []
-            self._in_stream_table = False
-            if self.final_response_markdown == "strip":
-                joined = _strip_markdown_syntax(joined)
-            block = realign_markdown_tables(joined, _terminal_width_for_streaming())
-            for ln in block.split("\n"):
-                _cprint(f"{_STREAM_PAD}{_tc}{ln}{_RST}" if _tc else f"{_STREAM_PAD}{ln}", strip=False)
-
-        if self._stream_buf:
-            line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
-            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}", strip=False)
-            self._stream_buf = ""
-
-        # Close the response box
-        if self._stream_box_opened:
-            w = self._scrollback_box_width()
-            _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
-
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
         self._stream_buf = ""
@@ -5761,132 +5018,24 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             pass
 
     def show_banner(self):
-        """Display the welcome banner in Claude Code style."""
+        """Display the welcome banner (``/clear``)."""
         self.console.clear()
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compactor'):
             ctx_len = self.agent.context_compactor.context_length
-        
-        # Auto-compact for narrow terminals — the full banner with caduceus
-        # + tool list needs ~80 columns minimum to render without wrapping.
-        term_width = shutil.get_terminal_size().columns
-        use_compact = self.compact or term_width < 80
-        
-        if use_compact:
-            self._console_print(_build_compact_banner())
-            self._show_status()
-        else:
-            # Warm-launch fast path: replay last launch's tool panel when the
-            # snapshot fingerprint (config.toml + .env + checkout rev +
-            # toolsets) is unchanged, skipping the ~0.5-0.9s cold
-            # get_tool_definitions walk. The agent's REAL tool list is still
-            # computed fresh at first message; a background refresh below
-            # re-verifies the snapshot so any drift self-heals next launch.
-            from son_of_anton_cli.banner import (
-                compute_toolset_availability,
-                load_banner_snapshot,
-                save_banner_snapshot,
-            )
-
-            snapshot = None
-            try:
-                snapshot = load_banner_snapshot(self.enabled_toolsets)
-            except Exception:
-                snapshot = None
-
-            # Get terminal working directory (where commands will execute)
-            cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-
-            if snapshot is not None:
-                self._defer_tool_warnings = True
-                toolset_map = snapshot["toolset_map"]
-                build_welcome_banner(
-                    console=self.console,
-                    model=self.model,
-                    cwd=cwd,
-                    tools=snapshot["tools"],
-                    enabled_toolsets=self.enabled_toolsets,
-                    session_id=self.session_id,
-                    get_toolset_for_tool=lambda name: toolset_map.get(name),
-                    context_length=ctx_len,
-                    availability=snapshot["availability"],
-                    deferred_print=_cprint,
-                )
-
-                def _refresh_banner_snapshot() -> None:
-                    try:
-                        from model_tools import get_toolset_for_tool
-                        tools = get_tool_definitions(
-                            enabled_toolsets=self.enabled_toolsets, quiet_mode=True
-                        )
-                        availability = compute_toolset_availability(self.enabled_toolsets)
-                        tmap = {
-                            t["function"]["name"]: get_toolset_for_tool(t["function"]["name"])
-                            for t in tools
-                        }
-                        for item in availability.get("unavailable_toolsets", []):
-                            for name in item.get("tools", []):
-                                tmap.setdefault(
-                                    name, item.get("id", item.get("name", ""))
-                                )
-                        save_banner_snapshot(
-                            tools, self.enabled_toolsets, availability, tmap
-                        )
-                    except Exception:
-                        logger.debug("banner snapshot refresh failed", exc_info=True)
-
-                threading.Thread(
-                    target=_refresh_banner_snapshot,
-                    name="banner-snapshot-refresh",
-                    daemon=True,
-                ).start()
-            else:
-                # Cold path: compute everything live, then persist the snapshot
-                # so the next launch replays it.
-                from model_tools import get_toolset_for_tool
-                tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-                availability = compute_toolset_availability(self.enabled_toolsets)
-
-                build_welcome_banner(
-                    console=self.console,
-                    model=self.model,
-                    cwd=cwd,
-                    tools=tools,
-                    enabled_toolsets=self.enabled_toolsets,
-                    session_id=self.session_id,
-                    context_length=ctx_len,
-                    availability=availability,
-                    deferred_print=_cprint,
-                )
-                try:
-                    tmap = {
-                        t["function"]["name"]: get_toolset_for_tool(t["function"]["name"])
-                        for t in tools
-                    }
-                    for item in availability.get("unavailable_toolsets", []):
-                        for name in item.get("tools", []):
-                            tmap.setdefault(name, item.get("id", item.get("name", "")))
-                    save_banner_snapshot(tools, self.enabled_toolsets, availability, tmap)
-                except Exception:
-                    logger.debug("banner snapshot save failed", exc_info=True)
-        
-        # Tool discovery is intentionally deferred on the bare-prompt fast
-        # path; availability warnings are shown once tools are initialized.
-        # On the snapshot fast path (warm launch), the check walks every
-        # check_fn (~180ms) — run it in the background refresh thread instead
-        # and let its output land above the prompt (patch_stdout-safe).
+        build_welcome_banner(
+            console=self.console,
+            model=self.model,
+            cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
+            tools=get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True),
+            session_id=self.session_id,
+            context_length=ctx_len,
+        )
         if os.environ.get("SON_OF_ANTON_DEFER_AGENT_STARTUP") != "1":
-            if getattr(self, "_defer_tool_warnings", False):
-                threading.Thread(
-                    target=self._show_tool_availability_warnings,
-                    name="tool-availability-warnings",
-                    daemon=True,
-                ).start()
-            else:
-                self._show_tool_availability_warnings()
+            self._show_tool_availability_warnings()
 
-        # Warn about low context lengths (common with local servers). Keep
-        # this tied to the runtime guard so guidance cannot drift again.
+        # Warn about low context lengths. Keep this tied to the runtime guard
+        # so guidance cannot drift again.
         from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
         if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
             self._console_print()
@@ -5897,26 +5046,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._console_print(
                 f"[dim]   Son of Anton needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens. Tool schemas + system prompt use a large fixed prefix."
             )
-            base_url = getattr(self, "base_url", "") or ""
-            from urllib.parse import urlparse as _urlparse
-            try:
-                _parsed = _urlparse(base_url if "://" in base_url else f"//{base_url}")
-                _port = _parsed.port
-            except ValueError:
-                _port = None
-            _host = base_url_hostname(base_url)
-            if _port == 11434 or "ollama" in _host:
-                self._console_print(
-                    f"[dim]   Ollama fix: OLLAMA_CONTEXT_LENGTH={MINIMUM_CONTEXT_LENGTH} ollama serve"
-                )
-            elif _port == 1234:
-                self._console_print(
-                    "[dim]   LM Studio fix: Set context length in model settings → reload model"
-                )
-            else:
-                self._console_print(
-                    "[dim]   Fix: Set model.context_length in config.toml, or increase your server's context setting"
-                )
+            self._console_print(
+                "[dim]   Fix: Set model.context_length in config.toml, or increase your server's context setting"
+            )
 
         self._console_print()
 
@@ -6236,16 +5368,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             seq = "\x1bPtmux;" + seq.replace("\x1b", "\x1b\x1b") + "\x1b\\"
         elif os.environ.get("STY"):
             seq = "\x1bP" + seq + "\x1b\\"
-        out = getattr(self, "_app", None)
-        output = getattr(out, "output", None) if out else None
-        if output and hasattr(output, "write_raw"):
-            output.write_raw(seq)
-            output.flush()
-            return
-        if output and hasattr(output, "write"):
-            output.write(seq)
-            output.flush()
-            return
         sys.stdout.write(seq)
         sys.stdout.flush()
 
@@ -6338,50 +5460,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass  # Don't crash on import errors
     
-    def _show_status(self):
-        """Show compact startup status line."""
-        # Avoid pulling the full tool registry into the bare-prompt fast path.
-        if os.environ.get("SON_OF_ANTON_DEFER_AGENT_STARTUP") == "1":
-            tool_status = "tools deferred"
-        else:
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-            tool_count = len(tools) if tools else 0
-            tool_status = f"{tool_count} tools"
-
-        # Format model name (shorten if needed)
-        model_short = self.model.split("/")[-1] if "/" in self.model else self.model
-        if len(model_short) > 30:
-            model_short = model_short[:27] + "..."
-
-        # Get API status indicator
-        if self.api_key:
-            api_indicator = "[green bold]●"
-        else:
-            api_indicator = "[red bold]●"
-
-        # Build status line with proper markup — skin-aware colors
-        try:
-            from son_of_anton_cli.skin_engine import get_active_skin
-            skin = get_active_skin()
-            separator_color = skin.get_color("banner_dim", "dim yellow")
-            accent_color = skin.get_color("ui_accent", "yellow")
-            label_color = skin.get_color("ui_label", "yellow")
-        except Exception:
-            separator_color, accent_color, label_color = "dim yellow", "yellow", "cyan"
-        toolsets_info = ""
-        if self.enabled_toolsets and "all" not in self.enabled_toolsets:
-            toolsets_info = f" [{separator_color}]· [{label_color}]toolsets: {', '.join(self.enabled_toolsets)}"
-
-        provider_info = f" [{separator_color}]· [dim]provider: {self.provider}"
-        if self._provider_source:
-            provider_info += f" [{separator_color}]· [dim]auth: {self._provider_source}"
-
-        self._console_print(
-            f"  {api_indicator} [{accent_color}]{model_short} "
-            f"[{separator_color}]· [{label_color}]{tool_status}"
-            f"{toolsets_info}{provider_info}"
-        )
-
     def _show_session_status(self):
         """Show gateway-style status for the current CLI session."""
         session_meta = {}
@@ -6678,7 +5756,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print("  (*) = currently enabled")
         print()
         print("  Tip: Use 'all' or '*' to enable all toolsets")
-        print("  Example: python cli.py --toolsets web,terminal")
+        print("  Example: son-of-anton --toolsets web,terminal")
         print()
     
 
@@ -7498,11 +6576,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
 
-        # Pre-fill the composer with the backed-up message so the user can
-        # edit and resubmit (Claude-Code-style). Editable, not auto-sent.
-        if prefill and removed_text:
-            self._prefill_input_buffer(removed_text)
-
     @staticmethod
     def _undo_content_to_text(content) -> str:
         """Flatten message content (str or content-part list) to plain text."""
@@ -7516,183 +6589,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             ]
             return "\n".join(t for t in parts if t)
         return ""
-
-    def _prefill_input_buffer(self, text: str) -> None:
-        """Place ``text`` in the active prompt_toolkit buffer, editable."""
-        app = getattr(self, "_app", None)
-        if app is None:
-            return
-        try:
-            buf = app.current_buffer
-            buf.text = text
-            if hasattr(buf, "cursor_position"):
-                buf.cursor_position = len(text)
-            app.invalidate()
-        except Exception as e:
-            logger.debug("undo: prefill buffer failed: %s", e)
-    
-    def _run_curses_picker(self, title: str, items: list[str], default_index: int = 0) -> int | None:
-        """Run curses_single_select via run_in_terminal so prompt_toolkit handles terminal ownership cleanly."""
-        from son_of_anton_cli.curses_ui import curses_single_select
-
-        result = [None]
-
-        def _pick():
-            result[0] = curses_single_select(title, items, default_index=default_index)
-
-        # run_in_terminal requires an asyncio event loop — only exists in the
-        # main prompt_toolkit thread.  If we're in a background thread (e.g.
-        # process_loop), fall back to direct curses call.
-        _pick()
-
-        return result[0]
-
-    def _prompt_text_input(self, prompt_text: str) -> str | None:
-        """Prompt for free-text input safely inside or outside prompt_toolkit.
-
-        Mirrors the thread-aware guard in ``_run_curses_picker``: ``run_in_terminal``
-        returns a coroutine that must be awaited by the prompt_toolkit event loop,
-        which only exists on the main thread.  Slash commands are dispatched from
-        the ``process_loop`` daemon thread (see issue #23185), so calling
-        ``run_in_terminal`` from there orphans the coroutine — ``_ask`` never runs,
-        and user keystrokes leak into the composer instead.  Fall back to a direct
-        ``input()`` when we're off the main thread.
-        """
-        import threading
-        result = [None]
-
-        def _ask():
-            try:
-                result[0] = input(prompt_text).strip() or None
-            except (KeyboardInterrupt, EOFError):
-                pass
-
-        in_main_thread = threading.current_thread() is threading.main_thread()
-
-        # Slash-worker guard (#23185 / billing auto-reload hang): when a
-        # prompt_toolkit app is running but we're on a non-main thread (the
-        # process_loop / TUI slash-worker daemon thread), stdin is owned by the
-        # event loop / JSON-RPC pipe.  A bare input() there blocks forever until
-        # the worker's 45s timeout fires.  We cannot safely prompt off the main
-        # thread, so cancel cleanly (None) instead of hanging — mirrors the
-        # _stdin_fallback discipline in _prompt_text_input_modal.
-        if self._app and not in_main_thread:
-            self._invalidate()
-            return None
-
-        _ask()
-        return result[0]
-
-    def _prompt_text_input_modal(
-        self,
-        *,
-        title: str,
-        detail: str,
-        choices: list[tuple[str, str, str]],
-        timeout: float = 120,
-    ) -> str | None:
-        """Prompt through the prompt_toolkit composer instead of raw input().
-
-        This is for CLI slash-command confirmations.  The old raw input() path
-        fought prompt_toolkit's active stdin ownership: in some terminals the
-        prompt appeared above the TUI, choices were redrawn later, and Enter
-        could be interpreted as EOF/exit.  A first-class modal state keeps the
-        choices visible and lets the normal Enter key binding submit the typed
-        or highlighted choice.
-
-        **Platform note:**
-        The confirm modal is set up on ``self._app.loop`` via
-        ``call_soon_threadsafe`` and answered by the normal prompt_toolkit key
-        bindings (the same input channel that already handles ordinary
-        typing).  The raw ``input()`` fallback is kept only for the genuinely
-        safe cases: no running app (unit tests / non-interactive), no
-        resolvable event loop, or a scheduling failure.
-        """
-        import threading
-        import time as _time
-
-        if not choices:
-            return None
-
-        # If prompt_toolkit is not running (unit tests / non-interactive calls),
-        # keep the simple stdin fallback.
-        if not getattr(self, "_app", None):
-            return self._prompt_text_input("Choice [1/2/3]: ")
-
-        try:
-            app_loop = self._app.loop
-        except Exception:
-            app_loop = None
-
-        in_main_thread = threading.current_thread() is threading.main_thread()
-
-        def _stdin_fallback() -> str | None:
-            return self._prompt_text_input("Choice [1/2/3]: ")
-
-        if not in_main_thread and app_loop is None:
-            return _stdin_fallback()
-
-        response_queue = queue.Queue()
-
-        def _setup_modal() -> None:
-            self._capture_modal_input_snapshot()
-            self._slash_confirm_state = {
-                "title": title,
-                "detail": detail,
-                "choices": choices,
-                "selected": 0,
-                "response_queue": response_queue,
-            }
-            self._slash_confirm_deadline = _time.monotonic() + timeout
-            self._invalidate()
-
-        def _teardown_modal() -> None:
-            self._slash_confirm_state = None
-            self._slash_confirm_deadline = 0
-            self._restore_modal_input_snapshot()
-            self._invalidate()
-
-        def _run_on_app_loop(fn) -> bool:
-            if in_main_thread or app_loop is None:
-                fn()
-                return True
-            ready = threading.Event()
-
-            def _wrapped() -> None:
-                try:
-                    fn()
-                finally:
-                    ready.set()
-
-            try:
-                app_loop.call_soon_threadsafe(_wrapped)
-            except Exception:
-                return False
-            return ready.wait(timeout=5)
-
-        if not _run_on_app_loop(_setup_modal):
-            return _stdin_fallback()
-
-        _last_countdown_refresh = _time.monotonic()
-        try:
-            while True:
-                try:
-                    result = response_queue.get(timeout=1)
-                    _run_on_app_loop(_teardown_modal)
-                    return result
-                except queue.Empty:
-                    remaining = self._slash_confirm_deadline - _time.monotonic()
-                    if remaining <= 0:
-                        break
-                    now = _time.monotonic()
-                    if now - _last_countdown_refresh >= 5.0:
-                        _last_countdown_refresh = now
-                        self._invalidate()
-        finally:
-            if self._slash_confirm_state is not None:
-                _run_on_app_loop(_teardown_modal)
-        return None
-
 
     def _normalize_slash_confirm_choice(
         self,
@@ -7745,24 +6641,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     continue
                 entries.append((cmd, category, desc))
         return entries
-
-    def _open_command_palette(self) -> None:
-        """Open the Ctrl+P fuzzy command palette modal."""
-        if getattr(self, "_command_palette_state", None):
-            return
-        # Don't stack over other modals.
-        if (self._model_picker_state or self._clarify_state or self._approval_state
-                or self._slash_confirm_state or self._sudo_state):
-            return
-        self._capture_modal_input_snapshot()
-        self._command_palette_state = {
-            "entries": self._build_command_palette_entries(),
-            "filter": "",
-            "selected": 0,
-            "_scroll_offset": 0,
-        }
-        self._invalidate(min_interval=0.0)
-
 
     def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
         """Open prompt_toolkit-native /model picker modal."""
@@ -8135,16 +7013,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # Capture before close — picker state is cleared on close.
                 _picker_custom_provs = state.get("custom_provs")
                 self._close_model_picker()
-                if getattr(self, "_app", None):
-                    threading.Thread(
-                        target=self._confirm_and_apply_model_switch_result,
-                        args=(result, persist_global, _picker_custom_provs),
-                        daemon=True,
-                    ).start()
-                else:
-                    self._confirm_and_apply_model_switch_result(
-                        result, persist_global, custom_providers=_picker_custom_provs
-                    )
+                self._confirm_and_apply_model_switch_result(
+                    result, persist_global, custom_providers=_picker_custom_provs
+                )
                 return
             self._close_model_picker()
 
@@ -8373,13 +7244,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # appears and the switch silently cancels after the 120s timeout.
         # Mirror the picker path (_handle_model_picker_selection), which
         # already dispatches confirm+apply on a worker thread.
-        if getattr(self, "_app", None):
-            threading.Thread(
-                target=self._confirm_and_apply_cli_model_switch,
-                args=(result, persist_global, one_turn, custom_provs),
-                daemon=True,
-            ).start()
-            return
         self._confirm_and_apply_cli_model_switch(
             result, persist_global, one_turn, custom_provs
         )
@@ -8527,19 +7391,13 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             SonOfAntonCLI._persist_model_switch_to_session(self, result)
 
 
-    def _output_console(self):
-        """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
-        if getattr(self, "_app", None):
-            return ChatConsole()
-        return self.console
-
     def _console_print(self, *args, **kwargs):
         """Print through the active command-safe console."""
         cleaned_args = tuple(
             strip_decorative_glyphs(arg) if isinstance(arg, str) else arg
             for arg in args
         )
-        self._output_console().print(*cleaned_args, **kwargs)
+        self.console.print(*cleaned_args, **kwargs)
 
     def handle_bang_shell(self, text: str) -> bool:
         """Run a ``!<command>`` submission. Returns True when it was handled.
@@ -8712,8 +7570,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "help":
             _help_parts = cmd_original.split(None, 1)
             self.show_help(_help_parts[1].strip() if len(_help_parts) > 1 else "")
-        elif canonical == "palette":
-            self._open_command_palette()
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":
@@ -8736,46 +7592,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 return True  # confirmation cancelled — command handled, keep REPL alive
             self.new_session(silent=True)
             _clear_output_history()
-            # Clear terminal screen.  Inside the TUI, Rich's console.clear()
-            # goes through patch_stdout's StdoutProxy which swallows the
-            # screen-clear escape sequences.  Use prompt_toolkit's output
-            # object directly to actually clear the terminal.
-            if self._app:
-                out = self._app.output
-                out.erase_screen()
-                out.cursor_goto(0, 0)
-                out.flush()
-            else:
-                self.console.clear()
-            # Show fresh banner.  Inside the TUI we must route Rich output
-            # through ChatConsole (which uses prompt_toolkit's native ANSI
-            # renderer) instead of self.console (which writes raw to stdout
-            # and gets mangled by patch_stdout).
-            if self._app:
-                cc = ChatConsole()
-                term_w = shutil.get_terminal_size().columns
-                if self.compact or term_w < 80:
-                    cc.print(_build_compact_banner())
-                else:
-                    tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-                    cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-                    ctx_len = None
-                    if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compactor'):
-                        ctx_len = self.agent.context_compactor.context_length
-                    build_welcome_banner(
-                        console=cc,
-                        model=self.model,
-                        cwd=cwd,
-                        tools=tools,
-                        enabled_toolsets=self.enabled_toolsets,
-                        session_id=self.session_id,
-                        context_length=ctx_len,
-                        deferred_print=_cprint,
-                    )
-                _cprint("  (◕‿◕) Fresh start! Screen cleared and conversation reset.\n")
-            else:
-                self.show_banner()
-                print("  (◕‿◕) Fresh start! Screen cleared and conversation reset.\n")
+            self.console.clear()
+            self.show_banner()
+            print("  (◕‿◕) Fresh start! Screen cleared and conversation reset.\n")
         elif canonical == "history":
             self.show_history()
         elif canonical == "title":
@@ -8911,10 +7730,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._show_session_status()
         elif canonical == "context":
             self._show_context_breakdown(cmd_original)
-        elif canonical == "statusbar":
-            self._status_bar_visible = not self._status_bar_visible
-            state = "visible" if self._status_bar_visible else "hidden"
-            self._console_print(f"  Status bar {state}")
         elif canonical == "diff":
             self._handle_diff_command(cmd_original)
         elif canonical == "timestamps":
@@ -8938,9 +7753,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "copy":
             self._handle_copy_command(cmd_original)
         elif canonical == "version":
-            from son_of_anton_cli.main import _print_version_info
+            from son_of_anton_cli._startup_fast import print_fast_version_info
 
-            _print_version_info(check_updates=True)
+            print_fast_version_info()
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "image":
@@ -9802,39 +8617,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._reasoning_preview_buf = getattr(self, "_reasoning_preview_buf", "") + reasoning_text
         self._flush_reasoning_preview(force=False)
 
-    def _render_compaction_summary(self, summary: str, stats: Optional[dict] = None) -> None:
-        """Show what the compacted context now remembers.
-
-        Bound to ``agent.compaction_summary_callback``. Mirrors opencode: a
-        "Compaction" divider, then the summary the model will carry forward,
-        so the user can see exactly what survived — rather than an opaque
-        "compaction complete" line. Under the Textual front-end the console
-        funnel routes these renderables into the transcript feed.
-        """
-        from rich.rule import Rule
-
-        stats = stats or {}
-        try:
-            accent = _accent_hex()
-        except Exception:
-            accent = "yellow"
-        console = ChatConsole()
-        console.print(Rule(title=f"[bold {accent}]Compaction", style=f"dim {accent}"))
-        console.print(Panel(
-            _render_final_assistant_content(
-                summary, mode=getattr(self, "final_response_markdown", "render")
-            ),
-            title=f"[bold {accent}]What I remember",
-            title_align="left",
-            border_style=f"dim {accent}",
-            box=rich_box.HORIZONTALS,
-            padding=(1, 0),
-            width=self._scrollback_box_width(),
-        ))
-        line = _format_compaction_stats(stats)
-        if line:
-            console.print(f"[dim]{_escape(line)}[/dim]")
-
     def _manual_compact(self, cmd_original: str = ""):
         """Manually trigger context compaction on the current conversation.
 
@@ -10661,124 +9443,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
     # Tool-call generation indicator (shown during streaming)
     # ====================================================================
 
-    def _on_tool_gen_start(self, tool_name: str) -> None:
-        """Called when the model begins generating tool-call arguments.
-
-        Closes any open streaming boxes (reasoning / response) exactly once,
-        then prints a short status line so the user sees activity instead of
-        a frozen screen while a large payload (e.g. 45 KB write_file) streams.
-        """
-        if getattr(self, "_stream_box_opened", False):
-            self._flush_stream()
-            self._stream_box_opened = False
-        self._close_reasoning_box()
-
-        _cprint(f"  ┊ preparing {tool_name}…")
-
     # ====================================================================
     # Tool progress callback
     # ====================================================================
-
-    def _on_tool_progress(self, event_type: str, function_name: str = None, preview: str = None, function_args: dict = None, **kwargs):
-        """Called on tool lifecycle events (tool.started, tool.completed, reasoning.available, etc.).
-
-        Updates the TUI spinner widget so the user can see what the agent
-        is doing during tool execution (fills the gap between thinking
-        spinner and next response).
-
-        On tool.started, records a monotonic timestamp so get_spinner_text()
-        can show a live elapsed timer (the TUI poll loop already invalidates
-        every ~0.15s, so the counter updates automatically).
-
-        When tool_progress_mode is "all" or "new", also prints a persistent
-        stacked line to scrollback on tool.completed so users can see the
-        full history of tool calls (not just the current one in the spinner).
-        """
-        if event_type == "tool.completed":
-            self._tool_start_time = 0.0
-            # Per-turn accounting: this feed already sees every tool call with
-            # its result, so the summary line needs no agent-loop state.
-            self._turn_summary_record(
-                function_name, kwargs.get("result"), kwargs.get("is_error", False)
-            )
-            # Focus view: count the scrollback line we are NOT printing, so the
-            # post-turn recovery line can report how much was hidden. Counted
-            # against the pre-focus tool-progress mode, so a user who already
-            # had /verbose off is never told focus hid something it didn't.
-            if getattr(self, "_focus_view_enabled", False):
-                try:
-                    self._note_focus_hidden_line(function_name or "")
-                except Exception:
-                    pass
-            # Print stacked scrollback line for "new" / "all" / "verbose" modes.
-            # "verbose" was previously omitted here, so non-streaming model
-            # calls (copilot-acp) rendered each tool only into
-            # the transient spinner line — which overwrites itself, so no
-            # scrollable tool history accumulated. Streaming models hid the bug
-            # because _on_tool_gen_start commits a "preparing" line per tool;
-            # non-streaming calls never emit that, leaving verbose mode with no
-            # committed line at all. "verbose" is strictly more than "all", so
-            # it must commit at least the same line.
-            if function_name and self.tool_progress_mode in {"new", "all", "verbose"}:
-                duration = kwargs.get("duration", 0.0)
-                # Pop stored args from tool.started for this function
-                stored = self._pending_tool_info.get(function_name)
-                stored_args = stored.pop(0) if stored else {}
-                if stored is not None and not stored:
-                    del self._pending_tool_info[function_name]
-                # "new" mode: skip consecutive repeats of the same tool
-                if self.tool_progress_mode == "new" and function_name == self._last_scrollback_tool:
-                    self._invalidate()
-                    return
-                self._last_scrollback_tool = function_name
-                try:
-                    from agent.display import get_cute_tool_message
-                    line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
-                    _cprint(f"  {line}")
-                except Exception:
-                    pass
-                # First-touch onboarding: on the first tool in this process
-                # that takes longer than the threshold while we're in the
-                # noisiest progress mode, print a one-time hint about
-                # /verbose.  Latched on self so it fires at most once per
-                # process; persisted to config.toml so it never fires again
-                # across processes either.
-                try:
-                    if (
-                        not getattr(self, "_long_tool_hint_fired", False)
-                        and self.tool_progress_mode == "all"
-                        and duration >= 30.0
-                    ):
-                        from agent.onboarding import (
-                            TOOL_PROGRESS_FLAG,
-                            is_seen,
-                            mark_seen,
-                            tool_progress_hint_cli,
-                        )
-                        if not is_seen(CLI_CONFIG, TOOL_PROGRESS_FLAG):
-                            self._long_tool_hint_fired = True
-                            _cprint(f"  {_DIM}{tool_progress_hint_cli()}{_RST}")
-                            mark_seen(_son_of_anton_home / "config.toml", TOOL_PROGRESS_FLAG)
-                            CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[TOOL_PROGRESS_FLAG] = True
-                except Exception:
-                    pass
-            self._invalidate()
-            return
-        if event_type != "tool.started":
-            return
-        if function_name and not function_name.startswith("_"):
-            label = preview or function_name
-            from agent.display import get_tool_preview_max_len
-            _pl = get_tool_preview_max_len()
-            if _pl > 0 and len(label) > _pl:
-                label = label[:_pl - 3] + "..."
-            self._spinner_text = label
-            self._tool_start_time = time.monotonic()
-            # Store args for stacked scrollback line on completion
-            self._pending_tool_info.setdefault(function_name, []).append(
-                function_args if function_args is not None else {}
-            )
-            self._invalidate()
 
     def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict):
         """Capture local before-state for write-capable tools."""
@@ -11267,33 +9934,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             choices.append("view")
         return choices
 
-
-    def _capture_modal_input_snapshot(self) -> None:
-        """Temporarily clear the input buffer and save the user's in-progress draft."""
-        if self._modal_input_snapshot is not None or not getattr(self, "_app", None):
-            return
-        try:
-            buf = self._app.current_buffer
-            self._modal_input_snapshot = {
-                "text": buf.text,
-                "cursor_position": buf.cursor_position,
-            }
-            buf.reset()
-        except Exception:
-            self._modal_input_snapshot = None
-
-    def _restore_modal_input_snapshot(self) -> None:
-        """Restore any draft text that was present before a modal prompt opened."""
-        snapshot = self._modal_input_snapshot
-        self._modal_input_snapshot = None
-        if not snapshot or not getattr(self, "_app", None):
-            return
-        try:
-            buf = self._app.current_buffer
-            buf.text = snapshot.get("text", "")
-            buf.cursor_position = min(snapshot.get("cursor_position", 0), len(buf.text))
-        except Exception:
-            pass
 
     def _clear_active_overlays_for_interrupt(self) -> None:
         """Drain and clear every input-blocking overlay left by an interrupted agent.
@@ -11996,39 +10636,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print(f"Error: {e}")
             return None
     
-    def _clear_terminal_on_exit(self):
-        """Clear screen + scrollback so nothing is stranded above the exit summary.
-
-        Called from ``_print_exit_summary`` after ``app.run()`` has returned and
-        prompt_toolkit has torn down its renderer + restored terminal modes —
-        so a direct write to the real stdout fd is safe (the StdoutProxy /
-        patch_stdout layer is gone by now).
-
-        Sequence: ``ESC[3J`` (erase scrollback) + ``ESC[2J`` (erase visible
-        screen) + ``ESC[H`` (cursor home). Modern terminals on Linux and macOS
-        all honor these. Best-effort: skip silently when
-        stdout isn't a real console, and fall back to the platform ``clear``
-        command if the escape write fails.
-        """
-        try:
-            stream = sys.stdout
-            if stream is None or not stream.isatty():
-                return
-        except Exception:
-            return
-        try:
-            stream.write("\033[3J\033[2J\033[H")
-            stream.flush()
-            return
-        except Exception:
-            pass
-        # Fallback: shell clear command (rarely needed — escapes work on every
-        # VT-capable terminal, but this covers exotic stdout wrappers).
-        try:
-            os.system("clear")
-        except Exception:
-            pass
-
     def _persist_active_session_before_close(self):
         """Best-effort SQLite/JSON flush before the CLI marks a session closed.
 
@@ -12114,27 +10721,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except (Exception, KeyboardInterrupt) as e:
             logger.debug("Could not persist active CLI session before close: %s", e)
 
-    def _print_exit_summary(self, clear_screen: bool = True):
-        """Print session resume info on exit, similar to Claude Code.
-
-        Args:
-            clear_screen: When True (default), clear the terminal screen and
-                scrollback before printing the summary. This is appropriate for
-                interactive TUI teardown (#38252). Single-query (-q) mode should
-                pass False to preserve the printed answer (#53009).
-        """
-        if clear_screen:
-            # Clear the screen + scrollback before printing the summary so the
-            # live bottom chrome (status bar, input box, separator rules) and the
-            # rest of the session transcript don't get stranded above the exit
-            # summary (#38252). By this point app.run() has returned and
-            # prompt_toolkit has restored terminal modes, so writing raw escapes
-            # to stdout is safe. ESC[3J clears scrollback, ESC[2J clears the
-            # visible screen, ESC[H homes the cursor — so the summary prints at a
-            # clean top-left. Falls back to the platform clear command if stdout
-            # isn't a TTY-capable stream. Honors NO_COLOR/dumb terminals by
-            # skipping silently when there's no real console.
-            self._clear_terminal_on_exit()
+    def _print_exit_summary(self):
+        """Print session resume info on exit, similar to Claude Code."""
         print()
         msg_count = len(self.conversation_history)
         if msg_count > 0:
@@ -12191,167 +10779,111 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 def main(
     query: str = None,
-    q: str = None,
     image: str = None,
     toolsets: str = None,
     model: str = None,
     provider: str = None,
     reasoning: str = None,
-    api_key: str = None,
-    base_url: str = None,
     max_turns: int = None,
     run_budget: float = None,
     verbose: Optional[bool] = None,
     quiet: bool = False,
     compact: bool = False,
-    list_tools: bool = False,
-    list_toolsets: bool = False,
-    gateway: bool = False,
     resume: str = None,
     worktree: bool = False,
-    w: bool = False,
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
     pickup: bool = False,
 ):
-    """
-    Son of Anton Agent CLI - Interactive AI Assistant
-    
-    Args:
-        query: Single query to execute (then exit). Alias: -q
-        q: Shorthand for --query
-        image: Optional local image path to attach to a single query
-        toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
-        model: Model to use (default: anthropic/claude-opus-4-20250514)
-        provider: Inference provider ("auto" by default; e.g. "openai",
-                  "custom", or a provider from config.toml)
-        reasoning: Reasoning effort for this run (none|minimal|low|medium|high|xhigh|max|ultra). Overrides agent.reasoning_effort.
-        api_key: API key for authentication
-        base_url: Base URL for the API
-        max_turns: Maximum tool-calling iterations (default: 60)
-        verbose: Enable verbose logging
-        compact: Use compact display mode
-        list_tools: List available tools and exit
-        list_toolsets: List available toolsets and exit
-        resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
-        worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
-        w: Shorthand for --worktree
-        pickup: With ``resume``: end the relaying of that session (as /pickup)
-                once the TUI starts (``son-of-anton --pickup``).
-    
-    Examples:
-        python cli.py                            # Start interactive mode
-        python cli.py --toolsets web,terminal    # Use specific toolsets
-        python cli.py -q "What is Python?"       # Single query mode
-        python cli.py -q "Describe this" --image ~/storage/shared/Pictures/cat.png
-        python cli.py --list-tools               # List tools and exit
-        python cli.py --resume 20260225_143052_a1b2c3  # Resume session
-        python cli.py -w                         # Start in isolated git worktree
-        python cli.py -w -q "Fix issue #123"     # Single query in worktree
+    """Run the TUI, or one query (``query``/``image``) without a front-end.
+
+    Called by ``son-of-anton chat`` (son_of_anton_cli.main.cmd_chat), which
+    maps its flags onto these keyword arguments.
+    ``pickup`` with ``resume``: end the relaying of that session (as /pickup)
+    once the TUI starts (``son-of-anton --pickup``).
     """
     global _active_worktree
 
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
     os.environ["SON_OF_ANTON_INTERACTIVE"] = "1"
-    
-    # Handle gateway mode (messaging + cron)
-    if gateway:
-        import asyncio
-        # Mark this process as a real gateway BEFORE importing gateway.run.
-        # gateway.run's config->env bridge (terminal.cwd -> TERMINAL_CWD) is
-        # gated on this marker, because the module sets _SON_OF_ANTON_GATEWAY
-        # on import and so cannot distinguish a genuine gateway from an
-        # incidental import.
-        os.environ["_SON_OF_ANTON_GATEWAY_PROC"] = "1"
-        from gateway.run import start_gateway
-        print("Starting Son of Anton Gateway (messaging platforms)...")
-        asyncio.run(start_gateway())
-        return
 
-    # Skip worktree for list commands (they exit immediately)
-    if not list_tools and not list_toolsets:
-        # ── Git worktree isolation (#652) ──
-        # Create an isolated worktree so this agent instance doesn't collide
-        # with other agents working on the same repo.
-        use_worktree = worktree or w or CLI_CONFIG.get("worktree", False)
-        wt_info = None
-        if use_worktree:
-            # Overlap tool discovery with the network/subprocess-bound
-            # worktree setup (base fetch + parallel `git worktree add`
-            # release the GIL for most of their wall time). show_banner()
-            # then hits the warm cache instead of paying ~0.4s serially.
-            # Only done on the -w path: on plain `son-of-anton` there is no I/O
-            # wait to hide and the extra thread just contends for CPU.
-            def _prewarm_tools() -> None:
-                try:
-                    import model_tools as _mt
-                    _mt.get_tool_definitions(quiet_mode=True)
-                except Exception:
-                    logger.debug("tool prewarm failed", exc_info=True)
+    # ── Git worktree isolation (#652) ──
+    # Create an isolated worktree so this agent instance doesn't collide
+    # with other agents working on the same repo.
+    use_worktree = worktree or CLI_CONFIG.get("worktree", False)
+    wt_info = None
+    if use_worktree:
+        # Overlap tool discovery with the network/subprocess-bound
+        # worktree setup (base fetch + parallel `git worktree add`
+        # release the GIL for most of their wall time). show_banner()
+        # then hits the warm cache instead of paying ~0.4s serially.
+        # Only done on the -w path: on plain `son-of-anton` there is no I/O
+        # wait to hide and the extra thread just contends for CPU.
+        def _prewarm_tools() -> None:
+            try:
+                import model_tools as _mt
+                _mt.get_tool_definitions(quiet_mode=True)
+            except Exception:
+                logger.debug("tool prewarm failed", exc_info=True)
 
-            threading.Thread(
-                target=_prewarm_tools, name="tool-prewarm", daemon=True
-            ).start()
-            # Worktree creation itself (~0.2-0.6s of git subprocess wall
-            # time) runs concurrently with the rest of startup; join right
-            # after SonOfAntonCLI construction, before anything consumes
-            # TERMINAL_CWD / wt_info. Failure semantics preserved: setup
-            # failure still aborts the session (checked at join).
-            _sync_base = CLI_CONFIG.get("worktree_sync", True)
-            _wt_result: dict = {}
+        threading.Thread(
+            target=_prewarm_tools, name="tool-prewarm", daemon=True
+        ).start()
+        # Worktree creation itself (~0.2-0.6s of git subprocess wall
+        # time) runs concurrently with the rest of startup; join right
+        # after SonOfAntonCLI construction, before anything consumes
+        # TERMINAL_CWD / wt_info. Failure semantics preserved: setup
+        # failure still aborts the session (checked at join).
+        _sync_base = CLI_CONFIG.get("worktree_sync", True)
+        _wt_result: dict = {}
 
-            def _create_worktree() -> None:
-                try:
-                    _wt_result["info"] = _setup_worktree(sync_base=_sync_base)
-                except Exception:
-                    logger.debug("worktree setup failed", exc_info=True)
-                    _wt_result["info"] = None
+        def _create_worktree() -> None:
+            try:
+                _wt_result["info"] = _setup_worktree(sync_base=_sync_base)
+            except Exception:
+                logger.debug("worktree setup failed", exc_info=True)
+                _wt_result["info"] = None
 
-            _wt_thread = threading.Thread(
-                target=_create_worktree, name="worktree-setup", daemon=True
-            )
-            _wt_thread.start()
+        _wt_thread = threading.Thread(
+            target=_create_worktree, name="worktree-setup", daemon=True
+        )
+        _wt_thread.start()
 
-            def _join_worktree() -> Optional[Dict[str, str]]:
-                _wt_thread.join(timeout=120)
-                info = _wt_result.get("info")
-                if info:
-                    global _active_worktree
-                    _active_worktree = info
-                    os.environ["TERMINAL_CWD"] = info["path"]
-                    atexit.register(_cleanup_worktree, info)
-                    # Prune stale worktrees from crashed/killed sessions in
-                    # the background — pure GC, nothing downstream depends
-                    # on it. Ordered AFTER _setup_worktree so the two never
-                    # race on git's worktrees metadata; the new tree itself
-                    # is immune to reaping (<24h age gate + live pid lock).
-                    _repo = _git_repo_root()
-                    if _repo:
-                        def _worktree_maintenance(repo: str) -> None:
-                            _prune_stale_worktrees(repo)
-                            # Same pass: repack when packs sprawl, so object
-                            # lookups (and the next `worktree add`) stay fast
-                            # on multi-agent boxes. After the pruner so the
-                            # repack sees final refs.
-                            _maintain_pack_health(repo)
+        def _join_worktree() -> Optional[Dict[str, str]]:
+            _wt_thread.join(timeout=120)
+            info = _wt_result.get("info")
+            if info:
+                global _active_worktree
+                _active_worktree = info
+                os.environ["TERMINAL_CWD"] = info["path"]
+                atexit.register(_cleanup_worktree, info)
+                # Prune stale worktrees from crashed/killed sessions in
+                # the background — pure GC, nothing downstream depends
+                # on it. Ordered AFTER _setup_worktree so the two never
+                # race on git's worktrees metadata; the new tree itself
+                # is immune to reaping (<24h age gate + live pid lock).
+                _repo = _git_repo_root()
+                if _repo:
+                    def _worktree_maintenance(repo: str) -> None:
+                        _prune_stale_worktrees(repo)
+                        # Same pass: repack when packs sprawl, so object
+                        # lookups (and the next `worktree add`) stay fast
+                        # on multi-agent boxes. After the pruner so the
+                        # repack sees final refs.
+                        _maintain_pack_health(repo)
 
-                        threading.Thread(
-                            target=_worktree_maintenance,
-                            args=(_repo,),
-                            name="worktree-prune",
-                            daemon=True,
-                        ).start()
-                return info
-        else:
-            _join_worktree = None
+                    threading.Thread(
+                        target=_worktree_maintenance,
+                        args=(_repo,),
+                        name="worktree-prune",
+                        daemon=True,
+                    ).start()
+            return info
     else:
         _join_worktree = None
     wt_info = None
-    
-    # Handle query shorthand
-    query = query or q
     
     # Parse toolsets - handle both string and tuple/list inputs
     # Default to son-of-anton-cli toolset which includes cronjob management tools
@@ -12382,8 +10914,6 @@ def main(
         toolsets=toolsets_list,
         provider=provider,
         reasoning=reasoning,
-        api_key=api_key,
-        base_url=base_url,
         max_turns=max_turns,
         run_budget=run_budget,
         verbose=verbose,
@@ -12415,17 +10945,6 @@ def main(
             f"The original repo is at {wt_info['repo_root']}.]"
         )
         cli.system_prompt = (cli.system_prompt or "") + wt_note
-    
-    # Handle list commands (don't init agent for these)
-    if list_tools:
-        cli.show_banner()
-        cli.show_tools()
-        sys.exit(0)
-    
-    if list_toolsets:
-        cli.show_banner()
-        cli.show_toolsets()
-        sys.exit(0)
     
     # Register cleanup for single-query mode (interactive mode registers in run())
     atexit.register(_run_cleanup)
@@ -12667,7 +11186,7 @@ def main(
                 # banner, doesn't depend on the welcome banner being shown.
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
-                cli._print_exit_summary(clear_screen=False)
+                cli._print_exit_summary()
         finally:
             _finalize_single_query(cli)
         return

@@ -13,15 +13,6 @@ Usage:
     python cli.py --gateway
 """
 
-# IMPORTANT: son_of_anton_bootstrap must be the very first import — it sets up
-# UTF-8 stdio and runtime environment guards.
-try:
-    import son_of_anton_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    # Graceful fallback when son_of_anton_bootstrap isn't registered in an
-    # editable dev venv built before it existed.
-    pass
-
 import asyncio
 import concurrent.futures
 import dataclasses
@@ -1792,15 +1783,6 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
         cfg = _expand_env_vars(cfg)
         if not isinstance(cfg, dict):
             cfg = {}
-        # Managed scope: keep administrator-pinned values authoritative on every
-        # turn too. This per-turn reload re-bridges config→env, so without the
-        # overlay a managed agent.max_turns / timezone / redact_secrets would be
-        # replaced by the user's value after the first turn. Fail-open.
-        try:
-            from son_of_anton_cli import managed_scope
-            cfg = managed_scope.apply_managed_overlay(cfg)
-        except Exception:
-            pass
     except Exception:
         return
 
@@ -1893,17 +1875,6 @@ def _bridge_gateway_config_to_env() -> None:
             _cfg = _expand_env_vars(_cfg)
             if not isinstance(_cfg, dict):
                 _cfg = {}
-            # Managed scope: overlay administrator-pinned values BEFORE bridging to
-            # env vars, so a managed timezone / redact_secrets / max_turns / terminal
-            # setting wins over the user's value at the env layer too. This bridge
-            # reads config.toml directly (not via load_config), so without the
-            # overlay every SON_OF_ANTON_*/TERMINAL_* env var below would carry the user's
-            # value even when an administrator pinned it. Fail-open via the helper.
-            try:
-                from son_of_anton_cli import managed_scope
-                _cfg = managed_scope.apply_managed_overlay(_cfg)
-            except Exception:
-                pass
             # Top-level simple values (fallback only — don't override .env)
             for _key, _val in _cfg.items():
                 if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
@@ -3051,15 +3022,6 @@ def _load_gateway_config(config_path: "Path | None" = None) -> dict:
             logger.debug("Could not load gateway config from %s", config_path)
             raw = {}
 
-    # Overlay managed scope. read_raw_config() returns the user's raw TOML
-    # WITHOUT the managed merge (that lives in load_config/_load_config_impl),
-    # so the overlay is required on both paths for the gateway to honor pinned
-    # values. Helper is fail-open and a no-op when no managed scope exists.
-    try:
-        from son_of_anton_cli import managed_scope
-        raw = managed_scope.apply_managed_overlay(raw if isinstance(raw, dict) else {})
-    except Exception:
-        pass
     if not isinstance(raw, dict):
         return {}
     # Canonicalize model-id aliases (model.name / model.model → model.default)
@@ -6702,11 +6664,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # below fixes the managed-scope/${VAR} drift without losing that.
             cfg = read_user_config_raw(cfg_path)
             try:
-                from son_of_anton_cli import managed_scope
-                cfg = managed_scope.apply_managed_overlay(cfg)
-            except Exception:
-                pass
-            try:
                 from son_of_anton_cli.config import _expand_env_vars
                 expanded = _expand_env_vars(cfg)
                 if isinstance(expanded, dict):
@@ -7978,12 +7935,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if not systemd_run or not systemctl:
                 return
 
-            try:
-                from son_of_anton_cli.gateway import get_service_name
-
-                service_name = get_service_name()
-            except Exception:
-                service_name = "son-of-anton-gateway"
+            service_name = "son-of-anton-gateway"
 
             current_pid = os.getpid()
 
@@ -21921,13 +21873,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from son_of_anton_cli.resource_limits import apply_nofile_soft_limit
 
     apply_nofile_soft_limit()
-
-    # Snapshot the checkout revision now, while sys.modules still matches disk,
-    # so a later `git pull` under this long-lived process can be detected (and
-    # risky work like model switching refused) instead of crashing on a stale
-    # in-memory module.
-    from gateway.code_skew import record_boot_fingerprint
-    record_boot_fingerprint()
 
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same SON_OF_ANTON_HOME.

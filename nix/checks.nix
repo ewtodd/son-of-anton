@@ -1,7 +1,4 @@
 # nix/checks.nix — build-time verification tests
-#
-# Checks are Linux-only by convention: the full Python venv (via uv2nix)
-# includes transitive deps without compatible wheels on aarch64-darwin.
 { inputs, ... }:
 {
   perSystem =
@@ -56,9 +53,6 @@
       nixosGatewayExec = eval: name:
         eval.config.systemd.services."son-of-anton-${name}".serviceConfig.ExecStart;
 
-      homeGatewayExec = eval:
-        eval.config.systemd.user.services.son-of-anton.Service.ExecStart;
-
       # Auto-generated config key reference — always in sync with Python.
       configKeys = pkgs.runCommand "son-of-anton-config-keys" { } ''
         set -euo pipefail
@@ -86,7 +80,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
       checks = {
         # Cross-platform evaluation — catches "not supported for interpreter"
-        # errors without needing a darwin builder.
+        # errors without needing an aarch64 builder.
         cross-eval =
           let
             targetSystems = builtins.filter
@@ -94,7 +88,6 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               [
                 "x86_64-linux"
                 "aarch64-linux"
-                "aarch64-darwin"
               ];
             tryEvalPkg =
               sys:
@@ -238,19 +231,24 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           '';
 
         # ── The Home Manager module ──────────────────────────────────────
+        # The activation merges settings into config.toml and environmentFiles
+        # into .env; the CLI lands on the profile with SON_OF_ANTON_HOME set.
         home-manager-module =
           let
-            exec = execStr (homeGatewayExec (
-              evalHomeModule {
-                enable = true;
-                gateway.enable = true;
-              }
-            ));
+            eval = evalHomeModule {
+              enable = true;
+              settings.model.default = "auto";
+              environmentFiles = [ "/run/agenix/check-env" ];
+            };
+            activation = eval.config.home.activation.son-of-antonAgentSetup.data;
           in
-          assert lib.hasInfix "bin/son-of-anton gateway" exec;
+          assert lib.hasInfix "--state /home/son-of-anton-check/.son-of-anton/.nix-managed.json" activation;
+          assert lib.hasInfix "/run/agenix/check-env" activation;
+          assert eval.config.home.sessionVariables.SON_OF_ANTON_HOME
+            == "/home/son-of-anton-check/.son-of-anton";
 
           pkgs.runCommand "son-of-anton-home-manager-module" { } ''
-            echo "PASS: Home Manager module gateway unit is correct"
+            echo "PASS: Home Manager module activation and environment are correct"
             mkdir -p $out
           '';
 

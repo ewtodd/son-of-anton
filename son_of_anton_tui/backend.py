@@ -295,7 +295,6 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
         self._attached_images = []
         self._image_counter = 0
         self._model_picker_state = getattr(self, "_model_picker_state", None)
-        self._command_palette_state = None
 
         import os
 
@@ -439,23 +438,13 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
         except Exception:
             pass
         try:
-            self._print_exit_summary(clear_screen=False)
+            self._print_exit_summary()
         except Exception:
             pass
         try:
             self._release_active_session()
         except Exception:
             pass
-
-        # /update parks a relaunch here so the exec happens after the app has
-        # exited and the terminal is restored, never from a worker thread.
-        if getattr(self, "_pending_relaunch", None):
-            try:
-                from son_of_anton_cli.relaunch import relaunch
-
-                relaunch(self._pending_relaunch, preserve_inherited=False)
-            except Exception:
-                pass
 
     # ------------------------------------------------------------------
     # Turn helpers used by the app
@@ -921,19 +910,8 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
     def _restore_modal_input_snapshot(self) -> None:
         return None
 
-    def _get_tui_terminal_width(self, default: tuple = (80, 24)) -> int:  # type: ignore[override]
-        if self._tui_feed_width:
-            return self._tui_feed_width
-        import shutil
-
-        return shutil.get_terminal_size(default).columns
-
     def _scrollback_box_width(self, width: Optional[int] = None) -> int:  # type: ignore[override]
         return SonOfAntonCLI._scrollback_box_width(width or self._tui_feed_width or None)
-
-    def _use_minimal_tui_chrome(self, width: Optional[int] = None) -> bool:
-        return False
-
 
     # ------------------------------------------------------------------
     # Prompts that fell back to stdin: make them queue-based

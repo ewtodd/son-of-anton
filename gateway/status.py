@@ -524,29 +524,6 @@ def _build_pid_record() -> dict:
     }
 
 
-def _get_code_identity_fields() -> dict[str, Any]:
-    """Code identity of THIS gateway process, for fleet version checks.
-
-    Lazy import so ``gateway.status`` keeps no import-time dependency on
-    ``son_of_anton_cli``; the helper itself is cached per process. A gateway
-    keeps serving the module versions it imported at startup, so stamping
-    the identity into ``gateway_state.json`` lets `son-of-anton update` (and the
-    dashboard) prove whether a running gateway actually picked up new code
-    after the restart phase — instead of assuming it did (#88654, #69754).
-    Never raises; degrades to absent fields.
-    """
-    try:
-        from son_of_anton_cli.build_info import get_code_identity
-
-        identity = get_code_identity()
-        return {
-            "code_sha": identity.get("sha"),
-            "code_version": identity.get("version"),
-        }
-    except Exception:
-        return {}
-
-
 def _build_runtime_status_record() -> dict[str, Any]:
     payload = _build_pid_record()
     payload.update({
@@ -557,7 +534,6 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "platforms": {},
         "updated_at": _utc_now_iso(),
     })
-    payload.update(_get_code_identity_fields())
     return payload
 
 
@@ -902,10 +878,6 @@ def write_runtime_status(
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
     payload["updated_at"] = _utc_now_iso()
-    # Re-stamp code identity on every write: the file can outlive the process
-    # that created it, and the top-level record must always describe the
-    # CURRENT writer's code (per-process cached, so this is a dict copy).
-    payload.update(_get_code_identity_fields())
 
     if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state

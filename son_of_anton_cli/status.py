@@ -7,7 +7,6 @@ Shows the status of all Son of Anton Agent components.
 import os
 import sys
 import time
-import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -23,18 +22,6 @@ def check_mark(ok: bool) -> str:
     if ok:
         return color("✓", Colors.GREEN)
     return color("✗", Colors.RED)
-
-def redact_key(key: str) -> str:
-    """Redact an API key for display.
-
-    Thin wrapper over :func:`agent.redact.mask_secret`. Preserves the
-    "(not set)" placeholder in dim color to match ``son-of-anton config``'s
-    output (previously this variant was missing the DIM color —
-    consolidated via PR that also introduced ``mask_secret``).
-    """
-    from agent.redact import mask_secret
-    return mask_secret(key, empty=color("(not set)", Colors.DIM))
-
 
 def _format_relative_ts(ts: float) -> str:
     """Format an epoch timestamp as a short relative age for status output."""
@@ -101,8 +88,6 @@ def _estop_status_line():
 
 def show_status(args):
     """Show status of all Son of Anton Agent components."""
-    deep = getattr(args, 'deep', False)
-
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 ⚛ Son of Anton Agent Status                  │", Colors.CYAN))
@@ -133,38 +118,6 @@ def show_status(args):
     print(f"  Provider:     {_effective_provider_label()}")
 
     # =========================================================================
-    # API Keys
-    # =========================================================================
-    print()
-    print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
-
-    # Values may be a single env var name (str) or a tuple of alternates (first found wins).
-    keys: dict[str, str | tuple[str, ...]] = {
-        "OpenAI": "OPENAI_API_KEY",
-        "DeepSeek": "DEEPSEEK_API_KEY",
-        "Firecrawl": "FIRECRAWL_API_KEY",
-        "Tavily": "TAVILY_API_KEY",
-        "GitHub": "GITHUB_TOKEN",
-    }
-
-    def _resolve_env(env_ref) -> str:
-        """Return first non-empty env var value from a str or tuple of names."""
-        if isinstance(env_ref, tuple):
-            for candidate in env_ref:
-                v = get_env_value(candidate) or ""
-                if v:
-                    return v
-            return ""
-        return get_env_value(env_ref) or ""
-
-    for name, env_ref in keys.items():
-        value = _resolve_env(env_ref)
-        has_key = bool(value)
-        display = redact_key(value)
-        print(f"  {name:<12}  {check_mark(has_key)} {display}")
-
-
-    # =========================================================================
     # Terminal Configuration
     # =========================================================================
     print()
@@ -186,28 +139,15 @@ def show_status(args):
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
 
     # =========================================================================
-    # Messaging Platforms
+    # Messaging
     # =========================================================================
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
-
-    platforms = {
-        "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
-    }
-
-    for name, (token_var, home_var) in platforms.items():
-        token = os.getenv(token_var, "")
-        has_token = bool(token)
-        
-        home_channel = ""
-        if home_var:
-            home_channel = os.getenv(home_var, "")
-
-        status = "configured" if has_token else "not configured"
-        if home_channel:
-            status += f" (home: {home_channel})"
-        
-        print(f"  {name:<12}  {check_mark(has_token)} {status}")
+    signal_url = os.getenv("SIGNAL_HTTP_URL", "")
+    signal_status = "configured" if signal_url else "not configured"
+    if os.getenv("SIGNAL_HOME_CHANNEL"):
+        signal_status += f" (home: {os.getenv('SIGNAL_HOME_CHANNEL')})"
+    print(f"  {'Signal':<12}  {check_mark(bool(signal_url))} {signal_status}")
 
     # =========================================================================
     # Gateway Status
@@ -216,25 +156,17 @@ def show_status(args):
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
 
     try:
-        from son_of_anton_cli.gateway import get_gateway_runtime_snapshot, _format_gateway_pids
+        from son_of_anton_cli.gateway import find_gateway_pids, systemd_units_of_pids
 
-        snapshot = get_gateway_runtime_snapshot()
-        is_running = snapshot.running
-        print(f"  Status:       {check_mark(is_running)} {'running' if is_running else 'stopped'}")
-        print(f"  Manager:      {snapshot.manager}")
-        if snapshot.gateway_pids:
-            print(f"  PID(s):       {_format_gateway_pids(snapshot.gateway_pids)}")
-        if snapshot.has_process_service_mismatch:
-            print("  Service:      installed but not managing the current running gateway")
-        elif snapshot.service_installed and not snapshot.service_running:
-            print("  Service:      installed but stopped")
+        pids = find_gateway_pids()
+        print(f"  Status:       {check_mark(bool(pids))} {'running' if pids else 'stopped'}")
+        if pids:
+            shown = [str(pid) for pid in pids[:3]] + (["..."] if len(pids) > 3 else [])
+            print(f"  PID(s):       {', '.join(shown)}")
+            units = systemd_units_of_pids(pids)
+            print(f"  Manager:      {'systemd: ' + ', '.join(units) if units else 'manual process'}")
     except Exception:
-        if sys.platform.startswith('linux'):
-            print(f"  Status:       {color('unknown', Colors.DIM)}")
-            print("  Manager:      systemd/manual")
-        elif sys.platform == 'darwin':
-            print(f"  Status:       {color('unknown', Colors.DIM)}")
-            print("  Manager:      launchd")
+        print(f"  Status:       {color('unknown', Colors.DIM)}")
 
     # =========================================================================
     # Cron Jobs
@@ -340,27 +272,6 @@ def show_status(args):
                 f"                {_entry.get('surface') or 'unknown':<17} "
                 f"{_entry.get('session_id') or '?':<24} {_age}"
             )
-
-    # =========================================================================
-    # Deep checks
-    # =========================================================================
-    if deep:
-        print()
-        print(color("◆ Deep Checks", Colors.CYAN, Colors.BOLD))
-
-        # Check gateway port
-        try:
-            import socket
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1)
-            result = sock.connect_ex(('127.0.0.1', 18789))
-            sock.close()
-            # Port in use = gateway likely running
-            port_in_use = result == 0
-            # This is informational, not necessarily bad
-            print(f"  Port 18789:   {'in use' if port_in_use else 'available'}")
-        except OSError:
-            pass
 
     print()
     print(color("─" * 60, Colors.DIM))

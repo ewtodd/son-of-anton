@@ -6,9 +6,6 @@
     let
       package = pkgs.callPackage ./son-of-anton.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
-        # Only embed clean revs — dirtyRev doesn't represent any upstream
-        # commit, so comparing it would always claim "update available".
-        rev = inputs.self.rev or null;
       };
     in
     {
