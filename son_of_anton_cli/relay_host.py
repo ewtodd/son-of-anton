@@ -610,7 +610,6 @@ class RelayHostMixin:
             reply = text
         self._clarify_state = None
         self._clarify_freetext = False
-        self._clarify_multi_base = None
         state["response_queue"].put(reply)
         return True
 

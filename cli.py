@@ -36,17 +36,6 @@ from agent.interrupt_compat import request_hard_interrupt
 import threading
 import queue
 
-def CanonicalUsage(*args, **kwargs):
-    from agent.usage_pricing import CanonicalUsage as _CanonicalUsage
-
-    return _CanonicalUsage(*args, **kwargs)
-
-
-def estimate_usage_cost(*args, **kwargs):
-    from agent.usage_pricing import estimate_usage_cost as _estimate_usage_cost
-
-    return _estimate_usage_cost(*args, **kwargs)
-
 
 def format_duration_compact(*args, **kwargs):
     seconds = float(args[0] if args else kwargs.get("seconds", 0.0))
@@ -61,42 +50,6 @@ def format_duration_compact(*args, **kwargs):
         return f"{int(hours)}h {remaining_min}m" if remaining_min else f"{int(hours)}h"
     days = hours / 24
     return f"{days:.1f}d"
-
-
-def format_token_count_compact(*args, **kwargs):
-    value = int(args[0] if args else kwargs.get("value", 0))
-    abs_value = abs(value)
-    if abs_value < 1_000:
-        return str(value)
-
-    sign = "-" if value < 0 else ""
-    units = ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K"))
-    for threshold, suffix in units:
-        if abs_value >= threshold:
-            scaled = abs_value / threshold
-            if scaled < 10:
-                text = f"{scaled:.2f}"
-            elif scaled < 100:
-                text = f"{scaled:.1f}"
-            else:
-                text = f"{scaled:.0f}"
-            if "." in text:
-                text = text.rstrip("0").rstrip(".")
-            return f"{sign}{text}{suffix}"
-
-    return f"{value:,}"
-
-
-def is_table_divider(*args, **kwargs):
-    from agent.markdown_tables import is_table_divider as _is_table_divider
-
-    return _is_table_divider(*args, **kwargs)
-
-
-def looks_like_table_row(*args, **kwargs):
-    from agent.markdown_tables import looks_like_table_row as _looks_like_table_row
-
-    return _looks_like_table_row(*args, **kwargs)
 
 
 def realign_markdown_tables(*args, **kwargs):
@@ -220,53 +173,6 @@ def _assistant_copy_text(content: Any) -> str:
 # Configuration Loading
 # =============================================================================
 
-def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
-    """Load ephemeral prefill messages from a JSON file.
-    
-    The file should contain a JSON array of {role, content} dicts, e.g.:
-        [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello!"}]
-    
-    Relative paths are resolved from ~/.son-of-anton/.
-    Returns an empty list if the path is empty or the file doesn't exist.
-    """
-    if not file_path:
-        return []
-    path = Path(file_path).expanduser()
-    if not path.is_absolute():
-        path = _son_of_anton_home / path
-    if not path.exists():
-        logger.warning("Prefill messages file not found: %s", path)
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, list):
-            logger.warning("Prefill messages file must contain a JSON array: %s", path)
-            return []
-        return data
-    except Exception as e:
-        logger.warning("Failed to load prefill messages from %s: %s", path, e)
-        return []
-
-
-def _resolve_prefill_messages_file(config: Dict[str, Any]) -> str:
-    """Resolve the prefill file path from env/config.
-
-    ``prefill_messages_file`` at the top level is the canonical config key.
-    ``agent.prefill_messages_file`` remains a legacy fallback for older CLI and
-    godmode-generated configs.
-    """
-    env_path = os.getenv("SON_OF_ANTON_PREFILL_MESSAGES_FILE", "").strip()
-    if env_path:
-        return env_path
-    top_level = str(config.get("prefill_messages_file", "") or "").strip()
-    if top_level:
-        return top_level
-    agent_cfg = config.get("agent", {})
-    if isinstance(agent_cfg, dict):
-        return str(agent_cfg.get("prefill_messages_file", "") or "").strip()
-    return ""
-
 
 def _parse_reasoning_config(effort) -> dict | None:
     """Parse a reasoning effort level into an OpenRouter reasoning config dict.
@@ -320,10 +226,6 @@ def load_cli_config() -> Dict[str, Any]:
             "system_prompt": "",
             "prefill_messages_file": "",
             "reasoning_effort": "",
-            # Built-in personalities live in son_of_anton_cli.personality
-            # (BUILTIN_PERSONALITIES) — the single owner. Entries here are
-            # user-defined additions/overrides merged on top by name.
-            "personalities": {},
         },
 
         "display": {
@@ -3492,7 +3394,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._focus_view_enabled = bool(CLI_CONFIG["display"].get("focus_view", False))
         self._focus_saved_tool_progress = None
         self._focus_hidden_lines = 0
-        self._focus_last_counted_tool = None
         if self._focus_view_enabled:
             from son_of_anton_cli.focus_view import (
                 FOCUS_TOOL_PROGRESS_MODE,
@@ -3512,16 +3413,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # reasoning_full: when reasoning display is on, print the post-response
         # recap box uncollapsed instead of clamping to the first 10 lines.
         self.reasoning_full = CLI_CONFIG["display"].get("reasoning_full", False)
-        _configure_output_history(
-            enabled=CLI_CONFIG["display"].get("persistent_output", True),
-            max_lines=CLI_CONFIG["display"].get("persistent_output_max_lines", 200),
-        )
 
         # self.verbose ONLY controls global DEBUG logging (root logger level).
         # display.tool_progress="verbose" controls tool-call rendering (full args,
         # results, think blocks) and is independent — see _apply_logging_levels.
-        # Coupling the two (PR #6a1aa420e) caused all module DEBUG logs to spew
-        # to console whenever a user set tool_progress: verbose in config.
         self.verbose = bool(verbose) if verbose is not None else False
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.toml)
@@ -3554,37 +3449,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # summary line out of non-interactive surfaces.
         self._interactive_turn = False
 
-        # Submitted multiline user-message preview (display.user_message_preview in config.toml)
-        _ump = CLI_CONFIG["display"].get("user_message_preview", {})
-        if not isinstance(_ump, dict):
-            _ump = {}
-        try:
-            _ump_first_lines = int(_ump.get("first_lines", 2))
-        except (TypeError, ValueError):
-            _ump_first_lines = 2
-        try:
-            _ump_last_lines = int(_ump.get("last_lines", 2))
-        except (TypeError, ValueError):
-            _ump_last_lines = 2
-        self.user_message_preview_first_lines = max(1, _ump_first_lines)
-        self.user_message_preview_last_lines = max(0, _ump_last_lines)
-
         # Streaming display state
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
-        # Table-row buffer.  When a streamed line looks like it could be
-        # part of a markdown table, hold it here until the block ends so
-        # we can re-pad with wcwidth-aware widths.  Empty by default;
-        # populated only while `_in_stream_table` is True.
-        self._stream_table_buf: list[str] = []
-        self._in_stream_table = False
         self._pending_edit_snapshots = {}
-        self._last_input_mode_recovery = 0.0
-        self._input_mode_recovery_notice_shown = False
-        self._last_termios_drift_check = 0.0
-        self._termios_drift_notice_shown = False
         
         # Configuration - priority: CLI args > env vars > config file
         # Model comes from: CLI arg or config.toml (single source of truth).
@@ -3603,18 +3473,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # clobber an explicit override with the session's stored model.
         self._explicit_model_override = bool(model)
         self.model = model or _config_model or ""
-        # Read max_tokens from config (env var override: SON_OF_ANTON_MAX_TOKENS)
-        _env_mt = os.environ.get("SON_OF_ANTON_MAX_TOKENS")
-        if _env_mt:
-            try:
-                self.max_tokens = int(_env_mt)
-            except (ValueError, TypeError):
-                self.max_tokens = None
-        elif isinstance(_model_config, dict):
-            _mt = _model_config.get("max_tokens")
-            self.max_tokens = _mt if isinstance(_mt, int) else None
-        else:
-            self.max_tokens = None
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
 
@@ -3623,13 +3481,12 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             provider
             or _nested_provider
             or CLI_CONFIG["model"].get("provider")
-            or os.getenv("SON_OF_ANTON_INFERENCE_PROVIDER")
             or "auto"
         )
         # `--provider <custom>` without `-m` must use that entry's
         # default_model. Otherwise the global model.default is sent to the
         # custom endpoint and the compactor inherits the wrong context
-        # length (#86978). Explicit `-m` still wins.
+        # length. Explicit `-m` still wins.
         if not model and provider:
             try:
                 from son_of_anton_cli.runtime_provider import _get_named_custom_provider
@@ -3646,41 +3503,20 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _provider_default = str((_named_custom or {}).get("model") or "").strip()
             if _provider_default:
                 self.model = _provider_default
-        self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
         self.base_url = (
             base_url
             or CLI_CONFIG["model"].get("base_url", "")
         ) or None
-        # Match key to resolved base_url: official OpenAI host → OPENAI_API_KEY,
-        # custom endpoint → OPENAI_API_KEY (issue #560).
         # Note: _ensure_runtime_credentials() re-resolves this before first use.
-        if self.base_url and base_url_host_matches(self.base_url, "openai.com"):
-            self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        else:
-            self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        # Max turns priority: CLI arg > config file > env var > default
-        # All paths go through resolve_turn_limit() so that agent.max_turns
-        # accepts "none"/"unlimited" (→ sys.maxsize) in addition to ints.
-        # See son_of_anton_cli.config.resolve_turn_limit for the full spelling table.
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        # Max turns: CLI arg > agent.max_turns (always present: load_cli_config
+        # defaults it). resolve_turn_limit() also accepts "none"/"unlimited".
         from son_of_anton_cli.config import resolve_turn_limit as _resolve_turn_limit
-        if max_turns is not None:  # CLI arg was explicitly set
-            self.max_turns = _resolve_turn_limit(max_turns)
-        elif CLI_CONFIG["agent"].get("max_turns") is not None:
-            self.max_turns = _resolve_turn_limit(CLI_CONFIG["agent"]["max_turns"])
-        elif CLI_CONFIG.get("max_turns") is not None:  # Backwards compat: root-level max_turns
-            # KEEP (evaluated for the v12 support-floor cleanup, July 2026):
-            # no versioned config migration ever rewrote root-level max_turns
-            # to agent.max_turns on disk — only load-time normalization
-            # (_normalize_max_turns_config) folds it, and configs read through
-            # other paths may bypass it. This fallback is therefore the only
-            # safety net for configs that still carry the root key.
-            self.max_turns = _resolve_turn_limit(CLI_CONFIG["max_turns"])
-        else:
-            # Env var bridge (set by gateway/run.py from config.toml, or by the
-            # user directly). Empty/unset → default (unlimited).
-            self.max_turns = _resolve_turn_limit(os.getenv("SON_OF_ANTON_MAX_ITERATIONS"))
+        self.max_turns = _resolve_turn_limit(
+            max_turns if max_turns is not None else CLI_CONFIG["agent"]["max_turns"]
+        )
 
         # Wall-clock run budget: CLI flag wins over config; both optional.
         # None keeps the feature fully off (AIAgent stays dormant).
@@ -3710,32 +3546,15 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # pass skip_context_files=True and skip_memory=True to AIAgent so
         # AGENTS.md/SOUL.md/.cursorrules and persistent memory are not loaded.
         self.ignore_rules = ignore_rules or os.environ.get("SON_OF_ANTON_IGNORE_RULES") == "1"
-        
-        # Ephemeral system prompt: env var takes precedence, then
-        # display.personality / agent.system_prompt from config.
-        # son_of_anton_cli.personality is the single owner of overlay resolution.
-        from son_of_anton_cli.personality import (
-            available_personalities,
-            resolve_ephemeral_system_prompt,
-        )
+        # Ephemeral system prompt: only --worktree sets it (main() appends the
+        # worktree note).
+        self.system_prompt = ""
 
-        self.system_prompt = (
-            os.getenv("SON_OF_ANTON_EPHEMERAL_SYSTEM_PROMPT", "")
-            or resolve_ephemeral_system_prompt(CLI_CONFIG)
-        )
-        self.personalities = available_personalities(CLI_CONFIG)
-        
-        # Ephemeral prefill messages (few-shot priming, never persisted)
-        self.prefill_messages = _load_prefill_messages(
-            _resolve_prefill_messages_file(CLI_CONFIG)
-        )
-        
-        # Reasoning config (OpenRouter reasoning effort level)
-        # Per-model override > per-route custom declaration > model section >
-        # global reasoning_effort — resolved through the shared chokepoint
-        # in son_of_anton_constants (Closes #21256). base_url may still be
-        # None here for named custom providers; the chokepoint resolves the
-        # route from the provider entry when so.
+        # Reasoning config: per-model override > per-route custom declaration >
+        # model section > global reasoning_effort — resolved through the shared
+        # chokepoint in son_of_anton_constants. base_url may still be None here
+        # for named custom providers; the chokepoint resolves the route from
+        # the provider entry when so.
         from son_of_anton_constants import resolve_reasoning_config
         self.reasoning_config = resolve_reasoning_config(
             CLI_CONFIG,
@@ -3744,10 +3563,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             provider=self.provider,
         )
         # An explicit --reasoning wins over config for this run only (never
-        # persisted). Kanban's dispatcher uses it to pin a task's thinking
-        # depth without touching the worker profile's config.toml. An
-        # unparseable level is ignored with a warning rather than silently
-        # swapping in the default — same contract as the config path.
+        # persisted). An unparseable level is ignored with a warning rather
+        # than silently swapping in the default — same contract as the config path.
         if reasoning is not None and str(reasoning).strip():
             _cli_reasoning = _parse_reasoning_config(reasoning)
             if _cli_reasoning is None:
@@ -3780,7 +3597,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._last_turn_finished_at: Optional[float] = None  # time.time() when the last agent loop finished
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
-        self._session_db_unavailable = False
         try:
             from son_of_anton_state import SessionDB
             self._session_db = SessionDB()
@@ -3790,7 +3606,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # later shows a truncated/empty session. A buried log line is not
             # enough; surface it prominently so the user knows persistence is
             # off for this run and can fix the store before relying on resume.
-            self._session_db_unavailable = True
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
             try:
                 # Console is imported at module scope; do NOT re-import it here.
@@ -3856,27 +3671,21 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # When stdout/PTY raises EIO (broken pipe after a stream-stall
         # interrupt), freeze further UI paints so we don't spin the main
         # thread at hundreds of escape-sequence writes/sec (#81521).
-        self._terminal_io_broken = False
         self._should_exit = False
         # /exit --delete: when True, the current session's SQLite history and
         # on-disk transcripts are deleted during shutdown. Set by
         # process_command() when the user runs /exit --delete or /quit --delete.
         # Ported from google-gemini/gemini-cli#19332.
         self._delete_session_on_exit = False
-        self._last_ctrl_c_time = 0
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
-        self._clarify_multi_base = None
-        self._clarify_prefill = ""
         self._sudo_state = None
         self._sudo_deadline = 0
-        self._modal_input_snapshot = None
         self._approval_state = None
         self._approval_deadline = 0
         self._approval_lock = threading.Lock()
         self._slash_confirm_state = None
-        self._slash_confirm_deadline = 0
         self._model_picker_state = None
         # Armed when a bare `/resume` prints the recent-sessions list so the
         # very next bare numeric input (e.g. `3`) resolves to that session.
@@ -3891,10 +3700,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
         self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
-        self._last_scrollback_tool: str = ""  # last tool name printed to scrollback (for "new" dedup)
         self._command_running = False
         self._command_blocks_input = False
-        self._command_status = ""
         self._attached_images: list[Path] = []
         self._image_counter = 0
         self._active_session_lease = None
@@ -4592,8 +4399,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
         self._deferred_content = ""
-        self._stream_table_buf = []
-        self._in_stream_table = False
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
@@ -4615,7 +4420,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         previous_blocks_input = getattr(self, "_command_blocks_input", False)
         self._command_running = True
         self._command_blocks_input = blocks_input
-        self._command_status = status
         self._invalidate(min_interval=0.0)
         try:
             print(f"{status}")
@@ -4623,7 +4427,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         finally:
             self._command_running = False
             self._command_blocks_input = previous_blocks_input
-            self._command_status = ""
             self._invalidate(min_interval=0.0)
 
 
@@ -7820,7 +7623,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._focus_view_enabled = False
             self._focus_saved_tool_progress = None
             self._focus_hidden_lines = 0
-            self._focus_last_counted_tool = None
             try:
                 from son_of_anton_cli.focus_view import FOCUS_CONFIG_KEY
 
@@ -8914,7 +8716,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
         # Open-ended questions skip straight to freetext input
         self._clarify_freetext = is_open_ended
-        self._clarify_multi_base = None
 
         # Trigger an immediate prompt_toolkit repaint from this (non-main)
         # thread. Modal prompts must paint at once and must not be gated by the
@@ -8952,7 +8753,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = None
-        self._clarify_multi_base = None
         self._paint_now()
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — the agent will wait for your reply){_RST}")
         return TIMEOUT_RESPONSE
@@ -8982,7 +8782,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         state["multi_select"] = bool(entry["multi_select"])
         state["selected_indices"] = set() if entry["multi_select"] else None
         self._clarify_freetext = not entry["choices"]
-        self._clarify_multi_base = None
         # Restore the earlier answer's cursor/checkbox position on re-visit.
         meta = (state.get("answer_meta") or {}).get(entry["qid"])
         choices = entry["choices"] or []
@@ -9031,7 +8830,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             pass
         self._clarify_state = None
         self._clarify_freetext = False
-        self._clarify_multi_base = None
 
 
     def _clarify_callback_batch(self, questions):
@@ -9104,7 +8902,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = None
-        self._clarify_multi_base = None
         self._paint_now()
         _cprint(
             f"\n{_DIM}(clarify timed out after {timeout}s — locked answers returned; "
@@ -9320,7 +9117,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 pass
             self._clarify_state = None
             self._clarify_freetext = False
-            self._clarify_multi_base = None
         if self._sudo_state:
             try:
                 self._sudo_state["response_queue"].put("")

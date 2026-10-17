@@ -77,7 +77,6 @@ class CLIAgentSetupMixin:
         )
         self.provider = runtime["provider"]
         self.api_mode = runtime["api_mode"]
-        self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
 
@@ -269,7 +268,6 @@ class CLIAgentSetupMixin:
                 provider=runtime.get("provider"),
                 requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"),
-                max_tokens=self.max_tokens,
                 max_iterations=self.max_turns,
                 run_budget_seconds=getattr(self, "run_budget_seconds", None),
                 enabled_toolsets=self.enabled_toolsets,
@@ -277,8 +275,7 @@ class CLIAgentSetupMixin:
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
-                ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
-                prefill_messages=self.prefill_messages or None,
+                ephemeral_system_prompt=self.system_prompt or None,
                 reasoning_config=self.reasoning_config,
                 session_id=self.session_id,
                 platform="cli",
