@@ -115,8 +115,7 @@ def _budget_for_agent(agent) -> BudgetConfig:
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
-# Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
-# guard does not preempt a slow-but-valid summarization attempt.
+# Per-call wall-clock guard for a concurrent tool batch.
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # Upper bound a concurrent worker will wait at the start-order gate for all
 # earlier-ordered tools to advance before proceeding out of order. Long enough

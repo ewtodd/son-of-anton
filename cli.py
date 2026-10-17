@@ -458,12 +458,6 @@ def load_cli_config() -> Dict[str, Any]:
                 "base_url": "",
                 "api_key": "",
             },
-            "web_extract": {
-                "provider": "auto",
-                "model": "",
-                "base_url": "",
-                "api_key": "",
-            },
         },
         "delegation": {
             "max_iterations": 45,  # Max tool-calling turns per child agent
@@ -626,7 +620,7 @@ def load_cli_config() -> Dict[str, Any]:
                     os.environ[env_var] = str(val)
     
     # Apply auxiliary model/direct-endpoint overrides to environment variables.
-    # Vision and web_extract each have their own provider/model/base_url/api_key tuple.
+    # Vision and approval each have their own provider/model/base_url/api_key tuple.
     # Compaction config is read directly from config.toml by run_agent.py and
     # auxiliary_client.py — no env var bridging needed.
     # Only set env vars for non-empty / non-default values so auto-detection
@@ -639,12 +633,6 @@ def load_cli_config() -> Dict[str, Any]:
             "model": "AUXILIARY_VISION_MODEL",
             "base_url": "AUXILIARY_VISION_BASE_URL",
             "api_key": "AUXILIARY_VISION_API_KEY",
-        },
-        "web_extract": {
-            "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
-            "model": "AUXILIARY_WEB_EXTRACT_MODEL",
-            "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
-            "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
         },
         "approval": {
             "provider": "AUXILIARY_APPROVAL_PROVIDER",

@@ -1019,15 +1019,6 @@ DEFAULT_CONFIG = {
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
-        "web_extract": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 360,        # seconds (6min) — per-attempt LLM summarization timeout; increase for slow local models
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
         "compaction": {
             "provider": "auto",
             "model": "",
@@ -1092,14 +1083,6 @@ DEFAULT_CONFIG = {
                 "repeat_penalty": 1.2,
                 "max_tokens": 24,
             },
-        },
-        "memory_query_rewrite": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 8,
-            "extra_body": {},
         },
         # Profile describer — auto-generates a 1-2 sentence description
         # of what a profile is good at. Invoked by

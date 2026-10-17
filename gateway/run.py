@@ -2005,11 +2005,11 @@ def _bridge_gateway_config_to_env() -> None:
                             os.environ[_env_var] = str(_val)
             # Compaction config is read directly from config.toml by run_agent.py
             # and auxiliary_client.py — no env var bridging needed.
-            # Auxiliary model/direct-endpoint overrides (vision, web_extract,
-            # approval, plus any plugin-registered auxiliary tasks).
+            # Auxiliary model/direct-endpoint overrides (vision, approval,
+            # plus any plugin-registered auxiliary tasks).
             # Each task has provider/model/base_url/api_key; bridge non-default
             # values to env vars named AUXILIARY_<KEY_UPPER>_*. The legacy
-            # hard-coded list (vision/web_extract/approval) is replaced by a
+            # hard-coded list (vision/approval) is replaced by a
             # dynamic loop so plugin-registered tasks benefit from the same
             # config→env bridging without core knowing about each one.
             _auxiliary_cfg = _cfg.get("auxiliary", {})
@@ -2017,7 +2017,7 @@ def _bridge_gateway_config_to_env() -> None:
                 # Built-in tasks that previously had explicit env-var bridging.
                 # Kept here as the canonical bridged set; plugin tasks are added
                 # below via the plugin auxiliary registry.
-                _aux_bridged_keys = {"vision", "web_extract", "approval"}
+                _aux_bridged_keys = {"vision", "approval"}
                 try:
                     from son_of_anton_cli.plugins import get_plugin_auxiliary_tasks
                     for _entry in get_plugin_auxiliary_tasks():

@@ -1969,11 +1969,9 @@ def _clear_stale_openai_base_url():
 _AUX_TASKS: list[tuple[str, str, str]] = [
     ("vision", "Vision", "image/screenshot analysis"),
     ("compaction", "Compaction", "context summarization"),
-    ("web_extract", "Web extract", "web page summarization"),
     ("approval", "Approval", "smart command approval"),
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
-    ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
 ]
 
 # Special non-auxiliary task surfaced in the same picker: subagent delegation.
