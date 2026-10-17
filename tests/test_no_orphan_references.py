@@ -449,6 +449,21 @@ _REMOVED_SYMBOLS = (
     "scan_skill",
     "scan_skill_cached",
     "should_allow_install",
+    # Discord/Slack, the relay connector and the hooks only they reached
+    # (removed 2026-10-16), all reached as self./adapter. calls.
+    "_handle_adapter_fatal_error",
+    "_is_discord_auto_thread_lane",
+    "_schedule_discord_semantic_thread_rename",
+    "_scale_to_zero_should_arm",
+    "send_native_task_card_progress",
+    "set_status_text",
+    "set_reaction_handler",
+    "set_platform_event_handler",
+    "set_authorization_check",
+    "register_slack_action_handler",
+    "create_handoff_thread",
+    "_schedule_ephemeral_delete",
+    "_active_stateless_run_count",
     # Dead imports of deleted modules and the code they guarded (removed
     # 2026-10-15): desktop-UI tool callbacks, browser cleanup, the MoA
     # virtual provider, the external cron-provider interface, Discord voice

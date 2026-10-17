@@ -1,45 +1,23 @@
 """
 Base platform adapter interface.
 
-All platform adapters (Discord, Slack, Signal, and more) inherit from this
-and implement the required methods.
+The Signal adapter inherits from this and implements the required methods.
 """
 
 import asyncio
 import inspect
-import ipaddress
 import logging
 import os
 import random
 import re
-import subprocess
 import sys
 import threading
 import time
 import uuid
-import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
-from utils import normalize_proxy_url
-
 logger = logging.getLogger(__name__)
-
-
-def _consume_detached_handler_exception(task: "asyncio.Task") -> None:
-    """Done-callback retrieving a detached fatal-error handler's exception.
-
-    Prevents "Task exception was never retrieved" warnings for handler tasks
-    we deliberately let finish in the background after their awaiting
-    (carrier) task was cancelled — see ``_notify_fatal_error``.
-    """
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.error(
-            "Detached fatal-error handler task failed: %s", exc, exc_info=exc
-        )
 
 
 # Audio file extensions Son of Anton recognizes for native audio delivery.
@@ -90,18 +68,7 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     value.
     """
     thread_id = getattr(source, "thread_id", None)
-    metadata = {"thread_id": thread_id} if thread_id is not None else {}
-    # Slack workspace identity is durable routing state, not ephemeral event
-    # metadata. Carry it on every outbound path (including unthreaded sends)
-    # so a multi-workspace Socket Mode gateway never falls back to its primary
-    # WebClient after an async, stream, or recovery boundary.
-    if _platform_name(getattr(source, "platform", None)) == "slack":
-        scope_id = getattr(source, "scope_id", None)
-        if scope_id:
-            metadata["slack_team_id"] = str(scope_id)
-    if not metadata:
-        return None
-    return metadata
+    return {"thread_id": thread_id} if thread_id is not None else None
 
 
 def _mark_notify_metadata(metadata: dict | None) -> dict:
@@ -113,20 +80,6 @@ def _mark_notify_metadata(metadata: dict | None) -> dict:
 
 def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics."""
-    source = getattr(event, "source", None)
-    platform = _platform_name(getattr(source, "platform", None))
-    raw_message = getattr(event, "raw_message", None)
-    if (
-        platform == "slack"
-        and isinstance(raw_message, dict)
-        and raw_message.get("_son_of_anton_no_thread_response")
-    ):
-        # Slack reaction handoffs into a configured target channel are meant
-        # to create a new top-level message there. Returning the synthetic
-        # event's message_id as reply_to would make
-        # SlackAdapter._resolve_thread_ts() treat it as a thread anchor and
-        # reply in a (nonexistent) thread anyway.
-        return None
     return getattr(event, "message_id", None)
 
 
@@ -139,40 +92,6 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
     if normalized_ext not in _AUDIO_EXTS:
         return False
     return True
-
-
-def utf16_len(s: str) -> int:
-    """Count UTF-16 code units in *s*.
-
-    The platform message-length limits are measured in UTF-16 code units,
-    **not** Unicode code-points.  Characters outside the Basic Multilingual
-    Plane (emoji like 😀, CJK Extension B, musical symbols, …) are encoded as
-    surrogate pairs and therefore consume **two** UTF-16 code units each, even
-    though Python's ``len()`` counts them as one.
-
-    Ported from nearai/ironclaw#2304 which discovered the same discrepancy in
-    Rust's ``chars().count()``.
-    """
-    return len(s.encode("utf-16-le")) // 2
-
-
-def _prefix_within_utf16_limit(s: str, limit: int) -> str:
-    """Return the longest prefix of *s* whose UTF-16 length ≤ *limit*.
-
-    Unlike a plain ``s[:limit]``, this respects surrogate-pair boundaries so
-    we never slice a multi-code-unit character in half.
-    """
-    if utf16_len(s) <= limit:
-        return s
-    # Binary search for the longest safe prefix
-    lo, hi = 0, len(s)
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if utf16_len(s[:mid]) <= limit:
-            lo = mid
-        else:
-            hi = mid - 1
-    return s[:lo]
 
 
 def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
@@ -192,268 +111,6 @@ def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
         else:
             hi = mid - 1
     return lo
-
-
-def _detect_macos_system_proxy() -> str | None:
-    """Read the macOS system HTTP(S) proxy via ``scutil --proxy``.
-
-    Returns an ``http://host:port`` URL string if an HTTP or HTTPS proxy is
-    enabled, otherwise *None*.  Falls back silently on non-macOS or on any
-    subprocess error.
-    """
-    if sys.platform != "darwin":
-        return None
-    try:
-        out = subprocess.check_output(
-            ["scutil", "--proxy"], timeout=3, text=True, encoding='utf-8', errors='replace', stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        return None
-
-    props: dict[str, str] = {}
-    for line in out.splitlines():
-        line = line.strip()
-        if " : " in line:
-            key, _, val = line.partition(" : ")
-            props[key.strip()] = val.strip()
-
-    # Prefer HTTPS, fall back to HTTP
-    for enable_key, host_key, port_key in (
-        ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
-        ("HTTPEnable", "HTTPProxy", "HTTPPort"),
-    ):
-        if props.get(enable_key) == "1":
-            host = props.get(host_key)
-            port = props.get(port_key)
-            if host and port:
-                return f"http://{host}:{port}"
-    return None
-
-
-def _split_host_port(value: str) -> tuple[str, int | None]:
-    raw = str(value or "").strip()
-    if not raw:
-        return "", None
-    if "://" in raw:
-        parsed = urlsplit(raw)
-        return (parsed.hostname or "").lower().rstrip("."), parsed.port
-    if raw.startswith("[") and "]" in raw:
-        host, _, rest = raw[1:].partition("]")
-        port = None
-        if rest.startswith(":") and rest[1:].isdigit():
-            port = int(rest[1:])
-        return host.lower().rstrip("."), port
-    if raw.count(":") == 1:
-        host, _, maybe_port = raw.rpartition(":")
-        if maybe_port.isdigit():
-            return host.lower().rstrip("."), int(maybe_port)
-    return raw.lower().strip("[]").rstrip("."), None
-
-
-def _no_proxy_entries() -> list[str]:
-    entries: list[str] = []
-    for key in ("NO_PROXY", "no_proxy"):
-        raw = os.environ.get(key, "")
-        entries.extend(part.strip() for part in raw.split(",") if part.strip())
-    return entries
-
-
-def _no_proxy_entry_matches(entry: str, host: str, port: int | None = None) -> bool:
-    token = str(entry or "").strip().lower()
-    if not token:
-        return False
-    if token == "*":
-        return True
-
-    token_host, token_port = _split_host_port(token)
-    if token_port is not None and port is not None and token_port != port:
-        return False
-    if token_port is not None and port is None:
-        return False
-    if not token_host:
-        return False
-
-    try:
-        network = ipaddress.ip_network(token_host, strict=False)
-        try:
-            return ipaddress.ip_address(host) in network
-        except ValueError:
-            return False
-    except ValueError:
-        pass
-
-    try:
-        token_ip = ipaddress.ip_address(token_host)
-        try:
-            return ipaddress.ip_address(host) == token_ip
-        except ValueError:
-            return False
-    except ValueError:
-        pass
-
-    if token_host.startswith("*."):
-        suffix = token_host[1:]
-        return host.endswith(suffix)
-    if token_host.startswith("."):
-        return host == token_host[1:] or host.endswith(token_host)
-    return host == token_host or host.endswith(f".{token_host}")
-
-
-def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[str] | None) -> bool:
-    """Return True when NO_PROXY/no_proxy matches at least one target host.
-
-    Supports exact hosts, domain suffixes, wildcard suffixes, IP literals,
-    CIDR ranges, optional host:port entries, and ``*``.
-    """
-    entries = _no_proxy_entries()
-    if not entries or not target_hosts:
-        return False
-    if isinstance(target_hosts, str):
-        candidates = [target_hosts]
-    else:
-        candidates = list(target_hosts)
-    for candidate in candidates:
-        host, port = _split_host_port(str(candidate))
-        if not host:
-            continue
-        if any(_no_proxy_entry_matches(entry, host, port) for entry in entries):
-            return True
-    return False
-
-
-def resolve_proxy_url(
-    platform_env_var: str | None = None,
-    *,
-    target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None,
-) -> str | None:
-    """Return a proxy URL from env vars, or macOS system proxy.
-
-    Check order:
-      0. *platform_env_var* (e.g. ``DISCORD_PROXY``) — highest priority
-      1. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (and lowercase variants)
-      2. macOS system proxy via ``scutil --proxy`` (auto-detect)
-
-    Returns *None* if no proxy is found, or if NO_PROXY/no_proxy matches one
-    of ``target_hosts``.
-    """
-    if platform_env_var:
-        value = (os.environ.get(platform_env_var) or "").strip()
-        if value:
-            if should_bypass_proxy(target_hosts):
-                return None
-            return normalize_proxy_url(value)
-    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
-                "https_proxy", "http_proxy", "all_proxy"):
-        value = (os.environ.get(key) or "").strip()
-        if value:
-            if should_bypass_proxy(target_hosts):
-                return None
-            return normalize_proxy_url(value)
-    detected = normalize_proxy_url(_detect_macos_system_proxy())
-    if detected and should_bypass_proxy(target_hosts):
-        return None
-    return detected
-
-
-def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
-    """Build kwargs for ``commands.Bot()`` / ``discord.Client()`` with proxy.
-
-    Returns:
-      - SOCKS URL  → ``{"connector": ProxyConnector(..., rdns=True)}``
-      - HTTP URL   → ``{"proxy": url}``
-      - *None*     → ``{}``
-
-    ``rdns=True`` forces remote DNS resolution through the proxy — required
-    by many SOCKS implementations (Shadowrocket, Clash) and essential for
-    bypassing DNS pollution behind the GFW.
-    """
-    if not proxy_url:
-        return {}
-    if proxy_url.lower().startswith("socks"):
-        try:
-            from aiohttp_socks import ProxyConnector
-
-            connector = ProxyConnector.from_url(proxy_url, rdns=True)
-            return {"connector": connector}
-        except ImportError:
-            logger.warning(
-                "aiohttp-socks is not part of this build — SOCKS proxy %s ignored. "
-                "Add aiohttp-socks to the Nix build (extraPythonPackages) to use it.",
-                proxy_url,
-            )
-            return {}
-    return {"proxy": proxy_url}
-
-
-def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
-    """Build kwargs for standalone ``aiohttp.ClientSession`` with proxy.
-
-    Returns ``(session_kwargs, request_kwargs)`` where:
-      - With aiohttp-socks → ``({"connector": ProxyConnector(...)}, {})``
-        for *all* proxy schemes (SOCKS **and** HTTP/HTTPS).
-      - HTTP without aiohttp-socks → ``({}, {"proxy": url})``.
-      - None → ``({}, {})``.
-
-    Prefer the connector path: it works transparently with libraries
-    (like mautrix) that call ``session.request()`` without forwarding
-    per-request ``proxy=`` kwargs.
-
-    Usage::
-
-        sess_kw, req_kw = proxy_kwargs_for_aiohttp(proxy_url)
-        async with aiohttp.ClientSession(**sess_kw) as session:
-            async with session.get(url, **req_kw) as resp:
-                ...
-    """
-    if not proxy_url:
-        return {}, {}
-    try:
-        from aiohttp_socks import ProxyConnector
-
-        connector = ProxyConnector.from_url(proxy_url, rdns=True)
-        return {"connector": connector}, {}
-    except ImportError:
-        if proxy_url.lower().startswith("socks"):
-            logger.warning(
-                "aiohttp-socks is not part of this build — SOCKS proxy %s ignored. "
-                "Add aiohttp-socks to the Nix build (extraPythonPackages) to use it.",
-                proxy_url,
-            )
-            return {}, {}
-        return {}, {"proxy": proxy_url}
-
-
-def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = None) -> bool:
-    """Return True when ``hostname`` matches a ``NO_PROXY`` entry.
-
-    Supports comma- or whitespace-separated entries with optional leading dots
-    and ``*.`` wildcards, which match both the apex domain and subdomains.
-    """
-    raw = no_proxy_value
-    if raw is None:
-        raw = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
-
-    raw = raw.strip()
-    if not raw:
-        return False
-
-    lower_hostname = hostname.lower()
-    for entry in re.split(r"[\s,]+", raw):
-        normalized = entry.strip().lower()
-        if not normalized:
-            continue
-        if normalized == "*":
-            return True
-
-        if normalized.startswith("*."):
-            normalized = normalized[2:]
-        elif normalized.startswith("."):
-            normalized = normalized[1:]
-
-        if lower_hostname == normalized or lower_hostname.endswith(f".{normalized}"):
-            return True
-
-    return False
 
 
 from dataclasses import dataclass, field
@@ -834,69 +491,6 @@ def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     filepath = cache_dir / filename
     filepath.write_bytes(data)
     return str(filepath)
-
-
-async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) -> str:
-    """
-    Download an audio file from a URL and save it to the local cache.
-
-    Retries on transient failures (timeouts, 429, 5xx) with exponential
-    backoff so a single slow CDN response doesn't lose the media.
-
-    Args:
-        url: The HTTP/HTTPS URL to download from.
-        ext: File extension including the dot (e.g. ".ogg", ".mp3").
-        retries: Number of retry attempts on transient failures.
-
-    Returns:
-        Absolute path to the cached audio file as a string.
-
-    Raises:
-        ValueError: If the URL targets a private/internal network (SSRF protection).
-    """
-    from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
-    if not is_safe_url(url):
-        raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
-
-    import httpx
-    _log = logging.getLogger(__name__)
-
-    async with create_ssrf_safe_async_client(
-        timeout=30.0,
-        follow_redirects=True,
-        event_hooks={"response": [_ssrf_redirect_guard]},
-    ) as client:
-        for attempt in range(retries + 1):
-            try:
-                async with client.stream(
-                    "GET",
-                    url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (compatible; SonOfAntonAgent/1.0)",
-                        "Accept": "audio/*,*/*;q=0.8",
-                    },
-                ) as response:
-                    response.raise_for_status()
-                    content = await _read_httpx_body_with_limit(
-                        response, media_type="audio",
-                    )
-                return cache_audio_from_bytes(content, ext)
-            except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
-                    raise
-                if attempt < retries:
-                    wait = 1.5 * (attempt + 1)
-                    _log.debug(
-                        "Audio cache retry %d/%d for %s (%.1fs): %s",
-                        attempt + 1,
-                        retries,
-                        safe_url_for_log(url),
-                        wait,
-                        exc,
-                    )
-                    await asyncio.sleep(wait)
-                    continue
-                raise
 
 
 def cleanup_audio_cache(max_age_hours: int = 24) -> int:
@@ -1340,33 +934,6 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".ts": "text/plain",
     ".py": "text/plain",
     ".sh": "text/plain",
-}
-
-
-# ---------------------------------------------------------------------------
-# Text-injection extension allowlist
-#
-# Files whose contents are safe to inline into the prompt (UTF-8 text) when
-# small enough. This is intentionally an extension/MIME gate, NOT a blind
-# UTF-8 decode: binary formats like PDF/zip/docx can begin with decodable
-# ASCII headers and must never be inlined. Any uploaded file is still cached
-# and surfaced to the agent regardless of whether it lands in this set —
-# this only controls inline-vs-path-pointer for the prompt.
-# ---------------------------------------------------------------------------
-
-_TEXT_INJECT_EXTENSIONS = {
-    ".txt", ".md", ".markdown", ".csv", ".tsv", ".log",
-    ".json", ".jsonl", ".ndjson", ".xml", ".yaml", ".yml", ".toml",
-    ".ini", ".cfg", ".conf", ".env", ".properties",
-    ".html", ".htm", ".css", ".scss", ".sass", ".less",
-    ".py", ".pyi", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
-    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat",
-    ".c", ".h", ".cpp", ".cc", ".hpp", ".cs", ".java", ".kt",
-    ".go", ".rs", ".rb", ".php", ".pl", ".lua", ".r", ".jl",
-    ".swift", ".m", ".scala", ".clj", ".ex", ".exs", ".erl",
-    ".sql", ".graphql", ".proto", ".tf", ".hcl",
-    ".dockerfile", ".makefile", ".cmake", ".gradle",
-    ".rst", ".tex", ".srt", ".vtt", ".diff", ".patch",
 }
 
 
@@ -2139,32 +1706,12 @@ def is_chat_level_not_found(exc: Optional[BaseException] = None, error_text: str
 
 
 class EphemeralReply(str):
-    """System-notice reply that auto-deletes after a TTL.
-
-    Slash-command handlers in ``gateway/run.py`` can return this wrapper
-    instead of a plain string to request that the reply message be deleted
-    after ``ttl_seconds`` on platforms that support ``delete_message``.
+    """System-notice reply from a slash-command handler.
 
     Subclassing ``str`` keeps the wrapper transparent to anything that
-    treats handler return values as text (existing tests use ``in`` /
-    ``startswith`` / equality; the ``_process_message_background`` pipeline
-    extracts attachments from the string content).  ``isinstance(r,
-    EphemeralReply)`` still distinguishes ephemeral replies from plain
-    strings so the send path can schedule deletion.
-
-    Platforms that don't override :meth:`BasePlatformAdapter.delete_message`
-    silently ignore the TTL — the message is sent normally and left in
-    place.  When ``ttl_seconds`` is ``None``, the pipeline uses the
-    configured ``display.ephemeral_system_ttl`` default.  A default of ``0``
-    disables auto-deletion globally, preserving prior behavior.
+    treats handler return values as text; ``isinstance(r, EphemeralReply)``
+    still distinguishes system notices from agent responses.
     """
-
-    ttl_seconds: Optional[int]
-
-    def __new__(cls, text: str, ttl_seconds: Optional[int] = None):
-        instance = super().__new__(cls, text)
-        instance.ttl_seconds = ttl_seconds
-        return instance
 
     @property
     def text(self) -> str:
@@ -2276,39 +1823,9 @@ _RETRYABLE_ERROR_PATTERNS = (
 
 
 # Type for message handlers.  Handlers may return a plain string (normal
-# reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
+# reply), an ``EphemeralReply`` system notice, or
 # ``None`` when the response was already delivered (e.g. via streaming).
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
-
-
-def resolve_channel_prompt(
-    config_extra: dict,
-    channel_id: str,
-    parent_id: str | None = None,
-) -> str | None:
-    """Resolve a per-channel ephemeral prompt from platform config.
-
-    Looks up ``channel_prompts`` in the adapter's ``config.extra`` dict.
-    Prefers an exact match on *channel_id*; falls back to *parent_id*
-    (useful for forum threads / child channels inheriting a parent prompt).
-
-    Returns the prompt string, or None if no match is found.  Blank/whitespace-
-    only prompts are treated as absent.
-    """
-    prompts = config_extra.get("channel_prompts") or {}
-    if not isinstance(prompts, dict):
-        return None
-
-    for key in (channel_id, parent_id):
-        if not key:
-            continue
-        prompt = prompts.get(key)
-        if prompt is None:
-            continue
-        prompt = str(prompt).strip()
-        if prompt:
-            return prompt
-    return None
 
 
 def _strip_media_directives(text: str) -> str:
@@ -2348,32 +1865,6 @@ class BasePlatformAdapter(ABC):
     # preview (see gateway/run.py progress_callback).
     supports_code_blocks: bool = False
 
-    # Whether this adapter's typing indicator renders TEXT (a status line
-    # next to the bot name) rather than a native textless bubble. When True,
-    # the gateway feeds live per-tool status phrases via set_status_text()
-    # ("is running pytest…") and send_typing() renders them. Textless
-    # platforms (Discord, …) keep the default False and
-    # never see these calls.
-    supports_status_text: bool = False
-
-    def set_status_text(self, chat_id: str, text: Optional[str]) -> None:
-        """Set or clear (``None``) the live working-state phrase for a chat.
-
-        Cheap, in-memory only: the next typing refresh renders the new text.
-        No-op storage on adapters that never read ``_status_text``.
-        """
-        # getattr-guard: many gateway tests build bare adapters via
-        # object.__new__() without running __init__ (see AGENTS.md pitfall
-        # on new __init__ attributes breaking tests).
-        store = getattr(self, "_status_text", None)
-        if store is None:
-            store = {}
-            self._status_text = store
-        if text:
-            store[str(chat_id)] = text
-        else:
-            store.pop(str(chat_id), None)
-
     # Whether this adapter can deliver an ASYNC notification back to the agent
     # AFTER a turn ends — i.e. wake a fresh turn to surface a background
     # process completion (terminal notify_on_complete / watch_patterns) or a
@@ -2410,21 +1901,6 @@ class BasePlatformAdapter(ABC):
     # "typed_command_prefix", "/"); no per-platform branching at call sites.
     typed_command_prefix: str = "/"
 
-    # Whether this adapter supports the ``in_channel`` continuable-cron surface
-    # (``platforms.<p>.extra.cron_continuable_surface: in_channel``): a
-    # continuable cron job delivered FLAT into a channel (no dedicated thread),
-    # with the user's plain channel reply continuing the job in-context via the
-    # shared-channel session.  Only coherent on a platform that has BOTH a
-    # flat-reply outbound gate AND a whole-channel inbound session bucket keyed
-    # ``(platform, chat_id, None)`` — today that is Slack (``reply_in_thread:
-    # false``).  Default False: an unsupported platform fails SAFE, treating
-    # ``in_channel`` as ``thread`` (a threaded continuation ≈ today's
-    # behaviour), never a dropped continuation.  Read generically by the cron
-    # scheduler via ``getattr(adapter, "supports_inchannel_continuable",
-    # False)`` — no per-platform branching at the call site (the key stays a
-    # generic seam; Slack is merely the first consumer).
-    supports_inchannel_continuable: bool = False
-
     # Whether a human is interactively present on this platform to answer a
     # "session restored — what next?" prompt.  The startup auto-resume turn
     # (``_schedule_resume_pending_sessions`` → the ``_is_resume_pending``
@@ -2438,41 +1914,14 @@ class BasePlatformAdapter(ABC):
     # site.
     interactive_resume: bool = True
 
-    # Back-reference to the running ``GatewayRunner``, injected by
-    # ``gateway/run.py`` after the adapter is created. Adapters consume it via
-    # ``getattr(self, "gateway_runner", None)`` for cross-platform delivery and
-    # — critically — for inbound profile routing: ``build_source`` resolves the
-    # target profile through ``runner._profile_name_for_source(...)``. Declaring
-    # it on the base (rather than only on adapters that happen to pre-declare
-    # it) means EVERY platform adapter receives the injection, so profile
-    # routing is platform-generic instead of Discord-only.
-    gateway_runner = None  # type: ignore[assignment]  # set by gateway/run.py
-
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
-        # Optional gateway-supplied fan-out for platform-native emoji
-        # reaction events (see ``set_reaction_handler``).
-        self._reaction_handler: Optional[
-            Callable[[Dict[str, Any]], Awaitable[None]]
-        ] = None
-        # Normalized platform events cross this runner-owned boundary before
-        # plugin dispatch so authorization/profile state never lives in an SDK
-        # adapter. The second argument is an internal SessionSource.
-        self._platform_event_handler: Optional[
-            Callable[[Dict[str, Any], Any], Awaitable[None]]
-        ] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
         self._fatal_error_retryable = True
-        self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
-        # Strong references to shielded fatal-error handler tasks that outlive
-        # their carrier task (asyncio only keeps weak refs). Without this set,
-        # the event loop can GC the detached handler before it finishes — the
-        # exact "handler killed mid-flight" class we are fixing (#81335).
-        self._detached_fatal_tasks: set = set()
         # Cross-SON_OF_ANTON_HOME token takeover is armed by GatewayRunner only for
         # an adapter's initial connect during an explicit ``gateway run
         # --replace`` startup.  Ordinary starts and every reconnect fail safe
@@ -2512,22 +1961,9 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
-        # Optional authorization check, registered by GatewayRunner. Used by
-        # adapters that fetch external context (e.g. Slack thread history) to
-        # mark senders not on the allowlist as unverified in LLM context,
-        # mitigating indirect prompt injection from third parties in a shared
-        # thread/channel.
-        self._authorization_check: Optional[Callable[[str, Optional[str], Optional[str]], bool]] = None
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
-        # Dynamic working-state status text per chat (chat_id -> phrase).
-        # Set by the gateway on tool starts ("is running pytest…") and read
-        # by adapters whose typing indicator renders text (Slack's
-        # assistant.threads.setStatus). The regular _keep_typing refresh
-        # cadence picks up changes, so updating this dict costs no extra
-        # platform API calls. Cleared when the typing loop winds down.
-        self._status_text: Dict[str, str] = {}
 
     @property
     def message_len_fn(self) -> Callable[[str], int]:
@@ -2561,66 +1997,6 @@ class BasePlatformAdapter(ABC):
         Discord-fronted chat on the same adapter measures codepoints.
         """
         return self.message_len_fn
-
-    @property
-    def enforces_own_access_policy(self) -> bool:
-        """Whether this adapter gates inbound access before dispatch.
-
-        Some adapters implement a
-        documented config-driven access surface — ``dm_policy`` / ``group_policy`` /
-        ``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra`` — and
-        enforce it at intake: a message is dropped inside the adapter and never
-        reaches the gateway unless it already passed that policy.
-
-        The gateway's env-based allowlist check runs *after* the adapter. When
-        no env allowlist is configured, the gateway consults this flag so it can
-        honor a config-only ``dm_policy: allowlist`` / ``allow_from`` (which the
-        adapter already enforced) instead of double-denying it. Crucially, the
-        flag alone is NOT "already authorized": these adapters default
-        ``dm_policy`` / ``group_policy`` to ``"open"``, which forwards every
-        sender, so the gateway trusts the adapter only when its effective policy
-        for the chat type is an actual ``"allowlist"`` restriction — never for
-        ``"open"`` (that would be the network-exposed fail-open the trust
-        model forbids). Open access still requires an explicit
-        ``{PLATFORM}_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOW_ALL_USERS`` opt-in.
-
-        Adapters that own their access policy override this to return ``True``.
-        Adapters that delegate access control to the gateway leave it ``False``
-        (the default).
-        """
-        return False
-
-    @property
-    def authorization_is_upstream(self) -> bool:
-        """Whether inbound on this adapter was already authorized UPSTREAM.
-
-        Distinct from ``enforces_own_access_policy``: that flag describes an
-        adapter that enforces a LOCAL, config-driven access surface
-        (``dm_policy: allowlist`` / ``allow_from``) the gateway can mirror. This
-        flag describes an adapter whose authorization is performed by a TRUSTED
-        UPSTREAM over an authenticated transport — there is no local policy to
-        consult, and the env allowlist (``{PLATFORM}_ALLOWED_USERS``) does not
-        apply because the sender identity isn't a platform account the operator
-        configures here.
-
-        The relay adapter is the sole user: it fronts the Team Gateway
-        connector over a per-instance-authenticated WebSocket, and the connector
-        performs owner-only author-binding resolution BEFORE delivering — a
-        message only reaches this gateway because the connector resolved it to
-        THIS instance's bound user (``user_instance_binding``). The author id is
-        read off the event the connector observed, never gateway-asserted. So an
-        inbound relay event carries an authorization decision already made by a
-        trusted, authenticated upstream; default-denying it (no env allowlist ⇒
-        deny) is incorrect.
-
-        This is NOT a fail-open: it is authorization DELEGATED to a trusted
-        upstream that authenticated the transport (the relay WS secret) and
-        enforced owner-only binding, as opposed to authorization being ABSENT.
-        It only takes effect for an adapter that explicitly overrides this to
-        ``True``; every network-exposed direct adapter leaves it ``False`` and
-        the env-allowlist default-deny continues to apply unchanged.
-        """
-        return False
 
     def supports_draft_streaming(
         self,
@@ -2754,10 +2130,6 @@ class BasePlatformAdapter(ABC):
     def fatal_error_retryable(self) -> bool:
         return self._fatal_error_retryable
 
-    def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
-        self._fatal_error_handler = handler
-
-
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
         self._running = False
         self._fatal_error_code = code
@@ -2804,44 +2176,6 @@ class BasePlatformAdapter(ABC):
                 logged.add(key)
             else:
                 logger.debug("Failed to write runtime status (%s) for %s: %s", context, self.platform.value, exc)
-
-    async def _notify_fatal_error(self) -> None:
-        handler = self._fatal_error_handler
-        if not handler:
-            return
-        result = handler(self)
-        if asyncio.iscoroutine(result):
-            # Run the handler as a detached, shielded task. The notification
-            # is frequently awaited from inside an adapter-owned task (e.g.
-            # the platform ``_polling_error_task``), and the gateway's fatal
-            # handler tears the adapter down via ``disconnect()`` — which
-            # cancels that very task. Without the shield the cancellation
-            # killed the handler mid-flight: the adapter was already popped
-            # from the gateway's adapter map but never queued for background
-            # reconnection, leaving a zombie gateway with no platforms and no
-            # pending retries (#81335).
-            task = asyncio.ensure_future(result)
-            # Keep a strong reference so the event loop's weak-ref task
-            # table doesn't GC the handler before it finishes (asyncio docs:
-            # "Save a reference to tasks ... to avoid a task disappearing
-            # mid-execution"). Matches the gateway-level pattern in
-            # GatewayRunner._handle_adapter_fatal_error.
-            _tasks = getattr(self, "_detached_fatal_tasks", None)
-            if _tasks is None:
-                _tasks = self._detached_fatal_tasks = set()
-            _tasks.add(task)
-            task.add_done_callback(_tasks.discard)
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                # The carrier task was cancelled (typically by our own
-                # teardown running inside the handler). Let the handler
-                # finish detached so reconnect queueing / the shutdown
-                # decision completes, and consume its eventual exception to
-                # avoid "Task exception was never retrieved" noise.
-                if not task.done():
-                    task.add_done_callback(_consume_detached_handler_exception)
-                raise
 
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
         """Acquire a scoped lock for this adapter. Returns True on success.
@@ -2932,11 +2266,6 @@ class BasePlatformAdapter(ABC):
         """Human-readable name for this adapter."""
         return self.platform.value.title()
     
-    @property
-    def is_connected(self) -> bool:
-        """Check if adapter is currently connected."""
-        return self._running
-
     def set_message_handler(self, handler: MessageHandler) -> None:
         """
         Set the handler for incoming messages.
@@ -2946,80 +2275,10 @@ class BasePlatformAdapter(ABC):
         """
         self._message_handler = handler
 
-    def set_platform_event_handler(
-        self,
-        handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]],
-    ) -> None:
-        """Install the gateway-owned normalized platform-event boundary.
-
-        Adapters normalize SDK updates and pass only stable dictionaries plus an
-        internal ``SessionSource`` to this callback. The runner owns the final
-        authorization decision and plugin dispatch; an adapter with no callback
-        therefore fails closed instead of exposing pre-auth events.
-        """
-        self._platform_event_handler = handler
-
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
 
-    def set_reaction_handler(
-        self, handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]]
-    ) -> None:
-        """Set the handler for emoji-reaction events on platform messages.
-
-        Called by adapters that subscribe to platform-native reaction events
-        (currently the Slack adapter's ``reaction_added``/``reaction_removed``).
-        The handler receives a normalised event dict — ``platform``,
-        ``event_name`` ("reaction:added"/"reaction:removed"), ``reaction``,
-        ``user_id``, ``item_user_id``, ``channel_id``, ``message_ts``,
-        ``event_ts``, ``raw_event`` — and fans out via
-        ``HookRegistry.emit(event_name, ...)``.
-
-        Adapters without reaction support simply never call the handler.
-        """
-        # Assign defensively: subclasses initialized via ``object.__new__``
-        # in tests never run ``BasePlatformAdapter.__init__``.
-        self._reaction_handler = handler  # type: ignore[attr-defined]
-
-    def set_authorization_check(
-        self,
-        callback: Optional[Callable[[str, Optional[str], Optional[str]], bool]],
-    ) -> None:
-        """Register a platform-bound authorization check.
-
-        The callback signature is ``(user_id, chat_type, chat_id) -> bool``.
-        It is used by adapters that pull external context (e.g. Slack thread
-        replies via ``conversations.replies``) to flag messages from senders
-        that are not on the configured allowlist, so the LLM can treat them
-        as unverified background reference rather than authoritative input.
-        """
-        self._authorization_check = callback
-
-    def _is_sender_authorized(
-        self,
-        user_id: Optional[str],
-        chat_type: Optional[str] = None,
-        chat_id: Optional[str] = None,
-    ) -> Optional[bool]:
-        """Return whether ``user_id`` is on the allowlist, if a check is configured.
-
-        Returns ``True``/``False`` when an authorization check has been
-        registered via :meth:`set_authorization_check`. Returns ``None``
-        when no check is registered (caller should treat as "trust unknown"
-        and preserve legacy behaviour).
-        """
-        if not user_id or self._authorization_check is None:
-            return None
-        try:
-            return bool(self._authorization_check(user_id, chat_type, chat_id))
-        except Exception:
-            logger.warning(
-                "[%s] Authorization check raised for user %s; treating as unknown",
-                self.name, user_id, exc_info=True,
-            )
-            return None
-    
     def set_session_store(self, session_store: Any) -> None:
         """
         Set the session store for checking active sessions.
@@ -3229,32 +2488,6 @@ class BasePlatformAdapter(ABC):
     # property) so the stream consumer knows not to short-circuit.
     REQUIRES_EDIT_FINALIZE: bool = False
 
-    async def create_handoff_thread(
-        self,
-        parent_chat_id: str,
-        name: str,
-    ) -> Optional[str]:
-        """Create a fresh thread under ``parent_chat_id`` for a new conversation.
-
-        Used by cron to give a continuable job's brief its own thread on a
-        thread-capable platform — the new thread isolates it from any
-        pre-existing chat in the channel and gives a clean scrollback.
-
-        Returns the new thread/topic id (as a string) on success, or
-        ``None`` if the platform doesn't support threading or the
-        attempt failed (permissions, topics-mode off, etc.). When ``None``
-        is returned the caller falls back to using ``parent_chat_id``
-        directly.
-
-        Default implementation returns ``None`` — adapters that support
-        threads override this. See:
-          - Forum topics in groups, DM topics with newer bot APIs
-          - Discord:  text-channel threads (1440-min auto-archive)
-          - Slack:    seed-message thread anchoring
-        """
-        return None
-
-
     async def edit_message(
         self,
         chat_id: str,
@@ -3304,119 +2537,6 @@ class BasePlatformAdapter(ABC):
         (e.g. platform ``deleteMessage``).
         """
         return False
-
-    def _get_ephemeral_system_ttl_default(self) -> int:
-        """Read ``display.ephemeral_system_ttl`` from config.
-
-        Returns the TTL in seconds to use when an :class:`EphemeralReply`
-        does not specify one explicitly.  ``0`` (the default) disables
-        auto-deletion.  Non-fatal if config is unreadable.
-        """
-        try:
-            from son_of_anton_cli.config import load_config_readonly as _load_config
-        except Exception:
-            return 0
-        try:
-            cfg = _load_config()  # read-only: .get() only, never mutated
-        except Exception:
-            return 0
-        display = cfg.get("display", {}) if isinstance(cfg, dict) else {}
-        if not isinstance(display, dict):
-            return 0
-        raw = display.get("ephemeral_system_ttl", 0)
-        try:
-            return int(raw)
-        except (TypeError, ValueError):
-            return 0
-
-    def _schedule_ephemeral_delete(
-        self,
-        chat_id: str,
-        message_id: str,
-        ttl_seconds: int,
-    ) -> None:
-        """Spawn a detached task that deletes ``message_id`` after ``ttl_seconds``.
-
-        Best-effort — failures (gateway restart, permission denied, message
-        too old for the platform's 48h window) are swallowed at debug level.
-        Does not block the caller.
-        """
-
-        async def _run_delete() -> None:
-            try:
-                await asyncio.sleep(max(1, int(ttl_seconds)))
-                await self.delete_message(chat_id=chat_id, message_id=message_id)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.debug(
-                    "[%s] Ephemeral delete failed for %s/%s: %s",
-                    self.name, chat_id, message_id, e,
-                )
-
-        coro = _run_delete()
-        try:
-            asyncio.create_task(coro)
-        except RuntimeError:
-            # No running loop (e.g. unit tests that never reach the async
-            # path).  Close the coroutine cleanly so Python doesn't warn
-            # about it never being awaited, then drop silently.
-            coro.close()
-
-    # ── Shared interactive-prompt formatting cores ─────────────────────────
-    # Template attrs for ``_format_exec_approval``. Adapters override these to
-    # keep their historical, platform-specific wording byte-identical while
-    # sharing the assembly logic (header → fenced command preview → reason →
-    # optional smart-deny note).
-    _EA_HEADER: str = "⚠️ Command Approval Required\n\n"
-    _EA_CODE_OPEN: str = "```\n"
-    _EA_CODE_CLOSE: str = "\n```\n"
-    _EA_REASON_LABEL: str = "Reason: "
-    _EA_SMART_DENY_LINE: str = (
-        "\n\nSmart DENY: owner override applies to this one operation only."
-    )
-    _EA_CMD_BUDGET: int = 3000
-
-    @staticmethod
-    def _truncate_preview(text: str, budget: int, suffix: str = "...") -> str:
-        """Truncate ``text`` to ``budget`` chars, appending ``suffix`` when cut.
-
-        The shared ``x[:budget] + "..." if len(x) > budget else x`` idiom used
-        by every adapter's approval/confirm preview construction.
-        """
-        text = str(text or "")
-        return text[:budget] + suffix if len(text) > budget else text
-
-
-    @staticmethod
-    def _format_choice_page(
-        options: list,
-        page: int,
-        per_page: int,
-    ) -> "tuple[list, Dict[str, Any]]":
-        """Shared pagination core for picker keyboards/menus.
-
-        Clamps ``page`` into range, slices ``options`` for that page and
-        returns ``(page_options, meta)`` where ``meta`` carries ``page``,
-        ``total_pages``, ``start``, ``end``, ``total`` and ``page_info`` —
-        the `` (N–M of T)`` suffix text (empty when everything fits on one
-        page). Option/button rendering stays platform-local.
-        """
-        total = len(options)
-        total_pages = max(1, (total + per_page - 1) // per_page)
-        page = max(0, min(page, total_pages - 1))
-        start = page * per_page
-        end = min(start + per_page, total)
-        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
-        meta: Dict[str, Any] = {
-            "page": page,
-            "total_pages": total_pages,
-            "start": start,
-            "end": end,
-            "total": total,
-            "page_info": page_info,
-        }
-        return options[start:end], meta
 
     async def send_slash_confirm(
         self,
@@ -3527,26 +2647,6 @@ class BasePlatformAdapter(ABC):
             metadata=metadata,
         )
 
-    async def send_private_notice(
-        self,
-        chat_id: str,
-        user_id: Optional[str],
-        content: str,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send a notice privately when the platform supports it.
-
-        The default implementation falls back to a normal send so callers can
-        use one code path across platforms.
-        """
-        return await self.send(
-            chat_id=chat_id,
-            content=content,
-            reply_to=reply_to,
-            metadata=metadata,
-        )
-
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
         Send a typing indicator.
@@ -3587,105 +2687,6 @@ class BasePlatformAdapter(ABC):
                 await stop_typing(chat_id, metadata=metadata)
                 return
         await self.stop_typing(chat_id)
-
-    async def send_multiple_images(
-        self,
-        chat_id: str,
-        images: List[Tuple[str, str]],
-        metadata: Optional[Dict[str, Any]] = None,
-        human_delay: float = 0.0,
-    ) -> None:
-        """Send a batch of images.
-
-        Accepts ``http(s)://``, ``file://`` URIs in the first tuple
-        element.
-
-        Default implementation sends each item individually,
-        routing animated GIFs through ``send_animation`` and local
-        files through ``send_image_file``.
-
-        Override in subclasses to bundle into a single native API call
-        (e.g. Signal's multi-attachment RPC)
-        """
-        from urllib.parse import unquote as _unquote
-
-        for image_url, alt_text in images:
-            if human_delay > 0:
-                await asyncio.sleep(human_delay)
-            try:
-                logger.info(
-                    "[%s] Sending image: %s (alt=%s)",
-                    self.name,
-                    safe_url_for_log(image_url),
-                    alt_text[:30] if alt_text else "",
-                )
-                if image_url.startswith("file://"):
-                    img_result = await self.send_image_file(
-                        chat_id=chat_id,
-                        image_path=_unquote(image_url[7:]),
-                        caption=alt_text if alt_text else None,
-                        metadata=metadata,
-                    )
-                elif self._is_animation_url(image_url):
-                    img_result = await self.send_animation(
-                        chat_id=chat_id,
-                        animation_url=image_url,
-                        caption=alt_text if alt_text else None,
-                        metadata=metadata,
-                    )
-                else:
-                    img_result = await self.send_image(
-                        chat_id=chat_id,
-                        image_url=image_url,
-                        caption=alt_text if alt_text else None,
-                        metadata=metadata,
-                    )
-                if not img_result.success:
-                    logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
-            except Exception as img_err:
-                logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
-
-    async def send_image(
-        self,
-        chat_id: str,
-        image_url: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """
-        Send an image natively via the platform API.
-        
-        Override in subclasses to send images as proper attachments
-        instead of plain-text URLs. Default falls back to sending the
-        URL as a text message.
-        """
-        # Fallback: send URL as text (subclasses override for native images)
-        text = f"{caption}\n{image_url}" if caption else image_url
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
-    
-    async def send_animation(
-        self,
-        chat_id: str,
-        animation_url: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """
-        Send an animated GIF natively via the platform API.
-        
-        Override in subclasses to send GIFs as proper animations
-        (e.g. platform send_animation) so they auto-play inline.
-        Default falls back to send_image.
-        """
-        return await self.send_image(chat_id=chat_id, image_url=animation_url, caption=caption, reply_to=reply_to, metadata=metadata)
-    
-    @staticmethod
-    def _is_animation_url(url: str) -> bool:
-        """Check if a URL points to an animated GIF (vs a static image)."""
-        lower = url.lower().split('?')[0]  # Strip query params
-        return lower.endswith('.gif')
 
     @staticmethod
     def extract_images(content: str) -> Tuple[List[Tuple[str, str]], str]:
@@ -3735,96 +2736,6 @@ class BasePlatformAdapter(ABC):
         
         return images, cleaned
     
-    async def send_voice(
-        self,
-        chat_id: str,
-        audio_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        """
-        Send an audio file as a native voice message via the platform API.
-
-        Override in subclasses to send audio as voice bubbles
-        or file attachments (Discord). Default falls back to a friendly
-        notice — never echo the local audio_path into chat, since it is a
-        host filesystem path that would leak the Son of Anton home layout.
-        """
-        # audio_path is intentionally NOT included in the chat text — it is a
-        # host-local path that leaks filesystem layout. The path is logged for
-        # operator diagnostics instead.
-        logger.warning(
-            "[%s] send_voice fallback: native audio send unavailable for %s",
-            self.name, audio_path,
-        )
-        text = "⚠️ Couldn't deliver the audio attachment."
-        if caption:
-            text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
-
-    async def send_video(
-        self,
-        chat_id: str,
-        video_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        """
-        Send a video natively via the platform API.
-
-        Override in subclasses to send videos as inline playable media.
-        Default falls back to a friendly notice — never echo the local
-        video_path into chat, since it is a host filesystem path that
-        would leak the Son of Anton home layout.
-        """
-        # See send_voice for the rationale: do not echo host paths into chat.
-        logger.warning(
-            "[%s] send_video fallback: native video send unavailable for %s",
-            self.name, video_path,
-        )
-        text = "⚠️ Couldn't deliver the video attachment."
-        if caption:
-            text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
-
-    async def send_document(
-        self,
-        chat_id: str,
-        file_path: str,
-        caption: Optional[str] = None,
-        file_name: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        """
-        Send a document/file natively via the platform API.
-
-        Override in subclasses to send files as downloadable attachments.
-        Default falls back to a friendly notice — never echo the local
-        file_path into chat, since it is a host filesystem path that
-        would leak the Son of Anton home layout.
-        """
-        # See send_voice for the rationale: do not echo host paths into chat.
-        logger.warning(
-            "[%s] send_document fallback: native file send unavailable for %s",
-            self.name, file_path,
-        )
-        # file_name is supplied by callers and represents the user-facing
-        # filename (already non-sensitive — it is what the agent named the
-        # output). Only show it when the caller passed one explicitly.
-        if file_name:
-            text = f"⚠️ Couldn't deliver the file attachment ({file_name})."
-        else:
-            text = "⚠️ Couldn't deliver the file attachment."
-        if caption:
-            text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
-
     async def _notify_media_delivery_failure(
         self,
         chat_id: str,
@@ -3863,34 +2774,6 @@ class BasePlatformAdapter(ABC):
                 self.name,
                 notify_err,
             )
-
-    async def send_image_file(
-        self,
-        chat_id: str,
-        image_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        """
-        Send a local image file natively via the platform API.
-
-        Unlike send_image() which takes a URL, this takes a local file path.
-        Override in subclasses for native photo attachments. Default falls
-        back to a friendly notice — never echo the local image_path into
-        chat, since it is a host filesystem path that would leak the
-        Son of Anton home layout.
-        """
-        # See send_voice for the rationale: do not echo host paths into chat.
-        logger.warning(
-            "[%s] send_image_file fallback: native image send unavailable for %s",
-            self.name, image_path,
-        )
-        text = "⚠️ Couldn't deliver the image attachment."
-        if caption:
-            text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     @staticmethod
     def validate_media_delivery_path(path: str) -> Optional[str]:
@@ -4317,10 +3200,6 @@ class BasePlatformAdapter(ABC):
                 except Exception:
                     pass
             self._typing_paused.discard(chat_id)
-            # getattr-guard: bare object.__new__() adapters in tests lack
-            # _status_text (same class of issue as _typing_paused, but that
-            # one is always present because those tests predate it).
-            getattr(self, "_status_text", {}).pop(str(chat_id), None)
 
     async def _stop_typing_refresh(
         self,
@@ -4472,54 +3351,13 @@ class BasePlatformAdapter(ABC):
 
     # ── Processing lifecycle hooks ──────────────────────────────────────────
     # Subclasses override these to react to message processing events
-    # (e.g. Discord adds 👀/✅/❌ reactions).
-
-    # Opt-in emoji set for the shared reaction-ack flow in
-    # ``on_processing_complete``. Adapters whose reaction primitives follow
-    # the ``_add_reaction(chat_id, message_id, emoji)`` /
-    # ``_remove_reaction(chat_id, message_id)`` shape can set these class
-    # attributes instead of overriding the hook. Left as ``None`` the hook
-    # stays a no-op (historical default).
-    _ACK_EMOJI: Optional[str] = None
-    _OK_EMOJI: Optional[str] = None
-    _FAIL_EMOJI: Optional[str] = None
+    # (Signal adds 👀/✅/❌ reactions).
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Hook called when background processing completes.
-
-        Default: shared reaction-ack flow — swap the in-progress reaction for
-        a final success/failure reaction. Runs only when the adapter opts in
-        by setting ``_OK_EMOJI`` / ``_FAIL_EMOJI`` class attributes AND
-        defines ``_add_reaction`` / ``_remove_reaction`` primitives taking
-        ``(chat_id, message_id[, emoji])``. Otherwise this is a no-op, as it
-        always was. Remove-then-add rather than a bare replace: deterministic
-        whether the platform replaces a sender's previous reaction or stacks
-        them. CANCELLED outcomes leave the message unreacted.
-        """
-        if self._OK_EMOJI is None and self._FAIL_EMOJI is None:
-            return
-        add: Any = getattr(self, "_add_reaction", None)
-        remove: Any = getattr(self, "_remove_reaction", None)
-        if not callable(add) or not callable(remove):
-            return
-        enabled = getattr(self, "_reactions_enabled", None)
-        if callable(enabled) and not enabled():
-            return
-        chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
-        if not chat_id or not message_id:
-            return
-        await remove(chat_id, message_id)
-        if outcome == ProcessingOutcome.SUCCESS:
-            if self._OK_EMOJI:
-                await add(chat_id, message_id, self._OK_EMOJI)
-        elif outcome == ProcessingOutcome.FAILURE:
-            if self._FAIL_EMOJI:
-                await add(chat_id, message_id, self._FAIL_EMOJI)
-        # CANCELLED: leave the message unreacted.
+        """Hook called when background processing completes."""
 
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
@@ -4551,55 +3389,12 @@ class BasePlatformAdapter(ABC):
         lowered = error.lower()
         return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
 
-    def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
-        """Unwrap a handler response into (text, ttl_seconds).
-
-        Accepts a plain string, ``None``, or an :class:`EphemeralReply`.
-        Returns ``(text, ttl)`` where ``ttl > 0`` means the caller should
-        schedule a deletion via :meth:`_schedule_ephemeral_delete` after
-        the send succeeds.  ``ttl`` is forced to 0 when the adapter
-        doesn't override :meth:`delete_message` so non-supporting
-        platforms silently degrade to normal sends.
-        """
+    def _unwrap_ephemeral(self, response: Any) -> Optional[str]:
+        """Unwrap a handler response (plain string, ``None`` or
+        :class:`EphemeralReply`) into its text."""
         if isinstance(response, EphemeralReply):
-            ttl = response.ttl_seconds
-            if ttl is None:
-                try:
-                    ttl = int(self._get_ephemeral_system_ttl_default())
-                except Exception:
-                    ttl = 0
-            if ttl and ttl > 0 and type(self).delete_message is BasePlatformAdapter.delete_message:
-                ttl = 0
-            return response.text, int(ttl or 0)
-        return response, 0
-
-    def _final_delivery_adapter(
-        self, source: Optional[SessionSource]
-    ) -> "BasePlatformAdapter":
-        """Return the runner's current adapter for a new final-response send.
-
-        A reconnect removes the failed adapter from the runner registry before
-        its in-flight message task completes. That task must keep its own
-        cleanup and partial-message ownership, but an as-yet-unsent final
-        response belongs on the replacement transport. This helper deliberately
-        does not migrate message IDs or route edits/deletes through the new
-        adapter: those operations remain owned by the old transport.
-        """
-        runner = getattr(self, "gateway_runner", None)
-        resolve = getattr(runner, "_adapter_for_source", None)
-        if not callable(resolve):
-            return self
-        try:
-            live_adapter = resolve(source)
-        except Exception:
-            logger.debug("[%s] Failed to resolve live adapter for final delivery", self.name)
-            return self
-        if (
-            not isinstance(live_adapter, BasePlatformAdapter)
-            or live_adapter.platform != self.platform
-        ):
-            return self
-        return live_adapter
+            return response.text
+        return response
 
     async def _send_with_retry(
         self,
@@ -5067,7 +3862,7 @@ class BasePlatformAdapter(ABC):
 
         try:
             response = await self._message_handler(event)
-            _text, _eph_ttl = self._unwrap_ephemeral(response)
+            _text = self._unwrap_ephemeral(response)
             # Send the response BEFORE cancelling the old task so the send
             # cannot be affected by task-cancellation side effects (race
             # condition fix — issue #18912).  Previously the send happened
@@ -5081,18 +3876,12 @@ class BasePlatformAdapter(ABC):
                     len(_text),
                     event.source.chat_id,
                 )
-                _r = await self._send_with_retry(
+                await self._send_with_retry(
                     chat_id=event.source.chat_id,
                     content=_text,
                     reply_to=_reply_anchor_for_event(event),
                     metadata=_mark_notify_metadata(thread_meta),
                 )
-                if _eph_ttl > 0 and _r.success and _r.message_id:
-                    self._schedule_ephemeral_delete(
-                        chat_id=event.source.chat_id,
-                        message_id=_r.message_id,
-                        ttl_seconds=_eph_ttl,
-                    )
             # Old adapter task (if any) is cancelled AFTER the response has
             # been sent — keeps ordering deterministic and avoids the race.
             await self.cancel_session_processing(
@@ -5195,20 +3984,14 @@ class BasePlatformAdapter(ABC):
                 try:
                     _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                     response = await self._message_handler(event)
-                    _text, _eph_ttl = self._unwrap_ephemeral(response)
+                    _text = self._unwrap_ephemeral(response)
                     if _text:
-                        _r = await self._send_with_retry(
+                        await self._send_with_retry(
                             chat_id=event.source.chat_id,
                             content=_text,
                             reply_to=_reply_anchor_for_event(event),
                             metadata=_mark_notify_metadata(_thread_meta),
                         )
-                        if _eph_ttl > 0 and _r.success and _r.message_id:
-                            self._schedule_ephemeral_delete(
-                                chat_id=event.source.chat_id,
-                                message_id=_r.message_id,
-                                ttl_seconds=_eph_ttl,
-                            )
                 except Exception as e:
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
                 return
@@ -5248,20 +4031,14 @@ class BasePlatformAdapter(ABC):
                             event.source, _reply_anchor_for_event(event)
                         )
                         response = await self._message_handler(event)
-                        _text, _eph_ttl = self._unwrap_ephemeral(response)
+                        _text = self._unwrap_ephemeral(response)
                         if _text:
-                            _r = await self._send_with_retry(
+                            await self._send_with_retry(
                                 chat_id=event.source.chat_id,
                                 content=_text,
                                 reply_to=_reply_anchor_for_event(event),
                                 metadata=_mark_notify_metadata(_thread_meta),
                             )
-                            if _eph_ttl > 0 and _r.success and _r.message_id:
-                                self._schedule_ephemeral_delete(
-                                    chat_id=event.source.chat_id,
-                                    message_id=_r.message_id,
-                                    ttl_seconds=_eph_ttl,
-                                )
                     except Exception as e:
                         logger.error(
                             "[%s] Clarify text-intercept dispatch failed: %s",
@@ -5399,14 +4176,10 @@ class BasePlatformAdapter(ABC):
             response = await self._message_handler(event)
             is_ephemeral_response = isinstance(response, EphemeralReply)
 
-            # Slash-command handlers may return an EphemeralReply sentinel to
-            # request that their reply message auto-delete after a TTL (used
-            # for system notices like "✨ New session started!" that the user
-            # doesn't need to keep in the thread).  Unwrap here so all the
-            # downstream extract_media / text-processing logic sees a plain
-            # string, and remember the TTL + platform capability so the
-            # post-send block can schedule the deletion.
-            response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+            # Slash-command handlers may return an EphemeralReply system
+            # notice. Unwrap here so all the downstream extract_media /
+            # text-processing logic sees a plain string.
+            response = self._unwrap_ephemeral(response)
 
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or
@@ -5514,12 +4287,9 @@ class BasePlatformAdapter(ABC):
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
 
-                # Send the text portion. A reconnect may have replaced this
-                # adapter while its in-flight handler was still producing a
-                # final response; that response is a new message, so resolve
-                # the current transport before sending it.
+                # Send the text portion.
                 if text_content:
-                    delivery_adapter = self._final_delivery_adapter(event.source)
+                    delivery_adapter = self
                     logger.info(
                         "[%s] Sending response (%d chars) to %s",
                         delivery_adapter.name,
@@ -5595,20 +4365,6 @@ class BasePlatformAdapter(ABC):
                             logger.debug(
                                 "delivery ledger update failed", exc_info=True
                             )
-
-                    # Schedule auto-deletion on the adapter that owns the new
-                    # message ID, which may be the reconnect replacement.
-                    if (
-                        _ephemeral_ttl
-                        and _ephemeral_ttl > 0
-                        and result.success
-                        and result.message_id
-                    ):
-                        delivery_adapter._schedule_ephemeral_delete(
-                            chat_id=event.source.chat_id,
-                            message_id=result.message_id,
-                            ttl_seconds=_ephemeral_ttl,
-                        )
 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
@@ -6065,49 +4821,20 @@ class BasePlatformAdapter(ABC):
         chat_type: str = "dm",
         user_id: Optional[str] = None,
         user_name: Optional[str] = None,
-        thread_id: Optional[str] = None,
-        chat_topic: Optional[str] = None,
         user_id_alt: Optional[str] = None,
         chat_id_alt: Optional[str] = None,
-        is_bot: bool = False,
-        scope_id: Optional[str] = None,
-        guild_id: Optional[str] = None,
-        parent_chat_id: Optional[str] = None,
-        message_id: Optional[str] = None,
-        role_authorized: bool = False,
-        auto_thread_created: bool = False,
-        auto_thread_initial_name: Optional[str] = None,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
-        # Normalize empty topic to None
-        if chat_topic is not None and not chat_topic.strip():
-            chat_topic = None
-
-        source = SessionSource(
+        return SessionSource(
             platform=self.platform,
             chat_id=str(chat_id),
             chat_name=chat_name,
             chat_type=chat_type,
             user_id=str(user_id) if user_id else None,
             user_name=user_name,
-            thread_id=str(thread_id) if thread_id else None,
-            chat_topic=chat_topic.strip() if chat_topic else None,
             user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt,
-            is_bot=is_bot,
-            scope_id=str(scope_id) if scope_id else None,
-            guild_id=str(guild_id) if guild_id else None,
-            parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
-            message_id=str(message_id) if message_id else None,
-            role_authorized=role_authorized,
-            auto_thread_created=auto_thread_created,
-            auto_thread_initial_name=auto_thread_initial_name,
         )
-        # In-process transport provenance is deliberately not serialized by
-        # SessionSource.to_dict(). The live receiving adapter is authoritative
-        # for this turn.
-        source._transport_adapter_ref = weakref.ref(self)
-        return source
     
     @abstractmethod
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

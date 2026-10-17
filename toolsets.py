@@ -131,12 +131,6 @@ TOOLSETS = {
         "includes": []
     },
 
-    "discord": {
-        "description": "Discord read and participate tools (fetch messages, search members, create threads)",
-        "tools": ["discord"],
-        "includes": [],
-    },
-
     # A messaging chat relaying work to terminal sessions. Listed in the
     # gateway platform composites; its check_fn shows it only in a gateway
     # whose config has single_user (tools/relay_tool.py), so the CLI never
@@ -171,20 +165,6 @@ TOOLSETS = {
         "includes": []
     },
 
-    "son-of-anton-discord": {
-        "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
-        "tools": _SON_OF_ANTON_CORE_TOOLS + [
-            "discord", "relay",
-        ],
-        "includes": []
-    },
-
-    "son-of-anton-slack": {
-        "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": _SON_OF_ANTON_CORE_TOOLS + ["relay"],
-        "includes": []
-    },
-
     "son-of-anton-signal": {
         "description": "Signal bot toolset - encrypted messaging platform (full access)",
         "tools": _SON_OF_ANTON_CORE_TOOLS + ["relay"],
@@ -194,7 +174,7 @@ TOOLSETS = {
     "son-of-anton-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["son-of-anton-discord", "son-of-anton-slack", "son-of-anton-signal"]
+        "includes": ["son-of-anton-signal"]
     }
 }
 
@@ -373,29 +353,6 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
     # Get toolset definition
     toolset = get_toolset(name, include_registry=include_registry)
     if not toolset:
-        # Auto-generate a toolset for plugin platforms (son-of-anton-<name>).
-        # Gives them _SON_OF_ANTON_CORE_TOOLS plus any tools the plugin registered
-        # into a toolset matching the platform name. This is a registry-derived
-        # view, so it only applies when registry tools are requested; the static
-        # view (include_registry=False) has no plugin-platform definition.
-        if include_registry and name.startswith("son-of-anton-"):
-            platform_name = name[len("son-of-anton-"):]
-            try:
-                from gateway.platform_registry import platform_registry
-                if platform_registry.is_registered(platform_name):
-                    plugin_tools = set(_SON_OF_ANTON_CORE_TOOLS)
-                    try:
-                        from tools.registry import registry
-                        plugin_tools.update(
-                            e.name for e in registry.get_all_entries()
-                            if e.toolset == platform_name
-                        )
-                    except Exception:
-                        pass
-                    return list(plugin_tools)
-            except Exception:
-                pass
-
         return []
 
     # Collect direct tools

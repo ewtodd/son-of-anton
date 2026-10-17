@@ -43,7 +43,6 @@ from agent.prompt_builder import (
     SESSION_SEARCH_GUIDANCE,
     STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
-    TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
@@ -591,42 +590,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         )
 
     platform_key = (agent.platform or "").lower().strip()
-    # Resolve the built-in/plugin default hint for this platform, then apply
+    # Resolve the built-in default hint for this platform, then apply
     # any per-platform override from config (platform_hints.<platform>).
-    _default_hint = ""
-    if platform_key in PLATFORM_HINTS:
-        _default_hint = PLATFORM_HINTS[platform_key]
-    elif platform_key:
-        # Check plugin registry for platform-specific LLM guidance
-        try:
-            from gateway.platform_registry import platform_registry
-            _entry = platform_registry.get(platform_key)
-            if _entry and _entry.platform_hint:
-                _default_hint = _entry.platform_hint
-        except Exception:
-            pass
-
-    # For Telegram: append the rich-messages extension only when the user has
-    # opted in to ``gateway.platforms.telegram.extra.rich_messages: true``
-    # (the canonical location the adapter reads from).  Merge with the
-    # top-level ``platforms.telegram.extra`` so config-wizard writes and
-    # dashboard-setup keys are also visible — same precedence the adapter
-    # uses: top-level platform overrides gateway.platforms at the leaf.
-    if platform_key == "telegram" and _default_hint:
-        try:
-            from son_of_anton_cli.config import load_config_readonly
-            _cfg = load_config_readonly()
-            _gw_tg_extra = (((_cfg.get("gateway") or {}).get("platforms") or {}).get("telegram") or {}).get("extra")
-            _top_tg_extra = ((_cfg.get("platforms") or {}).get("telegram") or {}).get("extra")
-            if not isinstance(_gw_tg_extra, dict):
-                _gw_tg_extra = {}
-            if not isinstance(_top_tg_extra, dict):
-                _top_tg_extra = {}
-            _tg_extra = {**_gw_tg_extra, **_top_tg_extra}
-            if _tg_extra.get("rich_messages"):
-                _default_hint = _default_hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
-        except Exception:
-            pass  # Config read failure — fall back to base hint only
+    _default_hint = PLATFORM_HINTS.get(platform_key, "")
 
     _effective_hint = _resolve_platform_hint(agent, platform_key, _default_hint)
     if _effective_hint:

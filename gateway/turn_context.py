@@ -1,9 +1,8 @@
 """Per-turn context shared between ``GatewayRunner._run_agent_inner`` and the
 ``TurnRunner`` collaborator (gateway/run.py).
 
-``_run_agent_inner`` historically defined its tool-progress plumbing as nested
-closures (``progress_callback`` ~250 LOC, ``send_progress_messages`` ~353 LOC)
-that closed over ~20 enclosing locals.  ``TurnContext`` is the extraction seam:
+``_run_agent_inner`` historically defined its turn plumbing as nested closures
+that closed over enclosing locals.  ``TurnContext`` is the extraction seam:
 each closed-over local becomes a field on this dataclass, so the closure bodies
 can move onto ``TurnRunner`` methods unchanged modulo ``name`` -> ``ctx.name``
 rewrites.
@@ -11,13 +10,10 @@ rewrites.
 Field notes:
 
 - All fields are written once by ``_run_agent_inner`` while wiring up the turn
-  (a few — ``_progress_metadata``, ``_progress_reply_to``, ``agent_holder`` —
-  are computed slightly later than construction and assigned onto the ctx as
-  soon as the original locals were bound).  None of the original closures
-  *rebound* their captured names (no ``nonlocal``); mutable state uses the
-  same single-element-list containers as before (``last_progress_msg``,
-  ``repeat_count``, ...), so mutation stays visible to the outer body through
-  the shared objects exactly as it did through the shared closure cells.
+  (a few — ``agent_holder`` — are computed slightly later than construction
+  and assigned onto the ctx as soon as the original locals were bound).
+  Mutable state uses single-element-list containers so mutation stays visible
+  to the outer body through the shared objects.
 - ``_run_still_current`` stays a callable (it captures ``self``/
   ``session_key``/``run_generation``); carrying the callable keeps the
   extracted bodies byte-identical.
@@ -26,7 +22,7 @@ Field notes:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Optional
 
 
 @dataclass
@@ -36,34 +32,13 @@ class TurnContext:
     # --- read-only turn identity / wiring -------------------------------
     source: Any = None
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]
-    _live_status_adapter: Any = None
-    _live_status_mode: str = "off"
     _thinking_enabled: bool = False
-    progress_mode: str = "off"
-    progress_grouping: str = "grouped"
-    tool_progress_enabled: bool = False
 
     # --- queues ----------------------------------------------------------
-    progress_queue: Any = None
     log_queue: Any = None
 
     # --- mutable single-element containers (shared with the outer body) --
-    last_progress_msg: list = field(default_factory=lambda: [None])
-    last_tool: list = field(default_factory=lambda: [None])
-    last_was_terminal_block: list = field(default_factory=lambda: [False])
-    repeat_count: list = field(default_factory=lambda: [0])
-    long_tool_hint_fired: list = field(default_factory=lambda: [False])
     agent_holder: list = field(default_factory=lambda: [None])
-
-    # --- constants / cleanup bookkeeping ---------------------------------
-    _LONG_TOOL_THRESHOLD_S: float = 30.0
-    _cleanup_progress: bool = False
-    _cleanup_msg_ids: List[str] = field(default_factory=list)
-
-    # --- progress threading metadata (assigned after construction, before
-    #     send_progress_messages is scheduled) ----------------------------
-    _progress_metadata: Optional[dict] = None
-    _progress_reply_to: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # run_sync extraction (second wave of the seam): the closed-over locals
@@ -100,7 +75,6 @@ class TurnContext:
     disabled_toolsets: Any = None
     log_mode_enabled: bool = False
     interim_assistant_messages_enabled: bool = False
-    needs_progress_queue: bool = False
 
     # --- lazy-imported callables captured from the outer body -------------
     AIAgent: Any = None
@@ -127,11 +101,3 @@ class TurnContext:
     _event_callback_sync: Optional[Callable] = None
     _status_callback_sync: Optional[Callable] = None
 
-    # --- Slack-native task-card progress (opt-in; #29483) ------------------
-    # True when the Slack adapter's ``native_task_cards_enabled()`` opt-in is
-    # set for this turn's platform. The ID-bearing lifecycle callbacks are
-    # published by TurnRunner (like progress_callback above) so tool starts
-    # and completions correlate by real tool-call ID instead of tool name.
-    _native_slack_task_cards: bool = False
-    native_tool_start_callback: Optional[Callable] = None
-    native_tool_complete_callback: Optional[Callable] = None

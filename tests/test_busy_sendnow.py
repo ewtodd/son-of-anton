@@ -137,7 +137,7 @@ def test_sendnow_with_text_queues_when_redirect_declines() -> None:
 def test_sendnow_with_text_steers_without_touching_the_queue() -> None:
     agent = _FakeAgent()
     gw, state, adapter = _runner(agent, slot=_text_event("already queued"))
-    reply = _sendnow(gw, "correction")
+    _sendnow(gw, "correction")
     assert agent.redirects == ["correction"]
     assert _queue(state, adapter) == ["already queued"]
 

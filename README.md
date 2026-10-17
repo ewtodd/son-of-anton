@@ -37,7 +37,7 @@ the same subcommand through its terminal.
 <!---->
 Other things worth knowing:
 <!---->
-- Talks over Discord, Slack, and Signal.
+- Talks over Signal.
 One gateway process also runs cron.
 - The Textual TUI is the only interface. There is no `--tui` flag and no
   fallback REPL; `son-of-anton "..."` still answers a single query without it.
@@ -169,7 +169,7 @@ Both stores are scoped:
 |---|---|---|
 | `shared` | `MEMORY.md`, `USER.md` | every session |
 | `cli` | `MEMORY.cli.md`, `USER.cli.md` | CLI and TUI sessions |
-| `gateway` | `MEMORY.gateway.md`, `USER.gateway.md` | Signal, Discord, Slack |
+| `gateway` | `MEMORY.gateway.md`, `USER.gateway.md` | Signal |
 <!---->
 The active scope follows the surface — cli → `cli`, messaging → `gateway`,
 anything else (cron, sub-agents, unknown front-ends) → `shared`. `memory.scope`
@@ -222,7 +222,7 @@ Retrieval happens per user turn: the closest chunks above `min_score`
 transcript or the frozen system prompt — so the prompt cache is preserved.
 The block is framed as reference data, not instructions, and secrets are
 redacted before anything is embedded. Visibility follows the memory scopes,
-plus per-chat isolation for messaging: a Signal/Discord/Slack chat recalls
+plus per-chat isolation for messaging: a Signal chat recalls
 only its own conversations (and shared/gateway notes); a CLI session recalls
 CLI and shared content, never a chat; subagents and cron runs inherit the
 origin of their parent session or delivery target (a cron job that delivers

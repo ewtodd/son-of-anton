@@ -508,22 +508,14 @@ def _resolve_job_reasoning_config(
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
-    "discord", "slack", "signal",
+    "signal",
 })
 
 # Platforms that support a configured cron/notification home target, mapped to
 # the environment variable used by gateway setup/runtime config.
 _HOME_TARGET_ENV_VARS = {
-    "discord": "DISCORD_HOME_CHANNEL",
-    "slack": "SLACK_HOME_CHANNEL",
     "signal": "SIGNAL_HOME_CHANNEL",
 }
-
-# Legacy env var names kept for back-compat.  Each entry is the current
-# primary env var → the previous name.  _get_home_target_chat_id falls
-# back to the legacy name if the primary is unset, so users who set the
-# old name before the rename keep working until they migrate.
-_LEGACY_HOME_TARGET_ENV_VARS = {}
 
 from cron.jobs import (
     advance_next_runs,
@@ -1623,63 +1615,22 @@ def _cron_job_origin_log_suffix(job: dict) -> str:
     return " " + " ".join(fields) if fields else ""
 
 
-def _plugin_cron_env_var(platform_name: str) -> str:
-    """Return the cron home-channel env var registered by a plugin platform.
-
-    Falls through the platform registry so plugins that set
-    ``cron_deliver_env_var`` on their ``PlatformEntry`` get cron delivery
-    support without editing this module.
-    """
-    try:
-        from son_of_anton_cli.plugins import discover_plugins
-        discover_plugins()  # idempotent
-        from gateway.platform_registry import platform_registry
-        entry = platform_registry.get(platform_name.lower())
-        if entry and entry.cron_deliver_env_var:
-            return entry.cron_deliver_env_var
-    except Exception:
-        pass
-    return ""
-
-
 def _is_known_delivery_platform(platform_name: str) -> bool:
-    """Whether ``platform_name`` is a valid cron delivery target.
-
-    Hardcoded built-ins in ``_KNOWN_DELIVERY_PLATFORMS`` are checked first;
-    plugin platforms registered via ``PlatformEntry`` are accepted if they
-    provide a ``cron_deliver_env_var``.
-    """
-    name = platform_name.lower()
-    if name in _KNOWN_DELIVERY_PLATFORMS:
-        return True
-    return bool(_plugin_cron_env_var(name))
+    """Whether ``platform_name`` is a valid cron delivery target."""
+    return platform_name.lower() in _KNOWN_DELIVERY_PLATFORMS
 
 
 def _resolve_home_env_var(platform_name: str) -> str:
-    """Return the env var name for a platform's cron home channel.
-
-    Built-in platforms are in ``_HOME_TARGET_ENV_VARS``; plugin platforms are
-    resolved from the platform registry.
-    """
-    name = platform_name.lower()
-    env_var = _HOME_TARGET_ENV_VARS.get(name)
-    if env_var:
-        return env_var
-    return _plugin_cron_env_var(name)
+    """Return the env var name for a platform's cron home channel."""
+    return _HOME_TARGET_ENV_VARS.get(platform_name.lower(), "")
 
 
 def _get_config_home_channel(platform_name: str):
     """Return the persisted ``HomeChannel`` for a platform from gateway config.
 
-    ``/sethome`` declares ``config.toml`` canonical (it is the only store that
-    survives for relay-fronted logical platforms, whose adapters are not
-    natively enabled) and mirrors the value into the legacy
-    ``<PLATFORM>_HOME_CHANNEL`` env var only as a best-effort compatibility
-    shim.  Cron historically read ONLY the env mirror, so a home channel that
-    existed solely in config.toml — e.g. Discord fronted by the relay
-    connector, where no ``DISCORD_HOME_CHANNEL`` was ever exported — was
-    invisible and jobs silently fell back to local-only.  Reading the
-    canonical store here fixes that for every relay-fronted platform at once.
+    ``/sethome`` declares ``config.toml`` canonical and mirrors the value
+    into the legacy ``<PLATFORM>_HOME_CHANNEL`` env var only as a best-effort
+    compatibility shim, so read the canonical store too.
     """
     try:
         from gateway.config import load_gateway_config, Platform
@@ -1700,20 +1651,15 @@ def _env_home_target_chat_id(platform_name: str) -> str:
     env_var = _resolve_home_env_var(platform_name)
     if not env_var:
         return ""
-    value = os.getenv(env_var, "")
-    if not value:
-        legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
-        if legacy:
-            value = os.getenv(legacy, "")
-    return value
+    return os.getenv(env_var, "")
 
 
 def _get_home_target_chat_id(platform_name: str) -> str:
     """Return the configured home target chat/room ID for a delivery platform.
 
     Resolution order: platform env var (legacy mirror, kept first so an
-    operator override keeps winning) → legacy env var name → the canonical
-    ``home_channel`` block persisted in config.toml by ``/sethome``.
+    operator override keeps winning) → the canonical ``home_channel`` block
+    persisted in config.toml by ``/sethome``.
     """
     value = _env_home_target_chat_id(platform_name)
     if value:
@@ -1728,10 +1674,6 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
     """Return the optional thread/topic ID for a platform home target."""
     env_var = _resolve_home_env_var(platform_name)
     value = os.getenv(f"{env_var}_THREAD_ID", "").strip() if env_var else ""
-    if not value and env_var:
-        legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
-        if legacy:
-            value = os.getenv(f"{legacy}_THREAD_ID", "").strip()
     if value:
         return value
     # Canonical config.toml fallback — same rationale as
@@ -1746,21 +1688,11 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
 
 
 def _iter_home_target_platforms():
-    """Iterate built-in + plugin platform names that expose a home channel.
+    """Iterate platform names that expose a home channel.
 
     Used by the ``deliver=origin`` fallback when the job has no origin.
     """
-    for name in _HOME_TARGET_ENV_VARS:
-        yield name
-    try:
-        from son_of_anton_cli.plugins import discover_plugins
-        discover_plugins()  # idempotent
-        from gateway.platform_registry import platform_registry
-        for entry in platform_registry.plugin_entries():
-            if entry.cron_deliver_env_var and entry.name not in _HOME_TARGET_ENV_VARS:
-                yield entry.name
-    except Exception:
-        pass
+    yield from _HOME_TARGET_ENV_VARS
 
 
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
@@ -1799,12 +1731,8 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
 
-        from tools.send_message_tool import (
-            prepare_send_message_platforms,
-            resolve_send_target,
-        )
+        from tools.send_message_tool import resolve_send_target
 
-        prepare_send_message_platforms()
         # pass_unresolved_references: stored jobs have no model in the loop to react
         # to a resolution error, and a target the directory doesn't know
         # (fresh install, platform-native id) used to be handed to the
@@ -1859,11 +1787,11 @@ def _normalize_deliver_value(deliver) -> str:
     """Normalize a stored/submitted ``deliver`` value to its canonical string form.
 
     The contract is that ``deliver`` is a string (``"local"``, ``"origin"``,
-    ``"discord"``, ``"discord:123"``, or comma-separated combinations).
+    ``"signal"``, ``"signal:+15551234567"``, or comma-separated combinations).
     Historically some callers — MCP clients passing an array, direct edits of
     ``jobs.json``, or stale code paths — have stored a list/tuple like
-    ``["discord"]``.  ``str(["discord"])`` would serialize to the literal
-    string ``"['discord']"``, which is not a known platform and fails
+    ``["signal"]``.  ``str(["signal"])`` would serialize to the literal
+    string ``"['signal']"``, which is not a known platform and fails
     resolution silently.  Flatten lists/tuples into a comma-separated string
     so both forms work.  Returns ``"local"`` for anything falsy.
     """
@@ -1906,7 +1834,7 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     Accepts the legacy comma-separated ``deliver`` string plus the
     ``all`` routing-intent token, which expands to every platform with
     a configured home channel.  Tokens may be combined with explicit
-    targets: ``origin,all`` and ``all,discord:123`` both work.
+    targets: ``origin,all`` and ``all,signal:+15551234567`` both work.
     Duplicate (platform, chat_id, thread_id) tuples are collapsed by the
     existing dedup pass.
     """
@@ -2192,8 +2120,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # the exact member who scheduled the job — parity with send_message.
         origin_user_id = origin.get("user_id") if origin_target else None
 
-        # Built-in names resolve to their enum member; plugin platform names
-        # create dynamic members via Platform._missing_().
         try:
             platform = Platform(platform_name.lower())
         except (ValueError, KeyError):
@@ -2520,7 +2446,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
             if result and result.get("error"):
                 # Include target context (platform/chat) so a bare error string
-                # like "Discord send failed: TimeoutError: " is attributable.
+                # like "Signal send failed: TimeoutError: " is attributable.
                 # Not inside an except block — the error comes from the send
                 # result dict, so there is no traceback to attach.
                 msg = f"delivery error: {result['error']} (target {platform_name}:{chat_id})"
@@ -3601,9 +3527,9 @@ def run_job(
     if job.get("no_agent"):
         # Load .env before the script runs so auto-delivery can resolve home
         # channels. A standalone cron tick process typically starts WITHOUT
-        # DISCORD_HOME_CHANNEL/SLACK_HOME_CHANNEL in its environment, and
+        # SIGNAL_HOME_CHANNEL in its environment, and
         # the agent path's per-run dotenv reload below never executes for
-        # no_agent jobs — every deliver=discord/all script job failed with
+        # no_agent jobs — every deliver=signal/all script job failed with
         # "no delivery target resolved". load_son_of_anton_dotenv does not override
         # already-set vars, so the gateway's in-process tick is unaffected.
         try:

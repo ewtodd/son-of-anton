@@ -161,11 +161,10 @@ son-of-anton/
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
 │   └── environments/     # Terminal environment (local)
 ├── gateway/              # Messaging gateway — run.py + session.py + platforms/
-│   └── platforms/        # signal (built-in); discord + slack live in plugins/platforms/
+│   └── platforms/        # signal — the only messaging platform
 ├── plugins/              # Plugin system (see "Plugins" below)
 │   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)
 │   ├── model-providers/  # Inference backend plugins (custom)
-│   ├── platforms/        # discord, slack adapters
 │   └── web/              # Web-search provider plugins (exa, tavily, firecrawl, ...)
 ├── autophysicist/       # Vendored physics mode (Autophysicist)
 │   ├── llm.py            # OpenAI-compatible layer resolving endpoints from config.toml
@@ -212,7 +211,7 @@ class AIAgent:
         enabled_toolsets: list = None,
         disabled_toolsets: list = None,
         quiet_mode: bool = False,
-        platform: str = None,              # "cli", "discord", "slack", "signal", ...
+        platform: str = None,              # "cli", "signal", "cron", ...
         session_id: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
@@ -347,11 +346,12 @@ fallback: if Textual will not start, nothing interactive starts. Single-query mo
 
 ---
 
-## Gateway (Discord + Slack + Signal)
+## Gateway (Signal)
 
-One gateway process runs the platform adapters and the cron scheduler. Discord and Slack
-live in `plugins/platforms/`; Signal is built-in (`gateway/platforms/signal.py`).
-Read `gateway/platforms/ADDING_A_PLATFORM.md` when adding a platform.
+One gateway process runs the Signal adapter (`gateway/platforms/signal.py`) and the cron
+scheduler. Signal is the only messaging platform: Discord, Slack, the Nous relay connector
+(`gateway/relay/`) and platform plugins (`gateway/platform_registry.py`) were removed
+(2026-10-16).
 
 The gateway has TWO message guards — both must bypass approval/control commands. When an
 agent is running, messages pass through (1) the base adapter's `_pending_messages` queue

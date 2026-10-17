@@ -2028,15 +2028,10 @@ class GatewayStreamConsumer:
         if not tail.strip():
             return
         try:
-            # Interim declaration: this tail is pre-boundary text, not the
-            # turn-final — never let it seal a native stream (see
-            # _send_commentary).
-            _md = dict(self.metadata) if self.metadata else {}
-            _md["_interim_send"] = True
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=tail,
-                metadata=_md,
+                metadata=self.metadata,
             )
             if result.success:
                 self._already_sent = True
@@ -2070,18 +2065,10 @@ class GatewayStreamConsumer:
         if not text.strip():
             return False
         try:
-            # Declare interim intent: this send is NOT the turn-final. A
-            # stream-is-the-message adapter (relay Slack native streaming)
-            # must not let its seal-interception convert this into
-            # draft(final=true) — that would seal the live stream with
-            # interim text and orphan the true final into a plain-send
-            # duplicate (live finding, 2026-08-16 canary).
-            _md = dict(self.metadata) if self.metadata else {}
-            _md["_interim_send"] = True
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                metadata=_md,
+                metadata=self.metadata,
             )
             # Note: do NOT set _already_sent = True here.
             # Commentary messages are interim status updates (e.g. "Using browser

@@ -11,7 +11,6 @@ the turn-start compaction gate would use.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 
 import pytest
 

@@ -40,11 +40,6 @@ _CANONICAL_TABLES = (
     "async_delegations",
 )
 
-_TOPIC_TABLES = (
-    "telegram_dm_topic_mode",
-    "telegram_dm_topic_bindings",
-)
-
 # These values describe derived indexes or the schema that owns an optional
 # table. A fresh destination must generate them from its own current schema.
 _GENERATED_META_KEYS = frozenset({
@@ -55,7 +50,6 @@ _GENERATED_META_KEYS = frozenset({
     "fts_cjk_stale",
     "fts_cjk_rebuild_high_water",
     "fts_cjk_rebuild_progress",
-    "telegram_dm_topic_schema_version",
 })
 
 _SIDECAR_SUFFIXES = ("", "-wal", "-shm", "-journal")
@@ -305,7 +299,7 @@ def _inspect_connection(conn: sqlite3.Connection) -> dict[str, Any]:
         # A damaged journal pragma must not block rows that are still readable.
         report["warnings"].append(f"journal mode: {exc}")
 
-    for table in (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES):
+    for table in (*_CANONICAL_TABLES, "state_meta"):
         report["tables"][table] = _table_inventory(conn, table)
 
     for required in ("sessions", "messages"):
@@ -1050,7 +1044,6 @@ def _cleanup_partial_orphans(
         "messages_removed": 0,
         "session_model_usage_removed": 0,
         "compaction_locks_removed": 0,
-        "telegram_dm_topic_bindings_removed": 0,
     }
     destination.execute("BEGIN IMMEDIATE")
     try:
@@ -1119,10 +1112,6 @@ def _cleanup_partial_orphans(
             ("messages", "messages_removed"),
             ("session_model_usage", "session_model_usage_removed"),
             ("compression_locks", "compaction_locks_removed"),
-            (
-                "telegram_dm_topic_bindings",
-                "telegram_dm_topic_bindings_removed",
-            ),
         )
         for table, report_key in dependent_tables:
             if not _table_columns(destination, table):
@@ -1156,7 +1145,6 @@ def _cleanup_partial_orphans(
         + int(result["messages_removed"])
         + int(result["session_model_usage_removed"])
         + int(result["compaction_locks_removed"])
-        + int(result["telegram_dm_topic_bindings_removed"])
     )
     return result
 
@@ -1243,7 +1231,7 @@ def _verify_recovered_database(
             )
 
         counts: dict[str, int] = {}
-        for table in (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES):
+        for table in (*_CANONICAL_TABLES, "state_meta"):
             columns = _table_columns(conn, table)
             if columns:
                 counts[table] = int(
@@ -1594,13 +1582,7 @@ def recover_session_database(
         destination_db: Optional[SessionDB] = None
         destination_conn: Optional[sqlite3.Connection] = None
         try:
-            has_topic_tables = any(
-                inspection["tables"][table].get("available") for table in _TOPIC_TABLES
-            )
-
             destination_db = SessionDB(db_path=output)
-            if has_topic_tables:
-                destination_db.apply_telegram_topic_migration()
             destination_db.close()
             destination_db = None
 
@@ -1643,25 +1625,6 @@ def recover_session_database(
             else:
                 copy_report["state_meta"] = {"status": "missing", "copied_rows": 0}
 
-            for table in _TOPIC_TABLES:
-                table_inspection = inspection["tables"][table]
-                if not table_inspection.get("available"):
-                    copy_report[table] = {
-                        "status": "missing",
-                        "copied_rows": 0,
-                    }
-                    continue
-                copy_function = (
-                    _copy_table_salvage if allow_partial else _copy_table
-                )
-                copy_report[table] = copy_function(
-                    source_conn,
-                    destination_conn,
-                    table,
-                    chunk_size=chunk_size,
-                    progress_cb=progress_cb,
-                    source_rows=table_inspection.get("rows"),
-                )
             orphan_cleanup = (
                 _cleanup_partial_orphans(destination_conn)
                 if allow_partial

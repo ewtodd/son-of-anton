@@ -2,8 +2,8 @@
 Delivery routing for cron job outputs and agent responses.
 
 Routes messages to the appropriate destination based on:
-- Explicit targets (e.g., "discord:123456789")
-- Platform home channels (e.g., "discord" → home channel)
+- Explicit targets (e.g., "signal:+15551234567")
+- Platform home channels (e.g., "signal" → home channel)
 - Origin (back to where the job was created)
 - Local (always saved to files)
 """
@@ -67,10 +67,6 @@ class DeliveryTransport:
     config: Optional[PlatformConfig]
     transport_platform: Platform
 
-    @property
-    def is_relay(self) -> bool:
-        return self.transport_platform == Platform.RELAY
-
     async def send(
         self,
         logical_platform: Platform,
@@ -78,14 +74,7 @@ class DeliveryTransport:
         content: str,
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
-        """Send through this transport while preserving the logical platform."""
-        if self.is_relay:
-            return await self.adapter.send_for_platform(
-                logical_platform,
-                chat_id,
-                content,
-                metadata=metadata,
-            )
+        """Send through this transport."""
         return await self.adapter.send(chat_id, content, metadata=metadata)
 
 
@@ -94,19 +83,12 @@ def resolve_delivery_transport(
     config: GatewayConfig,
     adapters: Optional[Dict[Platform, Any]],
 ) -> Optional[DeliveryTransport]:
-    """Resolve a logical platform to its live delivery transport.
-
-    A concrete native adapter always wins. Relay is eligible only when its
-    authenticated transport explicitly advertises that it fronts the logical
-    platform, which keeps restart-time delivery independent of per-chat caches
-    without letting Relay hijack unrelated platform targets.
-    """
+    """Resolve a logical platform to its live delivery transport."""
     live_adapters = adapters or {}
     native = live_adapters.get(platform)
     native_config = config.platforms.get(platform)
     # Preserve DeliveryRouter's historical support for explicitly supplied live
-    # adapters with no config block, but never let an explicitly disabled native
-    # adapter shadow an enabled Relay transport.
+    # adapters with no config block.
     if native is not None and (native_config is None or native_config.enabled):
         return DeliveryTransport(
             adapter=native,
@@ -114,20 +96,6 @@ def resolve_delivery_transport(
             transport_platform=platform,
         )
 
-    relay = live_adapters.get(Platform.RELAY)
-    relay_config = config.platforms.get(Platform.RELAY)
-    fronts_platform = getattr(relay, "fronts_platform", None)
-    if (
-        relay is not None
-        and (relay_config is None or relay_config.enabled)
-        and callable(fronts_platform)
-        and fronts_platform(platform)
-    ):
-        return DeliveryTransport(
-            adapter=relay,
-            config=relay_config,
-            transport_platform=Platform.RELAY,
-        )
     return None
 
 
@@ -178,8 +146,8 @@ class DeliveryTarget:
     Represents where a message should be sent:
     - "origin" → back to source
     - "local" → save to local files
-    - "discord" → Discord home channel
-    - "discord:123456" → specific Discord chat
+    - "signal" → Signal home channel
+    - "signal:+15551234567" → specific Signal chat
     """
     platform: Platform
     chat_id: Optional[str] = None  # None means use home channel
@@ -195,8 +163,8 @@ class DeliveryTarget:
         Formats:
         - "origin" → back to source
         - "local" → local files only
-        - "discord" → Discord home channel
-        - "discord:123456" → specific Discord chat
+        - "signal" → Signal home channel
+        - "signal:+15551234567" → specific Signal chat
         """
         target_stripped = target.strip()
         target_lower = target_stripped.lower()
@@ -504,13 +472,6 @@ class DeliveryRouter:
             }
 
         send_metadata = dict(metadata or {})
-        if transport.is_relay:
-            home = self.config.get_home_channel(target.platform)
-            if home is not None and home.chat_id == target.chat_id:
-                if home.user_id:
-                    send_metadata["user_id"] = home.user_id
-                if home.scope_id:
-                    send_metadata["scope_id"] = home.scope_id
         if target.thread_id:
             has_explicit_direct_topic = (
                 "direct_messages_topic_id" in send_metadata
