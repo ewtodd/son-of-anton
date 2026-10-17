@@ -1885,7 +1885,6 @@ if _IS_GATEWAY_PROCESS:
             os.environ["TERMINAL_CWD"] = _resolved_cwd
 
 from gateway.config import (
-    ChannelOverride,
     Platform,
     GatewayConfig,
     load_gateway_config,
@@ -2700,59 +2699,6 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
-def _channel_override_lookup_keys(
-    chat_id: str,
-    *,
-    thread_id: Optional[str] = None,
-    parent_id: Optional[str] = None,
-) -> list[str]:
-    """Ordered, de-duplicated keys for ``channel_overrides`` lookup.
-
-    Matches ``resolve_channel_prompt`` semantics: exact thread/channel id first,
-    then parent channel/forum id (Discord threads inherit parent overrides).
-    """
-    keys: list[str] = []
-    seen: set[str] = set()
-    for key in (chat_id, thread_id, parent_id):
-        if not key:
-            continue
-        sk = str(key)
-        if sk in seen:
-            continue
-        seen.add(sk)
-        keys.append(sk)
-    return keys
-
-
-def _get_channel_override(
-    config: GatewayConfig,
-    platform: Platform,
-    chat_id: str,
-    *,
-    thread_id: Optional[str] = None,
-    parent_id: Optional[str] = None,
-) -> Optional[ChannelOverride]:
-    """Return per-channel override for this platform/chat_id, or None.
-
-    Looks up ``channel_overrides`` by ``chat_id``, then ``thread_id``, then
-    ``parent_id`` (forum threads / child channels inherit the parent entry).
-    """
-    platforms = getattr(config, "platforms", None)
-    if not platforms:
-        return None
-    platform_config = platforms.get(platform)
-    if not platform_config or not platform_config.channel_overrides:
-        return None
-    overrides = platform_config.channel_overrides
-    for key in _channel_override_lookup_keys(
-        chat_id, thread_id=thread_id, parent_id=parent_id
-    ):
-        ov = overrides.get(key)
-        if ov is not None:
-            return ov
-    return None
-
-
 def _resolve_son_of_anton_bin() -> Optional[list[str]]:
     """Resolve the Son of Anton update command as argv parts.
 
@@ -3344,21 +3290,12 @@ class TurnRunner:
         # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
         platform_key = "cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value
         
-        # Combine platform context, TOML channel_prompts hint for this chat,
-        # channel_overrides system_prompt (or global ephemeral), and gateway
-        # ephemeral prompt from _get_system_prompt_for_channel.
+        # Combine platform context with the TOML channel_prompts hint for
+        # this chat.
         combined_ephemeral = ctx.context_prompt or ""
         event_channel_prompt = (ctx.channel_prompt or "").strip()
         if event_channel_prompt:
             combined_ephemeral = (combined_ephemeral + "\n\n" + event_channel_prompt).strip()
-        cfg_channel_prompt = self._runner._get_system_prompt_for_channel(
-            ctx.source.platform,
-            ctx.source.chat_id or "",
-            thread_id=getattr(ctx.source, "thread_id", None),
-            parent_id=getattr(ctx.source, "parent_chat_id", None),
-        )
-        if cfg_channel_prompt:
-            combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
 
         max_iterations = _current_max_iterations()
 
@@ -3616,7 +3553,6 @@ class TurnRunner:
                 enabled_toolsets=ctx.enabled_toolsets,
                 disabled_toolsets=ctx.disabled_toolsets,
                 ephemeral_system_prompt=combined_ephemeral or None,
-                prefill_messages=self._runner._prefill_messages or None,
                 reasoning_config=reasoning_config,
                 session_id=ctx.session_id,
                 platform=platform_key,
@@ -4355,25 +4291,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self._session_db_init_error: Optional[str] = None
         _gateway_runner_ref = _weakref.ref(self)
 
-        # Load ephemeral config from config.toml / env vars.
-        # Both are injected at API-call time only and never persisted.
-        self._prefill_messages = self._load_prefill_messages()
-        self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._show_reasoning = self._load_show_reasoning()
 
-        # Wire process registry into session store for reset protection.
-        # A background process older than the configured threshold (default 24h,
-        # session_reset.bg_process_max_age_hours) is treated as stale and no
-        # longer blocks session idle / daily reset — see #29177. The process is
-        # NOT killed, only ignored by the reset guard.
+        # Wire process registry into session store for prune protection.
+        # A background process 24h old or older is treated as stale and no
+        # longer pins its session — see #29177. The process is NOT killed,
+        # only ignored by the guard.
         from tools.process_registry import process_registry
-        _bg_max_age_hours = getattr(
-            self.config.default_reset_policy, "bg_process_max_age_hours", 24
-        )
-        _bg_max_age_seconds = (
-            _bg_max_age_hours * 3600 if _bg_max_age_hours and _bg_max_age_hours > 0 else None
-        )
+        _bg_max_age_seconds = 24 * 3600
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(
@@ -4614,12 +4540,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             except Exception as exc:
                 logger.debug("state.db auto-maintenance skipped: %s", exc)
 
-        # DM pairing store for code-based user authorization. One store per
-        # gateway process, shared by the runner and the
-        # ``son-of-anton pairing`` CLI.
-        from gateway.pairing import PairingStore
-        self.pairing_store = PairingStore()
-        
         # Event hook system
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
@@ -4937,9 +4857,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
-        Priority (highest first): session ``/model`` → ``channel_overrides`` →
-        global config/env (``_resolve_gateway_model(user_config)`` and default
-        provider resolution).
+        Priority (highest first): session ``/model`` → global config/env
+        (``_resolve_gateway_model(user_config)`` and default provider
+        resolution).
         """
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
@@ -5001,37 +4921,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 runtime_model,
             )
             model = runtime_model
-
-        cfg = getattr(self, "config", None)
-        if cfg and source is not None:
-            chat_id = str(source.chat_id) if source.chat_id else ""
-            thread_id = (
-                str(source.thread_id) if getattr(source, "thread_id", None) else None
-            )
-            parent_id = (
-                str(source.parent_chat_id)
-                if getattr(source, "parent_chat_id", None)
-                else None
-            )
-            ch = _get_channel_override(
-                cfg,
-                source.platform,
-                chat_id,
-                thread_id=thread_id,
-                parent_id=parent_id,
-            )
-            if ch:
-                if ch.model:
-                    model = ch.model
-                if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(
-                        ch.provider
-                    )
-                    ch_runtime_model = runtime_kwargs.pop("model", None)
-                    # Only adopt the provider's bundled model when the override
-                    # did not specify an explicit model.
-                    if ch_runtime_model and not ch.model:
-                        model = ch_runtime_model
 
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
@@ -5427,84 +5316,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             pass
         logger.info("%s resumed — retrying on next watcher tick", platform.value)
         return True
-
-    @staticmethod
-    def _load_prefill_messages() -> List[Dict[str, Any]]:
-        """Load ephemeral prefill messages from config or env var.
-        
-        Checks SON_OF_ANTON_PREFILL_MESSAGES_FILE env var first, then falls back to
-        the top-level prefill_messages_file key in ~/.son-of-anton/config.toml.
-        agent.prefill_messages_file is accepted as a legacy fallback.
-        Relative paths are resolved from ~/.son-of-anton/.
-        """
-        file_path = os.getenv("SON_OF_ANTON_PREFILL_MESSAGES_FILE", "")
-        if not file_path:
-            cfg = _load_gateway_runtime_config()
-            file_path = str(cfg.get("prefill_messages_file", "") or "")
-            if not file_path:
-                file_path = str(cfg_get(cfg, "agent", "prefill_messages_file", default="") or "")
-        if not file_path:
-            return []
-        path = Path(file_path).expanduser()
-        if not path.is_absolute():
-            path = _son_of_anton_home / path
-        if not path.exists():
-            logger.warning("Prefill messages file not found: %s", path)
-            return []
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, list):
-                logger.warning("Prefill messages file must contain a JSON array: %s", path)
-                return []
-            return data
-        except Exception as e:
-            logger.warning("Failed to load prefill messages from %s: %s", path, e)
-            return []
-
-    @staticmethod
-    def _load_ephemeral_system_prompt() -> str:
-        """Load ephemeral system prompt from config or env var.
-
-        Checks SON_OF_ANTON_EPHEMERAL_SYSTEM_PROMPT env var first, then
-        ``display.personality`` / ``agent.system_prompt`` in config.toml.
-        """
-        from son_of_anton_cli.config import resolve_ephemeral_system_prompt_from_config
-
-        prompt = os.getenv("SON_OF_ANTON_EPHEMERAL_SYSTEM_PROMPT", "")
-        if prompt:
-            return prompt
-        cfg = _load_gateway_runtime_config()
-        return resolve_ephemeral_system_prompt_from_config(cfg)
-
-
-    def _get_system_prompt_for_channel(
-        self,
-        platform: Platform,
-        chat_id: str,
-        *,
-        thread_id: Optional[str] = None,
-        parent_id: Optional[str] = None,
-    ) -> str:
-        """Ephemeral system prompt for this channel/thread.
-
-        Uses ``channel_overrides`` when set, else the global gateway prompt.
-        Legacy ``channel_prompts`` are applied separately via ``event.channel_prompt``
-        in ``run_sync`` (adapter ``resolve_channel_prompt``), so they are not
-        duplicated here.
-        """
-        config = getattr(self, "config", None)
-        if config:
-            override = _get_channel_override(
-                config,
-                platform,
-                chat_id,
-                thread_id=thread_id,
-                parent_id=parent_id,
-            )
-            if override and override.system_prompt:
-                return (override.system_prompt or "").strip()
-        return getattr(self, "_ephemeral_system_prompt", None) or ""
 
     @staticmethod
     def _load_reasoning_config(model: str = "") -> dict | None:
@@ -8157,144 +7968,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         return delivered
 
     async def _session_expiry_watcher(self, interval: int = 300):
-        """Background task that finalizes expired sessions.
+        """Background housekeeping for the session store and agent cache.
 
-        Runs every ``interval`` seconds (default 5 min).  For each session
-        whose reset policy has expired, invokes ``on_session_finalize``
-        hooks, cleans up the cached AIAgent's tool resources, evicts the
-        cache entry so it can be garbage-collected, and marks the session
-        so it won't be finalized again.
+        Runs every ``interval`` seconds (default 5 min): sweeps idle and
+        memory-pressured cached agents, and prunes stale SessionStore entries
+        once an hour.
         """
         await asyncio.sleep(60)  # initial delay — let the gateway fully start
-        _finalize_failures: dict[str, int] = {}  # session_id -> consecutive failure count
-        _MAX_FINALIZE_RETRIES = 3
         while self._running:
             try:
-                await self.async_session_store._ensure_loaded()
-                # Collect expired sessions first, then log a single summary.
-                _expired_entries = []
-                for key, entry in list(self.session_store._entries.items()):
-                    if entry.expiry_finalized:
-                        continue
-                    if not await self.async_session_store._is_session_expired(entry):
-                        continue
-                    _expired_entries.append((key, entry))
-
-                if _expired_entries:
-                    # Extract platform names from session keys for a compact summary.
-                    # Keys look like "agent:main:discord:dm:12345" — platform is field [2].
-                    _platforms: dict[str, int] = {}
-                    for _k, _e in _expired_entries:
-                        _parts = _k.split(":")
-                        _plat = _parts[2] if len(_parts) > 2 else "unknown"
-                        _platforms[_plat] = _platforms.get(_plat, 0) + 1
-                    _plat_summary = ", ".join(
-                        f"{p}:{c}" for p, c in sorted(_platforms.items())
-                    )
-                    logger.info(
-                        "Session expiry: %d sessions to finalize (%s)",
-                        len(_expired_entries), _plat_summary,
-                    )
-
-                for key, entry in _expired_entries:
-                    try:
-                        try:
-                            _parts = key.split(":")
-                            _platform = _parts[2] if len(_parts) > 2 else ""
-                            # Off-loop + bounded: plugin finalize hooks can
-                            # block arbitrarily (see _finalize_session_off_loop)
-                            # and this watcher runs on the gateway event loop.
-                            await self._finalize_session_off_loop(
-                                session_id=entry.session_id,
-                                platform=_platform,
-                                reason="session_expired",
-                            )
-                        except Exception:
-                            pass
-                        # Shut down memory provider and close tool resources
-                        # on the cached agent.  Idle agents live in
-                        # _agent_cache (not _running_agents), so look there.
-                        _cached_agent = None
-                        _cache_lock = getattr(self, "_agent_cache_lock", None)
-                        if _cache_lock is not None:
-                            with _cache_lock:
-                                _cached = self._agent_cache.get(key)
-                                _cached_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
-                        # Fall back to _running_agents in case the agent is
-                        # still mid-turn when the expiry fires.
-                        if _cached_agent is None:
-                            _exp_state = self._peek_session_state(key)
-                            _cached_agent = _exp_state.turn.agent if _exp_state else None
-                        if _cached_agent and _cached_agent is not _AGENT_PENDING_SENTINEL:
-                            await self._cleanup_agent_resources_off_loop(
-                                _cached_agent, context="session expiry"
-                            )
-                        # Drop the cache entry so the AIAgent (and its LLM
-                        # clients, tool schemas, memory provider refs) can
-                        # be garbage-collected.  Otherwise the cache grows
-                        # unbounded across the gateway's lifetime.
-                        self._evict_cached_agent(key)
-                        # Permanently finalizing this session — one funnel
-                        # call drops every conversation-scoped dict AND the
-                        # boundary security state (approvals, update
-                        # prompts, slash-confirm) so the dicts don't grow
-                        # unbounded across the gateway's lifetime. (Idle
-                        # agent-cache eviction must NOT do this: the
-                        # session is still alive and a resumed turn rebuilds
-                        # its agent from these overrides. Only true session
-                        # finalization, /new, and /reset clear them.) See
-                        # _CONVERSATION_SCOPED_STATE.
-                        self._clear_conversation_scope(
-                            key, reason="expiry_finalized"
-                        )
-                        # Persist the finalized flag to sessions.json AND
-                        # state.db (single write-path, #9006) — also drops
-                        # the persisted /model override, since finalization
-                        # is a conversation boundary.
-                        await self.async_session_store.set_expiry_finalized(entry)
-                        logger.debug(
-                            "Session expiry finalized for %s",
-                            entry.session_id,
-                        )
-                        _finalize_failures.pop(entry.session_id, None)
-                    except Exception as e:
-                        failures = _finalize_failures.get(entry.session_id, 0) + 1
-                        _finalize_failures[entry.session_id] = failures
-                        if failures >= _MAX_FINALIZE_RETRIES:
-                            logger.warning(
-                                "Session finalize gave up after %d attempts for %s: %s. "
-                                "Marking as finalized to prevent infinite retry loop.",
-                                failures, entry.session_id, e,
-                            )
-                            await self.async_session_store.set_expiry_finalized(
-                                entry, clear_model_override=False
-                            )
-                            _finalize_failures.pop(entry.session_id, None)
-                        else:
-                            logger.debug(
-                                "Session finalize failed (%d/%d) for %s: %s",
-                                failures, _MAX_FINALIZE_RETRIES, entry.session_id, e,
-                            )
-
-                if _expired_entries:
-                    _done = sum(
-                        1 for _, e in _expired_entries if e.expiry_finalized
-                    )
-                    _failed = len(_expired_entries) - _done
-                    if _failed:
-                        logger.info(
-                            "Session expiry done: %d finalized, %d pending retry",
-                            _done, _failed,
-                        )
-                    else:
-                        logger.info(
-                            "Session expiry done: %d finalized", _done,
-                        )
-
-                # Sweep agents that have been idle beyond the TTL regardless
-                # of session reset policy.  This catches sessions with very
-                # long / "never" reset windows, whose cached AIAgents would
-                # otherwise pin memory for the gateway's entire lifetime.
+                # Sweep agents that have been idle beyond the TTL. Sessions
+                # never reset, so their cached AIAgents would otherwise pin
+                # memory for the gateway's entire lifetime.
                 try:
                     _idle_evicted = self._sweep_idle_cached_agents()
                     if _idle_evicted:
@@ -8321,21 +8006,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 # unbounded in gateways serving many rotating chats /
                 # threads / users over long time windows.  Pruning is
                 # invisible to users — a resumed session just gets a
-                # fresh session_id, exactly as if the reset policy fired.
+                # fresh session_id. Entries idle 90 days go.
                 _last_prune_ts = getattr(self, "_last_session_store_prune_ts", 0.0)
                 _prune_interval = 3600.0  # once per hour
                 if time.time() - _last_prune_ts > _prune_interval:
                     try:
-                        _max_age = int(
-                            getattr(self.config, "session_store_max_age_days", 0) or 0
-                        )
-                        if _max_age > 0:
-                            _pruned = await self.async_session_store.prune_old_entries(_max_age)
-                            if _pruned:
-                                logger.info(
-                                    "SessionStore prune: dropped %d stale entries",
-                                    _pruned,
-                                )
+                        _pruned = await self.async_session_store.prune_old_entries(90)
+                        if _pruned:
+                            logger.info(
+                                "SessionStore prune: dropped %d stale entries",
+                                _pruned,
+                            )
                     except Exception as _e:
                         logger.debug("SessionStore prune failed: %s", _e)
                     self._last_session_store_prune_ts = time.time()
@@ -10050,63 +9731,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 if _action == "allow":
                     break
 
-        if is_internal:
-            pass
-        elif source.user_id is None:
-            # Messages with no user identity (service messages,
-            # channel forwards, anonymous admin posts, sender_chat) can't
-            # be paired, but they can still be authorized via a
-            # chat-scoped allowlist that authorizes every member of the
-            # listed chat regardless of sender. Defer to
-            # _is_user_authorized so that path runs.
-            if not self._is_user_authorized(source):
-                logger.debug("Ignoring message with no user_id from %s", source.platform.value)
-                return None
-        elif not self._is_user_authorized(source):
+        if not is_internal and not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-            # In DMs: offer pairing code. In groups: silently ignore.
-            if (
-                source.chat_type == "dm"
-                and self._get_unauthorized_dm_behavior(source.platform)
-                == "pair"
-            ):
-                platform_name = source.platform.value if source.platform else "unknown"
-                pairing_store = self._pairing_store_for(source)
-                if pairing_store is None:
-                    logger.error(
-                        "Cannot offer pairing code on %s: no pairing store",
-                        platform_name,
-                    )
-                    return None
-                # Rate-limit ALL pairing responses (code or rejection) to
-                # prevent spamming the user with repeated messages when
-                # multiple DMs arrive in quick succession.
-                if pairing_store._is_rate_limited(platform_name, source.user_id):
-                    return None
-                code = pairing_store.generate_code(
-                    platform_name, source.user_id, source.user_name or ""
-                )
-                if code:
-                    adapter = self._adapter_for_source(source)
-                    if adapter:
-                        await adapter.send(
-                            source.chat_id,
-                            f"Hi~ I don't recognize you yet!\n\n"
-                            f"Here's your pairing code: `{code}`\n\n"
-                            f"Ask the bot owner to run:\n"
-                            f"`son-of-anton pairing approve "
-                            f"{platform_name} {code}`"
-                        )
-                else:
-                    adapter = self._adapter_for_source(source)
-                    if adapter:
-                        await adapter.send(
-                            source.chat_id,
-                            "Too many pairing requests right now~ "
-                            "Please try again later!"
-                        )
-                    # Record rate limit so subsequent messages are silently ignored
-                    pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
 
         # Global emergency stop (`son-of-anton pause`): give new turns a brief
@@ -10114,7 +9740,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # (background-process completions from IN-FLIGHT work) bypass the
         # gate — pause stops NEW work, it never kills or orphans running
         # work. Placed after auth so unauthorized senders keep the normal
-        # silent/pairing behavior and can't probe pause state.
+        # silent behavior and can't probe pause state.
         #
         # Passthroughs (pause blocks new AGENT turns, not control traffic):
         #   * recognized slash commands — /status, /help, /new, /approve and
@@ -10264,85 +9890,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     "held_messages: summary failed", exc_info=True
                 )
 
-        # Intercept messages that are responses to a pending /update prompt.
-        # The update process (detached) wrote .update_prompt.json; the watcher
-        # forwarded it to the user; now the user's reply goes back via
-        # .update_response so the update process can continue.
-        #
-        # IMPORTANT: recognized slash commands must bypass this interception.
-        # Otherwise control/session commands like /new or /help get silently
-        # consumed as update answers instead of being dispatched normally.
         allow_gateway_control = event.allow_gateway_control
-        _up_state = self._peek_session_state(_quick_key)
-        if (
-            allow_gateway_control
-            and _up_state is not None
-            and _up_state.persistent.update_prompt_pending
-        ):
-            raw = (event.text or "").strip()
-            # Accept /approve and /deny as shorthand for yes/no
-            cmd = event.get_command()
-            if cmd in {"approve", "yes"}:
-                response_text = "y"
-            elif cmd in {"deny", "no"}:
-                response_text = "n"
-            else:
-                _recognized_cmd = None
-                if cmd:
-                    try:
-                        from son_of_anton_cli.commands import resolve_command as _resolve_update_cmd
-                    except Exception:
-                        _resolve_update_cmd = None
-                    if _resolve_update_cmd is not None:
-                        try:
-                            _cmd_def = _resolve_update_cmd(cmd)
-                            _recognized_cmd = _cmd_def.name if _cmd_def else None
-                        except Exception:
-                            _recognized_cmd = None
-                if _recognized_cmd:
-                    response_text = ""
-                else:
-                    response_text = raw
-            if response_text:
-                response_path = _son_of_anton_home / ".update_response"
-                prompt_path = _son_of_anton_home / ".update_prompt.json"
-                try:
-                    tmp = response_path.with_suffix(".tmp")
-                    tmp.write_text(response_text, encoding="utf-8")
-                    tmp.replace(response_path)
-                    prompt_path.unlink(missing_ok=True)
-                except OSError as e:
-                    logger.warning("Failed to write update response: %s", e)
-                    return f"Failed to send response to update process: {e}"
-                _up_state.persistent.update_prompt_pending = False
-                label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
-                return f"Sent `{label}` to the update process."
-            # Recognized slash command during a pending update prompt:
-            # unblock the detached update subprocess by writing a blank
-            # response so ``_gateway_prompt`` returns the prompt's default
-            # (typically a safe "n" / skip) and exits cleanly instead of
-            # blocking on stdin until the 30-minute watcher timeout.
-            # The slash command then falls through to normal dispatch.
-            if _recognized_cmd:
-                response_path = _son_of_anton_home / ".update_response"
-                prompt_path = _son_of_anton_home / ".update_prompt.json"
-                try:
-                    tmp = response_path.with_suffix(".tmp")
-                    tmp.write_text("", encoding="utf-8")
-                    tmp.replace(response_path)
-                    prompt_path.unlink(missing_ok=True)
-                    logger.info(
-                        "Recognized /%s during pending update prompt for %s; "
-                        "cancelled prompt with default and dispatching command",
-                        _recognized_cmd,
-                        _quick_key,
-                    )
-                except OSError as e:
-                    logger.warning(
-                        "Failed to write cancel response for pending update prompt: %s",
-                        e,
-                    )
-                _up_state.persistent.update_prompt_pending = False
 
         # Intercept messages that are responses to a pending clarify.
         # Open-ended prompts and "Other" responses are captured as free text;
@@ -10554,17 +10102,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if _cmd_def_inner and _cmd_def_inner.name == "context":
                 return await self._handle_context_command(event)
 
-            # Slash command access control on the running-agent fast-path.
-            # Mirrors the cold-path gate further below so non-admin users
-            # can't bypass gating just because an agent happens to be busy.
-            # /status above is intentionally pre-gate so users always see
-            # session state. /help and /whoami fall under the always-allowed
-            # floor inside _check_slash_access.
-            if _evt_cmd and _cmd_def_inner is not None:
-                _denied = self._check_slash_access(source, _cmd_def_inner.name)
-                if _denied is not None:
-                    return _denied
-
             # Any recognized slash command: dispatch according to its
             # declared busy_policy (dispatch / interrupt_then_dispatch /
             # reject). Unrecognized commands and plain text fall through
@@ -10616,39 +10153,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # don't depend on the exact alias the user typed.
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command
-
-        # Expand alias quick commands before built-in dispatch so targets like
-        # /model openai/gpt-5.5 --provider openrouter reach the /model handler.
-        # Preserve built-in precedence; aliases only need early handling when
-        # the typed command is not already known.
-        if command and _cmd_def is None:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
-            else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
-            if isinstance(quick_commands, dict) and command in quick_commands:
-                qcmd = quick_commands[command]
-                if qcmd.get("type") == "alias":
-                    target = (qcmd.get("target") or "").strip()
-                    if target:
-                        target = target if target.startswith("/") else f"/{target}"
-                        target_command = target.lstrip("/")
-                        user_args = event.get_command_args().strip()
-                        event.text = f"{target} {user_args}".strip()
-                        command = target_command.split()[0] if target_command else target_command
-                        _cmd_def = _resolve_cmd(command) if command else None
-                        canonical = _cmd_def.name if _cmd_def else command
-
-        # Per-platform slash command access control. Only kicks in when the
-        # operator has set ``allow_admin_from`` for the source's scope (DM
-        # vs group). When unset → backward-compat: every allowed user can
-        # run every command. When set → non-admins can run only commands in
-        # ``user_allowed_commands`` (plus the always-allowed floor: /help,
-        # /whoami). Plain chat is unaffected — only slash commands gate.
-        if command and canonical and is_gateway_known_command(canonical):
-            _denied = self._check_slash_access(source, canonical)
-            if _denied is not None:
-                return _denied
 
         # pre_command observer hook (#64204): fires for every recognized
         # slash command BEFORE core handling, mirroring the CLI fire-site in
@@ -10936,68 +10440,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if self._draining:
             return f"Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
-        # User-defined quick commands (bypass agent loop, no LLM call)
-        if command:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
-            else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
-            if not isinstance(quick_commands, dict):
-                quick_commands = {}
-            if command in quick_commands:
-                # Quick commands are slash capabilities too — and type:exec
-                # ones run a shell command in the gateway process. The early
-                # gate above only fires for registry-known commands, so quick
-                # commands (never in the registry) would otherwise reach this
-                # dispatch sink unchecked. Apply the same admin/user policy to
-                # the raw typed name here so non-admins can't invoke admin-only
-                # quick commands. (#44727)
-                _denied = self._check_slash_access(source, command)
-                if _denied is not None:
-                    return _denied
-                qcmd = quick_commands[command]
-                if qcmd.get("type") == "exec":
-                    exec_cmd = qcmd.get("command", "")
-                    if exec_cmd:
-                        try:
-                            # Sanitize env to prevent credential leakage —
-                            # quick commands run in the gateway process which
-                            # has all API keys in os.environ.
-                            from tools.environments.local import build_subprocess_env
-                            sanitized_env = build_subprocess_env()
-                            proc = await asyncio.create_subprocess_shell(
-                                exec_cmd,
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                                env=sanitized_env,
-                            )
-                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                            output = (stdout or stderr).decode().strip()
-                            # Redact any remaining sensitive patterns in output
-                            if output:
-                                from agent.redact import redact_sensitive_text
-                                output = redact_sensitive_text(output)
-                            return output if output else "Command returned no output."
-                        except asyncio.TimeoutError:
-                            return "Quick command timed out (30s)."
-                        except Exception as e:
-                            return f"Quick command error: {e}"
-                    else:
-                        return f"Quick command '/{command}' has no command defined."
-                elif qcmd.get("type") == "alias":
-                    target = (qcmd.get("target") or "").strip()
-                    if target:
-                        target = target if target.startswith("/") else f"/{target}"
-                        target_command = target.lstrip("/")
-                        user_args = event.get_command_args().strip()
-                        event.text = f"{target} {user_args}".strip()
-                        command = target_command.split()[0] if target_command else target_command
-                        # Fall through to normal command dispatch below
-                    else:
-                        return f"Quick command '/{command}' has no target defined."
-                else:
-                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
-
         # Plugin-registered slash commands
         if command:
             try:
@@ -11015,12 +10457,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
 
-        # Genuinely unrecognized /command: not a built-in, not a quick command,
-        # not a plugin's. Warn the user instead of silently forwarding it to
-        # the LLM as free text (which leads to silent-failure behavior like the
-        # model inventing a delegate_task call). Normalize to hyphenated form
-        # before checking known built-ins (command may be an alias target set
-        # by the quick-command block above, so _cmd_def can be stale).
+        # Genuinely unrecognized /command: not a built-in, not a plugin's.
+        # Warn the user instead of silently forwarding it to the LLM as free
+        # text (which leads to silent-failure behavior like the model
+        # inventing a delegate_task call). Normalize to hyphenated form
+        # before checking known built-ins.
         if command and command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
             logger.warning(
                 "Unrecognized slash command /%s from %s — "
@@ -11899,71 +11340,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # If the previous session expired and was auto-reset, deliver a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if _was_auto_reset:
-            reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
-            if reset_reason == "suspended":
-                context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
-            elif reset_reason == "daily":
-                context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
-            elif reset_reason == "resume_pending_expired":
-                context_note = "[System note: The previous gateway session could not be recovered after a restart (API recovery timed out). This is a fresh conversation — use /resume to restore history if needed.]"
-            else:
-                context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
-            turn_sidecar_notes.append(context_note)
+            turn_sidecar_notes.append(
+                "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
+            )
 
-            # Send a user-facing notification explaining the reset, unless:
-            # - notifications are disabled in config
-            # - the platform is excluded via notify_exclude_platforms
-            # - the expired session had no activity (nothing was cleared)
+            # Tell the user the session was replaced, so they know they can
+            # /resume it.
             try:
-                policy = self.session_store.config.get_reset_policy(
-                    platform=source.platform,
-                    session_type=getattr(source, 'chat_type', 'dm'),
-                )
-                platform_name = source.platform.value if source.platform else ""
-                had_activity = getattr(session_entry, 'reset_had_activity', False)
-                # Suspended and restart-recovery-expired sessions always notify
-                # regardless of policy.notify — the user had an active session
-                # that was silently replaced, so they need to know they can
-                # /resume it.  Idle/daily resets respect the policy flag.
-                should_notify = reset_reason in {"suspended", "resume_pending_expired"} or (
-                    policy.notify
-                    and had_activity
-                    and platform_name not in policy.notify_exclude_platforms
-                )
-                if should_notify:
-                    adapter = self._adapter_for_source(source)
-                    if adapter:
-                        if reset_reason == "suspended":
-                            reason_text = "previous session was stopped or interrupted"
-                        elif reset_reason == "resume_pending_expired":
-                            reason_text = "gateway restart recovery timed out"
-                        elif reset_reason == "daily":
-                            reason_text = f"daily schedule at {policy.at_hour}:00"
-                        else:
-                            hours = policy.idle_minutes // 60
-                            mins = policy.idle_minutes % 60
-                            duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
-                            reason_text = f"inactive for {duration}"
-                        notice = (
-                            f"Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
-                            f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.toml under session_reset."
+                adapter = self._adapter_for_source(source)
+                if adapter:
+                    notice = (
+                        "Session automatically reset (previous session was stopped or interrupted). "
+                        "Conversation history cleared.\n"
+                        "Use /resume to browse and restore a previous session.\n"
+                        "Adjust reset timing in config.toml under session_reset."
+                    )
+                    try:
+                        # Still off-loop: resolution can do blocking work
+                        # (credential refresh, context-length probes).
+                        session_info = await asyncio.to_thread(
+                            self._format_session_info
                         )
-                        try:
-                            # Still off-loop: resolution can do blocking work
-                            # (credential refresh, context-length probes).
-                            session_info = await asyncio.to_thread(
-                                self._format_session_info
-                            )
-                            if session_info:
-                                notice = f"{notice}\n\n{session_info}"
-                        except Exception:
-                            pass
-                        await adapter.send(
-                            source.chat_id, notice,
-                            metadata=self._thread_metadata_for_source(source),
-                        )
+                        if session_info:
+                            notice = f"{notice}\n\n{session_info}"
+                    except Exception:
+                        pass
+                    await adapter.send(
+                        source.chat_id, notice,
+                        metadata=self._thread_metadata_for_source(source),
+                    )
             except Exception as e:
                 logger.debug("Auto-reset notification failed (non-fatal): %s", e)
 
@@ -13618,49 +13023,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             lines.append(f"◆ Endpoint: {base_url}")
 
         return "\n".join(lines)
-
-
-    def _check_slash_access(
-        self, source: SessionSource, canonical_cmd: str
-    ) -> Optional[str]:
-        """Return a denial message if ``source`` cannot run ``canonical_cmd``,
-        else None. Used by both the cold and running-agent dispatch paths
-        in ``_handle_message`` so admin/user gating can't be bypassed by
-        an in-flight agent.
-
-        Backward-compat semantics live in
-        :func:`gateway.slash_access.policy_for_source` — when the operator
-        hasn't set ``allow_admin_from`` for the scope, the policy returns
-        ``enabled=False`` and this method always returns None.
-        """
-        from gateway.slash_access import policy_for_source as _policy_for_source
-
-        if not canonical_cmd:
-            return None
-        policy = _policy_for_source(self.config, source)
-        if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
-            return None
-        logger.info(
-            "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
-            canonical_cmd,
-            source.platform.value if source.platform else "?",
-            source.user_id,
-        )
-        allowed_preview = sorted(policy.user_allowed_commands)
-        if allowed_preview:
-            suffix = (
-                "You can run: "
-                + ", ".join(f"/{c}" for c in allowed_preview[:12])
-                + ("…" if len(allowed_preview) > 12 else "")
-                + ". Use /whoami for the full list."
-            )
-        else:
-            suffix = (
-                "No slash commands are enabled for non-admins on this "
-                "platform. Ask an admin to add you to allow_admin_from "
-                "or to set user_allowed_commands."
-            )
-        return f"/{canonical_cmd} is admin-only here. {suffix}"
 
 
     def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
@@ -17720,45 +17082,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 if last_activity is None:
                     continue
                 if (now - last_activity) > idle_ttl:
-                    # Check whether the session has actually expired in the
-                    # session store.  If it hasn't (e.g. daily-reset mode
-                    # where the reset fires hours after the user's last
-                    # message), keep the agent in cache so the session-store
-                    # expiry watcher can still find it and call
-                    # on_session_end() with the live transcript.  Skipping
-                    # eviction here means the agent stays alive until the
-                    # session genuinely expires, at which point the watcher
-                    # (gateway/run.py _session_expiry_watcher) tears it down
-                    # properly.  (#11205 follow-up)
-                    #
-                    # BUT only defer when the watcher will EVER finalize this
-                    # session.  For a mode == "none" session the watcher never
-                    # fires (is_session_finalizable() is False), so deferring
-                    # would pin the agent in cache for the gateway's entire
-                    # lifetime — the exact leak this idle sweep exists to
-                    # relieve.  Those sessions fall through to soft eviction
-                    # WITHOUT on_session_end, and that is correct: a mode=="none"
-                    # session never reaches a session-end boundary, so there is
-                    # no missed on_session_end to compensate for.  (The finite
-                    # case — a session evicted under LRU-cap pressure before it
-                    # expires — is instead covered by _commit_memory_before_soft_
-                    # evict on the cap path, which fires on_session_end via the
-                    # live agent's memory manager before releasing it.)
-                    session_entry = None
-                    _store = getattr(self, "session_store", None)
-                    try:
-                        if _store is not None:
-                            _store._ensure_loaded()
-                            session_entry = _store._entries.get(key)
-                    except Exception:
-                        session_entry = None
-                    if (
-                        session_entry is not None
-                        and _store is not None
-                        and _store.is_session_finalizable(session_entry)
-                        and not _store._is_session_expired(session_entry)
-                    ):
-                        continue  # keep agent — finite session hasn't expired
                     to_evict.append((key, agent))
             for key, _ in to_evict:
                 _cache.pop(key, None)

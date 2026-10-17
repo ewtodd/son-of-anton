@@ -1,35 +1,7 @@
 """
-Son of Anton Gateway - Multi-platform messaging integration.
+Son of Anton Gateway - the Signal messaging daemon.
 
-This module provides a unified gateway for connecting the Son of Anton agent
-to various messaging platforms (Discord, Slack, Signal, and more) with:
-- Session management (persistent conversations with reset policies)
-- Dynamic context injection (agent knows where messages come from)
-- Delivery routing (cron job outputs to appropriate channels)
-- Platform-specific toolsets (different capabilities per platform)
+Session management (persistent conversations), dynamic context injection (the
+agent knows where messages come from), and delivery routing (cron job outputs
+to the right chat).
 """
-
-from .config import GatewayConfig, PlatformConfig, HomeChannel, load_gateway_config
-from .session import (
-    SessionContext,
-    SessionStore,
-    SessionResetPolicy,
-    build_session_context_prompt,
-)
-from .delivery import DeliveryRouter, DeliveryTarget
-
-__all__ = [
-    # Config
-    "GatewayConfig",
-    "PlatformConfig", 
-    "HomeChannel",
-    "load_gateway_config",
-    # Session
-    "SessionContext",
-    "SessionStore",
-    "SessionResetPolicy",
-    "build_session_context_prompt",
-    # Delivery
-    "DeliveryRouter",
-    "DeliveryTarget",
-]

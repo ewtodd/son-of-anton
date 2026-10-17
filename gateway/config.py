@@ -1,16 +1,10 @@
 """
-Gateway configuration management.
-
-Handles loading and validating configuration for:
-- Connected platforms (Signal)
-- Home channels for each platform
-- Session reset policies
-- Delivery preferences
+Gateway configuration: the Signal platform, its home channel, and the
+``[gateway]`` settings the deployments use.
 """
 
 import logging
 import os
-import json
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
@@ -18,7 +12,6 @@ from enum import Enum
 
 from son_of_anton_cli.config import get_son_of_anton_home
 from agent.hour_window import parse_hour_window
-from agent.secret_scope import get_secret as _get_secret
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -75,41 +68,6 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
 
 
-def _coerce_optional_positive_int(value: Any, key: str) -> Optional[int]:
-    """Coerce an optional positive integer config value.
-
-    ``None``/0/negative disable the setting. Malformed values are ignored with
-    a warning so a typo never prevents the gateway from starting.
-    """
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        logger.warning(
-            "Ignoring invalid %s=%r (expected a positive integer; 0/null disables)",
-            key,
-            value,
-        )
-        return None
-    try:
-        if isinstance(value, float):
-            if not value.is_integer():
-                raise ValueError(value)
-            parsed = int(value)
-        elif isinstance(value, str):
-            parsed = int(value.strip(), 10)
-        else:
-            parsed = int(value)
-    except (TypeError, ValueError):
-        logger.warning(
-            "Ignoring invalid %s=%r (expected a positive integer; 0/null disables)",
-            key,
-            value,
-        )
-        return None
-    if parsed <= 0:
-        return None
-    return parsed
-
 
 _SYSTEMD_WATCHDOG_MAX_SECONDS = 2_147_483_647
 
@@ -159,52 +117,6 @@ def _coerce_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
-    """Normalize unauthorized DM behavior to a supported value."""
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"pair", "ignore"}:
-            return normalized
-    return default
-
-
-def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
-    """Normalize notice delivery mode to a supported value."""
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"public", "private"}:
-            return normalized
-    return default
-
-
-def _ensure_platform_extra_dict(platforms_data: dict, name: str) -> tuple[dict, dict]:
-    """Get-or-create ``platforms_data[name]`` and its nested ``extra`` dict.
-
-    Both slots are coerced to ``{}`` if a non-dict value is encountered, so
-    callers can safely write keys without type-checking.  Returns
-    ``(plat_data, extra)`` for in-place mutation.
-    """
-    plat_data = platforms_data.setdefault(name, {})
-    if not isinstance(plat_data, dict):
-        plat_data = {}
-        platforms_data[name] = plat_data
-    extra = plat_data.setdefault("extra", {})
-    if not isinstance(extra, dict):
-        extra = {}
-        plat_data["extra"] = extra
-    return plat_data, extra
-
-
-def _getenv(name: str, default: Optional[str] = None) -> Optional[str]:
-    """Read an env var through the credential seam."""
-    return _get_secret(name, default)
-
-
-def _getenv_str(name: str, default: str = "") -> str:
-    val = _getenv(name, default)
-    return val if val is not None else default
-
-
 class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
@@ -215,7 +127,7 @@ class Platform(Enum):
 class HomeChannel:
     """
     Default destination for a platform.
-    
+
     When a cron job specifies deliver="signal" without a specific chat ID,
     messages are sent to this home channel.
     """
@@ -223,7 +135,7 @@ class HomeChannel:
     chat_id: str
     name: str  # Human-readable name for display
     thread_id: Optional[str] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "platform": self.platform.value,
@@ -233,7 +145,7 @@ class HomeChannel:
         if self.thread_id:
             result["thread_id"] = self.thread_id
         return result
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "HomeChannel":
         return cls(
@@ -263,98 +175,6 @@ def persist_home_channel(home: HomeChannel) -> None:
 
 
 @dataclass
-class SessionResetPolicy:
-    """
-    Controls when sessions reset (lose context).
-    
-    Modes:
-    - "daily": Reset at a specific hour each day
-    - "idle": Reset after N minutes of inactivity
-    - "both": Whichever triggers first (daily boundary OR idle timeout)
-    - "none": Never auto-reset (context managed only by compaction)
-
-    Default is "none" — sessions never auto-reset unless the user opts in
-    via the `session_reset` section in config.toml (or gateway.json
-    overrides). Changed July 2026 from "both" (24h idle + daily 4am), which
-    surprised users who expected their conversations to persist.
-    """
-    mode: str = "none"  # "daily", "idle", "both", or "none"
-    at_hour: int = 4  # Hour for daily reset (0-23, local time)
-    idle_minutes: int = 1440  # Minutes of inactivity before reset (24 hours)
-    notify: bool = True  # Send a notification to the user when auto-reset occurs
-    notify_exclude_platforms: tuple = ()  # Platforms that don't get reset notifications
-    # A background process this many hours old (or older) no longer blocks
-    # session idle/daily reset. A forgotten preview server should not keep a
-    # session alive forever (#29177). The process is NOT killed — only ignored
-    # by the reset guard. Raise this if you run legitimate multi-day jobs whose
-    # liveness should pin the conversation open.
-    bg_process_max_age_hours: int = 24
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "mode": self.mode,
-            "at_hour": self.at_hour,
-            "idle_minutes": self.idle_minutes,
-            "notify": self.notify,
-            "notify_exclude_platforms": list(self.notify_exclude_platforms),
-            "bg_process_max_age_hours": self.bg_process_max_age_hours,
-        }
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
-        data = _coerce_dict(data)
-        # Handle both missing keys and explicit null values (TOML null → None)
-        mode = data.get("mode")
-        at_hour = data.get("at_hour")
-        idle_minutes = data.get("idle_minutes")
-        notify = data.get("notify")
-        exclude = data.get("notify_exclude_platforms")
-        bg_max_age = data.get("bg_process_max_age_hours")
-        return cls(
-            mode=mode if mode is not None else "none",
-            at_hour=at_hour if at_hour is not None else 4,
-            idle_minutes=idle_minutes if idle_minutes is not None else 1440,
-            notify=_coerce_bool(notify, True),
-            notify_exclude_platforms=tuple(exclude) if exclude is not None else (),
-            bg_process_max_age_hours=bg_max_age if bg_max_age is not None else 24,
-        )
-
-
-@dataclass
-class ChannelOverride:
-    """
-    Per-channel override for model, provider, and system prompt.
-
-    Used in config under platforms.<name>.channel_overrides[channel_id].
-    Enables different channels (e.g. Discord #daily vs #dev) to use different
-    models and personas without running separate gateway instances.
-    """
-    model: Optional[str] = None
-    provider: Optional[str] = None
-    system_prompt: Optional[str] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {}
-        if self.model is not None:
-            out["model"] = self.model
-        if self.provider is not None:
-            out["provider"] = self.provider
-        if self.system_prompt is not None:
-            out["system_prompt"] = self.system_prompt
-        return out
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
-        if not data:
-            return cls()
-        return cls(
-            model=data.get("model"),
-            provider=data.get("provider"),
-            system_prompt=data.get("system_prompt"),
-        )
-
-
-@dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
     enabled: bool = False
@@ -369,62 +189,30 @@ class PlatformConfig:
     # gateway/platforms/base.py.
     typing_indicator: bool = True
 
-    # Per-channel model/provider/system_prompt overrides (channel_id -> ChannelOverride)
-    channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
-
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
-        result = {
-            "enabled": self.enabled,
-            "extra": self.extra,
-            "gateway_restart_notification": self.gateway_restart_notification,
-            "typing_indicator": self.typing_indicator,
-        }
-        if self.home_channel:
-            result["home_channel"] = self.home_channel.to_dict()
-        if self.channel_overrides:
-            result["channel_overrides"] = {
-                cid: ov.to_dict() for cid, ov in self.channel_overrides.items()
-            }
-        return result
-
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
+        """Build from a ``[platforms.<name>]`` block.
+
+        ``require_mention`` is the one adapter setting read from the block;
+        it lands in ``extra``, where the Signal adapter looks for it.
+        """
         data = _coerce_dict(data)
         home_channel = None
         if isinstance(data.get("home_channel"), dict):
             home_channel = HomeChannel.from_dict(data["home_channel"])
-
-        # gateway_restart_notification may be bridged into extra via the
-        # shared-key loop in load_gateway_config(); check both top-level
-        # and extra.
-        extra = _coerce_dict(data.get("extra", {}))
-        _grn = data.get("gateway_restart_notification")
-        if _grn is None:
-            _grn = extra.get("gateway_restart_notification")
-
-        # typing_indicator mirrors gateway_restart_notification: it may arrive
-        # top-level or bridged into extra by the shared-key loop in
-        # load_gateway_config(), so check both.
-        _typing = data.get("typing_indicator")
-        if _typing is None:
-            _typing = extra.get("typing_indicator")
-
-        channel_overrides: Dict[str, ChannelOverride] = {}
-        raw_overrides = data.get("channel_overrides") or {}
-        if isinstance(raw_overrides, dict):
-            for cid, ov_data in raw_overrides.items():
-                if isinstance(ov_data, dict):
-                    channel_overrides[str(cid)] = ChannelOverride.from_dict(ov_data)
-
+        extra = dict(_coerce_dict(data.get("extra", {})))
+        if "require_mention" in data:
+            extra["require_mention"] = data["require_mention"]
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             home_channel=home_channel,
-            gateway_restart_notification=_coerce_bool(_grn, True),
-            typing_indicator=_coerce_bool(_typing, True),
-            channel_overrides=channel_overrides,
+            gateway_restart_notification=_coerce_bool(
+                data.get("gateway_restart_notification"), True
+            ),
+            typing_indicator=_coerce_bool(data.get("typing_indicator"), True),
             extra=extra,
         )
 
@@ -534,42 +322,14 @@ class StreamingConfig:
 class GatewayConfig:
     """
     Main gateway configuration.
-    
+
     Manages all platform connections, session policies, and delivery settings.
     """
     # Platform configurations
     platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)
-    
-    # Session reset policies by type
-    default_reset_policy: SessionResetPolicy = field(default_factory=SessionResetPolicy)
-    reset_by_type: Dict[str, SessionResetPolicy] = field(default_factory=dict)
-    reset_by_platform: Dict[Platform, SessionResetPolicy] = field(default_factory=dict)
-    
-    # Reset trigger commands
-    reset_triggers: List[str] = field(default_factory=lambda: ["/new", "/reset"])
 
-    # User-defined quick commands (slash commands that bypass the agent loop)
-    quick_commands: Dict[str, Any] = field(default_factory=dict)
-    
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_son_of_anton_home() / "sessions")
-
-    # Whether to keep writing the legacy sessions.json mirror of the gateway
-    # routing index. The primary copy lives in state.db (gateway_routing
-    # table, #9006). Default True for backward compatibility with external
-    # tooling and downgrade safety; set gateway.write_sessions_json: false in
-    # config.toml to stop producing the file.
-    write_sessions_json: bool = True
-    
-    # Delivery settings
-    always_log_local: bool = True  # Always save cron outputs to local files
-    # Drop outbound "silence narration" messages (e.g. *(silent)*, 🔇, a bare
-    # ".") pre-send. These are model hallucinations emitted when a persona has
-    # nothing actionable to say; in bot-to-bot channels they mirror back and
-    # forth, burning tokens and crashing models. Substrate-level guard that
-    # survives SOUL.md/prompt drift across providers. Opt out with False for
-    # raw passthrough.
-    filter_silence_narration: bool = True
 
     # Hours this instance runs agent turns, as [start, end) local hours;
     # wraps past midnight, so (20, 7) is 8pm-7am. None = always active.
@@ -591,32 +351,13 @@ class GatewayConfig:
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
-    thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
-    max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active chat sessions
 
     # Opt-in systemd event-loop watchdog. Zero preserves Type=simple and
     # disables sd_notify at runtime.
     systemd_watchdog_seconds: int = 0
 
-    # In-process event-loop liveness watchdog (#69089). A daemon OS thread
-    # probes the gateway loop with call_soon_threadsafe; after consecutive
-    # missed probes it dumps all-thread stacks and hard-exits with the
-    # service-restart code so the supervisor can revive the process. On by
-    # default; set gateway.loop_watchdog: false in config.toml to disable.
-    loop_watchdog: bool = True
-
-    # Unauthorized DM policy
-    unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
-
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
-
-    # Session store pruning: drop SessionEntry records older than this many
-    # days from the in-memory dict and sessions.json.  Keeps the store from
-    # growing unbounded in gateways serving many chats/threads/users over
-    # months.  Pruning is invisible to users — if they resume, they get a
-    # fresh session exactly as if the reset policy had fired.  0 = disabled.
-    session_store_max_age_days: int = 90
 
     def __post_init__(self) -> None:
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
@@ -636,16 +377,10 @@ class GatewayConfig:
         for platform, config in self.platforms.items():
             if not config.enabled:
                 continue
-            if self._is_platform_connected(platform, config):
+            if platform == Platform.SIGNAL and config.extra.get("http_url"):
                 connected.append(platform)
         return sorted(connected, key=lambda p: str(p.value))
 
-    def _is_platform_connected(self, platform: Platform, config: PlatformConfig) -> bool:
-        """Check whether a single platform is sufficiently configured."""
-        if platform == Platform.SIGNAL:
-            return bool(config.extra.get("http_url"))
-        return False
-    
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         """Get the home channel for a platform.
 
@@ -679,7 +414,7 @@ class GatewayConfig:
         on intake and the form ``send()`` parses back into a groupId. A bare
         id would be treated as a phone number and fail to deliver.
         """
-        raw = _getenv_str("SIGNAL_GROUP_ALLOWED_USERS", "")
+        raw = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
         groups = [part.strip() for part in raw.split(",") if part.strip()]
         if len(groups) != 1 or groups[0] == "*":
             return None
@@ -688,573 +423,71 @@ class GatewayConfig:
             chat_id=f"group:{groups[0]}",
             name="Signal group",
         )
-    
-    def get_reset_policy(
-        self, 
-        platform: Optional[Platform] = None,
-        session_type: Optional[str] = None
-    ) -> SessionResetPolicy:
-        """
-        Get the appropriate reset policy for a session.
-        
-        Priority: platform override > type override > default
-        """
-        # Platform-specific override takes precedence
-        if platform and platform in self.reset_by_platform:
-            return self.reset_by_platform[platform]
-        
-        # Type-specific override (dm, group, thread)
-        if session_type and session_type in self.reset_by_type:
-            return self.reset_by_type[session_type]
-        
-        return self.default_reset_policy
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "platforms": {
-                p.value: c.to_dict() for p, c in self.platforms.items()
-            },
-            "default_reset_policy": self.default_reset_policy.to_dict(),
-            "reset_by_type": {
-                k: v.to_dict() for k, v in self.reset_by_type.items()
-            },
-            "reset_by_platform": {
-                p.value: v.to_dict() for p, v in self.reset_by_platform.items()
-            },
-            "reset_triggers": self.reset_triggers,
-            "quick_commands": self.quick_commands,
-            "sessions_dir": str(self.sessions_dir),
-            "write_sessions_json": self.write_sessions_json,
-            "always_log_local": self.always_log_local,
-            "filter_silence_narration": self.filter_silence_narration,
-            "active_hours": list(self.active_hours) if self.active_hours else None,
-            "inactive_message": self.inactive_message,
-            "single_user": self.single_user,
-            "group_sessions_per_user": self.group_sessions_per_user,
-            "thread_sessions_per_user": self.thread_sessions_per_user,
-            "max_concurrent_sessions": self.max_concurrent_sessions,
-            "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
-            "loop_watchdog": self.loop_watchdog,
-            "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
-            "streaming": self.streaming.to_dict(),
-            "session_store_max_age_days": self.session_store_max_age_days,
-        }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GatewayConfig":
+        """Build from config.toml's ``[gateway]`` table.
+
+        ``platforms`` and ``streaming`` ride in the same dict:
+        ``load_gateway_config`` puts the top-level ``[platforms]`` and
+        ``[streaming]`` tables there.
+        """
         data = _coerce_dict(data)
         platforms = {}
-        platforms_data = _coerce_dict(data.get("platforms", {}))
-        for platform_name, platform_data in platforms_data.items():
-            if not isinstance(platform_data, dict):
-                continue
+        for platform_name, platform_data in _coerce_dict(data.get("platforms")).items():
             try:
-                platform = Platform(platform_name)
-                platforms[platform] = PlatformConfig.from_dict(platform_data)
+                platforms[Platform(platform_name)] = PlatformConfig.from_dict(platform_data)
             except ValueError:
                 pass  # Skip unknown platforms
-        
-        reset_by_type = {}
-        for type_name, policy_data in _coerce_dict(data.get("reset_by_type", {})).items():
-            reset_by_type[type_name] = SessionResetPolicy.from_dict(policy_data)
-        
-        reset_by_platform = {}
-        for platform_name, policy_data in _coerce_dict(data.get("reset_by_platform", {})).items():
-            try:
-                platform = Platform(platform_name)
-                reset_by_platform[platform] = SessionResetPolicy.from_dict(policy_data)
-            except ValueError:
-                pass
-        
-        default_policy = SessionResetPolicy()
-        if "default_reset_policy" in data:
-            default_policy = SessionResetPolicy.from_dict(data["default_reset_policy"])
-        
-        sessions_dir = get_son_of_anton_home() / "sessions"
-        if "sessions_dir" in data:
-            sessions_dir = Path(data["sessions_dir"])
-        
-        quick_commands = data.get("quick_commands", {})
-        if not isinstance(quick_commands, dict):
-            quick_commands = {}
-
-        group_sessions_per_user = data.get("group_sessions_per_user")
-        thread_sessions_per_user = data.get("thread_sessions_per_user")
-        raw_gateway = data.get("gateway")
-        nested_gateway = raw_gateway if isinstance(raw_gateway, dict) else {}
-        if "systemd_watchdog_seconds" in data:
-            systemd_watchdog_raw = data.get("systemd_watchdog_seconds")
-            systemd_watchdog_key = "systemd_watchdog_seconds"
-        else:
-            systemd_watchdog_raw = nested_gateway.get("systemd_watchdog_seconds")
-            systemd_watchdog_key = "gateway.systemd_watchdog_seconds"
-        systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
-            systemd_watchdog_raw, systemd_watchdog_key
-        )
-        if "loop_watchdog" in data:
-            loop_watchdog_raw = data.get("loop_watchdog")
-        else:
-            loop_watchdog_raw = nested_gateway.get("loop_watchdog")
-        loop_watchdog = _coerce_bool(loop_watchdog_raw, True)
-        if "max_concurrent_sessions" in data:
-            max_concurrent_raw = data.get("max_concurrent_sessions")
-            max_concurrent_key = "max_concurrent_sessions"
-        else:
-            max_concurrent_raw = nested_gateway.get("max_concurrent_sessions")
-            max_concurrent_key = "gateway.max_concurrent_sessions"
-        max_concurrent_sessions = _coerce_optional_positive_int(
-            max_concurrent_raw,
-            max_concurrent_key,
-        )
-        unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
-            data.get("unauthorized_dm_behavior"),
-            "pair",
-        )
-
-        try:
-            session_store_max_age_days = int(data.get("session_store_max_age_days", 90))
-            session_store_max_age_days = max(session_store_max_age_days, 0)
-        except (TypeError, ValueError):
-            session_store_max_age_days = 90
-
         return cls(
             platforms=platforms,
-            default_reset_policy=default_policy,
-            reset_by_type=reset_by_type,
-            reset_by_platform=reset_by_platform,
-            reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
-            quick_commands=quick_commands,
-            sessions_dir=sessions_dir,
-            write_sessions_json=_coerce_bool(data.get("write_sessions_json"), True),
-            always_log_local=_coerce_bool(data.get("always_log_local"), True),
-            filter_silence_narration=_coerce_bool(
-                data.get("filter_silence_narration"), True
-            ),
             active_hours=parse_hour_window(data.get("active_hours"), None),
             inactive_message=str(data.get("inactive_message") or "").strip(),
             single_user=_coerce_bool(data.get("single_user"), False),
-            group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
-            thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
-            systemd_watchdog_seconds=systemd_watchdog_seconds,
-            loop_watchdog=loop_watchdog,
-            max_concurrent_sessions=max_concurrent_sessions,
-            unauthorized_dm_behavior=unauthorized_dm_behavior,
+            group_sessions_per_user=_coerce_bool(data.get("group_sessions_per_user"), True),
+            systemd_watchdog_seconds=coerce_systemd_watchdog_seconds(
+                data.get("systemd_watchdog_seconds")
+            ),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
-            session_store_max_age_days=session_store_max_age_days,
         )
-
-    def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
-        """Return the effective unauthorized-DM behavior for a platform."""
-        if platform:
-            platform_cfg = self.platforms.get(platform)
-            if platform_cfg and "unauthorized_dm_behavior" in platform_cfg.extra:
-                return _normalize_unauthorized_dm_behavior(
-                    platform_cfg.extra.get("unauthorized_dm_behavior"),
-                    self.unauthorized_dm_behavior,
-                )
-        return self.unauthorized_dm_behavior
-
-    def get_notice_delivery(self, platform: Optional[Platform] = None) -> str:
-        """Return the effective notice-delivery mode for a platform."""
-        if platform:
-            platform_cfg = self.platforms.get(platform)
-            if platform_cfg and "notice_delivery" in platform_cfg.extra:
-                return _normalize_notice_delivery(
-                    platform_cfg.extra.get("notice_delivery"),
-                    "public",
-                )
-        return "public"
 
 
 def load_gateway_config() -> GatewayConfig:
+    """Load the gateway configuration from config.toml and the environment.
+
+    The Nix module writes the gateway's settings under ``[gateway]`` and
+    Signal's under ``[platforms.signal]``; SIGNAL_HTTP_URL and SIGNAL_ACCOUNT
+    come from the environment and are what enable the platform.
     """
-    Load gateway configuration from multiple sources.
-
-    Priority (highest to lowest):
-    1. Environment variables
-    2. ~/.son-of-anton/config.toml (primary user-facing config)
-    3. ~/.son-of-anton/gateway.json (legacy — provides defaults under config.toml)
-    4. Built-in defaults
-    """
-    _home = get_son_of_anton_home()
-    gw_data: dict = {}
-
-    # Legacy fallback: gateway.json provides the base layer.
-    # config.toml keys always win when both specify the same setting.
-    gateway_json_path = _home / "gateway.json"
-    if gateway_json_path.exists():
-        try:
-            with open(gateway_json_path, "r", encoding="utf-8") as f:
-                gw_data = json.load(f) or {}
-            logger.info(
-                "Loaded legacy %s — consider moving settings to config.toml",
-                gateway_json_path,
-            )
-        except Exception as e:
-            logger.warning("Failed to load %s: %s", gateway_json_path, e)
-
-    # Primary source: config.toml
+    config_toml_path = get_son_of_anton_home() / "config.toml"
+    data: Dict[str, Any] = {}
     try:
         import tomllib
-        config_toml_path = _home / "config.toml"
         if config_toml_path.exists():
             with open(config_toml_path, encoding="utf-8") as f:
                 toml_cfg = tomllib.loads(f.read()) or {}
-
-            # Shared nested-fallback source: settings meant to be top-level
-            # keys are also accepted when a user nests them under `gateway:`
-            # (e.g. via `son-of-anton config set gateway.<key> ...`, which naturally
-            # produces that shape). Every key below mirrors the precedent
-            # already established for gateway.multiplex_profiles/streaming/
-            # write_sessions_json: top-level wins, nested gateway.* falls back.
-            gateway_section = toml_cfg.get("gateway")
-
-            # Map config.toml keys → GatewayConfig.from_dict() schema.
-            # Each key overwrites whatever gateway.json may have set.
-            # Precedence contract: key-presence at the TOP LEVEL wins; the
-            # nested gateway.* form is consulted only when the top-level key
-            # is absent (not merely falsy/mistyped), so a present-but-empty
-            # top-level value is never silently replaced by the nested one.
-            sr = toml_cfg.get("session_reset")
-            if "session_reset" not in toml_cfg and isinstance(gateway_section, dict):
-                sr = gateway_section.get("session_reset")
-            if sr and isinstance(sr, dict):
-                gw_data["default_reset_policy"] = sr
-
-            qc = toml_cfg.get("quick_commands")
-            if qc is None and isinstance(gateway_section, dict):
-                qc = gateway_section.get("quick_commands")
-            if qc is not None:
-                if isinstance(qc, dict):
-                    gw_data["quick_commands"] = qc
-                else:
-                    logger.warning(
-                        "Ignoring invalid quick_commands in config.toml "
-                        "(expected mapping, got %s)",
-                        type(qc).__name__,
-                    )
-
-            gateway_cfg = toml_cfg.get("gateway")
-
-            if "group_sessions_per_user" in toml_cfg:
-                gw_data["group_sessions_per_user"] = toml_cfg["group_sessions_per_user"]
-            elif isinstance(gateway_section, dict) and "group_sessions_per_user" in gateway_section:
-                gw_data["group_sessions_per_user"] = gateway_section["group_sessions_per_user"]
-
-            if "thread_sessions_per_user" in toml_cfg:
-                gw_data["thread_sessions_per_user"] = toml_cfg["thread_sessions_per_user"]
-            elif isinstance(gateway_section, dict) and "thread_sessions_per_user" in gateway_section:
-                gw_data["thread_sessions_per_user"] = gateway_section["thread_sessions_per_user"]
-
-            if isinstance(gateway_section, dict):
-                if "max_concurrent_sessions" in gateway_section:
-                    gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
-                if "systemd_watchdog_seconds" in gateway_section:
-                    gw_data["systemd_watchdog_seconds"] = gateway_section[
-                        "systemd_watchdog_seconds"
-                    ]
-
-            if "max_concurrent_sessions" in toml_cfg:
-                gw_data["max_concurrent_sessions"] = toml_cfg["max_concurrent_sessions"]
-
-            streaming_cfg = toml_cfg.get("streaming")
-            if not isinstance(streaming_cfg, dict) and isinstance(gateway_section, dict):
-                # Fall back to nested gateway.streaming written by
-                # ``son-of-anton config set gateway.streaming.*``
-                streaming_cfg = gateway_section.get("streaming")
-            if isinstance(streaming_cfg, dict):
-                gw_data["streaming"] = streaming_cfg
-
-            if "reset_triggers" in toml_cfg:
-                gw_data["reset_triggers"] = toml_cfg["reset_triggers"]
-            elif isinstance(gateway_section, dict) and "reset_triggers" in gateway_section:
-                gw_data["reset_triggers"] = gateway_section["reset_triggers"]
-
-            if "always_log_local" in toml_cfg:
-                gw_data["always_log_local"] = toml_cfg["always_log_local"]
-            elif isinstance(gateway_section, dict) and "always_log_local" in gateway_section:
-                gw_data["always_log_local"] = gateway_section["always_log_local"]
-
-            # write_sessions_json: top-level wins; nested gateway.* fallback
-            # (matches the gateway.streaming precedence pattern).
-            if "write_sessions_json" in toml_cfg:
-                gw_data["write_sessions_json"] = toml_cfg["write_sessions_json"]
-            elif isinstance(gateway_section, dict) and "write_sessions_json" in gateway_section:
-                gw_data["write_sessions_json"] = gateway_section["write_sessions_json"]
-
-            if "filter_silence_narration" in toml_cfg:
-                gw_data["filter_silence_narration"] = toml_cfg[
-                    "filter_silence_narration"
-                ]
-            elif isinstance(gateway_section, dict) and "filter_silence_narration" in gateway_section:
-                gw_data["filter_silence_narration"] = gateway_section[
-                    "filter_silence_narration"
-                ]
-
-            for _hours_key in ("active_hours", "inactive_message", "single_user"):
-                if _hours_key in toml_cfg:
-                    gw_data[_hours_key] = toml_cfg[_hours_key]
-                elif isinstance(gateway_section, dict) and _hours_key in gateway_section:
-                    gw_data[_hours_key] = gateway_section[_hours_key]
-
-            if "unauthorized_dm_behavior" in toml_cfg:
-                gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
-                    toml_cfg.get("unauthorized_dm_behavior"),
-                    "pair",
-                )
-            elif isinstance(gateway_section, dict) and "unauthorized_dm_behavior" in gateway_section:
-                gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
-                    gateway_section.get("unauthorized_dm_behavior"),
-                    "pair",
-                )
-
-            # Merge platform config into gw_data so runtime-only settings under
-            # ``gateway.platforms`` are loaded the same way as top-level
-            # ``platforms``. Merge nested first so top-level config keeps
-            # precedence, matching the existing gateway.streaming fallback.
-            gateway_platforms = gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
-            platforms_data = gw_data.setdefault("platforms", {})
-            if not isinstance(platforms_data, dict):
-                platforms_data = {}
-                gw_data["platforms"] = platforms_data
-
-            def _merge_platform_map(source_platforms: Any) -> None:
-                if not isinstance(source_platforms, dict):
-                    return
-                for plat_name, plat_block in source_platforms.items():
-                    if not isinstance(plat_block, dict):
-                        continue
-                    existing = platforms_data.get(plat_name, {})
-                    if not isinstance(existing, dict):
-                        existing = {}
-                    # Deep-merge extra dicts so gateway.json defaults survive
-                    merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
-                    if "enabled" in plat_block:
-                        merged_extra["_enabled_explicit"] = True
-                    merged = {**existing, **plat_block}
-                    if merged_extra:
-                        merged["extra"] = merged_extra
-                    platforms_data[plat_name] = merged
-
-            _merge_platform_map(gateway_platforms)
-            _merge_platform_map(toml_cfg.get("platforms"))
-
-            # Also merge platform configs placed directly under ``gateway.*``
-            # (e.g. ``gateway.signal``) so subsections are discovered the
-            # same way ``gateway.streaming`` is handled elsewhere.  Iterate
-            # all ``gateway:*`` keys and merge only those that match a known
-            # platform value, skipping reserved keys like ``platforms``.
-            if isinstance(gateway_cfg, dict):
-                _nested_platforms: dict = {}
-                for _k, _v in gateway_cfg.items():
-                    if _k == "platforms":
-                        continue
-                    try:
-                        Platform(_k)
-                    except (ValueError, AttributeError):
-                        continue
-                    if isinstance(_v, dict):
-                        _nested_platforms[_k] = _v
-                if _nested_platforms:
-                    _merge_platform_map(_nested_platforms)
-
-            if platforms_data:
-                gw_data["platforms"] = platforms_data
-            for plat in (Platform.SIGNAL,):
-                platform_cfg = toml_cfg.get(plat.value)
-                _cfg_toplevel = isinstance(platform_cfg, dict)
-                # Fall back to the platform's block under ``platforms`` /
-                # ``gateway.platforms`` so shared-key bridging (allow_from,
-                # require_mention, free_response_channels, …) still runs when
-                # the user configured the platform only under those nested paths
-                # and not via a top-level block.
-                # Note: ``enabled`` is only written to plat_data from a
-                # top-level block (``_cfg_toplevel``); for nested-only configs
-                # ``_merge_platform_map`` already merged it with the correct
-                # precedence, so re-applying it here would overwrite that.
-                if not _cfg_toplevel:
-                    for _src in (gateway_platforms, toml_cfg.get("platforms")):
-                        if isinstance(_src, dict):
-                            _candidate = _src.get(plat.value)
-                            if isinstance(_candidate, dict):
-                                platform_cfg = _candidate
-                                break
-                if not isinstance(platform_cfg, dict):
-                    continue
-                # Collect bridgeable keys from this platform section
-                bridged = {}
-                if "unauthorized_dm_behavior" in platform_cfg:
-                    bridged["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
-                        platform_cfg.get("unauthorized_dm_behavior"),
-                        gw_data.get("unauthorized_dm_behavior", "pair"),
-                    )
-                if "notice_delivery" in platform_cfg:
-                    bridged["notice_delivery"] = _normalize_notice_delivery(
-                        platform_cfg.get("notice_delivery"),
-                        "public",
-                    )
-                if "reply_prefix" in platform_cfg:
-                    bridged["reply_prefix"] = platform_cfg["reply_prefix"]
-                if "reply_in_thread" in platform_cfg:
-                    bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
-                if "cron_continuable_surface" in platform_cfg:
-                    bridged["cron_continuable_surface"] = platform_cfg["cron_continuable_surface"]
-                if "require_mention" in platform_cfg:
-                    bridged["require_mention"] = platform_cfg["require_mention"]
-                if "send_read_receipts" in platform_cfg:
-                    bridged["send_read_receipts"] = platform_cfg["send_read_receipts"]
-                if "free_response_channels" in platform_cfg:
-                    bridged["free_response_channels"] = platform_cfg["free_response_channels"]
-                if "mention_patterns" in platform_cfg:
-                    bridged["mention_patterns"] = platform_cfg["mention_patterns"]
-                if "exclusive_bot_mentions" in platform_cfg:
-                    bridged["exclusive_bot_mentions"] = platform_cfg["exclusive_bot_mentions"]
-                if "dm_policy" in platform_cfg:
-                    bridged["dm_policy"] = platform_cfg["dm_policy"]
-                if "allow_from" in platform_cfg:
-                    bridged["allow_from"] = platform_cfg["allow_from"]
-                if "allow_admin_from" in platform_cfg:
-                    bridged["allow_admin_from"] = platform_cfg["allow_admin_from"]
-                if "user_allowed_commands" in platform_cfg:
-                    bridged["user_allowed_commands"] = platform_cfg["user_allowed_commands"]
-                if "group_policy" in platform_cfg:
-                    bridged["group_policy"] = platform_cfg["group_policy"]
-                if "group_allow_from" in platform_cfg:
-                    bridged["group_allow_from"] = platform_cfg["group_allow_from"]
-                if "group_allow_admin_from" in platform_cfg:
-                    bridged["group_allow_admin_from"] = platform_cfg["group_allow_admin_from"]
-                if "group_user_allowed_commands" in platform_cfg:
-                    bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
-                if "channel_prompts" in platform_cfg:
-                    channel_prompts = platform_cfg["channel_prompts"]
-                    if isinstance(channel_prompts, dict):
-                        bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
-                    else:
-                        bridged["channel_prompts"] = channel_prompts
-                if "gateway_restart_notification" in platform_cfg:
-                    bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
-                if "typing_indicator" in platform_cfg:
-                    bridged["typing_indicator"] = platform_cfg["typing_indicator"]
-                has_channel_overrides = "channel_overrides" in platform_cfg
-                if has_channel_overrides:
-                    raw_overrides = platform_cfg.get("channel_overrides")
-                    if isinstance(raw_overrides, dict):
-                        plat_data, _extra = _ensure_platform_extra_dict(
-                            platforms_data, plat.value
-                        )
-                        plat_data["channel_overrides"] = {
-                            str(cid): ov_data
-                            for cid, ov_data in raw_overrides.items()
-                            if isinstance(ov_data, dict)
-                        }
-                enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
-                if not bridged and not enabled_was_explicit and not has_channel_overrides:
-                    continue
-                plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)
-                if enabled_was_explicit:
-                    plat_data["enabled"] = platform_cfg["enabled"]
-                    # Mark the explicit enable/disable so _apply_env_overrides
-                    # honors an explicit ``enabled: false``.
-                    extra["_enabled_explicit"] = True
-                extra.update(bridged)
-
-            # Signal settings → env vars (env vars take precedence)
-            signal_cfg = toml_cfg.get("signal", {})
-            if isinstance(signal_cfg, dict):
-                if "require_mention" in signal_cfg and not os.getenv("SIGNAL_REQUIRE_MENTION"):
-                    os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
-
+            data = dict(_coerce_dict(toml_cfg.get("gateway")))
+            data["platforms"] = toml_cfg.get("platforms")
+            if isinstance(toml_cfg.get("streaming"), dict):
+                data["streaming"] = toml_cfg["streaming"]
     except Exception as e:
         logger.warning(
-            "Failed to process config.toml — falling back to .env / gateway.json values. "
+            "Failed to process config.toml — falling back to defaults. "
             "Check %s for syntax errors. Error: %s",
-            _home / "config.toml",
+            config_toml_path,
             e,
         )
 
-    config = GatewayConfig.from_dict(gw_data)
+    config = GatewayConfig.from_dict(data)
 
-    # Override with environment variables
-    _apply_env_overrides(config)
-    
-    # --- Validate loaded values ---
-    _validate_gateway_config(config)
-
-    return config
-
-
-def _validate_gateway_config(config: "GatewayConfig") -> None:
-    """Validate and sanitize a loaded GatewayConfig in place.
-
-    Called by ``load_gateway_config()`` after all config sources are merged.
-    Extracted as a separate function for testability.
-    """
-    policy = config.default_reset_policy
-
-    if not (0 <= policy.at_hour <= 23):
-        logger.warning(
-            "Invalid at_hour=%s (must be 0-23). Using default 4.", policy.at_hour
-        )
-        policy.at_hour = 4
-
-    if policy.idle_minutes is None or policy.idle_minutes <= 0:
-        logger.warning(
-            "Invalid idle_minutes=%s (must be positive). Using default 1440.",
-            policy.idle_minutes,
-        )
-        policy.idle_minutes = 1440
-
-
-def _apply_env_overrides(config: GatewayConfig) -> None:
-    """Apply environment variable overrides to config."""
-    getenv = _getenv_str
-
-    def _enable_from_env(platform: Platform) -> PlatformConfig:
-        if platform not in config.platforms:
-            config.platforms[platform] = PlatformConfig(enabled=True)
-            return config.platforms[platform]
-
-        platform_config = config.platforms[platform]
-        # Read (don't pop) the explicit-enable marker; it is cleared for all
-        # platforms at the end of _apply_env_overrides.
-        enabled_was_explicit = bool(platform_config.extra.get("_enabled_explicit", False))
-        if not platform_config.enabled and not enabled_was_explicit:
-            platform_config.enabled = True
-        return platform_config
-
-    # Signal
-    signal_url = getenv("SIGNAL_HTTP_URL")
-    signal_account = getenv("SIGNAL_ACCOUNT")
+    # SIGNAL_HTTP_URL + SIGNAL_ACCOUNT enable Signal.
+    signal_url = os.getenv("SIGNAL_HTTP_URL", "")
+    signal_account = os.getenv("SIGNAL_ACCOUNT", "")
     if signal_url and signal_account:
-        signal_config = _enable_from_env(Platform.SIGNAL)
+        signal_config = config.platforms.setdefault(Platform.SIGNAL, PlatformConfig())
+        signal_config.enabled = True
         signal_config.extra.update({
             "http_url": signal_url,
             "account": signal_account,
-            "ignore_stories": is_truthy_value(getenv("SIGNAL_IGNORE_STORIES", "true")),
         })
-    signal_home = getenv("SIGNAL_HOME_CHANNEL")
-    if signal_home and Platform.SIGNAL in config.platforms:
-        config.platforms[Platform.SIGNAL].home_channel = HomeChannel(
-            platform=Platform.SIGNAL,
-            chat_id=signal_home,
-            name=getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
-            thread_id=getenv("SIGNAL_HOME_CHANNEL_THREAD_ID") or None,
-        )
-
-    # Session settings
-    idle_minutes = getenv("SESSION_IDLE_MINUTES")
-    if idle_minutes:
-        try:
-            config.default_reset_policy.idle_minutes = int(idle_minutes)
-        except ValueError:
-            pass
-    
-    reset_hour = getenv("SESSION_RESET_HOUR")
-    if reset_hour:
-        try:
-            config.default_reset_policy.at_hour = int(reset_hour)
-        except ValueError:
-            pass
-
-    for platform_config in config.platforms.values():
-        platform_config.extra.pop("_enabled_explicit", None)
+    return config
