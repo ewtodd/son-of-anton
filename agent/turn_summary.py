@@ -65,7 +65,6 @@ _VERB_GROUPS: dict[str, tuple[str, str, str]] = {
     "search_files": ("searched", "path", "paths"),
     "web_search": ("searched the web", "time", "times"),
     "session_search": ("searched sessions", "time", "times"),
-    "browser_navigate": ("browsed", "page", "pages"),
     "todo": ("updated", "task list", "task lists"),
     "delegate_task": ("delegated", "task", "tasks"),
     "memory": ("updated", "memory", "memories"),

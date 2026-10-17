@@ -71,11 +71,6 @@ from son_of_anton_cli.plugin_capabilities import (  # noqa: F401 — re-exported
 from son_of_anton_cli.plugin_capabilities import (
     parse_declared_capabilities as _parse_declared_capabilities,
 )
-from son_of_anton_cli.relay_plugin_cutover import (
-    LEGACY_RELAY_PLUGIN_KEYS,
-    RELAY_PLUGINS_CONFIG_ENV,
-    legacy_relay_plugin_keys,
-)
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -220,98 +215,6 @@ VALID_HOOKS: Set[str] = {
     #   decided_by: "aux_llm"  -- only on surface="smart"
     "pre_approval_request",
     "post_approval_response",
-    # Kanban task lifecycle hooks. Fired by son_of_anton_cli.kanban_db when a task
-    # transitions state, AFTER the change is committed to the board DB (so the
-    # hook always sees durable state and a slow plugin can never hold the
-    # SQLite write lock). Observers only: return values are ignored.
-    #
-    # WHICH PROCESS each fires in matters, because kanban workers run as
-    # separate `son-of-anton -p <profile> chat -q` subprocesses:
-    #   - kanban_task_claimed   -> the DISPATCHER process (gateway-embedded
-    #                              dispatcher or `son-of-anton kanban dispatch`),
-    #                              right before the worker subprocess spawns.
-    #   - kanban_task_completed -> the WORKER process, when it calls
-    #                              kanban_complete (or a CLI/manual complete).
-    #   - kanban_task_blocked   -> the WORKER process (worker-initiated block)
-    #                              or whichever process drove the block.
-    # A plugin that needs to observe every transition centrally should hook in
-    # the dispatcher; one that needs per-task in-session context should hook in
-    # the worker.
-    #
-    # Common kwargs: task_id: str, board: str | None, assignee: str | None,
-    #   run_id: int | None, profile_name: str.
-    # kanban_task_completed adds: summary: str | None.
-    # kanban_task_blocked adds:   reason: str | None.
-    "kanban_task_claimed",
-    "kanban_task_completed",
-    "kanban_task_blocked",
-    # Kanban worker-lifecycle, task-mutation, and dispatcher-tick observers
-    # (RFC #58548, accepted as the design basis in the #64231 batch
-    # disposition; on_kanban_dispatch_tick is the re-port of PR #56066).
-    # All five are observers only: return values are ignored, and every fire
-    # site is fully best-effort, so a broken callback can never break
-    # dispatch or a task mutation. Cost rule: every call site short-circuits
-    # on has_hook(), so when nothing subscribes no payload is built and the
-    # hot paths (each dispatcher tick, each task write) pay one dict probe.
-    #
-    # WHICH PROCESS: worker spawn/exit/stale-claim and the dispatch tick
-    # fire in the DISPATCHER process (gateway-embedded dispatcher or
-    # ``son-of-anton kanban dispatch``); on_kanban_task_updated fires in whichever
-    # process committed the mutation (CLI, worker, or the gateway-embedded
-    # dashboard API).
-    #
-    # Common kwargs (task-scoped hooks): task_id: str, profile_name: str,
-    #   board: str | None, assignee: str | None, run_id: int | None.
-    #
-    # on_kanban_worker_spawned fires after ``spawn_fn`` returns AND the
-    # worker PID (when one was reported) is durably persisted, per the RFC
-    # timing contract; like kanban_task_claimed it runs inside the board's
-    # dispatch lock, so callbacks must stay fast. Adds:
-    #   worker_pid: int | None, workspace_path: str.
-    #   Privacy: workspace_path is a filesystem path and may reveal project
-    #   layout or usernames.
-    "on_kanban_worker_spawned",
-    # on_kanban_worker_exited is tick-derived from detect_crashed_workers —
-    # it fires when a dead-PID running task is reclaimed, AFTER every
-    # reclaim/accounting txn has committed. Exit visibility latency is
-    # bounded by the dispatcher tick interval. Adds:
-    #   worker_pid: int,
-    #   exit_kind: "clean_exit" | "rate_limited" | "nonzero_exit"
-    #              | "signaled" | "unknown",
-    #   exit_code: int | None,
-    #   outcome: "crashed" | "rate_limited",
-    #   retry_status: str  (the phase the task was released back to).
-    "on_kanban_worker_exited",
-    # on_kanban_worker_stale_claim fires when release_stale_claims reclaims
-    # a TTL-expired claim, after the reclaim txn commits. Live-PID claim
-    # extensions and deferred reclaims do NOT fire. Adds:
-    #   worker_pid: int | None, heartbeat_stale: bool, retry_status: str.
-    "on_kanban_worker_stale_claim",
-    # on_kanban_task_updated is the task-mutation boundary observer: it
-    # fires after a committed task-row field write outside the
-    # claim/complete/block lifecycle — kanban_db.assign_task,
-    # set_model_override, and set_reasoning_effort, plus the dashboard
-    # plugin API's direct-SQL priority/title/body editors (single and
-    # bulk) via kanban_db.notify_task_updated. Adds:
-    #   changed_fields: list[str] — field NAMES only; new values are never
-    #   carried (fetch the task if you need them).
-    #   Privacy: names only here, but title/body values in the board DB may
-    #   contain user/project content.
-    "on_kanban_task_updated",
-    # on_kanban_dispatch_tick fires once per dispatcher tick in
-    # dispatch_once, strictly AFTER the board's single-writer dispatch lock
-    # has been released (the #56066 original fired inside the lock — the
-    # #64231 disposition mandates the post-lock re-port), so a slow
-    # subscriber can never extend the writer critical section.
-    # Kwargs: board: str | None, profile_name: str, dry_run: bool,
-    #   outcome: "ok" | "skipped_locked" | "idle",
-    #   result: son_of_anton_cli.kanban_db.DispatchResult (spawned, reclaimed,
-    #     promoted, reconciled_orphans, crashed, stale, timed_out,
-    #     auto_blocked, rate_limited, auto_assigned_default,
-    #     respawn_guarded, skipped_per_profile_capped, skipped_unassigned,
-    #     skipped_nonspawnable, skipped_locked).
-    #   Privacy: result carries task ids, assignees, and workspace paths.
-    "on_kanban_dispatch_tick",
     # Slash-command dispatch observer (#64204, observer-first per #64182
     # ground rule 3). Fired when a recognized slash command is about to be
     # dispatched, BEFORE the handler runs, on both the interactive CLI
@@ -595,7 +498,6 @@ _KNOWN_MANIFEST_FIELDS: Set[str] = {
     "name", "version", "description", "author", "requires_env",
     "provides_tools", "provides_hooks", "kind", "hooks", "label",
     "optional_env", "platforms", "external_dependencies", "pip_dependencies",
-    "provides_web_providers",
     # v2 (#64165)
     "manifest_version", "api_version", "requires_plugins",
     "python_dependencies", "config_schema", "license", "homepage", "tags",
@@ -2034,51 +1936,6 @@ class PluginContext:
             tool_name, args, scope=self._manager.scope_key, **kwargs
         )
 
-    # -- context engine registration -----------------------------------------
-
-    @_serialized_replacement
-    def register_context_engine(self, engine) -> Optional[PluginRegistration]:
-        """Register a context engine to replace the built-in ContextCompactor.
-
-        Only one context engine plugin is allowed. If a second plugin tries
-        to register one, it is rejected with a warning.
-
-        The engine must be an instance of ``agent.context_engine.ContextEngine``.
-        """
-        if self._manager._context_engine is not None:
-            logger.warning(
-                "Plugin '%s' tried to register a context engine, but one is "
-                "already registered. Only one context engine plugin is allowed.",
-                self.manifest.name,
-            )
-            return
-        # Defer the import to avoid circular deps at module level
-        from agent.context_engine import ContextEngine
-        if not isinstance(engine, ContextEngine):
-            logger.warning(
-                "Plugin '%s' tried to register a context engine that does not "
-                "inherit from ContextEngine. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        previous = self._manager._context_engine
-        self._manager._context_engine = engine
-        handle = self._track_replacement(
-            "context_engine",
-            engine.name,
-            slot=("manager_value", id(self._manager), "_context_engine"),
-            current=engine,
-            previous=previous,
-            restore=lambda replacement: self._manager._restore_value(
-                "_context_engine", engine, replacement
-            ),
-        )
-        logger.info(
-            "Plugin '%s' registered context engine: %s",
-            self.manifest.name, engine.name,
-        )
-        return handle
-
     # -- context reference registration -------------------------------------
 
     def register_context_reference(self, provider) -> None:
@@ -2114,186 +1971,6 @@ class PluginContext:
             "Plugin '%s' registered context reference: @%s:",
             self.manifest.name, provider.prefix,
         )
-
-    # -- memory provider registration ---------------------------------------
-
-    def register_memory_provider(self, provider) -> None:
-        """Register a memory provider.
-
-        Memory providers are activated exclusively, by name, through
-        ``memory.provider`` in config.toml, and ``plugins/memory/__init__.py``
-        owns that path with its own collector. A provider reaching *this*
-        implementation is therefore one the general PluginManager loaded — it
-        was not classified ``exclusive`` — so the call is recorded and
-        otherwise inert. Without it, such a plugin's ``register()`` dies on a
-        missing attribute and the plugin fails to load at all.
-
-        Memory was the only provider category with no ``register_*`` here,
-        which is what made that failure mode possible. The provider must be an
-        instance of ``agent.memory_provider.MemoryProvider``.
-        """
-        from agent.memory_provider import MemoryProvider
-
-        if not isinstance(provider, MemoryProvider):
-            logger.warning(
-                "Plugin '%s' tried to register a memory provider that does not "
-                "inherit from MemoryProvider. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        self._memory_provider = provider
-        logger.debug(
-            "Plugin '%s' registered memory provider: %s",
-            self.manifest.name, getattr(provider, "name", "?"),
-        )
-
-    # -- image gen provider registration ------------------------------------
-
-    @_serialized_replacement
-    def register_image_gen_provider(self, provider) -> Optional[PluginRegistration]:
-        """Register an image generation backend.
-
-        ``provider`` must be an instance of
-        :class:`agent.image_gen_provider.ImageGenProvider`. The
-        ``provider.name`` attribute is what ``image_gen.provider`` in
-        ``config.toml`` matches against when routing ``image_generate``
-        tool calls.
-        """
-        from agent.image_gen_provider import ImageGenProvider
-        from agent.image_gen_registry import (
-            register_provider,
-            restore_registration,
-            snapshot_registration,
-        )
-
-        if not isinstance(provider, ImageGenProvider):
-            logger.warning(
-                "Plugin '%s' tried to register an image_gen provider that does "
-                "not inherit from ImageGenProvider. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        registry_name = provider.name.strip()
-        scope = self._manager.scope_key
-        previous = snapshot_registration(registry_name, scope=scope)
-        register_provider(provider, scope=scope)
-        registered = snapshot_registration(registry_name, scope=scope)
-        if registered is not provider:
-            return None
-        handle = self._track_replacement(
-            "image_gen_provider",
-            registry_name,
-            slot=("image_gen_provider", scope, registry_name),
-            current=provider,
-            previous=previous,
-            restore=lambda replacement: restore_registration(
-                registry_name, provider, replacement, scope=scope
-            ),
-        )
-        logger.info(
-            "Plugin '%s' registered image_gen provider: %s",
-            self.manifest.name, registry_name,
-        )
-        return handle
-
-    # -- video gen provider registration -------------------------------------
-
-    @_serialized_replacement
-    def register_video_gen_provider(self, provider) -> Optional[PluginRegistration]:
-        """Register a video generation backend.
-
-        ``provider`` must be an instance of
-        :class:`agent.video_gen_provider.VideoGenProvider`. The
-        ``provider.name`` attribute is what ``video_gen.provider`` in
-        ``config.toml`` matches against when routing ``video_generate``
-        tool calls.
-        """
-        from agent.video_gen_provider import VideoGenProvider
-        from agent.video_gen_registry import (
-            register_provider as _register_video_provider,
-            restore_registration,
-            snapshot_registration,
-        )
-
-        if not isinstance(provider, VideoGenProvider):
-            logger.warning(
-                "Plugin '%s' tried to register a video_gen provider that does "
-                "not inherit from VideoGenProvider. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        registry_name = provider.name.strip()
-        scope = self._manager.scope_key
-        previous = snapshot_registration(registry_name, scope=scope)
-        _register_video_provider(provider, scope=scope)
-        registered = snapshot_registration(registry_name, scope=scope)
-        if registered is not provider:
-            return None
-        handle = self._track_replacement(
-            "video_gen_provider",
-            registry_name,
-            slot=("video_gen_provider", scope, registry_name),
-            current=provider,
-            previous=previous,
-            restore=lambda replacement: restore_registration(
-                registry_name, provider, replacement, scope=scope
-            ),
-        )
-        logger.info(
-            "Plugin '%s' registered video_gen provider: %s",
-            self.manifest.name, registry_name,
-        )
-        return handle
-
-    # -- web search/extract provider registration ----------------------------
-
-    @_serialized_replacement
-    def register_web_search_provider(self, provider) -> Optional[PluginRegistration]:
-        """Register a web search/extract backend.
-
-        ``provider`` must be an instance of
-        :class:`agent.web_search_provider.WebSearchProvider`. The
-        ``provider.name`` attribute is what ``web.search_backend`` /
-        ``web.extract_backend`` / ``web.backend`` in ``config.toml``
-        matches against when routing ``web_search`` / ``web_extract``
-        tool calls.
-        """
-        from agent.web_search_provider import WebSearchProvider
-        from agent.web_search_registry import (
-            register_provider as _register_web_provider,
-            restore_registration,
-            snapshot_registration,
-        )
-
-        if not isinstance(provider, WebSearchProvider):
-            logger.warning(
-                "Plugin '%s' tried to register a web provider that does "
-                "not inherit from WebSearchProvider. Ignoring.",
-                self.manifest.name,
-            )
-            return
-        registry_name = provider.name.strip()
-        scope = self._manager.scope_key
-        previous = snapshot_registration(registry_name, scope=scope)
-        _register_web_provider(provider, scope=scope)
-        registered = snapshot_registration(registry_name, scope=scope)
-        if registered is not provider:
-            return None
-        handle = self._track_replacement(
-            "web_search_provider",
-            registry_name,
-            slot=("web_search_provider", scope, registry_name),
-            current=provider,
-            previous=previous,
-            restore=lambda replacement: restore_registration(
-                registry_name, provider, replacement, scope=scope
-            ),
-        )
-        logger.info(
-            "Plugin '%s' registered web provider: %s",
-            self.manifest.name, registry_name,
-        )
-        return handle
 
     # -- hook registration --------------------------------------------------
 
@@ -2699,7 +2376,6 @@ class PluginManager:
         self._middleware: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
-        self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._system_prompt_sections: Dict[str, PluginSystemPromptSection] = {}
         self._discovered: bool = False
@@ -2805,18 +2481,6 @@ class PluginManager:
             mapping.pop(key, None)
         else:
             mapping[key] = previous
-        return True
-
-    def _restore_value(
-        self,
-        attribute: str,
-        current: Any,
-        previous: Any,
-    ) -> bool:
-        """Restore a manager-local value only when *current* is still active."""
-        if getattr(self, attribute) is not current:
-            return False
-        setattr(self, attribute, previous)
         return True
 
     def _remove_tool_name_if_unowned(self, name: str) -> None:
@@ -2983,7 +2647,6 @@ class PluginManager:
             self._aux_tasks.clear()
             self._system_prompt_sections.clear()
             self._approval_transports.clear()
-            self._context_engine = None
             self._discovered = False
         else:
             for key in target_keys:
@@ -3072,14 +2735,6 @@ class PluginManager:
         # don't collide even when both manifests say ``name: openai``.
         disabled = _get_disabled_plugins()
         enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
-        stale_relay_keys = legacy_relay_plugin_keys(enabled)
-        if stale_relay_keys:
-            logger.warning(
-                "Removed Son of Anton plugin %s is still listed in plugins.enabled; "
-                "remove it and configure native Relay plugins with %s",
-                ", ".join(stale_relay_keys),
-                RELAY_PLUGINS_CONFIG_ENV,
-            )
         winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
             winners[manifest.key or manifest.name] = manifest
@@ -3089,26 +2744,6 @@ class PluginManager:
         to_load: Dict[str, PluginManifest] = {}
         for manifest in winners.values():
             lookup_key = manifest.key or manifest.name
-
-            # Relay lifecycle ownership now lives in the Son of Anton core. Loading
-            # an old user or entry-point copy would let plugin.initialize()
-            # compete for the same process-global Relay registries.
-            if (
-                lookup_key in LEGACY_RELAY_PLUGIN_KEYS
-                or manifest.name in LEGACY_RELAY_PLUGIN_KEYS
-            ):
-                loaded = LoadedPlugin(manifest=manifest, enabled=False)
-                loaded.error = (
-                    "removed — Relay lifecycle is owned by Son of Anton core; configure "
-                    f"{RELAY_PLUGINS_CONFIG_ENV} instead"
-                )
-                self._plugins[lookup_key] = loaded
-                logger.warning(
-                    "Refusing to load removed Son of Anton Relay plugin '%s'; %s",
-                    lookup_key,
-                    loaded.error,
-                )
-                continue
 
             # Explicit disable always wins (matches on key or on legacy
             # bare name for back-compat with existing user configs).
@@ -5040,11 +4675,6 @@ def _ensure_plugins_discovered(force: bool = False) -> PluginManager:
     manager = get_plugin_manager()
     manager.discover_and_load(force=force)
     return manager
-
-
-def get_plugin_context_engine():
-    """Return the plugin-registered context engine, or None."""
-    return _ensure_plugins_discovered()._context_engine
 
 
 def get_plugin_command_handler(name: str) -> Optional[Callable]:

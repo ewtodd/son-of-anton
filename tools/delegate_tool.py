@@ -983,7 +983,6 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
         if name in _COMPOSITE_BLOCKED_TOOLSETS
         or all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
     }
-    blocked_toolset_names.add("kanban")
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
@@ -2454,23 +2453,6 @@ def _run_single_child(
         except Exception:
             logger.debug("Failed to close child agent after delegation")
 
-        # The AIAgent turn boundary normally closes the child scope itself. This
-        # fallback covers failures before that boundary starts, but must not pop
-        # a scope while a timed-out child worker is still unwinding.
-        try:
-            from agent import relay_runtime
-
-            runtime = relay_runtime.get_runtime(create=False)
-            child_session_id = str(getattr(child, "session_id", "") or "")
-            child_turn_is_active = relay_runtime.SESSION_COORDINATOR.has_active_turn(
-                profile_key=relay_runtime.current_profile_key(),
-                session_id=child_session_id,
-            )
-            if runtime is not None and child_session_id and not child_turn_is_active:
-                runtime.unregister_subagent({"child_session_id": child_session_id})
-        except Exception:
-            logger.debug("Failed to close child Relay session after delegation")
-
 
 _PARENT_FINALIZATION_LOCK_GUARD = threading.Lock()
 _PARENT_FINALIZATION_FALLBACK_LOCK = threading.RLock()
@@ -2519,25 +2501,6 @@ def _finalize_child_results(
     with _parent_finalization_lock(parent_agent):
         _apply_summary_budget(results, parent_agent)
         child_by_index = {index: child for index, _task, child in children}
-
-        if parent_agent and getattr(parent_agent, "_memory_manager", None):
-            for entry in results:
-                try:
-                    task_index = entry.get("task_index", -1)
-                    task_goal = (
-                        task_list[task_index]["goal"]
-                        if isinstance(task_index, int)
-                        and 0 <= task_index < len(task_list)
-                        else ""
-                    )
-                    child = child_by_index.get(task_index)
-                    parent_agent._memory_manager.on_delegation(
-                        task=task_goal,
-                        result=entry.get("summary", "") or "",
-                        child_session_id=getattr(child, "session_id", ""),
-                    )
-                except Exception:
-                    pass
 
         parent_session_id = getattr(parent_agent, "session_id", None)
         try:

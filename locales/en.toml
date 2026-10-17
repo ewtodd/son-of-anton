@@ -149,24 +149,6 @@ more_commands = "\n... and {count} more commands. Use `/commands` for the full p
 invalid_days = "Invalid --days value: {value}"
 error = "Error generating insights: {error}"
 
-[gateway.kanban]
-error_prefix = "kanban error: {error}"
-subscribed_suffix = "(subscribed — you'll be notified when {task_id} completes or blocks)"
-truncated_suffix = "… (truncated; use `son-of-anton kanban …` in your terminal for full output)"
-no_output = "(no output)"
-
-[gateway.kanban.wake]
-completed = "completed"
-gave_up = "gave up (retries exhausted)"
-crashed = "crashed (worker exited); dispatcher will retry"
-timed_out = "timed out; dispatcher will retry"
-blocked = "blocked; needs attention"
-status_default = "status changed"
-status_joiner = ", "
-message = "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
-handoff = "Result: {summary}"
-guidance = "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
-
 [gateway.personality]
 none_configured = "No personalities configured in `{path}/config.toml`"
 header = "**Available Personalities**\n"

@@ -10,7 +10,7 @@ fork inherits the cached prompt verbatim.
 Three tiers are joined with ``\\n\\n``:
 
 * ``stable``   — identity (SOUL.md or DEFAULT_AGENT_IDENTITY), tool
-  guidance, computer-use guidance, nous subscription block, tool-use
+  guidance, nous subscription block, tool-use
   enforcement guidance + per-model operational guidance,
   alibaba model-name workaround, environment hints, coding guidance,
   platform hints.
@@ -25,7 +25,6 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any, Dict, List, Optional
@@ -643,15 +642,6 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if user_block:
                 volatile_parts.append(user_block)
 
-    # External memory provider system prompt block (additive to built-in)
-    if agent._memory_manager:
-        try:
-            _ext_mem_block = agent._memory_manager.build_system_prompt()
-            if _ext_mem_block:
-                volatile_parts.append(_ext_mem_block)
-        except Exception:
-            pass
-
     # Plugin sections are intentionally confined to one coarse anchor in the
     # volatile tail. This preserves deterministic ordering and lets a resumed
     # process reconstruct the stable cache prefix without re-running plugins.
@@ -804,34 +794,9 @@ def reconstruct_static_prefix(
     agent._static_rebuild_failed_for = stored
 
 
-def format_tools_for_system_message(agent: Any) -> str:
-    """Format tool definitions for the system message in the trajectory format.
-
-    Returns:
-        str: JSON string representation of tool definitions
-    """
-    if not agent.tools:
-        return "[]"
-
-    # Convert tool definitions to the format expected in trajectories
-    formatted_tools = []
-    for tool in agent.tools:
-        func = tool["function"]
-        formatted_tool = {
-            "name": func["name"],
-            "description": func.get("description", ""),
-            "parameters": func.get("parameters", {}),
-            "required": None  # Match the format in the example
-        }
-        formatted_tools.append(formatted_tool)
-
-    return json.dumps(formatted_tools, ensure_ascii=False)
-
-
 __all__ = [
     "build_system_prompt_parts",
     "build_system_prompt",
     "invalidate_system_prompt",
     "restore_plugin_prompt_sections",
-    "format_tools_for_system_message",
 ]

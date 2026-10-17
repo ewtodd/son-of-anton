@@ -763,7 +763,7 @@ def test_gateway_housekeeping_drives_the_refresh(monkeypatch) -> None:
 
 
 def test_compose_user_api_content_includes_rag_block() -> None:
-    composed = compose_user_api_content("question", "", "", "<recalled-notes>x</recalled-notes>")
+    composed = compose_user_api_content("question", "", "<recalled-notes>x</recalled-notes>")
     assert composed is not None
     assert "question" in composed
     assert "<recalled-notes>x</recalled-notes>" in composed
@@ -779,7 +779,7 @@ def test_recalled_api_content_is_persisted_and_replayed_byte_identically(embed, 
     _make_session(sid, "cli")
     block = rag.retrieve_for_turn(_agent(session_id=sid), "alpha?")
     assert "alpha recall source" in block
-    sent = compose_user_api_content("alpha?", "", "", block)
+    sent = compose_user_api_content("alpha?", "", block)
 
     db = SessionDB()
     try:

@@ -28,7 +28,6 @@ from agent.display import (
     build_tool_label as _build_tool_label,
     get_cute_tool_message as _get_cute_tool_message_impl,
     get_tool_emoji as _get_tool_emoji,
-    redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
 from agent.tool_dispatch_helpers import (
@@ -92,9 +91,7 @@ def _budget_for_agent(agent) -> BudgetConfig:
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
-_DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
-# Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
-# guard does not preempt a slow-but-valid summarization attempt.
+# Per-call wall-clock guard for a concurrent tool batch.
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # Upper bound a concurrent worker will wait at the start-order gate for all
 # earlier-ordered tools to advance before proceeding out of order. Long enough
@@ -193,44 +190,11 @@ def _flush_session_db_after_tool_progress(
         return False
 
 
-def _image_generate_parallel_limit() -> int:
-    """Return the configured image-generation parallelism cap.
-
-    Image-generation calls are slow enough that concurrent execution is useful,
-    but backend bursts can hit TTFB or rate-limit failures. Keep the default
-    intentionally conservative while allowing users to tune it per install.
-    """
-    try:
-        from son_of_anton_cli.config import load_config
-
-        cfg = load_config() or {}
-        image_gen = cfg.get("image_gen") if isinstance(cfg, dict) else None
-        value = (
-            image_gen.get("max_parallel_requests")
-            if isinstance(image_gen, dict)
-            else None
-        )
-    except Exception:
-        value = None
-
-    try:
-        limit = int(value)
-    except (TypeError, ValueError):
-        limit = _DEFAULT_IMAGE_PARALLEL_REQUESTS
-    return max(1, min(limit, _MAX_TOOL_WORKERS))
-
-
 def _max_workers_for_tool_batch(runnable_calls) -> int:
     """Return the worker cap for a concurrent tool batch."""
     if not runnable_calls:
         return 0
-    max_workers = _MAX_TOOL_WORKERS
-    if any(
-        (call[2] if len(call) >= 3 else None) == "image_generate"
-        for call in runnable_calls
-    ):
-        max_workers = min(max_workers, _image_generate_parallel_limit())
-    return min(len(runnable_calls), max_workers)
+    return min(len(runnable_calls), _MAX_TOOL_WORKERS)
 
 
 def _ra():
@@ -543,8 +507,7 @@ def _run_agent_tool_execution_middleware(
     begin_execution=None,
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
 ) -> _ManagedToolResult:
-    """Run Relay rewrites before Son of Anton policy and dispatch exactly once."""
-    from agent import relay_tools
+    """Run plugin middleware before Son of Anton policy and dispatch exactly once."""
     from son_of_anton_cli.middleware import (
         apply_tool_request_middleware,
         run_tool_execution_middleware,
@@ -683,7 +646,6 @@ def _run_agent_tool_execution_middleware(
         request_result = apply_tool_request_middleware(
             function_name,
             relay_args,
-            skip_relay=True,
             task_id=effective_task_id or "",
             session_id=getattr(agent, "session_id", "") or "",
             tool_call_id=tool_call_id or "",
@@ -711,18 +673,7 @@ def _run_agent_tool_execution_middleware(
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
         )
 
-    result, _relay_args = relay_tools.execute(
-        function_name,
-        function_args,
-        _son_of_anton_pipeline,
-        session_id=str(getattr(agent, "session_id", "") or ""),
-        metadata={
-            "task_id": effective_task_id or "",
-            "turn_id": getattr(agent, "_current_turn_id", "") or "",
-            "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
-            "tool_call_id": tool_call_id or "",
-        },
-    )
+    result = _son_of_anton_pipeline(function_args)
     return _ManagedToolResult(
         result=result,
         args=state["args"],
@@ -933,9 +884,7 @@ def _begin_tool_execution(
 ) -> None:
     """Run user-visible and checkpoint preflight on final tool arguments."""
     if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
-        display_args = (
-            _redact_tool_args_for_display(function_name, function_args) or function_args
-        )
+        display_args = function_args
         args_str = json.dumps(display_args, ensure_ascii=False)
         prefix = f"Tool {display_index}" if display_index is not None else "Tool"
         if agent.verbose_logging:
@@ -967,10 +916,7 @@ def _begin_tool_execution(
 
     if agent.tool_progress_callback:
         try:
-            display_args = (
-                _redact_tool_args_for_display(function_name, function_args)
-                or function_args
-            )
+            display_args = function_args
             preview = _build_tool_preview(function_name, display_args)
             agent.tool_progress_callback(
                 "tool.started", function_name, preview, display_args
@@ -980,10 +926,7 @@ def _begin_tool_execution(
 
     if agent.tool_start_callback:
         try:
-            display_args = (
-                _redact_tool_args_for_display(function_name, function_args)
-                or function_args
-            )
+            display_args = function_args
             agent.tool_start_callback(
                 tool_call_id, function_name, display_args
             )
@@ -1776,7 +1719,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
         if not blocked and agent.tool_complete_callback:
             try:
-                display_args = _redact_tool_args_for_display(name, args) or args
+                display_args = args
                 agent.tool_complete_callback(
                     tc.id, name, display_args, display_function_result,
                 )
@@ -2036,18 +1979,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     scope=next_args.get("scope"),
                     store=agent._memory_store,
                 )
-                # Mirror successful built-in memory writes to external
-                # providers. All gating/op-expansion lives behind the manager
-                # interface (MemoryManager.notify_memory_tool_write).
-                if agent._memory_manager:
-                    agent._memory_manager.notify_memory_tool_write(
-                        result,
-                        next_args,
-                        build_metadata=lambda: agent._build_memory_write_metadata(
-                            task_id=effective_task_id,
-                            tool_call_id=getattr(tool_call, "id", None),
-                        ),
-                    )
                 return result
             function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                 agent,
@@ -2085,57 +2016,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
-        elif function_name == "drive_preview":
-            def _execute(next_args: dict) -> Any:
-                from tools.drive_preview_tool import drive_preview_tool as _drive_preview_tool
-                return _drive_preview_tool(
-                    action=next_args.get("action", ""),
-                    ref=next_args.get("ref"),
-                    selector=next_args.get("selector"),
-                    text=next_args.get("text"),
-                    key=next_args.get("key"),
-                    submit=next_args.get("submit"),
-                    amount=next_args.get("amount"),
-                    to=next_args.get("to"),
-                    limit=next_args.get("max"),
-                    callback=getattr(agent, "drive_preview_callback", None),
-                )
-            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
-                agent,
-                function_name=function_name,
-                function_args=function_args,
-                effective_task_id=effective_task_id,
-                tool_call_id=getattr(tool_call, "id", "") or "",
-                execute=_execute,
-                scope_block=_ts_scope_block,
-                display_index=i,
-            ))
-            tool_duration = time.time() - tool_start_time
-            if agent._should_emit_quiet_tool_messages():
-                agent._vprint(f"  {_get_cute_tool_message_impl('drive_preview', function_args, tool_duration, result=function_result)}")
-        elif function_name == "annotate_preview":
-            def _execute(next_args: dict) -> Any:
-                from tools.annotate_preview_tool import annotate_preview_tool as _annotate_preview_tool
-                return _annotate_preview_tool(
-                    action=next_args.get("action", "add"),
-                    ref=next_args.get("ref"),
-                    selector=next_args.get("selector"),
-                    label=next_args.get("label"),
-                    callback=getattr(agent, "drive_preview_callback", None),
-                )
-            function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
-                agent,
-                function_name=function_name,
-                function_args=function_args,
-                effective_task_id=effective_task_id,
-                tool_call_id=getattr(tool_call, "id", "") or "",
-                execute=_execute,
-                scope_block=_ts_scope_block,
-                display_index=i,
-            ))
-            tool_duration = time.time() - tool_start_time
-            if agent._should_emit_quiet_tool_messages():
-                agent._vprint(f"  {_get_cute_tool_message_impl('annotate_preview', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
             _action_arg = str(function_args.get("action") or "").strip().lower()
             tasks_arg = function_args.get("tasks")
@@ -2179,83 +2059,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     spinner.stop(cute_msg)
                 elif agent._should_emit_quiet_tool_messages():
                     agent._vprint(f"  {cute_msg}")
-        elif agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
-            # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
-            spinner = None
-            if agent._should_emit_quiet_tool_messages():
-                face = random.choice(KawaiiSpinner.get_waiting_faces())
-                emoji = _get_tool_emoji(function_name)
-                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-                preview = _build_tool_label(function_name, display_args) or function_name
-                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
-                spinner.start()
-            _ce_result = None
-            try:
-                def _execute(next_args: dict) -> Any:
-                    return agent.context_compactor.handle_tool_call(function_name, next_args, messages=messages)
-                function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
-                    agent,
-                    function_name=function_name,
-                    function_args=function_args,
-                    effective_task_id=effective_task_id,
-                    tool_call_id=getattr(tool_call, "id", "") or "",
-                    execute=_execute,
-                    scope_block=_ts_scope_block,
-                    display_index=i,
-                ))
-                _ce_result = function_result
-            except Exception as tool_error:
-                function_result = json.dumps({"error": f"Context engine tool '{function_name}' failed: {tool_error}"})
-                logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
-            finally:
-                tool_duration = time.time() - tool_start_time
-                cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_ce_result)
-                if spinner:
-                    spinner.stop(cute_msg)
-                elif agent._should_emit_quiet_tool_messages():
-                    agent._vprint(f"  {cute_msg}")
-        elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
-            # Memory provider tools (hindsight_retain, honcho_search, etc.)
-            # These are not in the tool registry — route through MemoryManager.
-            spinner = None
-            if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
-                face = random.choice(KawaiiSpinner.get_waiting_faces())
-                emoji = _get_tool_emoji(function_name)
-                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
-                preview = _build_tool_label(function_name, display_args) or function_name
-                spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
-                spinner.start()
-            _mem_result = None
-            try:
-                def _execute(next_args: dict) -> Any:
-                    return agent._memory_manager.handle_tool_call(function_name, next_args)
-                function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
-                    agent,
-                    function_name=function_name,
-                    function_args=function_args,
-                    effective_task_id=effective_task_id,
-                    tool_call_id=getattr(tool_call, "id", "") or "",
-                    execute=_execute,
-                    scope_block=_ts_scope_block,
-                    display_index=i,
-                ))
-                _mem_result = function_result
-            except Exception as tool_error:
-                function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
-                logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
-            finally:
-                tool_duration = time.time() - tool_start_time
-                cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
-                if spinner:
-                    spinner.stop(cute_msg)
-                elif agent._should_emit_quiet_tool_messages():
-                    agent._vprint(f"  {cute_msg}")
         elif agent.quiet_mode:
             spinner = None
             if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
                 face = random.choice(KawaiiSpinner.get_waiting_faces())
                 emoji = _get_tool_emoji(function_name)
-                display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
+                display_args = function_args
                 preview = _build_tool_label(function_name, display_args) or function_name
                 spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=agent._print_fn)
                 spinner.start()
@@ -2540,10 +2349,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if not _execution_blocked and agent.tool_complete_callback:
             try:
-                display_args = (
-                    _redact_tool_args_for_display(function_name, function_args)
-                    or function_args
-                )
+                display_args = function_args
                 agent.tool_complete_callback(
                     tool_call.id,
                     function_name,

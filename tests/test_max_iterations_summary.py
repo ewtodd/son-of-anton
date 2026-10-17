@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import types
 
-import pytest
-
 from agent.chat_completion_helpers import handle_max_iterations
 
 
@@ -75,18 +73,6 @@ class _SummaryAgent:
 
     def _get_transport(self):
         return _StubTransport()
-
-
-@pytest.fixture(autouse=True)
-def _stub_relay(monkeypatch):
-    from agent import relay_llm
-
-    monkeypatch.setattr(
-        relay_llm,
-        "execute_current",
-        lambda request, callback, **kwargs: callback(request),
-    )
-    monkeypatch.setattr(relay_llm, "complete_logical_call", lambda *a, **k: None)
 
 
 def _user_turn():

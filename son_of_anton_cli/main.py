@@ -184,6 +184,7 @@ _ensure_project_root_on_path_fast()
 if _try_ultrafast_version():
     raise SystemExit(0)
 
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -1731,7 +1732,7 @@ def main():
     build_rag_parser(subparsers, cmd_rag=cmd_rag)
 
     # =========================================================================
-    # Plugin CLI commands — dynamically registered by memory/general plugins.
+    # Plugin CLI commands — dynamically registered by general plugins.
     # Plugins provide a register_cli(subparser) function that builds their
     # own argparse tree.  No hardcoded plugin commands in main.py.
     #
@@ -1743,26 +1744,10 @@ def main():
     # =========================================================================
     if _plugin_cli_discovery_needed():
         try:
-            from plugins.memory import discover_plugin_cli_commands
             from son_of_anton_cli.plugins import discover_plugins, get_plugin_manager
-
-            seen_plugin_commands = set()
-            for cmd_info in discover_plugin_cli_commands():
-                plugin_parser = subparsers.add_parser(
-                    cmd_info["name"],
-                    help=cmd_info["help"],
-                    description=cmd_info.get("description", ""),
-                    formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
-                )
-                cmd_info["setup_fn"](plugin_parser)
-                if cmd_info.get("handler_fn") is not None:
-                    plugin_parser.set_defaults(func=cmd_info["handler_fn"])
-                seen_plugin_commands.add(cmd_info["name"])
 
             discover_plugins()
             for cmd_info in get_plugin_manager()._cli_commands.values():
-                if cmd_info["name"] in seen_plugin_commands:
-                    continue
                 plugin_parser = subparsers.add_parser(
                     cmd_info["name"],
                     help=cmd_info["help"],
@@ -1926,33 +1911,9 @@ def main():
     )
     sessions_export.add_argument(
         "--format",
-        choices=["jsonl", "md", "qmd", "html", "trace"],
+        choices=["jsonl", "md", "qmd", "html"],
         default="jsonl",
-        help=(
-            "Export format (default: jsonl). 'trace' emits Claude Code JSONL "
-            "for the Hugging Face Agent Trace Viewer"
-        ),
-    )
-    sessions_export.add_argument(
-        "--upload",
-        action="store_true",
-        help=(
-            "trace only: upload to your Hugging Face traces dataset instead "
-            "of writing a local file (needs HF_TOKEN)"
-        ),
-    )
-    sessions_export.add_argument(
-        "--public",
-        action="store_true",
-        help="trace --upload only: create/update a public dataset instead of private",
-    )
-    sessions_export.add_argument(
-        "--no-redact",
-        action="store_true",
-        help=(
-            "trace only: skip the forced secret redaction; "
-            "only use after manual review"
-        ),
+        help="Export format (default: jsonl)",
     )
     sessions_export.add_argument(
         "--only",

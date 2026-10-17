@@ -1393,17 +1393,6 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     return None
 
 
-# Tool results can contain literal MEDIA: examples in docs, logs, or other
-# ordinary outputs. Only tools that intentionally create deliverable media
-# artifacts should be eligible for automatic append when the model omits them
-# from the final gateway reply.
-_AUTO_APPEND_MEDIA_TOOL_NAMES = {
-    "text_to_speech",
-    "text_to_speech_tool",
-    "image_generate",
-    "bfl_flux3_get_result",
-}
-
 # ---- helpers: detect interrupted tool tails & auto-continue noise ----------
 
 # Replay-tail sanitization lives in agent/replay_cleanup.py so every resume
@@ -1451,18 +1440,8 @@ def _strip_auto_continue_noise(content: Any) -> Any:
         text = text[end + 1 :].lstrip()
     return text
 
-# Tools in this set return their deliverable artifact as a JSON payload with a
-# local-file path field rather than a literal ``MEDIA:`` tag (e.g. image_generate
-# returns ``{"success": true, "image": "/abs/path.png"}``). The auto-append path
-# extracts the path from these fields so delivery is deterministic and does not
-# depend on the model restating the path in its final reply.
-_JSON_MEDIA_TOOL_PATH_FIELDS = ("host_image", "image", "agent_visible_image")
-
-
-# Extension-anchored MEDIA: matcher for tool results. Mirrors the dispatch-site
-# pattern so a bare ``MEDIA:`` token in prose (no deliverable extension) is never
-# auto-appended. Kept local to the auto-append path; the producer-tool allowlist
-# below is the primary guard, this is the secondary precision guard.
+# Extension-anchored MEDIA: matcher, so a bare ``MEDIA:`` token in prose (no
+# deliverable extension) never counts as a delivered path.
 _TOOL_MEDIA_RE = re.compile(
     r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
     r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
@@ -1472,104 +1451,21 @@ _TOOL_MEDIA_RE = re.compile(
 )
 
 
-def _collect_auto_append_media_tags(
-    messages: List[Dict[str, Any]],
-    history_offset: int = 0,
-    history_media_paths: Optional[set] = None,
-) -> tuple[List[str], bool]:
-    """Collect real media tags from current-turn producer-tool results only.
-
-    Two layered guards keep stale/example MEDIA: strings out of the reply:
-
-    1. Producer-tool allowlist: only tools that intentionally emit deliverable
-       artifacts (TTS) are eligible. Documentation, logs, and search results can
-       contain example strings such as MEDIA:/absolute/path/to/file, which must
-       never be delivered as attachments. (Fixes the original report behind #16721.)
-    2. Current-turn isolation: only messages produced this turn are scanned, so a
-       tool result from an earlier turn (still present in the full message list)
-       cannot leak onto a later text-only reply (#34608).
-
-    Mid-run context compaction can rewrite/shrink the message list below the
-    original history length. When that happens the slice boundary is no longer
-    trustworthy, so fall back to scanning every message and rely on
-    ``history_media_paths`` for dedup, preserving the compaction-safe behaviour
-    of #160. The producer-tool allowlist still applies on the fallback path.
-    """
-    history_media_paths = history_media_paths or set()
-    # Only trust the slice boundary when the message list still contains the
-    # full history prefix. Otherwise scan everything (compaction-safe fallback).
-    if history_offset and len(messages) >= history_offset:
-        new_messages = messages[history_offset:]
-    else:
-        new_messages = messages
-
-    tool_name_by_call_id: Dict[str, str] = {}
-    for msg in new_messages:
-        if msg.get("role") != "assistant":
-            continue
-        for call in msg.get("tool_calls") or []:
-            call_id = call.get("id") or call.get("call_id")
-            fn = call.get("function") or {}
-            name = str(fn.get("name") or call.get("name") or "")
-            if call_id and name:
-                tool_name_by_call_id[str(call_id)] = name
-
-    media_tags: List[str] = []
-    has_voice_directive = False
-    for msg in new_messages:
-        if msg.get("role") not in ("tool", "function"):
-            continue
-        call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        if tool_name_by_call_id.get(call_id) not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
-            continue
-        content = str(msg.get("content") or "")
-        tool_name = tool_name_by_call_id.get(call_id)
-        # JSON-payload tools (image_generate) return a local-file path in a
-        # known field rather than a MEDIA: tag. Extract it so delivery is
-        # deterministic even when the model omits the path from its reply.
-        if tool_name == "image_generate" and "MEDIA:" not in content:
-            try:
-                payload = json.loads(content)
-            except Exception:
-                payload = None
-            if isinstance(payload, dict) and payload.get("success"):
-                for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
-                    path = payload.get(field)
-                    if (isinstance(path, str)
-                            and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
-                            and path not in history_media_paths):
-                        media_tags.append(f"MEDIA:{path}")
-                        break
-            continue
-        if "MEDIA:" not in content:
-            continue
-        for match in _TOOL_MEDIA_RE.finditer(content):
-            path = match.group(1).strip().rstrip('",}')
-            if path and path not in history_media_paths:
-                media_tags.append(f"MEDIA:{path}")
-        if "[[audio_as_voice]]" in content:
-            has_voice_directive = True
-
-    return media_tags, has_voice_directive
-
-
 def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
     """Collect every media path already delivered in prior assistant/tool output.
 
-    Used to dedup auto-appended and model-emitted MEDIA tags so the same file
-    is not re-sent on later turns. Covers three delivery shapes:
-      * ``MEDIA:<path>`` text tags in tool results,
-      * ``MEDIA:<path>`` text tags in assistant messages (model-generated tags),
-      * ``image_generate`` JSON-payload paths (``host_image`` / ``image`` /
-        ``agent_visible_image``), which carry no MEDIA: tag.
-
-    Missing the JSON-payload shape caused #46627; missing the assistant-message
-    shape caused repeated delivery when the model echoed a previous MEDIA tag.
+    Used to dedup delivered paths so the same file is not re-sent on later
+    turns: ``MEDIA:<path>`` tags in tool results and in assistant messages
+    (missing the assistant shape caused repeated delivery when the model
+    echoed a previous MEDIA tag).
     """
     paths: set = set()
-    tool_name_by_call_id: Dict[str, str] = {}
-
-    def _add_text_media_paths(content: str) -> None:
+    for msg in agent_history:
+        if msg.get("role") not in {"assistant", "tool", "function"}:
+            continue
+        content = str(msg.get("content", "") or "")
+        if "MEDIA:" not in content:
+            continue
         for match in _TOOL_MEDIA_RE.finditer(content):
             path = match.group(1).strip().rstrip('",}')
             if path:
@@ -1580,40 +1476,6 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
         # been delivered.
         media_files, _ = BasePlatformAdapter.extract_media(content)
         paths.update(path for path, _is_voice in media_files)
-
-    for msg in agent_history:
-        if msg.get("role") == "assistant":
-            for call in msg.get("tool_calls") or []:
-                cid = call.get("id") or call.get("call_id")
-                fn = call.get("function") or {}
-                name = str(fn.get("name") or call.get("name") or "")
-                if cid and name:
-                    tool_name_by_call_id[str(cid)] = name
-    for msg in agent_history:
-        role = msg.get("role")
-        if role == "assistant":
-            content = str(msg.get("content", "") or "")
-            if "MEDIA:" in content:
-                _add_text_media_paths(content)
-            continue
-        if role not in {"tool", "function"}:
-            continue
-        content = str(msg.get("content", "") or "")
-        if "MEDIA:" in content:
-            _add_text_media_paths(content)
-            continue
-        cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        if tool_name_by_call_id.get(cid) == "image_generate":
-            try:
-                payload = json.loads(content)
-            except Exception:
-                payload = None
-            if isinstance(payload, dict) and payload.get("success"):
-                for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
-                    jp = payload.get(field)
-                    if isinstance(jp, str) and jp:
-                        paths.add(jp)
-                        break
     return paths
 
 # ---------------------------------------------------------------------------
@@ -1917,11 +1779,11 @@ def _bridge_gateway_config_to_env() -> None:
                             os.environ[_env_var] = str(_val)
             # Compaction config is read directly from config.toml by run_agent.py
             # and auxiliary_client.py — no env var bridging needed.
-            # Auxiliary model/direct-endpoint overrides (vision, web_extract,
-            # approval, plus any plugin-registered auxiliary tasks).
+            # Auxiliary model/direct-endpoint overrides (vision, approval,
+            # plus any plugin-registered auxiliary tasks).
             # Each task has provider/model/base_url/api_key; bridge non-default
             # values to env vars named AUXILIARY_<KEY_UPPER>_*. The legacy
-            # hard-coded list (vision/web_extract/approval) is replaced by a
+            # hard-coded list (vision/approval) is replaced by a
             # dynamic loop so plugin-registered tasks benefit from the same
             # config→env bridging without core knowing about each one.
             _auxiliary_cfg = _cfg.get("auxiliary", {})
@@ -1929,7 +1791,7 @@ def _bridge_gateway_config_to_env() -> None:
                 # Built-in tasks that previously had explicit env-var bridging.
                 # Kept here as the canonical bridged set; plugin tasks are added
                 # below via the plugin auxiliary registry.
-                _aux_bridged_keys = {"vision", "web_extract", "approval"}
+                _aux_bridged_keys = {"vision", "approval"}
                 try:
                     from son_of_anton_cli.plugins import get_plugin_auxiliary_tasks
                     for _entry in get_plugin_auxiliary_tasks():
@@ -2559,59 +2421,6 @@ def _build_document_context_note(display_name: str, agent_path: str, mtype: str)
         f"read_file tool, which converts PDF/DOCX/XLSX to text — before answering, "
         f"instead of asking the user to paste the contents.]"
     )
-
-
-def _format_duration(seconds: float) -> str:
-    total = int(round(seconds))
-    if total < 0:
-        total = 0
-    hours, rem = divmod(total, 3600)
-    minutes, secs = divmod(rem, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
-
-
-async def _probe_audio_duration(path: str) -> Optional[str]:
-    """Best-effort duration probe. Returns formatted MM:SS / HH:MM:SS, or None on failure."""
-    ext = os.path.splitext(path)[1].lower()
-
-    if ext == ".wav":
-        try:
-            def _wav_duration() -> float:
-                import wave
-                with wave.open(path, "rb") as wf:
-                    frames = wf.getnframes()
-                    rate = wf.getframerate() or 1
-                    return frames / float(rate)
-            secs = await asyncio.to_thread(_wav_duration)
-            return _format_duration(secs)
-        except Exception:
-            pass
-
-    if ext in (".ogg", ".opus", ".oga"):
-        try:
-            def _ogg_duration() -> float:
-                from mutagen.oggopus import OggOpus
-                return float(OggOpus(path).info.length)
-            secs = await asyncio.to_thread(_ogg_duration)
-            return _format_duration(secs)
-        except Exception:
-            pass
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-        if proc.returncode == 0:
-            return _format_duration(float(stdout.decode().strip()))
-    except Exception:
-        pass
-
-    return None
 
 
 def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
@@ -4237,11 +4046,6 @@ class TurnRunner:
                     _selected, now=time.time()
                 )
         
-        # Collect MEDIA paths already in history so we can exclude them
-        # from the current turn's extraction. This is compaction-safe:
-        # even if the message list shrinks, we know which paths are old.
-        _history_media_paths: set = _collect_history_media_paths(agent_history)
-        
         # Register per-session gateway approval callback so dangerous
         # command approval blocks the agent thread (mirrors CLI input()).
         # The callback bridges sync→async to send the approval request
@@ -4704,44 +4508,6 @@ class TurnRunner:
                 "context_length": _context_length,
             }
 
-        # Scan tool results for MEDIA:<path> tags that need to be delivered
-        # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
-        # in its JSON response, but the model's final text reply usually
-        # doesn't include them.  We collect unique tags from tool results and
-        # append any that aren't already present in the final response, so the
-        # adapter's extract_media() can find and deliver the files exactly once.
-        #
-        # Scope the scan to THIS turn's tool results only. ``agent_history``
-        # was passed into run_conversation as ``conversation_history``, so the
-        # agent's returned ``messages`` list is ``agent_history`` followed by
-        # the messages produced this turn. Slicing at ``len(agent_history)``
-        # isolates the current turn precisely, so a stale MEDIA: path emitted
-        # by a tool several turns earlier (still present in the full message
-        # list) can never leak onto a later text-only reply. (Fixes #34608)
-        #
-        # Path-based deduplication against _history_media_paths (collected
-        # before run_conversation) is retained as a secondary guard. It is
-        # also the sole guard on the fallback branch taken when mid-run
-        # context compaction shrinks the message list below the original
-        # history length, preserving the compaction-safe behaviour of #160.
-        if "MEDIA:" not in final_response:
-            media_tags, has_voice_directive = _collect_auto_append_media_tags(
-                result.get("messages", []),
-                history_offset=len(agent_history),
-                history_media_paths=_history_media_paths,
-            )
-
-            if media_tags:
-                seen = set()
-                unique_tags = []
-                for tag in media_tags:
-                    if tag not in seen:
-                        seen.add(tag)
-                        unique_tags.append(tag)
-                if has_voice_directive:
-                    unique_tags.insert(0, "[[audio_as_voice]]")
-                final_response = final_response + "\n" + "\n".join(unique_tags)
-
         # Auto-titling runs at TURN START (agent/turn_context.py) from the
         # user's message alone, so it no longer waits on final_response — a
         # failed or interrupted turn still gets a titled session. The
@@ -4823,7 +4589,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     _cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
-    _external_drain_active: bool = False
     _restart_requested: bool = False
     _restart_task_started: bool = False
     _restart_detached: bool = False
@@ -4969,16 +4734,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self._exit_code: Optional[int] = None
         self._draining = False
         self._systemd_watchdog = None
-        # External (NAS-driven) drain state — distinct from the shutdown
-        # ``_draining`` flag above. Set by ``_drain_control_watcher`` when the
-        # ``.drain_request.json`` marker is present: the gateway flips
-        # ``gateway_state -> draining`` and refuses NEW turns, but the process
-        # does NOT exit (the whole point — quiesce-without-restart, D4a). It is
-        # fully reversible: removing the marker reverts to ``running`` and
-        # re-accepts turns. ``_draining`` (shutdown) is one-way and ends in
-        # process exit; this one is a steady state NAS polls during its
-        # request -> poll -> proceed loop.
-        self._external_drain_active = False
         self._restart_requested = False
         # Set by shutdown_signal_handler when a SIGTERM/SIGINT arrived
         # WITHOUT a planned-stop / takeover marker — i.e. an unexpected
@@ -5129,11 +4884,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # some platforms).
         import itertools as _itertools
         self._slash_confirm_counter = _itertools.count(1)
-
-        # Persistent Honcho managers keyed by gateway session key.
-        # This preserves write_frequency="session" semantics across short-lived
-        # per-message AIAgent instances.
-
 
         # Ensure tirith security scanner is available (downloads if needed)
         try:
@@ -5964,92 +5714,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             write_runtime_status(active_agents=self._active_work_count())
         except Exception:
             pass
-
-    # ------------------------------------------------------------------
-    # External drain control (NAS-driven quiesce-without-restart, Phase 2).
-    # The dashboard's begin/cancel-drain endpoint writes/removes the
-    # ``.drain_request.json`` marker (gateway/drain_control.py); this watcher
-    # observes the marker and flips the gateway between accepting and refusing
-    # NEW turns, WITHOUT exiting the process. Reversible by design (D4a): NAS
-    # POSTs begin-drain, polls /api/status until active_agents hits 0, proceeds
-    # with its lifecycle action, then (on cancel/abort) the marker is removed
-    # and the gateway re-accepts turns.
-    # ------------------------------------------------------------------
-    def _enter_external_drain(self) -> None:
-        """Begin external drain: stop accepting new turns, flip state.
-
-        Idempotent — re-entering while already draining is a no-op beyond a
-        best-effort status re-write. In-flight turns are NOT interrupted (the
-        whole point is to let them finish); only NEW turns are refused.
-        """
-        if self._external_drain_active:
-            return
-        self._external_drain_active = True
-        logger.info(
-            "External drain ENGAGED (.drain_request.json present) — refusing "
-            "new turns; %d in-flight turn(s) will finish. Process stays up.",
-            self._active_work_count(),
-        )
-        # Flip the persisted lifecycle state so /api/status.gateway_busy /
-        # gateway_drainable track the drain. Preserve active_agents (the
-        # read-merge keeps the live count); only the state changes.
-        self._update_runtime_status("draining")
-
-    def _exit_external_drain(self) -> None:
-        """Cancel external drain: revert state, re-accept new turns.
-
-        Idempotent. Only reverts to ``running`` when we are actually mid-drain
-        AND not also shutting down (a real shutdown ``_draining`` must win —
-        never resurrect a stopping gateway to ``running``).
-        """
-        if not self._external_drain_active:
-            return
-        self._external_drain_active = False
-        if self._draining or not self._running:
-            # A shutdown drain is in progress / the loop has stopped — do not
-            # clobber the terminal state back to running.
-            logger.info(
-                "External drain marker cleared during shutdown — not reverting "
-                "to running (shutdown takes precedence)."
-            )
-            return
-        logger.info(
-            "External drain RELEASED (.drain_request.json removed) — "
-            "re-accepting new turns; gateway_state -> running."
-        )
-        self._update_runtime_status("running")
-
-    async def _drain_control_watcher(self, interval: float = 1.0) -> None:
-        """Background task: reconcile gateway accept-state with the drain marker.
-
-        Polls ``.drain_request.json`` (presence-based contract,
-        gateway/drain_control.py). Marker present -> ``_enter_external_drain``;
-        marker absent -> ``_exit_external_drain``. The 1s cadence bounds the
-        observe-the-marker latency the live-validation gate checks (point a).
-        Reconciles once at startup. A marker stamped with a PRIOR
-        instantiation epoch (one that survived a machine restart on the durable
-        SON_OF_ANTON_HOME volume — NS-570) is treated as absent by ``drain_requested``
-        and is NOT honoured; only a marker from the current instantiation flips
-        the gateway into drain. Best-effort: any tick error is logged and the
-        loop continues (a transient stat() failure must not wedge the gateway).
-        """
-        from gateway.drain_control import drain_requested
-
-        while self._running:
-            try:
-                if drain_requested():
-                    self._enter_external_drain()
-                    # API and cron work live outside messaging's
-                    # _running_agents map. Refresh the aggregate while an
-                    # external caller polls this reversible drain state.
-                    self._persist_active_agents()
-                else:
-                    self._exit_external_drain()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.debug("Drain-control watcher tick error: %s", exc, exc_info=True)
-            await asyncio.sleep(interval)
 
     def _update_platform_runtime_status(
         self,
@@ -7078,32 +6742,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
             return
 
-        # Suppress ONLY the home-channel broadcast when the drain that is ending
-        # in this shutdown asked us to be quiet (e.g. a NAS auto-update image
-        # migration — drain-gated, then the machine is recreated). On the
-        # always-on Son of Anton Cloud fleet that broadcast would otherwise fire on
-        # every routine auto-update, spamming home channels with operator-
-        # flavoured "gateway shutting down" pings the user doesn't care about.
-        # The per-active-session interrupt pings above are deliberately NOT
-        # gated: on a drained shutdown they're empty by construction, and in the
-        # force-interrupt (deadline-exceeded) case they carry the genuinely
-        # useful "your task was cut off, message me to resume" hint. The flag is
-        # only honoured for a CURRENT-epoch marker (drain_notification_suppressed
-        # reuses the NS-570 staleness check), so an orphaned marker can never
-        # silence a fresh gateway's legitimate broadcast.
-        try:
-            from gateway.drain_control import drain_notification_suppressed
-            if drain_notification_suppressed():
-                logger.info(
-                    "Home-channel shutdown broadcast suppressed by drain marker "
-                    "(suppress_notification=true)"
-                )
-                return
-        except Exception as e:
-            # Never let the suppression check block the shutdown broadcast —
-            # fail toward the louder, more-visible behaviour.
-            logger.debug("drain_notification_suppressed check failed: %s", e)
-
         # Snapshot adapters up front: adapter.send() can hit a fatal error
         # path that pops the adapter from self.adapters (see _handle_fatal
         # elsewhere), which would otherwise trigger
@@ -7309,9 +6947,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         task.add_done_callback(tasks.discard)
 
     # Bounded budget for one finalize_session() dispatch (plugin
-    # on_session_finalize hooks + core Relay conversation close). Generous
-    # enough for a normal trace-export flush, small enough that a wedged
-    # plugin can never eat the systemd stop window.
+    # on_session_finalize hooks), small enough that a wedged plugin can
+    # never eat the systemd stop window.
     _FINALIZE_TIMEOUT_S = 10.0
 
     async def _finalize_session_off_loop(
@@ -7411,27 +7048,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return
         try:
             if hasattr(agent, "shutdown_memory_provider"):
-                # Drain queued memory writes BEFORE tearing the provider down.
-                # The memory manager persists per-turn sync and end-of-session
-                # extraction on a single serialized background worker.
-                # shutdown_memory_provider() -> shutdown_all() only gives that
-                # worker a ~5s bounded drain and abandons (cancels) anything
-                # still queued past it, so a /reset — or any gateway session
-                # rotation that reaches this cleanup path — could silently drop
-                # writes the session had already handed off. The next session
-                # then loads stale memory (#73297). Give pending work a bounded
-                # head start through the manager's own barrier first, mirroring
-                # the CLI exit path (cli.py). Best-effort: a flush failure must
-                # never block teardown.
-                _mm = getattr(agent, "_memory_manager", None)
-                if _mm is not None and hasattr(_mm, "flush_pending"):
-                    try:
-                        _mm.flush_pending(timeout=10)
-                    except Exception:
-                        pass
-                # Pass the agent's own conversation transcript so memory
-                # providers' ``on_session_end`` hooks see the real messages
-                # instead of the empty default (#15165). ``_session_messages``
+                # Pass the agent's own conversation transcript to the
+                # ``on_session_end`` hooks (#15165). ``_session_messages``
                 # is set on ``AIAgent`` (run_agent.py:1518) and refreshed at
                 # the end of every ``run_conversation`` turn via
                 # ``_persist_session``; on an agent built through
@@ -9136,14 +8754,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         from gateway.relay_workers import relay_event_loop as _relay_event_loop
 
         self._spawn_supervised(lambda: _relay_event_loop(self), "relay_events")
-
-        # Start background drain-control watcher — reconciles the gateway's
-        # new-turn accept-state with the external ``.drain_request.json`` marker
-        # the dashboard begin/cancel-drain endpoint writes (Phase 2). A marker
-        # left behind by a prior instantiation (durable-volume restart, NS-570)
-        # is ignored via its instantiation epoch; only a current-epoch marker
-        # engages drain on the first tick.
-        self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
 
         logger.info("Press Ctrl+C to stop")
         
@@ -12292,27 +11902,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
-
-        # ── External-drain new-turn gate (Phase 2) ────────────────────
-        # When NAS has engaged an external drain (.drain_request.json present,
-        # observed by _drain_control_watcher), refuse to START a new turn so
-        # the in-flight set can only fall to zero — eliminating the TOCTOU race
-        # (D4a: stop accepting new turns FIRST, then NAS polls until
-        # active_agents==0). In-flight turns are untouched; this only blocks the
-        # claim of a NEW session slot. Internal/system events (restart-recovery
-        # replays, background-process completions) bypass the gate — they are
-        # not user-initiated new work and must still flow during a drain.
-        # Reversible: once the marker is removed the gate opens again.
-        if self._external_drain_active and not is_internal:
-            logger.info(
-                "Refusing new turn for session %s — external drain active.",
-                _quick_key,
-            )
-            return (
-                "This agent is draining for a maintenance action and isn't "
-                "accepting new turns right now. It'll be back in a moment — "
-                "please resend shortly."
-            )
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -15559,8 +15148,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # (#73771). This rescan is already EXPLICIT-ONLY (see docstring):
             # a MEDIA: directive in the final streamed reply is the model
             # deliberately attaching a file — including a user-requested
-            # resend. Stale auto-appended tags are deduped upstream in
-            # _collect_auto_append_media_tags with history_media_paths.
+            # resend.
             # Mirrors the same filter removal on the non-streaming path in
             # gateway/platforms/base.py.
             # Strip image URLs from the cleaned text for parity with the
@@ -17098,7 +16686,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             The enriched message string with vision descriptions prepended.
         """
         from tools.vision_tools import vision_analyze_tool
-        from agent.memory_manager import sanitize_context
 
         analysis_prompt = (
             "Concisely describe this image in 2-4 sentences "
@@ -17119,7 +16706,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 result = json.loads(result_json)
                 if result.get("success"):
                     description = result.get("analysis", "")
-                    description = sanitize_context(description)
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
@@ -17152,34 +16738,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         user_text: str,
         audio_paths: List[str],
     ) -> str:
-        """Prepend a note for the user's voice/audio messages to the text.
-
-        There is no speech-to-text. With ``stt_enabled`` off, each clip is
-        named by path and duration; otherwise the message carries a single
-        "could not be transcribed" marker.
-        """
-        seen = set()
-        audio_paths = [p for p in audio_paths if p not in seen and not seen.add(p)]
-        if not getattr(self.config, "stt_enabled", True):
-            notes = []
-            for path in audio_paths:
-                abs_path = os.path.abspath(path)
-                duration_str = await _probe_audio_duration(abs_path)
-                if duration_str:
-                    notes.append(
-                        f"[The user sent a voice message: {abs_path} (duration: {duration_str})]"
-                    )
-                else:
-                    notes.append(f"[The user sent a voice message: {abs_path}]")
-            if not notes:
-                return user_text
-            prefix = "\n\n".join(notes)
-        else:
-            prefix = "[voice message could not be transcribed]"
-        _placeholder = "(The user sent a message with no text content)"
-        if user_text and user_text.strip() == _placeholder:
-            return prefix
-        if user_text:
+        """Prepend the marker for the user's voice messages (there is no speech-to-text)."""
+        prefix = "[voice message could not be transcribed]"
+        if user_text and user_text.strip() != "(The user sent a message with no text content)":
             return f"{prefix}\n\n{user_text}"
         return prefix
 
@@ -18332,51 +17893,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         ("compaction", "proactive_prune_min_reclaim_tokens"),
         ("compaction", "min_tail_user_messages"),
         ("agent", "disabled_toolsets"),
-        ("memory", "provider"),
     )
-
-    _HONCHO_CACHE_BUSTING_KEYS = (
-        "honcho.peer_name",
-        "honcho.ai_peer",
-        "honcho.pin_peer_name",
-        "honcho.runtime_peer_prefix",
-        "honcho.user_peer_aliases",
-    )
-    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
-
-    @classmethod
-    def _empty_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        return {key: None for key in cls._HONCHO_CACHE_BUSTING_KEYS}
-
-    @classmethod
-    def _extract_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        """Extract Honcho identity keys, memoized by honcho.json mtime."""
-        try:
-            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-
-            path = resolve_config_path()
-            try:
-                mtime_ns = path.stat().st_mtime_ns
-            except OSError:
-                mtime_ns = None
-            memo_key = (str(path), mtime_ns)
-            cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
-            if cached is not None:
-                return dict(cached)
-
-            hcfg = HonchoClientConfig.from_global_config(config_path=path)
-            aliases = hcfg.user_peer_aliases or {}
-            values = {
-                "honcho.peer_name": hcfg.peer_name,
-                "honcho.ai_peer": hcfg.ai_peer,
-                "honcho.pin_peer_name": bool(hcfg.pin_peer_name),
-                "honcho.runtime_peer_prefix": hcfg.runtime_peer_prefix or "",
-                "honcho.user_peer_aliases": sorted(aliases.items()) if isinstance(aliases, dict) else [],
-            }
-            cls._HONCHO_CACHE_BUSTING_MEMO = {memo_key: values}
-            return dict(values)
-        except Exception:
-            return cls._empty_honcho_cache_busting_config()
 
     @classmethod
     def _custom_provider_context_windows(cls, config: dict) -> list:
@@ -18469,14 +17986,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception:
             out["tools.registry_fingerprint"] = None
 
-        # Honcho identity-mapping keys live in honcho.json, not user_config.
-        # Only read that file when Honcho is the active memory provider.
-        provider = cfg_get(cfg, "memory", "provider")
-        if isinstance(provider, str) and provider.lower() == "honcho":
-            out.update(cls._extract_honcho_cache_busting_config())
-        else:
-            out.update(cls._empty_honcho_cache_busting_config())
-
         # Per-model custom-provider windows are nested, so they cannot ride in
         # _CACHE_BUSTING_CONFIG_KEYS; flatten them into the same flat dict.
         out["custom_providers.context_windows"] = (
@@ -18512,17 +18021,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         ``user_id`` and ``user_id_alt`` are the runtime user identities
         carried by the current message's gateway source.  They participate
-        in the cache key because the Honcho memory provider freezes them
-        into ``HonchoSessionManager`` at first-message init (see
-        ``plugins/memory/honcho/__init__.py::_do_session_init``).  Without
-        them in the signature, a shared-thread session_key (one in which
-        ``build_session_key`` intentionally omits the participant ID,
-        e.g. ``thread_sessions_per_user=False``) would reuse the cached
-        AIAgent across distinct users, causing the second user's messages
-        to be attributed to the first user's resolved Honcho peer.  This
-        broke #27371's per-user-peer contract in multi-user gateways.
-        Per-user agent rebuilds in shared threads trade prompt-cache
-        warmth for correct memory attribution.
+        in the cache key because the agent freezes them at construction
+        (RAG recall's chat identity reads them).  Without them in the
+        signature, a shared-thread session_key (one in which
+        ``build_session_key`` intentionally omits the participant ID) would
+        reuse the cached AIAgent across distinct users (#27371).
         """
         import hashlib, json as _j
 
@@ -19423,70 +18926,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
 
-    def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:
-        """Fire on_session_end extraction before soft-evicting a live agent.
-
-        Soft eviction (``_release_evicted_agent_soft``) deliberately keeps the
-        session resumable and does NOT fire ``on_session_end`` — that hook is
-        reserved for the true session boundary, tear-down done by
-        ``_session_expiry_watcher`` when the session finally expires.
-
-        But the watcher tears down whatever agent it finds in ``_agent_cache``
-        at expiry time.  If cache pressure (the LRU cap) soft-evicts a
-        finalizable session's agent BEFORE it expires, the watcher later finds
-        no cached agent and ``on_session_end`` is silently skipped — memory
-        providers never see the transcript (#11205, LRU-cap variant).
-
-        We hold the live, fully-scoped agent right now, so commit its
-        end-of-session memory extraction here using the agent's own memory
-        manager (correct per-user/chat scoping, no reconstruction).  This uses
-        ``commit_memory_session`` — extraction WITHOUT provider teardown — so
-        the eviction stays soft and a resumed turn keeps working.
-
-        Only fires for sessions the expiry watcher will eventually finalize
-        (finite reset policy).  For ``mode == "none"`` sessions the watcher
-        never runs, so there is no missed-boundary to compensate for and we
-        skip the commit (the agent is simply released).  Best-effort: any
-        failure is swallowed so eviction still proceeds.
-        """
-        if agent is None or not hasattr(agent, "commit_memory_session"):
-            return
-        if getattr(agent, "_memory_manager", None) is None:
-            return  # no external memory provider — nothing to commit
-        try:
-            _store = getattr(self, "session_store", None)
-            if _store is None:
-                return
-            _store._ensure_loaded()
-            entry = _store._entries.get(key)
-            if entry is None:
-                return
-            # Only compensate when the watcher would otherwise expect to find
-            # this agent at expiry (finite policy, not yet expired). Expired
-            # sessions are torn down by the watcher directly; mode="none"
-            # sessions are never finalized.
-            if not _store.is_session_finalizable(entry):
-                return
-            if _store._is_session_expired(entry):
-                return
-            messages = getattr(agent, "_session_messages", None)
-            agent.commit_memory_session(messages if isinstance(messages, list) else None)
-            logger.debug(
-                "Committed on_session_end extraction before soft-evicting "
-                "finalizable session=%s (cache pressure, pre-expiry)", key,
-            )
-        except Exception as _e:
-            logger.debug("Pre-evict memory commit failed for %s: %s", key, _e)
-
     def _commit_then_release_soft(self, agent: Any, key: str) -> None:
-        """Commit end-of-session memory (if warranted), then soft-release.
-
-        Runs on the daemon eviction thread so the memory-provider call and the
-        client teardown never block the caller's held cache lock. Order matters:
-        commit uses the live agent's memory manager before ``release_clients``
-        drops the message buffer.
-        """
-        self._commit_memory_before_soft_evict(agent, key)
+        """Soft-release on the daemon eviction thread so the client teardown
+        never blocks the caller's held cache lock."""
         self._release_evicted_agent_soft(agent)
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:
@@ -21315,7 +20757,7 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     chore never delays a due job and a stuck tick never stalls the chores.
 
     Refreshes the channel directory every 5 minutes and prunes the
-    image/audio/video/document/screenshot caches + expired ``son-of-anton debug
+    image/audio/video/document caches + expired ``son-of-anton debug
     share`` pastes once per hour, and keeps the ``memory.rag`` retrieval
     index fresh on its configured interval.
     """
@@ -21323,7 +20765,6 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
         cleanup_audio_cache,
         cleanup_document_cache,
         cleanup_image_cache,
-        cleanup_screenshot_cache,
         cleanup_video_cache,
     )
     from tools.tool_result_storage import cleanup_spillover_cache
@@ -21343,7 +20784,6 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
         ("Document", cleanup_document_cache),
         ("Audio", cleanup_audio_cache),
         ("Video", cleanup_video_cache),
-        ("Screenshot", cleanup_screenshot_cache),
         ("Spillover", cleanup_spillover_cache),
     )
 
@@ -21981,8 +21421,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Start the in-process cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE
-    # support), and the external-drain gate so a draining gateway takes on
-    # no new cron work.
+    # support), and the drain gate so a draining gateway takes on no new
+    # cron work.
     from cron.scheduler_provider import InProcessCronScheduler
 
     cron_stop = threading.Event()
@@ -21992,9 +21432,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         kwargs={
             "adapters": runner.adapters,
             "loop": asyncio.get_running_loop(),
-            "can_dispatch": lambda: not (
-                runner._draining or runner._external_drain_active
-            ),
+            "can_dispatch": lambda: not runner._draining,
         },
         daemon=True,
         name="cron-scheduler",

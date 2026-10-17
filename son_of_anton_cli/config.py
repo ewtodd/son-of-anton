@@ -265,19 +265,6 @@ _EXTRA_ENV_KEYS = frozenset({
     # support floor retired its only consumer (the v3→4 migration): it is no
     # longer listed here and doctor flags it as ignored.
     "SON_OF_ANTON_TOOL_PROGRESS_MODE",
-    # Langfuse observability plugin — optional tuning keys + standard SDK vars.
-    # Activation is via plugins.enabled (opt-in through `son-of-anton plugins enable
-    # observability/langfuse` or `son-of-anton tools → Langfuse`); credentials gate
-    # the plugin at runtime.
-    "SON_OF_ANTON_LANGFUSE_ENV",
-    "SON_OF_ANTON_LANGFUSE_RELEASE",
-    "SON_OF_ANTON_LANGFUSE_SAMPLE_RATE",
-    "SON_OF_ANTON_LANGFUSE_MAX_CHARS",
-    "SON_OF_ANTON_LANGFUSE_CAPTURE",
-    "SON_OF_ANTON_LANGFUSE_DEBUG",
-    "LANGFUSE_PUBLIC_KEY",
-    "LANGFUSE_SECRET_KEY",
-    "LANGFUSE_BASE_URL",
     # ACP (Agent Client Protocol) keys — profile-isolable so different
     # profiles can use different ACP backends without cross-leak.
     "SON_OF_ANTON_ACP_AUTH_METHOD",
@@ -637,15 +624,11 @@ def _is_env_config_key(key: str) -> bool:
         return False
     key_upper = key.upper()
     api_keys = [
-        'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
-        'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
-        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
-        'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
-        'FAL_KEY', 'DISCORD_BOT_TOKEN',
+        'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+        'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
-        'GITHUB_TOKEN', 'HONCHO_API_KEY',
+        'GITHUB_TOKEN',
     ]
     return (
         key_upper in api_keys
@@ -3249,16 +3232,9 @@ def show_config():
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
     
-    # Only credentials a shipped tool actually reads. The voice, browser, and
-    # image-generation tools left the fork with their toolsets; their keys kept
-    # being printed here, inviting people to configure services nothing would
-    # ever call. The search and scrape keys below are read by tools/web_tools.py.
+    # Only credentials a shipped tool actually reads.
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
-        ("EXA_API_KEY", "Exa"),
-        ("PARALLEL_API_KEY", "Parallel"),
-        ("FIRECRAWL_API_KEY", "Firecrawl"),
-        ("TAVILY_API_KEY", "Tavily"),
     ]
     
     for env_key, name in keys:
@@ -3350,7 +3326,6 @@ def show_config():
     auxiliary = config.get('auxiliary', {})
     aux_tasks = {
         "Vision":      auxiliary.get('vision', {}),
-        "Web extract": auxiliary.get('web_extract', {}),
     }
     has_overrides = any(
         t.get('provider', 'auto') != 'auto' or t.get('model', '')

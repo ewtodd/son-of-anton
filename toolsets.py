@@ -101,12 +101,6 @@ TOOLSETS = {
         "includes": []
     },
 
-    "context_engine": {
-        "description": "Runtime tools exposed by the active context engine",
-        "tools": [],
-        "includes": []
-    },
-
     "session_search": {
         "description": "Search and recall past conversations with summarization",
         "tools": ["session_search"],

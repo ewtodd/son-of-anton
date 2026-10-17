@@ -589,11 +589,6 @@ class GatewayConfig:
     # gateway/single_user.py).
     single_user: bool = False
 
-    # Inbound voice messages. There is no speech-to-text: when False, each
-    # clip is named by path and duration in the prompt; when True (default),
-    # the message carries a "could not be transcribed" marker.
-    stt_enabled: bool = True
-
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
@@ -735,7 +730,6 @@ class GatewayConfig:
             "active_hours": list(self.active_hours) if self.active_hours else None,
             "inactive_message": self.inactive_message,
             "single_user": self.single_user,
-            "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
@@ -783,10 +777,6 @@ class GatewayConfig:
         quick_commands = data.get("quick_commands", {})
         if not isinstance(quick_commands, dict):
             quick_commands = {}
-
-        stt_enabled = data.get("stt_enabled")
-        if stt_enabled is None:
-            stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
@@ -843,7 +833,6 @@ class GatewayConfig:
             active_hours=parse_hour_window(data.get("active_hours"), None),
             inactive_message=str(data.get("inactive_message") or "").strip(),
             single_user=_coerce_bool(data.get("single_user"), False),
-            stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             systemd_watchdog_seconds=systemd_watchdog_seconds,
@@ -944,12 +933,6 @@ def load_gateway_config() -> GatewayConfig:
                         "(expected mapping, got %s)",
                         type(qc).__name__,
                     )
-
-            stt_cfg = toml_cfg.get("stt")
-            if "stt" not in toml_cfg and isinstance(gateway_section, dict):
-                stt_cfg = gateway_section.get("stt")
-            if isinstance(stt_cfg, dict):
-                gw_data["stt"] = stt_cfg
 
             gateway_cfg = toml_cfg.get("gateway")
 

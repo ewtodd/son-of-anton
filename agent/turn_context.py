@@ -5,7 +5,7 @@ tool-calling loop ever started: stdio guarding, runtime-main wiring, retry-count
 resets, user-message sanitization, todo/nudge-counter hydration, system-prompt
 restore-or-build, session-row creation (before compaction, whose DB writes
 reference the row), turn-start context compaction, the ``pre_llm_call`` plugin
-hook, external-memory prefetch, and crash-resilience persistence (last, so the
+hook, retrieval-augmented recall, and crash-resilience persistence (last, so the
 user row is written once with its final ``api_content`` sidecar).
 
 All of that is *prologue* — it runs once per turn, has no back-references into the
@@ -25,6 +25,7 @@ move-and-name refactor with no semantic change.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -39,23 +40,52 @@ from agent.conversation_compaction import (
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
-from agent.memory_manager import build_memory_context_block
-from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
 
 
+# Prompts that carry no semantic signal — trivial acknowledgements, greetings,
+# slash commands, empty input. The alternation is anchored and may only be
+# followed by whitespace or punctuation, so words that merely START with a
+# trivial word ("k8s", "yolo", "note") do NOT match, while trailing-punctuation
+# variants ("hi!", "hey.", "thanks :)", "done???") do.
+TRIVIAL_PROMPT_RE = re.compile(
+    r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
+    r'hi|hey|hello|yo|sup|'
+    r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)'
+    r'[\s!?.:;,"' + "'" + r'~\u2018\u2019\u201c\u201d\u2014\u2013\u2026()\[\]{}<>*&^%$#@!+=`\u00a0]*$',
+    re.IGNORECASE,
+)
+
+
+def is_trivial_prompt(text: Optional[str]) -> bool:
+    """Return True if a user prompt is too trivial to warrant RAG recall.
+
+    Empty/whitespace-only input, slash commands, and bare greetings or
+    acknowledgements (with optional trailing punctuation) all count as
+    trivial: retrieval on them costs an embedding round-trip and injects
+    context that derails one-word replies.
+    """
+    if not text:
+        return True
+    stripped = text.strip()
+    if not stripped:
+        return True
+    if stripped.startswith("/"):
+        return True
+    return bool(TRIVIAL_PROMPT_RE.match(stripped))
+
+
 def compose_user_api_content(
     content: Any,
-    ext_prefetch_cache: str,
     plugin_user_context: str,
     rag_context: str = "",
 ) -> Optional[str]:
     """Compose the API-bound content of the current turn's user message.
 
-    Sources: memory-manager prefetch, retrieval-augmented recall, and
+    Sources: retrieval-augmented recall and
     ``pre_llm_call`` plugin context with target="user_message" (the default).
     All are appended to the *API copy* of the user message only — the stored
     content stays clean.
@@ -73,10 +103,6 @@ def compose_user_api_content(
     if not isinstance(content, str):
         return None
     injections = []
-    if ext_prefetch_cache:
-        fenced = build_memory_context_block(ext_prefetch_cache)
-        if fenced:
-            injections.append(fenced)
     if rag_context:
         injections.append(rag_context)
     if plugin_user_context:
@@ -582,8 +608,6 @@ class TurnContext:
     current_turn_user_idx: int
     # Context contributed by ``pre_llm_call`` plugins (appended to user message).
     plugin_user_context: str = ""
-    # External-memory prefetch result, reused across loop iterations.
-    ext_prefetch_cache: str = ""
 
 
 def build_turn_context(
@@ -808,14 +832,6 @@ def build_turn_context(
     if conversation_history and not agent._todo_store.has_items():
         agent._hydrate_todo_store(conversation_history)
 
-    # Hydrate the session's user-turn count from persisted history (issue #22357).
-    if conversation_history and agent._user_turn_count == 0:
-        prior_user_turns = sum(
-            1 for m in conversation_history if m.get("role") == "user"
-        )
-        if prior_user_turns > 0:
-            agent._user_turn_count = prior_user_turns
-
     # Add the current user message after the prompt/session setup has made
     # close persistence safe. The handoff above preserves any marker already
     # stamped by an earlier close flush.
@@ -844,17 +860,11 @@ def build_turn_context(
         current_turn_user_idx = len(messages) - 1
         agent._persist_user_message_idx = current_turn_user_idx
 
-        # Track user turns for the memory provider's turn hooks.
-        agent._user_turn_count += 1
         # Copilot x-initiator: the first API call of this user turn is
         # user-initiated; tool-loop follow-ups revert to "agent" (#3040).
         agent._is_user_initiated_turn = True
 
-    # Reset the streaming context scrubber at the top of each turn.
-    scrubber = getattr(agent, "_stream_context_scrubber", None)
-    if scrubber is not None:
-        scrubber.reset()
-    # Reset the think scrubber for the same reason.
+    # Reset the streaming think scrubber at the top of each turn.
     think_scrubber = getattr(agent, "_stream_think_scrubber", None)
     if think_scrubber is not None:
         think_scrubber.reset()
@@ -1301,44 +1311,11 @@ def build_turn_context(
         agent._interrupt_message = None
         agent._interrupt_thread_signal_pending = False
 
-    # Notify memory providers of the new turn (BEFORE prefetch_all). A
-    # continued turn is not a new one, and adds nothing to its message.
-    if agent._memory_manager and not continue_turn:
-        try:
-            _turn_msg = original_user_message if isinstance(original_user_message, str) else ""
-            agent._memory_manager.on_turn_start(agent._user_turn_count, _turn_msg)
-        except Exception:
-            pass
-
-    # External memory provider: prefetch once before the tool loop.
-    #
-    # Skip prefetch on trivial prompts (greetings, acknowledgements) to
-    # prevent memory-context injection on turns that carry no semantic signal.
-    ext_prefetch_cache = ""
-    if agent._memory_manager and not continue_turn:
-        try:
-            _query = original_user_message if isinstance(original_user_message, str) else ""
-            if not is_trivial_prompt(_query):
-                ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
-        except Exception:
-            pass
-        # Deterministic, model-independent recall indicator: when memory was
-        # actually injected this turn, tell the user — don't rely on the model
-        # to surface it. Rendered by Son of Anton (via _emit_status), so it always
-        # shows and can't be silently dropped by the model.
-        if ext_prefetch_cache:
-            try:
-                _recall_indicator = agent._memory_manager.describe_recall()
-                if _recall_indicator:
-                    agent._emit_status(_recall_indicator)
-            except Exception:
-                pass
-
     # Retrieval-augmented recall: search the local index for the active
     # session's scope and inject the closest chunks into this turn's API copy.
-    # Same cache contract as the memory prefetch — the stored user content is
-    # untouched; the composed bytes are stamped as api_content so a replay
-    # sends exactly what this turn sent.
+    # The stored user content is untouched; the composed bytes are stamped as
+    # api_content so a replay sends exactly what this turn sent. Trivial
+    # prompts (greetings, acknowledgements) carry no signal and skip it.
     agent._turn_rag_context = ""
     try:
         from agent.rag import retrieve_for_turn as _rag_retrieve
@@ -1369,7 +1346,6 @@ def build_turn_context(
         _turn_user_msg = messages[current_turn_user_idx]
         _api_content = compose_user_api_content(
             _turn_user_msg.get("content", ""),
-            ext_prefetch_cache,
             plugin_user_context,
             getattr(agent, "_turn_rag_context", ""),
         )
@@ -1453,5 +1429,4 @@ def build_turn_context(
         turn_id=turn_id,
         current_turn_user_idx=current_turn_user_idx,
         plugin_user_context=plugin_user_context,
-        ext_prefetch_cache=ext_prefetch_cache,
     )

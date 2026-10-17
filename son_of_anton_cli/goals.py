@@ -2079,18 +2079,6 @@ class GoalManager:
         return self._state.contract.render_block()
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Kanban worker goal loop
-# ──────────────────────────────────────────────────────────────────────
-
-# Continuation prompt fed back to a kanban goal-mode worker that has not
-# yet completed/blocked its task. The card's own acceptance criteria are
-# the goal — the worker already has the full task body in its first turn,
-# so we keep this short and point it back at the lifecycle contract.
-# Fed when the judge believes the work is done but the worker never called
-# kanban_complete / kanban_block. One explicit nudge to terminate the task
-# the right way before the loop gives up.
-
 __all__ = [
     "GoalState",
     "GoalContract",

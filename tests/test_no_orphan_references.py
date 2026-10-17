@@ -540,6 +540,18 @@ _REMOVED_SYMBOLS = (
     "subagent_worktree",
     "subagent_lifecycle",
     "reaction_callback",
+    # NeMo Relay scopes, trajectories, drain control, the dashboard OAuth
+    # bridge, TTS/image media auto-append and STT (removed 2026-10-16).
+    "SESSION_COORDINATOR",
+    "complete_logical_call",
+    "save_trajectories",
+    "_save_trajectory",
+    "drive_preview_callback",
+    "_external_drain_active",
+    "get_dashboard_oauth_flow",
+    "_collect_auto_append_media_tags",
+    "computer_use_guidance",
+    "stt_enabled",
 )
 
 

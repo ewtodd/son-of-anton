@@ -6,8 +6,8 @@ Two processes disagree about what ``TERMINAL_CWD`` means and share one env var:
 - the **gateway** owns the configured ``terminal.cwd`` from config.toml.
 
 ``gateway/run.py`` bridges config.toml -> env at import time. The CLI agent
-lazy-imports that module on its first turn (``agent/relay_runtime
-._segments_config``), so the bridge used to fire inside the CLI and silently
+used to lazy-import that module on its first turn, so the bridge fired inside
+the CLI and silently
 replace the launch dir with the gateway's configured cwd ~2s after startup —
 the banner showed the spawn dir while ``pwd`` and the system prompt showed
 ``terminal.cwd``.
@@ -80,7 +80,7 @@ def test_cli_lazy_import_preserves_launch_dir(tmp_path) -> None:
         import os
         os.environ["TERMINAL_CWD"] = {launch_dir!r}
         os.environ["TERMINAL_ENV"] = "local"
-        from gateway.run import _load_gateway_config  # the relay_runtime path
+        from gateway.run import _load_gateway_config
         print(os.environ.get("TERMINAL_CWD"))
         """,
     )

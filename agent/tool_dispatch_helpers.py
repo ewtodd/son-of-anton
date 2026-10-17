@@ -12,8 +12,6 @@ Pure module-level utilities extracted from ``run_agent.py``:
   shape returned by tools like ``computer_use``.
 * ``_extract_file_mutation_targets`` / ``_extract_error_preview`` —
   per-turn file-mutation verifier inputs.
-* ``_trajectory_normalize_msg`` — strip image blobs from a message for
-  trajectory saving.
 
 All helpers are stateless.  ``run_agent`` re-exports each name so existing
 ``from run_agent import ...`` imports in tests and other modules keep
@@ -432,29 +430,6 @@ def _extract_error_preview(result: Any, max_len: int = 180) -> str:
     return text
 
 
-def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip image blobs from a message for trajectory saving.
-
-    Returns a shallow copy with multimodal tool results replaced by their
-    text_summary, and image parts in content lists replaced by
-    `[screenshot]` placeholders. Keeps the message schema otherwise intact.
-    """
-    if not isinstance(msg, dict):
-        return msg
-    content = msg.get("content")
-    if _is_multimodal_tool_result(content):
-        return {**msg, "content": _multimodal_text_summary(content)}
-    if isinstance(content, list):
-        cleaned = []
-        for p in content:
-            if isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
-                cleaned.append({"type": "text", "text": "[screenshot]"})
-            else:
-                cleaned.append(p)
-        return {**msg, "content": cleaned}
-    return msg
-
-
 def make_tool_result_message(
     name: str,
     content: Any,
@@ -716,7 +691,6 @@ __all__ = [
     "_append_subdir_hint_to_multimodal",
     "_extract_file_mutation_targets",
     "_extract_error_preview",
-    "_trajectory_normalize_msg",
     "_detect_upstream_elision",
     "_maybe_append_elision_notice",
     "make_tool_result_message",

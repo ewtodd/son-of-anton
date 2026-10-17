@@ -458,7 +458,6 @@ class CLICommandsMixin:
             _cprint("  Already on that session.")
             return
 
-        old_session_id = self.session_id
         # Flush un-persisted messages before ending the old session (#47202).
         if self.agent:
             try:
@@ -521,22 +520,6 @@ class CLICommandsMixin:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
-
-            # Notify memory providers that session_id rotated to a resumed
-            # session. reset=False — the provider's accumulated state is
-            # still valid; it just needs to target the new session_id for
-            # subsequent writes. See #6672.
-            try:
-                _mm = getattr(self.agent, "_memory_manager", None)
-                if _mm is not None:
-                    _mm.on_session_switch(
-                        target_id,
-                        parent_session_id=old_session_id or "",
-                        reset=False,
-                        reason="resume",
-                    )
-            except Exception:
-                pass
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
         from agent.context_compactor import is_user_originated_turn

@@ -163,9 +163,6 @@ son-of-anton/
 ├── gateway/              # Messaging gateway — run.py + session.py + platforms/
 │   └── platforms/        # signal — the only messaging platform
 ├── plugins/              # Plugin system (see "Plugins" below)
-│   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)
-│   ├── model-providers/  # Inference backend plugins (custom)
-│   └── web/              # Web-search provider plugins (exa, tavily, firecrawl, ...)
 ├── autophysicist/       # Vendored physics mode (Autophysicist)
 │   ├── llm.py            # OpenAI-compatible layer resolving endpoints from config.toml
 │   └── verification/     # Experimental verification (RESULTS.txt, formal eval)
@@ -598,17 +595,6 @@ product (observability backends, vendor SaaS, analytics) ship as standalone plug
 users install into `~/.son-of-anton/plugins/` (or via pip entry points). This is a
 coupling-and-maintenance decision, not a quality bar. (Directories already in the tree are
 existing precedent, not an invitation.)
-
-### Memory-provider plugins (`plugins/memory/<name>/`)
-
-Pluggable memory backends, activated by name via `memory.provider` in config.toml.
-Built-in providers: **honcho, mem0, supermemory, byterover, hindsight, holographic,
-openviking, retaindb**. Each implements the `MemoryProvider` ABC (see
-`agent/memory_provider.py`), orchestrated by `agent/memory_manager.py`.
-
-**The set of built-in memory providers is closed (policy, May 2026).** New memory backends
-ship as standalone plugin repos implementing the same ABC; bug fixes to existing in-tree
-providers are welcome.
 
 ### Model-provider plugins (`plugins/model-providers/<name>/`)
 
