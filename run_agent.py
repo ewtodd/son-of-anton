@@ -5745,11 +5745,7 @@ class AIAgent:
         )
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
-                     tool_call_id: Optional[str] = None, messages: list = None,
-                     pre_tool_block_checked: bool = False,
-                     skip_tool_request_middleware: bool = False,
-                     tool_request_middleware_trace: Optional[list[dict[str, Any]]] = None,
-                     skip_tool_execution_middleware: bool = False) -> str:
+                     tool_call_id: Optional[str] = None, messages: list = None) -> str:
         """Forwarder — see ``agent.agent_runtime_helpers.invoke_tool``."""
         from agent.agent_runtime_helpers import invoke_tool
         return invoke_tool(
@@ -5759,10 +5755,6 @@ class AIAgent:
             effective_task_id,
             tool_call_id,
             messages,
-            pre_tool_block_checked,
-            skip_tool_request_middleware,
-            tool_request_middleware_trace,
-            skip_tool_execution_middleware,
         )
 
     @staticmethod

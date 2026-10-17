@@ -24,11 +24,8 @@ import json
 import re
 import sys
 import asyncio
-from contextlib import contextmanager
-from contextvars import ContextVar
 import logging
 import threading
-import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import (
@@ -41,20 +38,6 @@ from tools.registry import (
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
-
-_post_tool_call_hook_suppressed: ContextVar[bool] = ContextVar(
-    "post_tool_call_hook_suppressed", default=False
-)
-
-
-@contextmanager
-def suppress_post_tool_call_hook():
-    """Let an outer executor own the terminal post-tool event."""
-    token = _post_tool_call_hook_suppressed.set(True)
-    try:
-        yield
-    finally:
-        _post_tool_call_hook_suppressed.reset(token)
 
 # Tracks platform-bundle names already flagged in disabled_toolsets so the
 # advisory (#33924) is logged once per name, not on every tool recompute.
@@ -231,12 +214,6 @@ discover_builtin_tools()
 #   - tui_gateway/server.py     -> inline on startup (no event loop)
 #   - acp_adapter/server.py     -> asyncio.to_thread on session init
 
-# Plugin tool discovery (user/project/pip plugins)
-try:
-    from son_of_anton_cli.plugins import discover_plugins
-    discover_plugins()
-except Exception as e:
-    logger.debug("Plugin discovery failed: %s", e)
 
 
 # =============================================================================
@@ -431,12 +408,6 @@ def _compute_tool_definitions(
                     print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
-
-    # Plugin-registered tools are now resolved through the normal toolset
-    # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
-    # all check the tool registry for plugin-provided toolsets.  No bypass
-    # needed; plugins respect enabled_toolsets / disabled_toolsets like any
-    # other toolset.
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
@@ -980,83 +951,6 @@ def _coerce_boolean(value: str):
     return value
 
 
-def _tool_result_observer_fields(
-    tool_name: str,
-    result: Any,
-) -> tuple[str, Optional[str], Optional[str]]:
-    try:
-        parsed_result = json.loads(result) if isinstance(result, str) else result
-        if isinstance(parsed_result, dict) and parsed_result.get("error"):
-            return "error", "tool_error", str(parsed_result.get("error"))
-    except Exception:
-        pass
-    try:
-        from agent.display import _detect_tool_failure
-
-        failed, suffix = _detect_tool_failure(tool_name, result)
-        if failed:
-            return "error", "tool_error", suffix.strip().strip("[]") or None
-    except Exception:
-        pass
-    return "ok", None, None
-
-
-def _emit_post_tool_call_hook(
-    *,
-    function_name: str,
-    function_args: Dict[str, Any],
-    result: Any,
-    task_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    tool_call_id: Optional[str] = None,
-    turn_id: Optional[str] = None,
-    api_request_id: Optional[str] = None,
-    duration_ms: int = 0,
-    status: Optional[str] = None,
-    error_type: Optional[str] = None,
-    error_message: Optional[str] = None,
-    middleware_trace: Optional[List[Dict[str, Any]]] = None,
-) -> None:
-    """Emit the ``post_tool_call`` observer hook.
-
-    No-ops cheaply when no plugin has registered for ``post_tool_call`` —
-    the ``has_hook`` gate skips both the result-field derivation and the
-    payload dispatch so the no-listener path costs one dict lookup.  When
-    ``status`` is not supplied, the ok/error fields are derived from the
-    result *after* the gate (parsing the result is only worth it when a
-    listener will actually consume it).
-    """
-    if _post_tool_call_hook_suppressed.get():
-        return
-    try:
-        from son_of_anton_cli.lifecycle import has_hook, invoke_hook
-        if not has_hook("post_tool_call"):
-            return
-        if status is None:
-            status, error_type, error_message = _tool_result_observer_fields(
-                function_name,
-                result,
-            )
-        invoke_hook(
-            "post_tool_call",
-            tool_name=function_name,
-            args=function_args,
-            result=result,
-            task_id=task_id or "",
-            session_id=session_id or "",
-            tool_call_id=tool_call_id or "",
-            turn_id=turn_id or "",
-            api_request_id=api_request_id or "",
-            duration_ms=duration_ms,
-            status=status,
-            error_type=error_type,
-            error_message=error_message,
-            middleware_trace=list(middleware_trace or []),
-        )
-    except Exception as _hook_err:
-        logger.debug("post_tool_call hook error: %s", _hook_err)
-
-
 def _departed_mcp_tool_error(function_name: str) -> Optional[str]:
     """Tool-error JSON for an MCP tool whose server has taken it back.
 
@@ -1086,16 +980,9 @@ def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
     task_id: Optional[str] = None,
-    tool_call_id: Optional[str] = None,
     session_id: Optional[str] = None,
-    turn_id: Optional[str] = None,
-    api_request_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
-    skip_pre_tool_call_hook: bool = False,
-    skip_tool_request_middleware: bool = False,
-    skip_tool_execution_middleware: bool = False,
-    tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
 ) -> str:
@@ -1127,30 +1014,12 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
-    _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
     # inline. tool_call is unwrapped to the underlying tool so that every
-    # downstream hook (pre/post, edit approval, guardrails) sees the real
+    # downstream check (edit approval, guardrails) sees the real
     # tool name, not the bridge.
-    _dispatch_start = time.monotonic()
-
-    def _return_bridge_result(result: Any) -> Any:
-        _emit_post_tool_call_hook(
-            function_name=function_name,
-            function_args=function_args,
-            result=result,
-            task_id=task_id,
-            session_id=session_id,
-            tool_call_id=tool_call_id,
-            turn_id=turn_id,
-            api_request_id=api_request_id,
-            duration_ms=int((time.monotonic() - _dispatch_start) * 1000),
-            middleware_trace=list(_tool_middleware_trace),
-        )
-        return result
-
     _ts_mod = None
     try:
         from tools import tool_search as _ts_mod  # noqa: F401
@@ -1180,25 +1049,19 @@ def handle_function_call(
         except Exception:
             current_defs = []
         if function_name == _ts_mod.TOOL_SEARCH_NAME:
-            return _return_bridge_result(
-                _ts_mod.dispatch_tool_search(
-                    function_args or {},
-                    current_tool_defs=current_defs,
-                )
+            return _ts_mod.dispatch_tool_search(
+                function_args or {},
+                current_tool_defs=current_defs,
             )
         if function_name == _ts_mod.TOOL_DESCRIBE_NAME:
-            return _return_bridge_result(
-                _ts_mod.dispatch_tool_describe(
-                    function_args or {},
-                    current_tool_defs=current_defs,
-                )
+            return _ts_mod.dispatch_tool_describe(
+                function_args or {},
+                current_tool_defs=current_defs,
             )
         if function_name == _ts_mod.TOOL_CALL_NAME:
             underlying_name, underlying_args, err = _ts_mod.resolve_underlying_call(function_args or {})
             if err or not underlying_name:
-                return _return_bridge_result(
-                    tool_error(err or "tool_call could not be resolved")
-                )
+                return tool_error(err or "tool_call could not be resolved")
             # Defense in depth: the underlying tool MUST be in the session's
             # scoped deferrable catalog. resolve_underlying_call() only checks
             # that the name is deferrable in the global registry; this gate
@@ -1207,109 +1070,31 @@ def handle_function_call(
             # the bridge even if the catalog scoping above regressed.
             _scoped_deferrable = _ts_mod.scoped_deferrable_names(current_defs)
             if underlying_name not in _scoped_deferrable:
-                return _return_bridge_result(
-                    tool_error(
-                        f"'{underlying_name}' is not available in this session. "
-                        "Use tool_search to find tools you can call."
-                    )
+                return tool_error(
+                    f"'{underlying_name}' is not available in this session. "
+                    "Use tool_search to find tools you can call."
                 )
             # Probe-validate against the deferred tool's schema (ironclaw#5149):
             # a blind call missing required arguments returns the parameter
             # schema instead of dispatching into an opaque downstream failure.
             _probe_err = _ts_mod.validate_deferred_call_args(underlying_name, underlying_args)
             if _probe_err is not None:
-                return _return_bridge_result(_probe_err)
-            # Recurse with the underlying tool. All hooks fire against the
-            # real tool name. The bridge is invisible to hooks by design.
+                return _probe_err
+            # Recurse with the underlying tool.
             return handle_function_call(
                 function_name=underlying_name,
                 function_args=underlying_args,
                 task_id=task_id,
-                tool_call_id=tool_call_id,
                 session_id=session_id,
-                turn_id=turn_id,
-                api_request_id=api_request_id,
                 user_task=user_task,
                 enabled_tools=enabled_tools,
-                skip_pre_tool_call_hook=skip_pre_tool_call_hook,
-                skip_tool_request_middleware=skip_tool_request_middleware,
-                skip_tool_execution_middleware=skip_tool_execution_middleware,
-                tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
             )
 
-    _tool_original_args = dict(function_args)
-    if not skip_tool_request_middleware:
-        try:
-            from son_of_anton_cli.middleware import apply_tool_request_middleware
-
-            _tool_request_mw = apply_tool_request_middleware(
-                function_name,
-                function_args,
-                task_id=task_id or "",
-                session_id=session_id or "",
-                tool_call_id=tool_call_id or "",
-                turn_id=turn_id or "",
-                api_request_id=api_request_id or "",
-            )
-            function_args = _tool_request_mw.payload
-            _tool_original_args = _tool_request_mw.original_payload
-            _tool_middleware_trace = _tool_request_mw.trace
-        except Exception as _mw_err:
-            logger.debug("tool_request middleware error: %s", _mw_err)
-
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return tool_error(f"{function_name} must be handled by the agent loop")
-
-        # Check plugin hooks for a block/approve/modify directive (unless caller
-        # already checked — e.g. run_agent._invoke_tool passes skip=True to
-        # avoid double-firing the hook).
-        #
-        # Single-fire contract: pre_tool_call fires exactly once per tool
-        # execution. _dispatch_pre_tool_call_hooks() internally calls
-        # invoke_hook("pre_tool_call", ...) once and returns both the block
-        # message (for `block`/`approve` directives) and any modified args
-        # (for `modify` directives). Observer plugins see
-        # the hook on that same pass. When skip=True, the caller already
-        # fired it — do nothing here.
-        if not skip_pre_tool_call_hook:
-            block_message: Optional[str] = None
-            try:
-                from son_of_anton_cli.plugins import _dispatch_pre_tool_call_hooks
-                block_message, modified_args = _dispatch_pre_tool_call_hooks(
-                    function_name,
-                    function_args,
-                    task_id=task_id or "",
-                    session_id=session_id or "",
-                    tool_call_id=tool_call_id or "",
-                    turn_id=turn_id or "",
-                    api_request_id=api_request_id or "",
-                    middleware_trace=list(_tool_middleware_trace),
-                )
-                if modified_args is not None:
-                    function_args = modified_args
-            except Exception as _hook_err:
-                logger.debug("pre_tool_call hook error: %s", _hook_err)
-
-            if block_message is not None:
-                result = tool_error(block_message)
-                _emit_post_tool_call_hook(
-                    function_name=function_name,
-                    function_args=function_args,
-                    result=result,
-                    task_id=task_id,
-                    session_id=session_id,
-                    tool_call_id=tool_call_id,
-                    turn_id=turn_id,
-                    api_request_id=api_request_id,
-                    status="blocked",
-                    error_type="plugin_block",
-                    error_message=block_message,
-                    middleware_trace=list(_tool_middleware_trace),
-                )
-                return result
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).
@@ -1320,151 +1105,30 @@ def handle_function_call(
             except Exception:
                 pass  # file_tools may not be loaded yet
 
-        # Measure tool dispatch latency so post_tool_call and
-        # transform_tool_result hooks can observe per-tool duration.
-        # Inspired by Claude Code 2.1.119, which added ``duration_ms`` to
-        # PostToolUse hook inputs so plugin authors can build latency
-        # dashboards, budget alerts, and regression canaries without having
-        # to wrap every tool manually.  We use monotonic() so the value is
-        # unaffected by wall-clock adjustments during the call.
-        _dispatch_start = time.monotonic()
-        _approval_tokens = None
-        try:
-            from tools.approval import (
-                reset_current_observability_context,
-                set_current_observability_context,
+        if function_name == "execute_code":
+            # Prefer the caller-provided list so subagents can't overwrite
+            # the parent's tool set via the process-global.
+            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+            return registry.dispatch(
+                function_name, function_args,
+                task_id=task_id,
+                session_id=session_id,
+                enabled_tools=sandbox_enabled,
             )
-            _approval_tokens = set_current_observability_context(
-                turn_id=turn_id or "",
-                tool_call_id=tool_call_id or "",
-                session_id=session_id or "",
-            )
-        except Exception:
-            reset_current_observability_context = None
-        try:
-            if function_name == "execute_code":
-                # Prefer the caller-provided list so subagents can't overwrite
-                # the parent's tool set via the process-global.
-                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
-                def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    return registry.dispatch(
-                        function_name, next_args,
-                        task_id=task_id,
-                        session_id=session_id,
-                        enabled_tools=sandbox_enabled,
-                    )
-            else:
-                def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    departed = _departed_mcp_tool_error(function_name)
-                    if departed is not None:
-                        return departed
-                    return registry.dispatch(
-                        function_name, next_args,
-                        task_id=task_id,
-                        session_id=session_id,
-                        user_task=user_task,
-                    )
-            if skip_tool_execution_middleware:
-                result = _dispatch(function_args)
-            else:
-                from son_of_anton_cli.middleware import run_tool_execution_middleware
-
-                result = run_tool_execution_middleware(
-                    function_name,
-                    function_args,
-                    _dispatch,
-                    original_args=_tool_original_args,
-                    task_id=task_id or "",
-                    session_id=session_id or "",
-                    tool_call_id=tool_call_id or "",
-                    turn_id=turn_id or "",
-                    api_request_id=api_request_id or "",
-                )
-        finally:
-            if _approval_tokens is not None and reset_current_observability_context is not None:
-                try:
-                    reset_current_observability_context(_approval_tokens)
-                except Exception:
-                    pass
-        duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
-
-        _emit_post_tool_call_hook(
-            function_name=function_name,
-            function_args=function_args,
-            result=result,
+        departed = _departed_mcp_tool_error(function_name)
+        if departed is not None:
+            return departed
+        return registry.dispatch(
+            function_name, function_args,
             task_id=task_id,
             session_id=session_id,
-            tool_call_id=tool_call_id,
-            turn_id=turn_id,
-            api_request_id=api_request_id,
-            duration_ms=duration_ms,
-            middleware_trace=list(_tool_middleware_trace),
+            user_task=user_task,
         )
-
-        # Generic tool-result canonicalization seam: plugins receive the
-        # final result string (JSON, usually) and may replace it by
-        # returning a string from transform_tool_result. Runs after
-        # post_tool_call (which stays observational) and before the result
-        # is appended back into conversation context. Fail-open; the first
-        # valid string return wins; non-string returns are ignored.
-        # Gated on has_hook so the no-listener path skips both the result
-        # field derivation and the payload dispatch.
-        try:
-            from son_of_anton_cli.lifecycle import has_hook, invoke_hook
-            if has_hook("transform_tool_result"):
-                status, error_type, error_message = _tool_result_observer_fields(
-                    function_name,
-                    result,
-                )
-                hook_results = invoke_hook(
-                    "transform_tool_result",
-                    tool_name=function_name,
-                    args=function_args,
-                    result=result,
-                    task_id=task_id or "",
-                    session_id=session_id or "",
-                    tool_call_id=tool_call_id or "",
-                    turn_id=turn_id or "",
-                    api_request_id=api_request_id or "",
-                    duration_ms=duration_ms,
-                    status=status,
-                    error_type=error_type,
-                    error_message=error_message,
-                )
-                for hook_result in hook_results:
-                    if isinstance(hook_result, str):
-                        result = hook_result
-                        break
-        except Exception as _hook_err:
-            logger.debug("transform_tool_result hook error: %s", _hook_err)
-
-        return result
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
-        result = tool_error(_sanitize_tool_error(error_msg))
-        duration_ms = (
-            int((time.monotonic() - _dispatch_start) * 1000)
-            if _dispatch_start is not None
-            else 0
-        )
-        _emit_post_tool_call_hook(
-            function_name=function_name,
-            function_args=function_args,
-            result=result,
-            task_id=task_id,
-            session_id=session_id,
-            tool_call_id=tool_call_id,
-            turn_id=turn_id,
-            api_request_id=api_request_id,
-            duration_ms=duration_ms,
-            status="error",
-            error_type=type(e).__name__,
-            error_message=str(e),
-            middleware_trace=list(_tool_middleware_trace),
-        )
-        return result
+        return tool_error(_sanitize_tool_error(error_msg))
 
 
 # =============================================================================
