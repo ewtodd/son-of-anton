@@ -25,12 +25,6 @@ mode parameter):
 All four modes operate on the SQLite session DB via the FTS5 index and
 the get_anchored_view / get_messages_around primitives in son_of_anton_state.
 No LLM calls anywhere — every shape returns actual messages from the DB.
-
-History: PR #20238 (JabberELF) seeded a fast/summary dual-mode split; the
-toolkit expansion in PR #26419 (yoniebans) added the anchored drill-down,
-bookends, and sort. This module merges all of that into a single calling
-shape with no mode parameter, no summary LLM path, and explicit scroll
-support.
 """
 
 import json
@@ -39,10 +33,9 @@ from typing import Any, Dict, List, Optional, Union
 
 from son_of_anton_state_common import _RESET_END_REASONS
 
-# Sources that are excluded from session browsing/searching by default.
-# Third-party integrations tag their sessions with SON_OF_ANTON_SESSION_SOURCE=tool;
-# delegate subagent runs are tagged "subagent"; kanban dispatcher workers are
-# tagged "kanban" — none belongs in the user's session history.
+# Sources excluded from session browsing/searching: delegate subagent runs
+# ("subagent"), integrations run with `--source tool`, and "kanban" rows older
+# installs wrote — none belongs in the user's session history.
 _HIDDEN_SESSION_SOURCES = ("kanban", "subagent", "tool")
 
 # Automation sources that are kept searchable but DEMOTED below interactive
@@ -50,7 +43,7 @@ _HIDDEN_SESSION_SOURCES = ("kanban", "subagent", "tool")
 # large volumes of repetitive vocabulary (recurring project names, dates,
 # "session", summaries); under bare BM25 they dominate the top-N FTS rows and
 # starve out the user's own interactive sessions, producing "recall blindness"
-# where only cron sessions surface (#19434). Demoting — not excluding — keeps
+# where only cron sessions surface. Demoting — not excluding — keeps
 # cron content reachable when it's the only match, while interactive sessions
 # always win when both match.
 _DEMOTED_SESSION_SOURCES = ("cron",)
@@ -74,10 +67,10 @@ _DISCOVER_SEARCH_FIELDS = (
 )
 
 # Prefixes that identify generated context-compaction handoff summaries.
-# These are inserted by agent/context_compactor.py as normal user/assistant
-# messages but contain machine-generated summary metadata — not user content.
-# They must be excluded from discovery bookends to avoid re-introducing huge
-# compaction payloads into fresh sessions via session_search.  (#43175)
+# These are inserted by compaction as normal user/assistant messages but
+# contain machine-generated summary metadata — not user content. They must be
+# excluded from discovery bookends to avoid re-introducing huge compaction
+# payloads into fresh sessions via session_search.
 _COMPACTION_PREFIXES = (
     "[CONTEXT COMPACTION",
     "[CONTEXT SUMMARY]:",
@@ -273,8 +266,7 @@ def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     ranked by relevance. This only changes cross-class ordering: a cron hit
     never displaces an interactive hit during lineage dedup, so the user's
     own conversations surface first even when cron rows out-rank them under
-    bare BM25 (#19434). Demoted rows still appear when they're the only
-    matches.
+    bare BM25. Demoted rows still appear when they're the only matches.
     """
     return sorted(
         raw_results,
@@ -330,38 +322,14 @@ def _shape_message(
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
 
 
-def _resolve_profile_db(profile: str):
-    """Always None — every session lives in this home's ``state.db``.
-
-    The desktop's ``@session:<profile>/<id>`` link format still carries a
-    profile segment, and older links carry a real name. Both resolve against
-    the caller's own db now: one process serves one SON_OF_ANTON_HOME, so
-    there is no other database to open.
-    """
-    return None
-
-
 def _session_link(session_id: str, profile: str = None) -> str:
-    """The reference the agent writes to point the user at a session.
+    """The ``@session:[<profile>/]<id>`` reference the agent writes to point at a session.
 
-    Same value the desktop composer emits when a session is dragged into a
-    message, so the desktop renders it as a link carrying the session's title.
-    The profile segment is omitted when we can't name it confidently — a bare
-    id still resolves, it just can't disambiguate across profiles.
+    The profile segment is only a label: every session lives in this home's
+    ``state.db``, so a link resolves against the caller's db either way.
     """
     name = (profile or "").strip()
     return f"@session:{name}/{session_id}" if name else f"@session:{session_id}"
-
-
-def _locate_session_db(session_id: str):
-    """Always ``(None, None)`` — the caller's own db is the only store.
-
-    This used to scan every profile's ``state.db`` as the safety net for a
-    linked-session read whose link had lost its owning profile. With one home
-    per process the caller's default db already is that store, so callers fall
-    through to it.
-    """
-    return None, None
 
 
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
@@ -422,11 +390,8 @@ def _list_recent_sessions(
     try:
         # list_sessions_rich (include_children=False) already applies the
         # canonical child classifier (_LISTABLE_CHILD_SQL): roots, /branch
-        # children, and /new-reset children are admitted (stable markers plus
-        # the legacy same-key heuristic), while delegation/compaction
-        # children are hidden. Re-classifying rows here in Python duplicated
-        # that predicate and re-hid legacy pre-marker reset children the SQL
-        # deliberately admits — trust the query instead (#85756).
+        # children, and /new-reset children are admitted, while
+        # delegation/compaction children are hidden — trust the query.
         sessions = db.list_sessions_rich(
             limit=limit + 15,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
@@ -727,7 +692,7 @@ def _discover(
 
     # Demote automation (cron) rows below interactive ones before dedup, so a
     # high-volume cron corpus can't starve the user's own sessions out of the
-    # top `limit` results (#19434). Stable — preserves BM25/recency order
+    # top `limit` results. Stable — preserves BM25/recency order
     # within each class.
     raw_results = _order_for_recall(raw_results)
 
@@ -772,7 +737,7 @@ def _discover(
         # /new-reset (and idle/daily/CLI new_session): the predecessor was
         # ended without carrying any transcript into the child. Same lineage
         # root, but the prior conversation is NOT in the active context —
-        # hiding it made gateway recall go blind after every /new (#85756).
+        # hiding it made gateway recall go blind after every /new.
         # A live delegation child has end_reason=None, so it stays excluded.
         #
         # In-place compaction: the FTS hit lives on the SAME session_id as the
@@ -887,14 +852,12 @@ def _session_search_impl(
     window: int = 5,
     # Discovery shape
     sort: str = None,
-    # Cross-profile (any shape)
+    # Link label (any shape)
     profile: str = None,
     # Discovery result shaping (appended to preserve positional compatibility)
     detail: str = "adaptive",
     # Source filter (discovery + browse): restrict to named session sources
     sources: str = None,
-    *,
-    _owned_dbs: Optional[List[Any]] = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
@@ -903,35 +866,19 @@ def _session_search_impl(
     Read:      pass ``session_id`` (no anchor) — dumps the whole session.
     Browse:    pass nothing.
 
-    Pass ``profile`` to read another profile's sessions (e.g. resolving an
-    ``@session:<profile>/<id>`` link). Scroll wins over read/discovery when an
-    anchor is set — the agent has asked for a specific slice.
+    Scroll wins over read/discovery when an anchor is set — the agent has
+    asked for a specific slice. ``profile`` only labels the returned links.
     """
     # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
     # Session ids never contain "/", so a slash unambiguously means profile/id —
     # always strip the prefix off the id, and adopt the embedded profile only
-    # when one wasn't passed explicitly. Handles every permutation the model
-    # might send (full value as id, with or without a separate profile=).
+    # when one wasn't passed explicitly.
     if isinstance(session_id, str) and "/" in session_id:
         emb_profile, _, emb_id = session_id.partition("/")
         if emb_id:
             session_id = emb_id
             if emb_profile and (profile is None or not str(profile).strip()):
                 profile = emb_profile
-
-    # Cross-profile read: swap in the named profile's DB (read-only) for every
-    # shape below. The current-session-lineage guards no longer apply across
-    # profiles, but they key off ids that won't collide, so they stay inert.
-    if profile is not None and str(profile).strip():
-        try:
-            profile_db = _resolve_profile_db(profile)
-        except Exception as e:
-            return tool_error(f"profile '{profile}': {e}", success=False)
-        if profile_db is not None:
-            db = profile_db
-            if _owned_dbs is not None:
-                _owned_dbs.append(profile_db)
-            current_session_id = None
 
     # Scroll shape takes precedence — explicit anchor beats any query.
     if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
@@ -945,24 +892,7 @@ def _session_search_impl(
 
     # Read shape: a session_id with no anchor → dump the whole session.
     if isinstance(session_id, str) and session_id.strip():
-        sid = session_id.strip()
-        result = _read_session(db, sid, link_profile=profile)
-        if json.loads(result).get("success"):
-            return result
-
-        # Miss in the target profile — the model may have dropped the owning
-        # profile from the link. Scan every profile and read it from wherever
-        # it lives, tagging the profile it was found in.
-        located, owner = _locate_session_db(sid)
-        if located is not None:
-            try:
-                found = json.loads(_read_session(located, sid, link_profile=owner))
-            finally:
-                located.close()
-            if found.get("success"):
-                found["profile"] = owner
-                return json.dumps(found, ensure_ascii=False)
-        return result
+        return _read_session(db, session_id.strip(), link_profile=profile)
 
     # Limit clamp [1, 10]
     if not isinstance(limit, int):
@@ -974,8 +904,7 @@ def _session_search_impl(
 
     # Parse the source filter (comma-separated), applied to both the browse
     # and discovery shapes so a workstation session can stop a gateway
-    # session's history from surfacing in recall (STATUS.md: per-surface
-    # session search scoping).
+    # session's history from surfacing in recall.
     source_list: Optional[List[str]] = None
     if isinstance(sources, str) and sources.strip():
         source_list = [s.strip() for s in sources.split(",") if s.strip()]
@@ -1029,21 +958,20 @@ def session_search(
     window: int = 5,
     # Discovery shape
     sort: str = None,
-    # Cross-profile (any shape)
+    # Link label (any shape)
     profile: str = None,
     # Discovery result shaping (appended to preserve positional compatibility)
     detail: str = "adaptive",
     # Source filter (discovery + browse): restrict to named session sources
     sources: str = None,
 ) -> str:
-    """Run session search and close databases opened by this invocation."""
-    owned_dbs: List[Any] = []
+    """Run session search, opening (and closing) the default SessionDB when none is given."""
+    owned_db = None
     if db is None:
         try:
             from son_of_anton_state import SessionDB
 
-            db = SessionDB()
-            owned_dbs.append(db)
+            db = owned_db = SessionDB()
         except Exception:
             logging.debug("SessionDB unavailable for session_search", exc_info=True)
             from son_of_anton_state import format_session_db_unavailable
@@ -1064,10 +992,9 @@ def session_search(
             profile=profile,
             detail=detail,
             sources=sources,
-            _owned_dbs=owned_dbs,
         )
     finally:
-        for owned_db in reversed(owned_dbs):
+        if owned_db is not None:
             try:
                 owned_db.close()
             except Exception:
@@ -1075,12 +1002,9 @@ def session_search(
 
 
 def check_session_search_requirements() -> bool:
-    """Requires the SQLite state database."""
-    try:
-        from son_of_anton_state import _default_db_path
-        return _default_db_path().parent.exists()
-    except ImportError:
-        return False
+    """Requires the SQLite state database's directory."""
+    from son_of_anton_state import _default_db_path
+    return _default_db_path().parent.exists()
 
 
 SESSION_SEARCH_SCHEMA = {
