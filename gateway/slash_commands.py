@@ -178,37 +178,6 @@ class GatewaySlashCommandsMixin:
         # (Conversation-scoped overrides + security state were already
         # cleared via _clear_conversation_scope above.)
 
-        _old_sid = old_entry.session_id if old_entry else None
-
-        # Fire plugin on_session_finalize hook (session boundary).
-        # Off-loop + bounded: finalize hooks can block arbitrarily
-        # (observability trace exports) and this handler runs on the
-        # gateway event loop (see GatewayRunner._finalize_session_off_loop).
-        try:
-            await self._finalize_session_off_loop(
-                session_id=_old_sid,
-                platform=source.platform.value if source.platform else "",
-                reason="new_session",
-                old_session_id=_old_sid,
-                new_session_id=new_entry.session_id if new_entry else None,
-            )
-        except Exception:
-            pass
-
-        # Emit session:end hook (session is ending)
-        await self.hooks.emit("session:end", {
-            "platform": source.platform.value if source.platform else "",
-            "user_id": source.user_id,
-            "session_key": session_key,
-        })
-
-        # Emit session:reset hook
-        await self.hooks.emit("session:reset", {
-            "platform": source.platform.value if source.platform else "",
-            "user_id": source.user_id,
-            "session_key": session_key,
-        })
-
         # Resolve session config info to surface to the user, scoped to the
         # profile serving this source so a multiplexed /reset //new banner
         # reports the profile's model, not the base config's (#59003).
@@ -248,21 +217,6 @@ class GatewaySlashCommandsMixin:
                 # sanitize_title returned empty (whitespace-only / unprintable)
                 _title_note = t("gateway.reset.title_empty_untitled")
         header = header + _title_note
-
-        # Fire plugin on_session_reset hook (new session guaranteed to exist)
-        try:
-            from son_of_anton_cli.lifecycle import invoke_hook as _invoke_hook
-            _new_sid = new_entry.session_id if new_entry else None
-            _invoke_hook(
-                "on_session_reset",
-                session_id=_new_sid,
-                platform=source.platform.value if source.platform else "",
-                reason="new_session",
-                old_session_id=_old_sid,
-                new_session_id=_new_sid,
-            )
-        except Exception:
-            pass
 
         if session_info:
             return EphemeralReply(f"{header}\n\n{session_info}")

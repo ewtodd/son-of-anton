@@ -4,9 +4,9 @@
 tool-calling loop ever started: stdio guarding, runtime-main wiring, retry-counter
 resets, user-message sanitization, todo/nudge-counter hydration, system-prompt
 restore-or-build, session-row creation (before compaction, whose DB writes
-reference the row), turn-start context compaction, the ``pre_llm_call`` plugin
-hook, retrieval-augmented recall, and crash-resilience persistence (last, so the
-user row is written once with its final ``api_content`` sidecar).
+reference the row), turn-start context compaction, retrieval-augmented recall,
+and crash-resilience persistence (last, so the user row is written once with its
+final ``api_content`` sidecar).
 
 All of that is *prologue* — it runs once per turn, has no back-references into the
 loop, and produces a fixed set of values the loop then consumes. ``TurnContext``
@@ -80,14 +80,13 @@ def is_trivial_prompt(text: Optional[str]) -> bool:
 
 def compose_user_api_content(
     content: Any,
-    plugin_user_context: str,
+    user_context: str,
     rag_context: str = "",
 ) -> Optional[str]:
     """Compose the API-bound content of the current turn's user message.
 
-    Sources: retrieval-augmented recall and
-    ``pre_llm_call`` plugin context with target="user_message" (the default).
-    All are appended to the *API copy* of the user message only — the stored
+    Sources: retrieval-augmented recall and the gateway's must-deliver notes.
+    Both are appended to the *API copy* of the user message only — the stored
     content stays clean.
 
     This is the single source of that composition. The prologue stamps the
@@ -105,8 +104,8 @@ def compose_user_api_content(
     injections = []
     if rag_context:
         injections.append(rag_context)
-    if plugin_user_context:
-        injections.append(plugin_user_context)
+    if user_context:
+        injections.append(user_context)
     if not injections:
         return None
     return content + "\n\n" + "\n\n".join(injections)
@@ -593,21 +592,18 @@ class TurnContext:
 
     # Sanitized inbound message (surrogates stripped).
     user_message: str
-    # Clean message preserved for transcripts / memory queries (no nudge injection).
-    original_user_message: Any
     # Working message list for this turn (loop appends to it).
     messages: List[Dict[str, Any]]
     # May be reset to None by turn-start compaction (new session created).
     conversation_history: Optional[List[Dict[str, Any]]]
     # Cached system prompt active for this turn (may be rebuilt by compaction).
     active_system_prompt: Optional[str]
-    # Task / turn identifiers.
+    # Task identifier.
     effective_task_id: str
-    turn_id: str
     # Index of the current user turn within ``messages``.
     current_turn_user_idx: int
-    # Context contributed by ``pre_llm_call`` plugins (appended to user message).
-    plugin_user_context: str = ""
+    # Gateway notes appended to the API copy of the user message.
+    user_context: str = ""
 
 
 def build_turn_context(
@@ -639,8 +635,8 @@ def build_turn_context(
     ``continue_turn`` carries on the turn the transcript ends in (see
     :func:`continue_turn_tail`; :class:`NothingToContinue` when there is
     none) instead of starting one: no user message is appended, and nothing
-    is added to the existing one — no plugin context, memory prefetch or
-    retrieval — so the request replays the stored rows byte for byte.
+    is added to the existing one — no gateway notes or retrieval — so the
+    request replays the stored rows byte for byte.
     """
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
@@ -654,7 +650,7 @@ def build_turn_context(
 
     # Continuing: the turn's own user message stands in for the new one in
     # everything below that reads it (logging, compaction re-anchoring, the
-    # finalizer's trajectory and hooks); it is never appended again.
+    # finalizer's trajectory); it is never appended again.
     continue_idx: Optional[int] = None
     if continue_turn:
         continue_idx, why = continue_turn_tail(conversation_history or [])
@@ -728,8 +724,6 @@ def build_turn_context(
             f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
         )
     agent._relay_pending_turn_id = None
-    agent._current_turn_id = turn_id
-    agent._current_api_request_id = ""
     # Tripwire: warn (with both turn ids) when this turn starts before the
     # previous turn's turn-end persist — concurrent turns on one session
     # interleave transcript writes. Cleared in _persist_session.
@@ -1234,46 +1228,10 @@ def build_turn_context(
         )
         agent._persist_user_message_idx = current_turn_user_idx
 
-    # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
-    plugin_user_context = ""
-    try:
-        if continue_turn:
-            # No new message to add context to: the turn's user message
-            # replays with what was injected when it was sent (api_content).
-            _pre_results = []
-        else:
-            from son_of_anton_cli.lifecycle import invoke_hook as _invoke_hook
-            _pre_results = _invoke_hook(
-                "pre_llm_call",
-                session_id=agent.session_id,
-                task_id=effective_task_id,
-                turn_id=turn_id,
-                user_message=original_user_message,
-                conversation_history=list(messages),
-                is_first_turn=(not bool(conversation_history)),
-                model=agent.model,
-                platform=getattr(agent, "platform", None) or "",
-                parent_session_id=getattr(agent, "_parent_session_id", None) or "",
-                sender_id=getattr(agent, "_user_id", None) or "",
-            )
-        _ctx_parts: list[str] = []
-        for r in _pre_results:
-            _piece: str = ""
-            if isinstance(r, dict) and r.get("context"):
-                _piece = str(r["context"])
-            elif isinstance(r, str) and r.strip():
-                _piece = r
-            else:
-                continue
-            _ctx_parts.append(_piece)
-        if _ctx_parts:
-            plugin_user_context = "\n\n".join(_ctx_parts)
-    except Exception as exc:
-        logger.warning("pre_llm_call hook failed: %s", exc)
-
+    user_context = ""
     # Gateway must-deliver notes (auto-reset note, first-contact intro,
-    # voice-channel change) ride the same user-message injection channel as
-    # plugin context so the ephemeral system prompt can stay byte-stable.
+    # voice-channel change) ride the user-message injection channel so the
+    # ephemeral system prompt can stay byte-stable.
     # One-shot: staged by the gateway right before this turn, consumed here.
     # Multimodal (list) content can't take the string sidecar — append a
     # durable text part instead of dropping the fact.
@@ -1289,11 +1247,7 @@ def build_turn_context(
         if isinstance(_gw_turn_content, list):
             append_notes_to_multimodal_content(_gw_turn_content, _gateway_notes)
         else:
-            plugin_user_context = (
-                plugin_user_context + "\n\n" + _gateway_notes
-                if plugin_user_context
-                else _gateway_notes
-            )
+            user_context = _gateway_notes
 
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
@@ -1327,7 +1281,7 @@ def build_turn_context(
         agent._turn_rag_context = ""
 
     # ── api_content sidecar: persist what you send ──
-    # The prefetch/plugin context above is injected into the API copy of this
+    # The recall/gateway context above is injected into the API copy of this
     # turn's user message, never into the stored content — so on the next
     # turn the message would replay WITHOUT the injection, diverging the
     # request prefix at this point and re-prefilling everything after it
@@ -1346,14 +1300,14 @@ def build_turn_context(
         _turn_user_msg = messages[current_turn_user_idx]
         _api_content = compose_user_api_content(
             _turn_user_msg.get("content", ""),
-            plugin_user_context,
+            user_context,
             getattr(agent, "_turn_rag_context", ""),
         )
         if _api_content is not None and _api_content != _turn_user_msg.get("content"):
             _turn_user_msg["api_content"] = _api_content
             # In-place turn-start compaction has ALREADY inserted this turn's
-            # user row (archive_and_compact runs before prefetch/pre_llm_call
-            # can compose the sidecar), and the crash persist below identity-
+            # user row (archive_and_compact runs before recall can compose
+            # the sidecar), and the crash persist below identity-
             # skips every compacted dict (they are all in the rebound
             # conversation_history) — so the stamp would never reach the DB.
             # Backfill it onto the freshly-inserted row directly. Rotation
@@ -1421,12 +1375,10 @@ def build_turn_context(
 
     return TurnContext(
         user_message=user_message,
-        original_user_message=original_user_message,
         messages=messages,
         conversation_history=conversation_history,
         active_system_prompt=active_system_prompt,
         effective_task_id=effective_task_id,
-        turn_id=turn_id,
         current_turn_user_idx=current_turn_user_idx,
-        plugin_user_context=plugin_user_context,
+        user_context=user_context,
     )

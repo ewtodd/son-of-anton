@@ -1420,16 +1420,6 @@ DEFAULT_CONFIG = {
         # lets the vendor train on prompts/completions. The startup guard still
         # prints the full warning on every run and never bypasses cost guards.
         "allow_data_training_tiers_noninteractive": False,
-        # Human approval presentation transport. "builtin" preserves the
-        # current CLI/TUI/gateway/ACP surfaces. A plugin transport is used only
-        # when named explicitly here. Transport timeout/error/invalid response
-        # denies unless transport_fallback is explicitly set to "builtin".
-        # This is presentation only: plugins cannot detect, suppress, or
-        # auto-approve commands outside a correlated human response.
-        "approval": {
-            "transport": "builtin",
-            "transport_fallback": "deny",
-        },
         # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/
         # .cursorrules, project-local .son-of-anton config) always require human
         # approval — even under auto-approve/yolo. Extra patterns are

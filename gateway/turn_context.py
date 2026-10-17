@@ -88,7 +88,6 @@ class TurnContext:
 
     # --- hook / status bridge wiring (published at original binding sites) -
     _loop_for_step: Any = None
-    _hooks_ref: Any = None
     _status_adapter: Any = None
     _status_chat_id: Any = None
     _status_thread_metadata: Optional[dict] = None
@@ -97,7 +96,5 @@ class TurnContext:
     #     reads them through the ctx exactly where it used to close over
     #     the sibling closures) ---------------------------------------------
     progress_callback: Optional[Callable] = None
-    _step_callback_sync: Optional[Callable] = None
-    _event_callback_sync: Optional[Callable] = None
     _status_callback_sync: Optional[Callable] = None
 

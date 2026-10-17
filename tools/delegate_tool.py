@@ -609,7 +609,7 @@ def _sanitize_tool_target(key: str, value: Any) -> Any:
                 if not hostname:
                     return None
                 # ``SplitResult.netloc`` includes ``user:password@``. Rebuild
-                # the authority from parsed host/port so hook-visible history
+                # the authority from parsed host/port so the tool trace
                 # cannot carry URL credentials. Bracket IPv6 literals before
                 # appending a validated port.
                 host = f"[{hostname}]" if ":" in hostname else hostname
@@ -642,58 +642,6 @@ def _summarize_tool_arguments(arguments: Any) -> Dict[str, Any]:
         if cleaned is not None:
             targets[key] = cleaned
     return {"argument_keys": keys, "targets": targets}
-
-
-def _sanitize_tool_input_summary(summary: Any) -> Dict[str, Any]:
-    if not isinstance(summary, dict):
-        return {"argument_keys": [], "targets": {}}
-    keys = summary.get("argument_keys")
-    safe_keys = (
-        [str(key)[:128] for key in keys[:64]]
-        if isinstance(keys, list)
-        else []
-    )
-    targets = summary.get("targets")
-    safe_targets: Dict[str, Any] = {}
-    if isinstance(targets, dict):
-        for raw_key, value in targets.items():
-            key = str(raw_key).lower()
-            if key not in _TOOL_INPUT_TARGET_KEYS:
-                continue
-            cleaned = _sanitize_tool_target(key, value)
-            if cleaned is not None:
-                safe_targets[key] = cleaned
-    return {"argument_keys": safe_keys, "targets": safe_targets}
-
-
-def _subagent_stop_tool_call_history(tool_trace: Any) -> List[Dict[str, Any]]:
-    """Build a detached, metadata-only tool history for lifecycle hooks."""
-    if not isinstance(tool_trace, list):
-        return []
-
-    history: List[Dict[str, Any]] = []
-    for item in tool_trace:
-        if not isinstance(item, dict):
-            continue
-        tool_name = str(item.get("tool") or "unknown")[:256]
-        status = str(item.get("status") or "unknown").lower()
-        if status not in {"ok", "error"}:
-            status = "unknown"
-
-        def _byte_count(key: str) -> int:
-            value = item.get(key, 0)
-            if not isinstance(value, (int, float)) or isinstance(value, bool):
-                return 0
-            return max(0, int(value))
-
-        history.append({
-            "tool_name": tool_name,
-            "tool_input": _sanitize_tool_input_summary(item.get("input_summary")),
-            "input_bytes": _byte_count("args_bytes"),
-            "output_bytes": _byte_count("result_bytes"),
-            "status": status,
-        })
-    return history
 
 
 def _looks_like_error_output(content: Any) -> bool:
@@ -1515,21 +1463,6 @@ def _build_child_agent(
             child_progress_cb("subagent.spawn_requested", preview=goal)
         except Exception as exc:
             logger.debug("spawn_requested relay failed: %s", exc)
-
-    try:
-        from son_of_anton_cli.lifecycle import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "subagent_start",
-            parent_session_id=getattr(parent_agent, "session_id", None),
-            parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
-            parent_subagent_id=parent_subagent_id,
-            child_session_id=getattr(child, "session_id", None),
-            child_subagent_id=subagent_id,
-            child_role="leaf",
-            child_goal=goal,
-        )
-    except Exception:
-        logger.debug("subagent_start hook invocation failed", exc_info=True)
 
     return child
 
@@ -2493,50 +2426,21 @@ def _parent_finalization_lock(parent_agent) -> threading.RLock:
 
 def _finalize_child_results(
     results: List[Dict[str, Any]],
-    task_list: List[Dict[str, Any]],
-    children: List[tuple[int, Dict[str, Any], Any]],
     parent_agent,
 ) -> None:
-    """Apply host-owned summary, memory, hook, and cost contracts once."""
+    """Apply host-owned summary, memory, and cost contracts once."""
     with _parent_finalization_lock(parent_agent):
         _apply_summary_budget(results, parent_agent)
-        child_by_index = {index: child for index, _task, child in children}
-
-        parent_session_id = getattr(parent_agent, "session_id", None)
-        try:
-            from son_of_anton_cli.plugins import invoke_hook as invoke_hook
-        except Exception:
-            invoke_hook = None
 
         children_cost_total = 0.0
         for entry in results:
-            child_role = entry.pop("_child_role", None)
+            entry.pop("_child_role", None)
             child_cost = entry.pop("_child_cost_usd", 0.0)
             try:
                 if child_cost:
                     children_cost_total += float(child_cost)
             except (TypeError, ValueError):
                 pass
-            if invoke_hook is None:
-                continue
-            try:
-                child_index = entry.get("task_index", -1)
-                child = child_by_index.get(child_index)
-                invoke_hook(
-                    "subagent_stop",
-                    parent_session_id=parent_session_id,
-                    parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
-                    child_session_id=getattr(child, "session_id", None),
-                    child_role=child_role,
-                    child_summary=entry.get("summary"),
-                    child_status=entry.get("status"),
-                    tool_call_history=_subagent_stop_tool_call_history(
-                        entry.get("tool_trace")
-                    ),
-                    duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
-                )
-            except Exception:
-                logger.debug("subagent_stop hook invocation failed", exc_info=True)
 
         if children_cost_total > 0.0:
             try:
@@ -2881,7 +2785,7 @@ def delegate_task(
 
     def _execute_and_aggregate(*, honor_parent_interrupt: bool = True) -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
-        fire subagent_stop hooks + cost rollup, and return the combined result
+        apply the cost rollup, and return the combined result
         dict. Used by BOTH the synchronous path and the background runner. In
         the background case this whole function runs on the daemon executor, so
         the parent turn isn't blocked — but the batch still JOINS on itself
@@ -3037,7 +2941,7 @@ def delegate_task(
         # headroom (split across the batch) before they enter the parent's
         # conversation. Full text is spilled to disk so nothing is lost.
         # Covers both the single-task and batch paths. See PR #9126.
-        _finalize_child_results(results, task_list, children, parent_agent)
+        _finalize_child_results(results, parent_agent)
 
         total_duration = round(time.monotonic() - overall_start, 2)
 

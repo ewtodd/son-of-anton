@@ -3668,22 +3668,6 @@ def compact_context(
             agent._compaction_warning = _cc_msg
             agent._emit_status(_cc_msg)
 
-        # Emit session:compact event so hooks (e.g. MemPalace sync) can ingest
-        # the completed old session before its details are lost. In in-place mode
-        # there is no old id (same session); ``in_place=True`` tells hooks the
-        # transcript was compacted on the same id rather than rotated.
-        if getattr(agent, "event_callback", None):
-            try:
-                agent.event_callback("session:compact", {
-                    "platform": agent.platform or "",
-                    "session_id": agent.session_id,
-                    "old_session_id": _old_sid or "",
-                    "in_place": in_place,
-                    "compaction_count": agent.context_compactor.compaction_count,
-                })
-            except Exception as e:
-                logger.debug("event_callback error on session:compact: %s", e)
-
         # Surface the compaction mode to the caller (run_conversation / gateway)
         # via a rotation-independent flag. The gateway uses this — NOT an
         # id-change diff — to re-baseline transcript handling (history_offset=0 +

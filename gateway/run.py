@@ -1779,29 +1779,12 @@ def _bridge_gateway_config_to_env() -> None:
                             os.environ[_env_var] = str(_val)
             # Compaction config is read directly from config.toml by run_agent.py
             # and auxiliary_client.py — no env var bridging needed.
-            # Auxiliary model/direct-endpoint overrides (vision, approval,
-            # plus any plugin-registered auxiliary tasks).
+            # Auxiliary model/direct-endpoint overrides (vision, approval).
             # Each task has provider/model/base_url/api_key; bridge non-default
-            # values to env vars named AUXILIARY_<KEY_UPPER>_*. The legacy
-            # hard-coded list (vision/approval) is replaced by a
-            # dynamic loop so plugin-registered tasks benefit from the same
-            # config→env bridging without core knowing about each one.
+            # values to env vars named AUXILIARY_<KEY_UPPER>_*.
             _auxiliary_cfg = _cfg.get("auxiliary", {})
             if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
-                # Built-in tasks that previously had explicit env-var bridging.
-                # Kept here as the canonical bridged set; plugin tasks are added
-                # below via the plugin auxiliary registry.
-                _aux_bridged_keys = {"vision", "approval"}
-                try:
-                    from son_of_anton_cli.plugins import get_plugin_auxiliary_tasks
-                    for _entry in get_plugin_auxiliary_tasks():
-                        _aux_bridged_keys.add(_entry["key"])
-                except Exception:
-                    # Plugin discovery failure must not break gateway startup;
-                    # built-in bridging stays intact.
-                    pass
-
-                for _task_key in _aux_bridged_keys:
+                for _task_key in ("vision", "approval"):
                     _task_cfg = _auxiliary_cfg.get(_task_key, {})
                     if not isinstance(_task_cfg, dict):
                         continue
@@ -3354,43 +3337,6 @@ class TurnRunner:
                 preview_str = f' "{preview}"' if preview else ""
                 ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
 
-    def _step_callback_sync(self, iteration: int, prev_tools: list) -> None:
-        ctx = self._ctx
-        if not ctx._run_still_current():
-            return
-        # prev_tools may be list[str] or list[dict] with "name"/"result"
-        # keys.  Normalise to keep "tool_names" backward-compatible for
-        # user-authored hooks that do ', '.join(tool_names)'.
-        _names: list[str] = []
-        for _t in (prev_tools or []):
-            if isinstance(_t, dict):
-                _names.append(_t.get("name") or "")
-            else:
-                _names.append(str(_t))
-        safe_schedule_threadsafe(
-            ctx._hooks_ref.emit("agent:step", {
-                "platform": ctx.source.platform.value if ctx.source.platform else "",
-                "user_id": ctx.source.user_id,
-                "session_id": ctx.session_id,
-                "iteration": iteration,
-                "tool_names": _names,
-                "tools": prev_tools,
-            }),
-            ctx._loop_for_step,
-            logger=logger,
-            log_message="agent:step hook scheduling error",
-        )
-
-    def _event_callback_sync(self, event_type: str, context: dict) -> None:
-        ctx = self._ctx
-        try:
-            asyncio.run_coroutine_threadsafe(
-                ctx._hooks_ref.emit(event_type, context),
-                ctx._loop_for_step,
-            )
-        except Exception as _e:
-            logger.debug("event_callback hook error: %s", _e)
-
     def _attach_session_title_callback(self, agent, ctx) -> None:
         """Wire the platform thread-rename lane onto the agent as `_on_session_title`.
 
@@ -3854,7 +3800,6 @@ class TurnRunner:
         agent.tool_progress_callback = (
             ctx.progress_callback if ctx.log_mode_enabled else None
         )
-        agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = _stream_delta_cb
         agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
         agent.status_callback = ctx._status_callback_sync
@@ -3889,7 +3834,6 @@ class TurnRunner:
 
         agent.notice_callback = _notice_callback_sync
         agent.notice_clear_callback = None
-        agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config = reasoning_config
         agent.request_overrides = {}
         # Must-deliver notes for THIS turn ride the current user message
@@ -4551,7 +4495,6 @@ class TurnRunner:
             "context_length": _context_length,
             "session_id": effective_session_id,
             "response_previewed": result.get("response_previewed", False),
-            "response_transformed": result.get("response_transformed", False),
             # Pass through the agent_persisted flag so the persistence block
             # above knows whether the turn persisted its own messages.
             # Default True preserves the skip-db behaviour.
@@ -4985,8 +4928,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self.pairing_store = PairingStore()
         
         # Event hook system
-        from gateway.hooks import HookRegistry
-        self.hooks = HookRegistry()
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
@@ -6162,8 +6103,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         pending_slot = getattr(adapter, "_pending_messages", None)
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
         security_metadata_keys = (
-            "son_of_anton_plugin_id",
-            "son_of_anton_plugin_injection",
             "gateway_session_key",
             "gateway_session_id",
             "gateway_session_strict",
@@ -6855,19 +6794,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         )
             except Exception as _e:
                 logger.debug("Shutdown transcript flush failed: %s", _e)
-            # Off-loop + bounded: finalize_session fans out to plugin
-            # on_session_finalize hooks that can do arbitrary synchronous
-            # work (e.g. an observability plugin serializing a full-session
-            # trace export). Running it inline on the event loop blocked the
-            # entire shutdown sequence past systemd's TimeoutStopSec on a
-            # multi-day 4.7G session — heartbeats froze and the process was
-            # SIGKILLed mid-export. Same class as the memory-provider hang
-            # below (#53175).
-            await self._finalize_session_off_loop(
-                session_id=getattr(agent, "session_id", None),
-                platform="gateway",
-                reason="shutdown",
-            )
             # Off-loop + bounded: a wedged memory provider here used to hang
             # the whole shutdown so SIGTERM never completed (#53175).
             await self._cleanup_agent_resources_off_loop(
@@ -6900,8 +6826,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     # Upper bound on off-loop agent-resource cleanup invoked from coroutines
     # running on the gateway's event loop (session-expiry sweep, in-turn
     # cache-hygiene re-eviction). _cleanup_agent_resources is synchronous and
-    # can block for a long time (agent.close() does subprocess teardown;
-    # shutdown_memory_provider() may do network/SQLite IO via a memory plugin).
+    # can block for a long time (agent.close() does subprocess teardown).
     # Calling it inline wedges the whole loop — the bot goes silent, the
     # runtime-status updated_at heartbeat freezes, and SIGTERM cannot be
     # serviced (#53175). Offload to a worker thread under this timeout so the
@@ -6945,62 +6870,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             self._deferred_agent_cleanup_tasks = tasks
         tasks.add(task)
         task.add_done_callback(tasks.discard)
-
-    # Bounded budget for one finalize_session() dispatch (plugin
-    # on_session_finalize hooks), small enough that a wedged plugin can
-    # never eat the systemd stop window.
-    _FINALIZE_TIMEOUT_S = 10.0
-
-    async def _finalize_session_off_loop(
-        self,
-        *,
-        session_id: Any,
-        platform: str,
-        reason: str,
-        **extra: Any,
-    ) -> None:
-        """Run son_of_anton_cli.lifecycle.finalize_session off the event loop, bounded.
-
-        finalize_session() invokes plugin ``on_session_finalize`` hooks
-        synchronously; a hook doing heavy blocking work (observability trace
-        export, network flush) on the event loop freezes heartbeats, adapters,
-        and the shutdown drain itself. Off-loop + ``wait_for`` keeps the loop
-        live; on timeout the worker thread is left to finish (or leak) on its
-        own and the caller proceeds — mirroring
-        ``_cleanup_agent_resources_off_loop`` (#53175).
-        """
-
-        def _call() -> None:
-            from son_of_anton_cli.lifecycle import finalize_session
-
-            finalize_session(
-                session_id=session_id,
-                platform=platform,
-                reason=reason,
-                **extra,
-            )
-
-        try:
-            await asyncio.wait_for(
-                self._run_in_executor_with_context(_call),
-                timeout=self._FINALIZE_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "Session finalize hooks (%s, reason=%s) exceeded %ss; "
-                "proceeding without blocking the event loop (the worker "
-                "thread is left to finish on its own).",
-                session_id,
-                reason,
-                self._FINALIZE_TIMEOUT_S,
-            )
-        except Exception as finalize_exc:
-            logger.debug(
-                "Session finalize hooks (%s, reason=%s) failed: %s",
-                session_id,
-                reason,
-                finalize_exc,
-            )
 
     async def _cleanup_agent_resources_off_loop(
         self, agent: Any, *, context: str = ""
@@ -8214,24 +8083,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 "with GATEWAY_ALLOW_ALL_USERS=true."
             )
         
-        # Discover Python plugins before shell hooks so plugin block
-        # decisions take precedence in tie cases.  The CLI startup path
-        # does this via an explicit call in son_of_anton_cli/main.py; the
-        # gateway lazily imports run_agent inside per-request handlers,
-        # so the discover_plugins() side-effect in model_tools.py is NOT
-        # guaranteed to have run by the time we reach this point.
-        try:
-            from son_of_anton_cli.plugins import discover_plugins
-            discover_plugins()
-        except Exception:
-            logger.warning(
-                "plugin discovery failed at gateway startup", exc_info=True,
-            )
-
-        # Discover and load event hooks
-        self.hooks.discover_and_load()
-
-        
         # Recover background processes from checkpoint (crash recovery)
         try:
             from tools.process_registry import process_registry
@@ -8324,17 +8175,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                # Distinguish between missing builtin deps and missing plugin
-                _pval = platform.value
-                _builtin_names = {m.value for m in Platform.__members__.values()}
-                if _pval not in _builtin_names:
-                    logger.warning(
-                        "No adapter for '%s' -- is the plugin installed? "
-                        "(platform is enabled in config.toml but no plugin registered it)",
-                        _pval,
-                    )
-                else:
-                    logger.warning("No adapter available for %s", _pval)
+                logger.warning("No adapter available for %s", platform.value)
                 continue
 
             # Set up message + fatal error handlers. Under multiplexing the
@@ -8592,19 +8433,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self._running = True
         self._enforce_single_user_allowlist()
         self._start_active_hours_reopen_watch()
-        self._install_plugin_message_injector()
         self._update_runtime_status("running")
 
         self._start_loop_heartbeat_task()
 
-        # Emit gateway:startup hook
-        hook_count = len(self.hooks.loaded_hooks)
-        if hook_count:
-            logger.info("%s hook(s) loaded", hook_count)
-        await self.hooks.emit("gateway:startup", {
-            "platforms": [p.value for p in self.adapters.keys()],
-        })
-        
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
         
@@ -8930,8 +8762,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         """Background task that finalizes expired sessions.
 
         Runs every ``interval`` seconds (default 5 min).  For each session
-        whose reset policy has expired, invokes ``on_session_finalize``
-        hooks, cleans up the cached AIAgent's tool resources, evicts the
+        whose reset policy has expired, cleans up the cached AIAgent's tool
+        resources, evicts the
         cache entry so it can be garbage-collected, and marks the session
         so it won't be finalized again.
         """
@@ -8968,19 +8800,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
                 for key, entry in _expired_entries:
                     try:
-                        try:
-                            _parts = key.split(":")
-                            _platform = _parts[2] if len(_parts) > 2 else ""
-                            # Off-loop + bounded: plugin finalize hooks can
-                            # block arbitrarily (see _finalize_session_off_loop)
-                            # and this watcher runs on the gateway event loop.
-                            await self._finalize_session_off_loop(
-                                session_id=entry.session_id,
-                                platform=_platform,
-                                reason="session_expired",
-                            )
-                        except Exception:
-                            pass
                         # Shut down memory provider and close tool resources
                         # on the cached agent.  Idle agents live in
                         # _agent_cache (not _running_agents), so look there.
@@ -9746,7 +9565,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 return time.monotonic() - _stop_started_at
 
             self._running = False
-            self._clear_plugin_message_injector()
             self._draining = True
 
             stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
@@ -10680,7 +10498,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     def _event_steerable_text(self, event: Any) -> Optional[str]:
         """Text a live-turn steer can carry, or None when the event must queue.
 
-        Attachments, synthetic goal continuations, internal plugin events and
+        Attachments, synthetic goal continuations, internal events and
         commands cannot ride a redirect: they stay in the queue for their own
         turn. A command that rode one would reach the model as its literal
         text instead of running.
@@ -10869,50 +10687,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         ):
             self._queue_startup_restore_event(event)
             return None
-
-        # Fire pre_gateway_dispatch plugin hook for user-originated messages.
-        # Plugins receive the MessageEvent and may return a dict influencing flow:
-        #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
-        #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
-        #   {"action": "allow"}   /   None          -> normal dispatch
-        # Hook runs BEFORE auth so plugins can handle unauthorized senders
-        # (e.g. customer handover ingest) without triggering the pairing flow.
-        if not is_internal:
-            try:
-                from son_of_anton_cli.lifecycle import invoke_hook as _invoke_hook
-                _hook_results = _invoke_hook(
-                    "pre_gateway_dispatch",
-                    event=event,
-                    gateway=self,
-                    # getattr: bare-runner tests build GatewayRunner via
-                    # object.__new__ without __init__ (pitfall #17), and the
-                    # hook must not fail dispatch over a missing attribute.
-                    session_store=getattr(self, "session_store", None),
-                )
-            except Exception as _hook_exc:
-                logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
-                _hook_results = []
-
-            for _result in _hook_results:
-                if not isinstance(_result, dict):
-                    continue
-                _action = _result.get("action")
-                if _action == "skip":
-                    logger.info(
-                        "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
-                        _result.get("reason"),
-                        source.platform.value if source.platform else "unknown",
-                        source.chat_id or "unknown",
-                    )
-                    return None
-                if _action == "rewrite":
-                    _new_text = _result.get("text")
-                    if isinstance(_new_text, str):
-                        event = dataclasses.replace(event, text=_new_text)
-                        source = event.source
-                    break
-                if _action == "allow":
-                    break
 
         if is_internal:
             pass
@@ -11472,12 +11246,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         from son_of_anton_cli.commands import (
             GATEWAY_KNOWN_COMMANDS,
-            is_gateway_known_command,
             resolve_command as _resolve_cmd,
         )
 
-        # Resolve aliases to canonical name so dispatch and hook names
-        # don't depend on the exact alias the user typed.
+        # Resolve aliases to canonical name so dispatch doesn't depend on
+        # the exact alias the user typed.
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command
 
@@ -11509,94 +11282,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # run every command. When set → non-admins can run only commands in
         # ``user_allowed_commands`` (plus the always-allowed floor: /help,
         # /whoami). Plain chat is unaffected — only slash commands gate.
-        if command and canonical and is_gateway_known_command(canonical):
+        if command and canonical and canonical in GATEWAY_KNOWN_COMMANDS:
             _denied = self._check_slash_access(source, canonical)
             if _denied is not None:
                 return _denied
-
-        # pre_command observer hook (#64204): fires for every recognized
-        # slash command BEFORE core handling, mirroring the CLI fire-site in
-        # cli.py process_command. Observer-only in v1 (returns ignored).
-        #
-        # Placement matters: this cold-path dispatch is only reached when NO
-        # agent is running for the session. The running-agent intercept path
-        # above (/stop, /approve, busy_policy dispatch via
-        # _dispatch_busy_slash_command) deliberately does NOT fire this hook —
-        # those are control-plane operations on an in-flight run, and giving
-        # plugins an observation (and eventually veto) point there would let
-        # a slow or hostile plugin interfere with the operator's escape
-        # hatches for a live agent.
-        if command and is_gateway_known_command(canonical):
-            try:
-                from son_of_anton_cli.plugins import fire_pre_command_hook
-                fire_pre_command_hook(
-                    surface="gateway",
-                    command=str(canonical),
-                    alias_used=str(command),
-                    args_raw=event.get_command_args().strip(),
-                    session_key=_quick_key,
-                    platform=source.platform.value if source.platform else "",
-                )
-            except Exception as _pre_cmd_err:
-                logger.debug(
-                    "pre_command hook dispatch failed (non-fatal): %s",
-                    _pre_cmd_err,
-                )
-
-        # Fire the ``command:<canonical>`` hook for any recognized slash
-        # command — built-in OR plugin-registered. Handlers can return a
-        # dict with ``{"decision": "deny" | "handled" | "rewrite", ...}``
-        # to intercept dispatch before core handling runs. This replaces
-        # the previous fire-and-forget emit(): return values are now
-        # honored, but handlers that return nothing behave exactly as
-        # before (telemetry-style hooks keep working).
-        if command and is_gateway_known_command(canonical):
-            raw_args = event.get_command_args().strip()
-            hook_ctx = {
-                "platform": source.platform.value if source.platform else "",
-                "user_id": source.user_id,
-                "command": canonical,
-                "raw_command": command,
-                "args": raw_args,
-                "raw_args": raw_args,
-            }
-            try:
-                hook_results = await self.hooks.emit_collect(
-                    f"command:{canonical}", hook_ctx
-                )
-            except Exception as _hook_err:
-                logger.debug(
-                    "command:%s hook dispatch failed (non-fatal): %s",
-                    canonical, _hook_err,
-                )
-                hook_results = []
-
-            for hook_result in hook_results:
-                if not isinstance(hook_result, dict):
-                    continue
-                decision = str(hook_result.get("decision", "")).strip().lower()
-                if not decision or decision == "allow":
-                    continue
-                if decision == "deny":
-                    message = hook_result.get("message")
-                    if isinstance(message, str) and message:
-                        return message
-                    return f"Command `/{command}` was blocked by a hook."
-                if decision == "handled":
-                    message = hook_result.get("message")
-                    return message if isinstance(message, str) and message else None
-                if decision == "rewrite":
-                    new_command = str(
-                        hook_result.get("command_name", "")
-                    ).strip().lstrip("/")
-                    if not new_command:
-                        continue
-                    new_args = str(hook_result.get("raw_args", "")).strip()
-                    event.text = f"/{new_command} {new_args}".strip()
-                    command = event.get_command()
-                    _cmd_def = _resolve_cmd(command) if command else None
-                    canonical = _cmd_def.name if _cmd_def else command
-                    break
 
         if canonical == "pause":
             return await self._handle_pause_command(event)
@@ -11862,25 +11551,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 else:
                     return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
 
-        # Plugin-registered slash commands
-        if command:
-            try:
-                from son_of_anton_cli.plugins import get_plugin_command_handler
-                # Normalize underscores to hyphens so underscored
-                # autocomplete form matches plugin commands registered with
-                # hyphens.
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
-                    if asyncio.iscoroutine(result):
-                        result = await result
-                    return str(result) if result else None
-            except Exception as e:
-                logger.warning("Plugin command dispatch failed: %s", e)
-
-        # Genuinely unrecognized /command: not a built-in, not a quick command,
-        # not a plugin's. Warn the user instead of silently forwarding it to
+        # Genuinely unrecognized /command: not a built-in or a quick command.
+        # Warn the user instead of silently forwarding it to
         # the LLM as free text (which leads to silent-failure behavior like the
         # model inventing a delegate_task call). Normalize to hyphenated form
         # before checking known built-ins (command may be an alias target set
@@ -12451,153 +12123,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 except AttributeError:
                     pass
 
-    def _install_plugin_message_injector(self) -> None:
-        """Publish this live gateway's plugin message scheduler."""
-        from son_of_anton_cli.plugins import get_plugin_manager
-
-        get_plugin_manager().set_gateway_message_injector(
-            self,
-            self._schedule_plugin_message_injection,
-        )
-
-    def _clear_plugin_message_injector(self) -> None:
-        """Remove this runner's scheduler without clobbering a newer owner."""
-        from son_of_anton_cli.plugins import get_plugin_manager
-
-        get_plugin_manager().clear_gateway_message_injector(self)
-
-    def _schedule_plugin_message_injection(
-        self,
-        *,
-        session_key: str,
-        content: str,
-        plugin_id: str,
-    ) -> bool:
-        """Schedule a plugin-triggered turn on the live gateway loop."""
-        loop = getattr(self, "_gateway_loop", None)
-        if not getattr(self, "_running", False) or loop is None or loop.is_closed():
-            return False
-
-        coro = self._dispatch_plugin_message_injection(
-            session_key=session_key,
-            content=content,
-            plugin_id=plugin_id,
-        )
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
-
-        if current_loop is loop:
-            try:
-                future = loop.create_task(coro)
-            except Exception:
-                coro.close()
-                logger.warning(
-                    "Plugin message injection scheduling failed",
-                    exc_info=True,
-                )
-                return False
-            self._background_tasks.add(future)
-            future.add_done_callback(self._background_tasks.discard)
-        else:
-            future = safe_schedule_threadsafe(
-                coro,
-                loop,
-                logger=logger,
-                log_message="Plugin message injection scheduling failed",
-                log_level=logging.WARNING,
-            )
-            if future is None:
-                return False
-
-        def _log_result(completed) -> None:
-            try:
-                accepted = completed.result()
-            except (asyncio.CancelledError, concurrent.futures.CancelledError):
-                return
-            except Exception:
-                logger.warning(
-                    "Plugin message injection failed: plugin=%s session=%s",
-                    plugin_id,
-                    session_key,
-                    exc_info=True,
-                )
-                return
-            if not accepted:
-                logger.warning(
-                    "Plugin message injection was not routed: plugin=%s session=%s",
-                    plugin_id,
-                    session_key,
-                )
-
-        future.add_done_callback(_log_result)
-        return True
-
-    async def _dispatch_plugin_message_injection(
-        self,
-        *,
-        session_key: str,
-        content: str,
-        plugin_id: str,
-    ) -> bool:
-        """Route a plugin-triggered turn through the session's live adapter."""
-        if not getattr(self, "_running", False) or getattr(self, "_draining", False):
-            return False
-
-        entry = await self.async_session_store.lookup_by_session_key(session_key)
-        if entry is None or entry.origin is None:
-            return False
-        if not getattr(self, "_running", False) or getattr(self, "_draining", False):
-            return False
-
-        source = dataclasses.replace(entry.origin)
-        try:
-            if not self._is_user_authorized(source):
-                logger.warning(
-                    "Plugin message injection denied by current gateway authorization: "
-                    "plugin=%s session=%s",
-                    plugin_id,
-                    session_key,
-                )
-                return False
-        except Exception:
-            logger.warning(
-                "Plugin message injection authorization check failed: "
-                "plugin=%s session=%s",
-                plugin_id,
-                session_key,
-                exc_info=True,
-            )
-            return False
-
-        adapter = self._adapter_for_source(source)
-        if adapter is None:
-            return False
-
-        event = MessageEvent(
-            text=content,
-            message_type=MessageType.TEXT,
-            source=source,
-            internal=True,
-            allow_gateway_control=False,
-            metadata={
-                "son_of_anton_plugin_id": plugin_id,
-                "son_of_anton_plugin_injection": True,
-                "gateway_session_key": session_key,
-                "gateway_session_id": entry.session_id,
-                "gateway_session_strict": True,
-            },
-        )
-        await adapter.handle_message(event)
-        logger.info(
-            "Plugin message injection dispatched: plugin=%s session=%s session_id=%s",
-            plugin_id,
-            session_key,
-            entry.session_id,
-        )
-        return True
-
     def _get_cached_session_source(self, session_key: str):
         if not session_key:
             return None
@@ -12699,23 +12224,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             self._evict_cached_agent(session_key)
             session_entry.was_auto_reset = False
         
-        # Emit session:start for new or auto-reset sessions
-        _is_new_session = (
-            session_entry.created_at == session_entry.updated_at
-            or _was_auto_reset
-            or getattr(session_entry, "is_fresh_reset", False)
-        )
         # Consume the is_fresh_reset flag immediately so it doesn't leak
         # onto subsequent messages in the same session (issue #6508).
         if getattr(session_entry, "is_fresh_reset", False):
             session_entry.is_fresh_reset = False
-        if _is_new_session:
-            await self.hooks.emit("session:start", {
-                "platform": source.platform.value if source.platform else "",
-                "user_id": source.user_id,
-                "session_id": session_entry.session_id,
-                "session_key": session_key,
-            })
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
@@ -13797,18 +13309,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         )
 
         try:
-            # Emit agent:start hook
-            hook_ctx = {
-                "platform": source.platform.value if source.platform else "",
-                "user_id": source.user_id,
-                "chat_id": source.chat_id or "",
-                "thread_id": str(getattr(source, "thread_id", None)) if getattr(source, "thread_id", None) else "",
-                "chat_type": getattr(source, "chat_type", "") or "",
-                "session_id": session_entry.session_id,
-                "message": message_text[:500],
-            }
-            await self.hooks.emit("agent:start", hook_ctx)
-
             # Run the agent. Capture the session id that this run was launched
             # against so post-run compaction publication can be identity-guarded
             # below; a /new or another lifecycle transition may move
@@ -14042,14 +13542,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
 
-            # Emit agent:end hook
-            await self.hooks.emit("agent:end", {
-                **hook_ctx,
-                "response": (response or "")[:500],
-                "model": agent_result.get("model", ""),
-                "provider": agent_result.get("provider", ""),
-            })
-            
             # Check for pending process watchers (check_interval on background processes)
             try:
                 from tools.process_registry import process_registry
@@ -19607,20 +19099,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         turn_ctx.tools_holder = tools_holder
         turn_ctx.stream_consumer_holder = stream_consumer_holder
         
-        # Bridge sync step_callback → async hooks.emit for agent:step events
-        _loop_for_step = asyncio.get_running_loop()
-        _hooks_ref = self.hooks
-
-        # Bridge extracted to TurnRunner._step_callback_sync; the loop and
-        # hooks refs bound just above are published at their original site.
-        turn_ctx._loop_for_step = _loop_for_step
-        turn_ctx._hooks_ref = _hooks_ref
-        turn_ctx._step_callback_sync = turn_runner._step_callback_sync
-
-        # Bridge sync event_callback → async hooks.emit for lifecycle events
-        # (e.g. session:compact fires after context compaction splits a session)
-        # Bridge extracted to TurnRunner._event_callback_sync.
-        turn_ctx._event_callback_sync = turn_runner._event_callback_sync
+        # The gateway loop the sync agent-thread callbacks schedule onto.
+        turn_ctx._loop_for_step = asyncio.get_running_loop()
 
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self._adapter_for_source(source)
@@ -20572,10 +20052,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         _stale_finalized = False
                 if _stale_finalized:
                     _content_delivered = False
-            # Plugin hooks (e.g. transform_llm_output) may have appended content
-            # after streaming finished — when the response was transformed, always
-            # send the final version so the appended content reaches the client.
-            _transformed = bool(response.get("response_transformed"))
             # Only suppress the normal send when the actual final reply reached
             # the user: the stream consumer streamed it (final_response_sent /
             # final_content_delivered), or the interim preview delivered that
@@ -20587,7 +20063,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 _final,
                 previewed=_previewed,
             )
-            if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
+            if not _is_empty_sentinel and (_streamed or _content_delivered):
                 logger.info(
                     "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
                     session_key or "?",
@@ -20596,10 +20072,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     _content_delivered,
                 )
                 response["already_sent"] = True
-            elif not _is_empty_sentinel and not _transformed and _stale_finalized and _sc is not None:
+            elif not _is_empty_sentinel and _stale_finalized and _sc is not None:
                 # Stale finalize (#71643): the streamed message holds only the
                 # last preview snapshot. Prefer editing it up to the complete
-                # response (same shape as the transformed branch below) so the
+                # response so the
                 # user gets one corrected message; on edit failure fall through
                 # with already_sent unset so the normal final send delivers the
                 # complete text.
@@ -20646,28 +20122,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         "Stale streamed finalize detected for session %s with no editable message; delivering complete response via normal final send (#71643).",
                         session_key or "?",
                     )
-            elif not _is_empty_sentinel and _transformed and _sc is not None:
-                # Plugin hooks transformed the response after streaming — edit the
-                # existing streamed message instead of sending a duplicate.
-                _sc_msg_id = _sc.message_id
-                if _sc_msg_id:
-                    try:
-                        await _sc.adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=_sc_msg_id,
-                            content=response["final_response"],
-                            finalize=True,
-                        )
-                        response["already_sent"] = True
-                        logger.info(
-                            "Edited streamed message %s for session %s to include plugin-transformed content.",
-                            _sc_msg_id, session_key or "?",
-                        )
-                    except Exception as _edit_err:
-                        logger.warning(
-                            "Failed to edit streamed message for session %s: %s",
-                            session_key or "?", _edit_err,
-                        )
 
         return response
 
