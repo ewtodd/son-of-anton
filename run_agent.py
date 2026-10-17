@@ -1161,36 +1161,6 @@ class AIAgent:
             return True
         return os.getenv("SON_OF_ANTON_API_CALL_STALE_TIMEOUT") is not None
 
-    def _anthropic_prompt_cache_policy(
-        self,
-        *,
-        provider: Optional[str] = None,
-        base_url: Optional[str] = None,
-        api_mode: Optional[str] = None,
-        model: Optional[str] = None,
-    ) -> tuple[bool, bool]:
-        """Forwarder — see ``agent.agent_runtime_helpers.anthropic_prompt_cache_policy``."""
-        from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
-        return anthropic_prompt_cache_policy(self, provider=provider, base_url=base_url, api_mode=api_mode, model=model)
-
-    def _direct_native_anthropic_tool_cache_capability(
-        self,
-        *,
-        provider: Optional[str] = None,
-        base_url: Optional[str] = None,
-        api_mode: Optional[str] = None,
-        model: Optional[str] = None,
-    ) -> bool:
-        """Forwarder for the request-local native Anthropic tool capability."""
-        from agent.agent_runtime_helpers import _direct_native_anthropic_tool_cache_capability
-        return _direct_native_anthropic_tool_cache_capability(
-            self,
-            provider=provider,
-            base_url=base_url,
-            api_mode=api_mode,
-            model=model,
-        )
-
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
 
