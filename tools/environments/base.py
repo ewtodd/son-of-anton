@@ -201,7 +201,7 @@ def get_activity_callback() -> Callable[[str], None] | None:
     Public accessor for callers outside this module that need to capture the
     calling thread's callback before handing work to another thread (the
     callback is thread-local, so a freshly spawned thread cannot read it
-    back) — e.g. the manual cron-run heartbeat (#76502).
+    back) — e.g. the manual cron-run heartbeat.
     """
     return getattr(_activity_callback_local, "callback", None)
 
@@ -232,20 +232,6 @@ def touch_activity_if_due(
         pass
 
 
-def get_sandbox_dir() -> Path:
-    """Return the host-side root for sandbox storage.
-
-    Configurable via TERMINAL_SANDBOX_DIR. Defaults to {SON_OF_ANTON_HOME}/sandboxes/.
-    """
-    custom = os.getenv("TERMINAL_SANDBOX_DIR")
-    if custom:
-        p = Path(custom)
-    else:
-        p = get_son_of_anton_home() / "sandboxes"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
 # ---------------------------------------------------------------------------
 # Shared constants and utilities
 # ---------------------------------------------------------------------------
@@ -254,20 +240,8 @@ def get_sandbox_dir() -> Path:
 def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
     """Write *data* to proc.stdin on a daemon thread to avoid pipe-buffer deadlocks.
 
-    On Windows, text-mode stdin (``text=True`` / ``encoding="utf-8"``)
-    translates ``\\n`` → ``\\r\\n`` as the data flows through the pipe —
-    which corrupts every write_file / patch call because the bytes that
-    land on disk include injected carriage returns.  The file IS created,
-    but every subsequent byte-count / content compare against the
-    caller's ``\\n``-only string fails.
-
-    Workaround: write through ``proc.stdin.buffer`` (the underlying byte
-    buffer), encoding to UTF-8 ourselves.  That bypasses Python's
-    newline translation entirely on every platform.  No behaviour change
-    on POSIX — the byte sequence is identical to what text-mode would
-    produce there.
-
-    Encoding uses ``errors="surrogateescape"`` — the exact inverse of the
+    Writes through ``proc.stdin.buffer`` (the underlying byte buffer),
+    encoding to UTF-8 ourselves with ``errors="surrogateescape"`` — the exact inverse of the
     surrogateescape decode, so original bytes are restored.  For
     surrogate-free strings it is byte-identical to strict UTF-8.
     Surrogates outside the round-trip range U+DC80–U+DCFF raise and are
@@ -344,21 +318,13 @@ def _cwd_marker(session_id: str) -> str:
 # Per-session variables that the gateway bridges freshly onto every command's
 # process environment (via tools/environments/local._inject_session_context_env,
 # reading gateway.session_context._VAR_MAP). They must NEVER be persisted into
-# the shared bash session snapshot: a single long-lived backend serves many
-# concurrent sessions (the messaging gateway, TUI, desktop/web dashboard all
-# collapse the terminal to one "default" environment), so ``export -p`` dumping
-# the FIRST session's SON_OF_ANTON_SESSION_ID into the snapshot makes every LATER
-# session ``source`` that stale value and see a FOREIGN session's identity —
-# overriding the correct per-command Popen env (issue: cross-session
-# SON_OF_ANTON_SESSION_ID leak via the shared snapshot). Stripping them from the
-# snapshot is safe because they are re-injected on every command; a snapshot
-# should only carry the user's own shell state (PATH, functions, exports they
-# set), not Son of Anton' per-turn session identity.
-#
-# Kept in sync with gateway.session_context._VAR_MAP: every bridged name starts
-# with one of these prefixes (or is SON_OF_ANTON_UI_SESSION_ID). Used by unit tests
-# as the Python-side contract for the exclusion set; the dump path unsets by
-# name/prefix instead of grepping declare lines (see below / issue #71296).
+# the shared bash session snapshot: one long-lived environment serves every
+# concurrent session, so ``export -p`` dumping the FIRST session's
+# SON_OF_ANTON_SESSION_ID into the snapshot would make every LATER session
+# ``source`` that stale value and see a FOREIGN session's identity. Stripping
+# them is safe because they are re-injected on every command. Every bridged
+# name starts with SON_OF_ANTON_SESSION_ / SON_OF_ANTON_CRON_AUTO_DELIVER_ (or
+# is SON_OF_ANTON_UI_SESSION_ID).
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -371,13 +337,12 @@ def _export_dump_excluding_session_vars(
     additional names supplied by the caller.
 
     Unset the bridged vars in a subshell *before* ``export -p``. A line-based
-    ``grep -vE`` filter is unsafe: bash 3.2 prints a value containing a newline
-    as a multi-line ``declare -x NAME="…`` block, so only the opener matches the
-    regex and continuation lines (e.g. ``curl … | bash #`` smuggled into a
-    Matrix room/display name via ``SON_OF_ANTON_SESSION_CHAT_NAME``) land in the
-    snapshot and execute on the next ``source`` (issue #71296). Unsetting first
-    means ``export -p`` never emits those vars — including any continuation
-    lines. ``|| true`` keeps the success contract for callers that chain on it.
+    ``grep -vE`` filter is unsafe: a value containing a newline can print as a
+    multi-line ``declare -x NAME="…`` block, so only the opener would match and
+    continuation lines (attacker-chosen text, e.g. a chat name in
+    ``SON_OF_ANTON_SESSION_CHAT_NAME``) would land in the snapshot and execute
+    on the next ``source``. Unsetting first means ``export -p`` never emits
+    those vars. ``|| true`` keeps the success contract for callers that chain on it.
 
     The dump MUST be wrapped in a brace group with the redirection applied to
     the group. *tmp_path* is typically a shell-variable expansion (a
@@ -387,7 +352,7 @@ def _export_dump_excluding_session_vars(
     ``mv``. The brace-group redirect is expanded in the current shell,
     keeping both expansions consistent.
     """
-    # ${!PREFIX*} is bash 3.2+ name-prefix expansion; empty matches are fine
+    # ${!PREFIX*} is bash name-prefix expansion; empty matches are fine
     # because ``unset`` with only missing names is ignored under 2>/dev/null.
     # Quote caller-provided names so malformed configuration can never become
     # shell syntax. Valid environment names remain unquoted by shlex.quote().
@@ -421,26 +386,16 @@ def _export_dump_excluding_session_vars(
 
 
 class BaseEnvironment(ABC):
-    """Common interface and unified execution flow for all Son of Anton backends.
+    """Unified execution flow for the terminal environment.
 
-    Subclasses implement ``_run_bash()`` and ``cleanup()``.  The base class
-    provides ``execute()`` with session snapshot sourcing, CWD tracking,
-    interrupt handling, and timeout enforcement.
+    The subclass (LocalEnvironment) implements ``_run_bash()``, ``cleanup()``
+    and ``get_temp_dir()``.  The base class provides ``execute()`` with session
+    snapshot sourcing, CWD tracking, interrupt handling, and timeout
+    enforcement.
     """
 
-    # Snapshot creation timeout (override for slow cold-starts).
+    # Snapshot creation timeout.
     _snapshot_timeout: int = 30
-
-    # Local resolves allowlisted values through the active profile scope.
-    _profile_scoped_passthrough: bool = False
-
-    def get_temp_dir(self) -> str:
-        """Return the backend temp directory used for session artifacts.
-
-        LocalEnvironment overrides this when ``/tmp`` is missing and
-        ``TMPDIR`` is the portable writable location.
-        """
-        return "/tmp"
 
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd
@@ -450,13 +405,11 @@ class BaseEnvironment(ABC):
         self._session_id = uuid.uuid4().hex[:12]
         temp_dir = self.get_temp_dir().rstrip("/") or "/"
         self._snapshot_path = f"{temp_dir}/son-of-anton-snap-{self._session_id}.sh"
-        self._cwd_file = f"{temp_dir}/son-of-anton-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
         self._snapshot_ready = False
         self._snapshot_passthrough_names: set[str] = set()
-        # When True, login bash is unusable (e.g. broken Git-for-Windows
-        # ``Directory \\drivers\\etc`` startup) so execute() must not fall
-        # back to ``bash -l`` per command — use non-login ``bash -c`` instead.
+        # When True, login bash is unusable so execute() must not fall back
+        # to ``bash -l`` per command — use non-login ``bash -c`` instead.
         self._prefer_nonlogin = False
 
     # ------------------------------------------------------------------
@@ -486,26 +439,17 @@ class BaseEnvironment(ABC):
     # Session snapshot (init_session)
     # ------------------------------------------------------------------
 
-    def _additional_profile_scoped_passthrough_names(self) -> Iterable[str]:
-        """Return backend-specific names that must not persist in snapshots."""
-        return ()
-
     def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
-        """Return profile-scoped names that must not persist in the snapshot.
+        """Return passthrough names that must not persist in the snapshot.
 
         The set is monotonic for the environment lifetime. A config
         allowlist can change after a value was captured; retaining the
         exclusion prevents that old value from becoming visible to a later
         session through the shared snapshot.
         """
-        if not self._profile_scoped_passthrough:
-            return ()
         try:
             from tools.env_passthrough import get_all_passthrough
-            names = (
-                *get_all_passthrough(),
-                *self._additional_profile_scoped_passthrough_names(),
-            )
+            names = get_all_passthrough()
             self._snapshot_passthrough_names.update(
                 name
                 for name in names
@@ -529,36 +473,21 @@ class BaseEnvironment(ABC):
         # Restore configured cwd after login shell profile scripts, which may
         # change the working directory (e.g. bashrc `cd ~`).  Without this,
         # pwd -P captures the profile's directory, not terminal.cwd.
-        # Route through ``_quote_cwd_for_cd`` (not a bare ``shlex.quote``) so
-        # Route through ``_quote_cwd_for_cd`` (not a bare ``shlex.quote``) so
-        # subclass overrides can rewrite a native path to the shell form the
-        # bootstrap ``cd`` can resolve.
         _quoted_cwd = self._quote_cwd_for_cd(self.cwd)
-        # Quote snapshot / cwd-file paths via ``_quote_shell_path`` so a
-        # LocalEnvironment override can rewrite native paths before quoting.
-        # On POSIX this is plain ``shlex.quote``.
-        _quoted_snap = self._quote_shell_path(self._snapshot_path)
+        _quoted_snap = shlex.quote(self._snapshot_path)
         # Use atomic file replacement: assemble the snapshot in a temp file,
         # then mv it over the final path.  This prevents concurrent source()
         # calls from reading a half-written snapshot when another terminal
-        # command finishes and rewrites the env vars (issue #38249).  `mv` is
-        # atomic on POSIX when src and dest are on the same filesystem, so
-        # source() either sees the old complete snapshot or the new complete
-        # one — never a partial/truncated file.
+        # command finishes and rewrites the env vars.  `mv` is atomic when
+        # src and dest are on the same filesystem, so source() either sees the
+        # old complete snapshot or the new complete one.
         #
-        # The temp name MUST be unique per concurrent writer.  ``$$`` is the
-        # bash PID, but in ``&``-launched subshells (how concurrent terminal
-        # calls run) ``$$`` stays the *parent* shell's PID — so two concurrent
-        # writers would pick the SAME temp name, clobber each other's temp
-        # mid-write, and mv would then publish a torn file (the corruption is
-        # only narrowed, not closed).  ``$BASHPID`` would be unique per writer,
-        # but macOS ships bash 3.2 which does NOT provide it — the name expands
-        # empty there, so every writer shares one temp path and the race is
-        # back.  ``mktemp`` allocates a per-writer unique path portably across
-        # bash versions.  The template is shell-quoted (spaces and special
-        # characters) and the resulting path lives in a shell variable so
+        # The temp name MUST be unique per concurrent writer: ``$$`` stays the
+        # *parent* shell's PID in ``&``-launched subshells (how concurrent
+        # terminal calls run), so ``mktemp`` allocates the path.  The template
+        # is shell-quoted and the resulting path lives in a shell variable so
         # every later expansion is consistent.
-        _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
+        _snap_tmp_template = shlex.quote(self._snapshot_path + ".tmp.XXXXXXXXXX")
         _snap_tmp = '"$__son_of_anton_snap_tmp"'
         snapshot_excluded = self._snapshot_excluded_passthrough_names()
         bootstrap = (
@@ -607,9 +536,8 @@ class BaseEnvironment(ABC):
         except Exception as exc:
             self._snapshot_ready = False
             # Default fallback is bash -l per command so PATH/nvm/etc still
-            # load.  If login itself is dead (classic Windows Git Bash
-            # ``Directory \\drivers\\etc does not exist``), that fallback
-            # would brick every tool — prefer non-login bash -c instead.
+            # load.  If login itself is dead, that fallback would brick every
+            # tool — prefer non-login bash -c instead.
             detail = str(exc)
             prefer_nonlogin = False
             try:
@@ -652,31 +580,15 @@ class BaseEnvironment(ABC):
             return f"$HOME/{shlex.quote(cwd[2:])}"
         return shlex.quote(cwd)
 
-    def _quote_shell_path(self, path: str) -> str:
-        """Quote *path* for interpolation into a bash script.
-
-        LocalEnvironment overrides this to rewrite native/mixed paths to the
-        shell form before quoting.
-        """
-        return shlex.quote(path)
-
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
         escaped = command.replace("'", "'\\''")
 
-        # Quote the snapshot path (see init_session — LocalEnvironment
-        # rewrites native paths to the shell form).
-        _quoted_snap = self._quote_shell_path(self._snapshot_path)
-        # Use atomic file replacement for env snapshot updates (issue #38249).
-        # Assemble into a per-writer-unique temp file, then mv to atomically
-        # replace the snapshot so concurrent source() calls never read a
-        # truncated/half-written file.  ``mktemp`` is used instead of
-        # ``$BASHPID``/``$$`` because macOS bash 3.2 lacks ``$BASHPID`` (it
-        # expands empty, collapsing every writer onto one temp name) and ``$$``
-        # is shared by ``&``-launched subshells.  Template shell-quoted
-        # (Windows/spaces); the allocated path lives in a shell variable.
-        _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
+        _quoted_snap = shlex.quote(self._snapshot_path)
+        # Atomic snapshot updates via a per-writer mktemp file + mv, as in
+        # init_session, so concurrent source() calls never read a torn file.
+        _snap_tmp_template = shlex.quote(self._snapshot_path + ".tmp.XXXXXXXXXX")
         _snap_tmp = '"$__son_of_anton_snap_tmp"'
 
         parts = []
@@ -697,11 +609,6 @@ class BaseEnvironment(ABC):
             parts.append(f"{value}=${{{name}-}}")
 
         # Source snapshot (env vars from previous commands).
-        # Redirect stdout to /dev/null: on macOS (bash 3.2 and certain
-        # Homebrew bash builds) sourcing a file containing ``declare -x``
-        # can emit the declarations to stdout, leaking ~60 lines of env
-        # vars into every tool response (issue #15459).  Linux bash is
-        # silent here, but the redirect is harmless.
         if self._snapshot_ready:
             parts.append(
                 f"source {_quoted_snap} >/dev/null 2>&1 || true"
@@ -715,13 +622,9 @@ class BaseEnvironment(ABC):
             parts.append(f"unset {present} {value}")
 
         # Harness attribution: every tool subprocess advertises that it runs
-        # under Son of Anton via the cross-agent ``AI_AGENT`` standard (read by e.g.
-        # huggingface_hub's agent detection) plus the Son of Anton-specific
-        # ``SON_OF_ANTON_AGENT`` marker.  The value MUST equal our id in the public
-        # agent-harness registry (``son-of-anton`` — see huggingface.js
-        # ``agent-harnesses.ts``); standard-var matching is exact, so any other
-        # value is reported as "unknown".  ``${VAR:-default}`` semantics:
-        # never clobber an outer harness value that arrived via the inherited
+        # under Son of Anton via the cross-agent ``AI_AGENT`` standard plus the
+        # ``SON_OF_ANTON_AGENT`` marker.  ``${VAR:-default}`` semantics: never
+        # clobber an outer harness value that arrived via the inherited
         # process env (Son of Anton running inside another agent's terminal).
         parts.append(
             'export AI_AGENT="${AI_AGENT:-son-of-anton}" '
@@ -745,10 +648,6 @@ class BaseEnvironment(ABC):
         # Chain mv on the export succeeding so a failed/partial dump never
         # replaces a good snapshot; drop the temp on failure so it isn't
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
-        # NOTE: the temp path is allocated with mktemp into a shell variable
-        # first — the redirection inside _export_dump_excluding_session_vars is
-        # attached to a brace group so the variable expands in the same shell
-        # that later expands the ``mv`` operand, keeping both consistent.
         if self._snapshot_ready:
             parts.append(
                 f"__son_of_anton_snap_tmp=$(mktemp {_snap_tmp_template}) && "
@@ -779,12 +678,10 @@ class BaseEnvironment(ABC):
     ) -> dict:
         """Poll-based wait with interrupt checking and stdout draining.
 
-        Shared across all backends — not overridden.
-
         ``bounded_capture=True`` (foreground terminal-tool path only) retains
         at most ``tool_output.max_bytes`` of output in a head/tail window
-        while draining, so a verbose subprocess cannot OOM the process
-        (#64435). The default (False) preserves full-fidelity capture for
+        while draining, so a verbose subprocess cannot OOM the process.
+        The default (False) preserves full-fidelity capture for
         internal consumers — file-operation ``cat`` reads feeding the patch
         engine, code-execution RPC reads, log reads — where truncation would
         corrupt data.
@@ -797,8 +694,7 @@ class BaseEnvironment(ABC):
         call ``self._kill_process(proc)`` if we exit via ``KeyboardInterrupt``
         or ``SystemExit``.  Without this, the local backend (which spawns
         subprocesses with ``os.setsid`` into their own process group) leaves
-        an orphan with ``PPID=1`` when python is shut down mid-tool — the
-        ``sleep 300``-survives-30-min bug Physikal and I both hit.
+        an orphan with ``PPID=1`` when python is shut down mid-tool.
         """
         if bounded_capture:
             try:
@@ -835,28 +731,16 @@ class BaseEnvironment(ABC):
 
         # Non-blocking drain via select().
         #
-        # The old pattern — ``for line in proc.stdout`` — blocks on
-        # ``readline()`` until the pipe reaches EOF.  When the user's command
-        # backgrounds a process (``cmd &``, ``setsid cmd & disown``, etc.),
-        # that backgrounded grandchild inherits the write-end of our stdout
-        # pipe via ``fork()``.  Even after ``bash`` itself exits, the pipe
-        # stays open because the grandchild still holds it — so the drain
-        # thread never returns and the tool hangs for the full lifetime of
-        # the grandchild (issue #8340: users reported indefinite hangs when
-        # restarting uvicorn with ``setsid ... & disown``).
+        # A blocking read waits for EOF, and when the user's command
+        # backgrounds a process (``cmd &``, ``setsid cmd & disown``), that
+        # grandchild inherits the write-end of our stdout pipe, so EOF never
+        # comes while it lives.  select() with a short poll interval lets us
+        # stop draining shortly after ``bash`` exits even if the pipe hasn't
+        # EOF'd yet.
         #
-        # The fix: select() with a short poll interval, and stop draining
-        # shortly after ``bash`` exits even if the pipe hasn't EOF'd yet.
-        # Any output the grandchild writes after that point goes to an
-        # orphaned pipe (harmless — the kernel reaps it when our end closes).
-        #
-        # Decoding: we ``os.read()`` raw bytes in fixed-size chunks (4096)
-        # so a single multibyte UTF-8 character can split across reads.  An
-        # incremental decoder buffers partial sequences across chunks, and
-        # ``errors="replace"`` mirrors the baseline ``TextIOWrapper`` (which
-        # was constructed with ``encoding="utf-8", errors="replace"`` on
-        # ``Popen``) so binary or mis-encoded output is preserved with
-        # U+FFFD substitution rather than clobbering the whole buffer.
+        # Decoding: raw ``os.read()`` chunks can split a multibyte UTF-8
+        # character, so an incremental decoder buffers partial sequences;
+        # ``errors="replace"`` keeps binary output as U+FFFD substitutions.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def _drain():
@@ -1073,14 +957,13 @@ class BaseEnvironment(ABC):
         *,
         timeout: int | None = None,
         stdin_data: str | None = None,
-        rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
     ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}.
 
         ``bounded_capture=True`` caps stdout/stderr retention at
         ``tool_output.max_bytes`` WHILE the stream is drained (head/tail
-        window) instead of holding the full output in memory (#64435).
+        window) instead of holding the full output in memory.
         It must only be set by callers whose output is destined for the
         model/tool payload (the foreground terminal tool). Internal
         full-fidelity consumers — file operations ``cat`` reads that feed
@@ -1088,12 +971,9 @@ class BaseEnvironment(ABC):
         it False: truncating those corrupts data, not just display.
         """
         exec_command, sudo_stdin = self._prepare_command(command)
-        # Guard against the `A && B &` subshell-wait trap by default.
-        # Some callers (spawn_via_env) already produce shell-safe wrappers and
-        # pass rewrite_compound_background=False.
-        if rewrite_compound_background:
-            from tools.terminal_tool import _rewrite_compound_background
-            exec_command = _rewrite_compound_background(exec_command)
+        # Guard against the `A && B &` subshell-wait trap.
+        from tools.terminal_tool import _rewrite_compound_background
+        exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
         effective_cwd = cwd or self.cwd
 
@@ -1124,10 +1004,6 @@ class BaseEnvironment(ABC):
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
-
-    def stop(self):
-        """Alias for cleanup (compat with older callers)."""
-        self.cleanup()
 
     def __del__(self):
         try:
