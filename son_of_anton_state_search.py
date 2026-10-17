@@ -513,7 +513,7 @@ class SessionSearchMixin:
         an empty external-content index without markers (healable on re-run).
         False for fresh and fully-optimized installs (and when FTS5 is
         unavailable)."""
-        if not self._fts_enabled or self.read_only:
+        if not self._fts_enabled:
             return False
         with self._lock:
             if self._db_has_legacy_inline_fts(self._conn):
@@ -620,8 +620,6 @@ class SessionSearchMixin:
         """
         if not self._fts_enabled:
             return {"ok": False, "reason": "fts5_unavailable"}
-        if self.read_only:
-            return {"ok": False, "reason": "read_only"}
 
         # Heal empty-index / orphan-marker bookkeeping from an interrupted
         # demote *before* deciding whether to demote again. This re-seeds
