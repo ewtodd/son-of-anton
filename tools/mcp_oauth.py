@@ -806,13 +806,6 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None):
         Opens the browser automatically when possible; always prints the URL
         as a fallback for headless/SSH/gateway environments.
         """
-        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
-
-        dashboard_flow = get_dashboard_oauth_flow()
-        if dashboard_flow is not None:
-            await dashboard_flow.publish_authorization_url(authorization_url)
-            return
-
         # Fail fast at the authorization boundary in non-interactive contexts
         # (systemd gateway, cron, background MCP discovery). A cached-but-unusable
         # token (expired/revoked, refresh rejected) makes the SDK fall through to
@@ -918,15 +911,6 @@ def _make_callback_waiter(
     """
 
     async def _wait():
-        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
-
-        dashboard_flow = get_dashboard_oauth_flow()
-        if dashboard_flow is not None:
-            # The dashboard flow still speaks the legacy tuple; normalize it
-            # here so both callback sources hand the SDK one shape.
-            dash_code, dash_state = await dashboard_flow.wait_for_callback()
-            return _authorization_code_result(dash_code, dash_state)
-
         # Reject before binding the callback listener in non-interactive
         # contexts. Reaching here means the SDK entered the authorization-code
         # flow (a valid or refreshable token would never call the callback
@@ -1339,14 +1323,6 @@ def _maybe_use_cimd(
     if (cfg.get("token_endpoint_auth_method") or "none") != "none":
         return None
 
-    # Dashboard/desktop flows redirect to the server's own externally
-    # reachable URL (``/api/mcp/oauth/callback/<name>``), which is
-    # deployment-specific and can never appear in a static document.
-    from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
-
-    if get_dashboard_oauth_flow() is not None:
-        return None
-
     if cfg.get("redirect_uri") or cfg.get("redirect_port"):
         return None
 
@@ -1427,13 +1403,6 @@ def _configure_callback_port(
     consolidation PR.
     """
     global _oauth_port
-    from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
-
-    dashboard_flow = get_dashboard_oauth_flow()
-    if dashboard_flow is not None:
-        cfg["_resolved_port"] = 0
-        cfg["redirect_uri"] = cfg.get("redirect_uri") or dashboard_flow.redirect_uri
-        return 0
     cached_redirect_uri = _cached_redirect_uri(storage)
     if not cfg.get("redirect_uri") and cached_redirect_uri:
         cfg["redirect_uri"] = cached_redirect_uri

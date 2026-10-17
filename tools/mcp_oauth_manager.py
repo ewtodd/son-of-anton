@@ -669,13 +669,7 @@ class MCPOAuthManager:
         )
         storage = SonOfAntonTokenStorage(server_name)
 
-        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
-
-        if (
-            get_dashboard_oauth_flow() is None
-            and not _is_interactive()
-            and not storage.has_cached_tokens()
-        ):
+        if not _is_interactive() and not storage.has_cached_tokens():
             raise OAuthNonInteractiveError(
                 "MCP OAuth for "
                 f"'{server_name}': non-interactive environment and no "

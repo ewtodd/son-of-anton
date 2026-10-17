@@ -2329,14 +2329,6 @@ DEFAULT_CONFIG = {
         "profile_build": "ask",
     },
 
-    # Privacy-safe aggregate metrics written only to this profile's local
-    # telemetry directory. Collection is opt-in and no remote sink exists.
-    "telemetry": {
-        "shared_metrics": {
-            "enabled": False,
-        },
-    },
-
     # ``son-of-anton doctor`` behaviour.
     "doctor": {
         # Per-probe timeout (seconds) for the opt-in `son-of-anton doctor --live`

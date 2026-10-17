@@ -1573,17 +1573,6 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     return None
 
 
-# Tool results can contain literal MEDIA: examples in docs, logs, or other
-# ordinary outputs. Only tools that intentionally create deliverable media
-# artifacts should be eligible for automatic append when the model omits them
-# from the final gateway reply.
-_AUTO_APPEND_MEDIA_TOOL_NAMES = {
-    "text_to_speech",
-    "text_to_speech_tool",
-    "image_generate",
-    "bfl_flux3_get_result",
-}
-
 # ---- helpers: detect interrupted tool tails & auto-continue noise ----------
 
 # Replay-tail sanitization lives in agent/replay_cleanup.py so every resume
@@ -1631,18 +1620,8 @@ def _strip_auto_continue_noise(content: Any) -> Any:
         text = text[end + 1 :].lstrip()
     return text
 
-# Tools in this set return their deliverable artifact as a JSON payload with a
-# local-file path field rather than a literal ``MEDIA:`` tag (e.g. image_generate
-# returns ``{"success": true, "image": "/abs/path.png"}``). The auto-append path
-# extracts the path from these fields so delivery is deterministic and does not
-# depend on the model restating the path in its final reply.
-_JSON_MEDIA_TOOL_PATH_FIELDS = ("host_image", "image", "agent_visible_image")
-
-
-# Extension-anchored MEDIA: matcher for tool results. Mirrors the dispatch-site
-# pattern so a bare ``MEDIA:`` token in prose (no deliverable extension) is never
-# auto-appended. Kept local to the auto-append path; the producer-tool allowlist
-# below is the primary guard, this is the secondary precision guard.
+# Extension-anchored MEDIA: matcher, so a bare ``MEDIA:`` token in prose (no
+# deliverable extension) never counts as a delivered path.
 _TOOL_MEDIA_RE = re.compile(
     r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
     r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
@@ -1652,104 +1631,21 @@ _TOOL_MEDIA_RE = re.compile(
 )
 
 
-def _collect_auto_append_media_tags(
-    messages: List[Dict[str, Any]],
-    history_offset: int = 0,
-    history_media_paths: Optional[set] = None,
-) -> tuple[List[str], bool]:
-    """Collect real media tags from current-turn producer-tool results only.
-
-    Two layered guards keep stale/example MEDIA: strings out of the reply:
-
-    1. Producer-tool allowlist: only tools that intentionally emit deliverable
-       artifacts (TTS) are eligible. Documentation, logs, and search results can
-       contain example strings such as MEDIA:/absolute/path/to/file, which must
-       never be delivered as attachments. (Fixes the original report behind #16721.)
-    2. Current-turn isolation: only messages produced this turn are scanned, so a
-       tool result from an earlier turn (still present in the full message list)
-       cannot leak onto a later text-only reply (#34608).
-
-    Mid-run context compaction can rewrite/shrink the message list below the
-    original history length. When that happens the slice boundary is no longer
-    trustworthy, so fall back to scanning every message and rely on
-    ``history_media_paths`` for dedup, preserving the compaction-safe behaviour
-    of #160. The producer-tool allowlist still applies on the fallback path.
-    """
-    history_media_paths = history_media_paths or set()
-    # Only trust the slice boundary when the message list still contains the
-    # full history prefix. Otherwise scan everything (compaction-safe fallback).
-    if history_offset and len(messages) >= history_offset:
-        new_messages = messages[history_offset:]
-    else:
-        new_messages = messages
-
-    tool_name_by_call_id: Dict[str, str] = {}
-    for msg in new_messages:
-        if msg.get("role") != "assistant":
-            continue
-        for call in msg.get("tool_calls") or []:
-            call_id = call.get("id") or call.get("call_id")
-            fn = call.get("function") or {}
-            name = str(fn.get("name") or call.get("name") or "")
-            if call_id and name:
-                tool_name_by_call_id[str(call_id)] = name
-
-    media_tags: List[str] = []
-    has_voice_directive = False
-    for msg in new_messages:
-        if msg.get("role") not in ("tool", "function"):
-            continue
-        call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        if tool_name_by_call_id.get(call_id) not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
-            continue
-        content = str(msg.get("content") or "")
-        tool_name = tool_name_by_call_id.get(call_id)
-        # JSON-payload tools (image_generate) return a local-file path in a
-        # known field rather than a MEDIA: tag. Extract it so delivery is
-        # deterministic even when the model omits the path from its reply.
-        if tool_name == "image_generate" and "MEDIA:" not in content:
-            try:
-                payload = json.loads(content)
-            except Exception:
-                payload = None
-            if isinstance(payload, dict) and payload.get("success"):
-                for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
-                    path = payload.get(field)
-                    if (isinstance(path, str)
-                            and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
-                            and path not in history_media_paths):
-                        media_tags.append(f"MEDIA:{path}")
-                        break
-            continue
-        if "MEDIA:" not in content:
-            continue
-        for match in _TOOL_MEDIA_RE.finditer(content):
-            path = match.group(1).strip().rstrip('",}')
-            if path and path not in history_media_paths:
-                media_tags.append(f"MEDIA:{path}")
-        if "[[audio_as_voice]]" in content:
-            has_voice_directive = True
-
-    return media_tags, has_voice_directive
-
-
 def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
     """Collect every media path already delivered in prior assistant/tool output.
 
-    Used to dedup auto-appended and model-emitted MEDIA tags so the same file
-    is not re-sent on later turns. Covers three delivery shapes:
-      * ``MEDIA:<path>`` text tags in tool results,
-      * ``MEDIA:<path>`` text tags in assistant messages (model-generated tags),
-      * ``image_generate`` JSON-payload paths (``host_image`` / ``image`` /
-        ``agent_visible_image``), which carry no MEDIA: tag.
-
-    Missing the JSON-payload shape caused #46627; missing the assistant-message
-    shape caused repeated delivery when the model echoed a previous MEDIA tag.
+    Used to dedup delivered paths so the same file is not re-sent on later
+    turns: ``MEDIA:<path>`` tags in tool results and in assistant messages
+    (missing the assistant shape caused repeated delivery when the model
+    echoed a previous MEDIA tag).
     """
     paths: set = set()
-    tool_name_by_call_id: Dict[str, str] = {}
-
-    def _add_text_media_paths(content: str) -> None:
+    for msg in agent_history:
+        if msg.get("role") not in {"assistant", "tool", "function"}:
+            continue
+        content = str(msg.get("content", "") or "")
+        if "MEDIA:" not in content:
+            continue
         for match in _TOOL_MEDIA_RE.finditer(content):
             path = match.group(1).strip().rstrip('",}')
             if path:
@@ -1760,40 +1656,6 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
         # been delivered.
         media_files, _ = BasePlatformAdapter.extract_media(content)
         paths.update(path for path, _is_voice in media_files)
-
-    for msg in agent_history:
-        if msg.get("role") == "assistant":
-            for call in msg.get("tool_calls") or []:
-                cid = call.get("id") or call.get("call_id")
-                fn = call.get("function") or {}
-                name = str(fn.get("name") or call.get("name") or "")
-                if cid and name:
-                    tool_name_by_call_id[str(cid)] = name
-    for msg in agent_history:
-        role = msg.get("role")
-        if role == "assistant":
-            content = str(msg.get("content", "") or "")
-            if "MEDIA:" in content:
-                _add_text_media_paths(content)
-            continue
-        if role not in {"tool", "function"}:
-            continue
-        content = str(msg.get("content", "") or "")
-        if "MEDIA:" in content:
-            _add_text_media_paths(content)
-            continue
-        cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        if tool_name_by_call_id.get(cid) == "image_generate":
-            try:
-                payload = json.loads(content)
-            except Exception:
-                payload = None
-            if isinstance(payload, dict) and payload.get("success"):
-                for field in _JSON_MEDIA_TOOL_PATH_FIELDS:
-                    jp = payload.get(field)
-                    if isinstance(jp, str) and jp:
-                        paths.add(jp)
-                        break
     return paths
 
 # ---------------------------------------------------------------------------
@@ -2917,59 +2779,6 @@ def _build_document_context_note(display_name: str, agent_path: str, mtype: str)
         f"read_file tool, which converts PDF/DOCX/XLSX to text — before answering, "
         f"instead of asking the user to paste the contents.]"
     )
-
-
-def _format_duration(seconds: float) -> str:
-    total = int(round(seconds))
-    if total < 0:
-        total = 0
-    hours, rem = divmod(total, 3600)
-    minutes, secs = divmod(rem, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
-
-
-async def _probe_audio_duration(path: str) -> Optional[str]:
-    """Best-effort duration probe. Returns formatted MM:SS / HH:MM:SS, or None on failure."""
-    ext = os.path.splitext(path)[1].lower()
-
-    if ext == ".wav":
-        try:
-            def _wav_duration() -> float:
-                import wave
-                with wave.open(path, "rb") as wf:
-                    frames = wf.getnframes()
-                    rate = wf.getframerate() or 1
-                    return frames / float(rate)
-            secs = await asyncio.to_thread(_wav_duration)
-            return _format_duration(secs)
-        except Exception:
-            pass
-
-    if ext in (".ogg", ".opus", ".oga"):
-        try:
-            def _ogg_duration() -> float:
-                from mutagen.oggopus import OggOpus
-                return float(OggOpus(path).info.length)
-            secs = await asyncio.to_thread(_ogg_duration)
-            return _format_duration(secs)
-        except Exception:
-            pass
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-        if proc.returncode == 0:
-            return _format_duration(float(stdout.decode().strip()))
-    except Exception:
-        pass
-
-    return None
 
 
 def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
@@ -5585,11 +5394,6 @@ class TurnRunner:
                     _selected, now=time.time()
                 )
         
-        # Collect MEDIA paths already in history so we can exclude them
-        # from the current turn's extraction. This is compaction-safe:
-        # even if the message list shrinks, we know which paths are old.
-        _history_media_paths: set = _collect_history_media_paths(agent_history)
-        
         # Register per-session gateway approval callback so dangerous
         # command approval blocks the agent thread (mirrors CLI input()).
         # The callback bridges sync→async to send the approval request
@@ -6051,44 +5855,6 @@ class TurnRunner:
                 "model": _resolved_model,
                 "context_length": _context_length,
             }
-
-        # Scan tool results for MEDIA:<path> tags that need to be delivered
-        # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
-        # in its JSON response, but the model's final text reply usually
-        # doesn't include them.  We collect unique tags from tool results and
-        # append any that aren't already present in the final response, so the
-        # adapter's extract_media() can find and deliver the files exactly once.
-        #
-        # Scope the scan to THIS turn's tool results only. ``agent_history``
-        # was passed into run_conversation as ``conversation_history``, so the
-        # agent's returned ``messages`` list is ``agent_history`` followed by
-        # the messages produced this turn. Slicing at ``len(agent_history)``
-        # isolates the current turn precisely, so a stale MEDIA: path emitted
-        # by a tool several turns earlier (still present in the full message
-        # list) can never leak onto a later text-only reply. (Fixes #34608)
-        #
-        # Path-based deduplication against _history_media_paths (collected
-        # before run_conversation) is retained as a secondary guard. It is
-        # also the sole guard on the fallback branch taken when mid-run
-        # context compaction shrinks the message list below the original
-        # history length, preserving the compaction-safe behaviour of #160.
-        if "MEDIA:" not in final_response:
-            media_tags, has_voice_directive = _collect_auto_append_media_tags(
-                result.get("messages", []),
-                history_offset=len(agent_history),
-                history_media_paths=_history_media_paths,
-            )
-
-            if media_tags:
-                seen = set()
-                unique_tags = []
-                for tag in media_tags:
-                    if tag not in seen:
-                        seen.add(tag)
-                        unique_tags.append(tag)
-                if has_voice_directive:
-                    unique_tags.insert(0, "[[audio_as_voice]]")
-                final_response = final_response + "\n" + "\n".join(unique_tags)
 
         # Auto-titling runs at TURN START (agent/turn_context.py) from the
         # user's message alone, so it no longer waits on final_response — a
@@ -9371,9 +9137,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         task.add_done_callback(tasks.discard)
 
     # Bounded budget for one finalize_session() dispatch (plugin
-    # on_session_finalize hooks + core Relay conversation close). Generous
-    # enough for a normal trace-export flush, small enough that a wedged
-    # plugin can never eat the systemd stop window.
+    # on_session_finalize hooks), small enough that a wedged plugin can
+    # never eat the systemd stop window.
     _FINALIZE_TIMEOUT_S = 10.0
 
     async def _finalize_session_off_loop(
@@ -18105,8 +17870,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # (#73771). This rescan is already EXPLICIT-ONLY (see docstring):
             # a MEDIA: directive in the final streamed reply is the model
             # deliberately attaching a file — including a user-requested
-            # resend. Stale auto-appended tags are deduped upstream in
-            # _collect_auto_append_media_tags with history_media_paths.
+            # resend.
             # Mirrors the same filter removal on the non-streaming path in
             # gateway/platforms/base.py.
             # Strip image URLs from the cleaned text for parity with the
@@ -20023,34 +19787,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         user_text: str,
         audio_paths: List[str],
     ) -> str:
-        """Prepend a note for the user's voice/audio messages to the text.
-
-        There is no speech-to-text. With ``stt_enabled`` off, each clip is
-        named by path and duration; otherwise the message carries a single
-        "could not be transcribed" marker.
-        """
-        seen = set()
-        audio_paths = [p for p in audio_paths if p not in seen and not seen.add(p)]
-        if not getattr(self.config, "stt_enabled", True):
-            notes = []
-            for path in audio_paths:
-                abs_path = os.path.abspath(path)
-                duration_str = await _probe_audio_duration(abs_path)
-                if duration_str:
-                    notes.append(
-                        f"[The user sent a voice message: {abs_path} (duration: {duration_str})]"
-                    )
-                else:
-                    notes.append(f"[The user sent a voice message: {abs_path}]")
-            if not notes:
-                return user_text
-            prefix = "\n\n".join(notes)
-        else:
-            prefix = "[voice message could not be transcribed]"
-        _placeholder = "(The user sent a message with no text content)"
-        if user_text and user_text.strip() == _placeholder:
-            return prefix
-        if user_text:
+        """Prepend the marker for the user's voice messages (there is no speech-to-text)."""
+        prefix = "[voice message could not be transcribed]"
+        if user_text and user_text.strip() != "(The user sent a message with no text content)":
             return f"{prefix}\n\n{user_text}"
         return prefix
 
@@ -24493,7 +24232,7 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
     chore never delays a due job and a stuck tick never stalls the chores.
 
     Refreshes the channel directory every 5 minutes and prunes the
-    image/audio/video/document/screenshot caches + expired ``son-of-anton debug
+    image/audio/video/document caches + expired ``son-of-anton debug
     share`` pastes once per hour, and keeps the ``memory.rag`` retrieval
     index fresh on its configured interval.
     """
@@ -24501,7 +24240,6 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
         cleanup_audio_cache,
         cleanup_document_cache,
         cleanup_image_cache,
-        cleanup_screenshot_cache,
         cleanup_video_cache,
     )
     from tools.tool_result_storage import cleanup_spillover_cache
@@ -24521,7 +24259,6 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
         ("Document", cleanup_document_cache),
         ("Audio", cleanup_audio_cache),
         ("Video", cleanup_video_cache),
-        ("Screenshot", cleanup_screenshot_cache),
         ("Spillover", cleanup_spillover_cache),
     )
 

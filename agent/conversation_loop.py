@@ -2223,9 +2223,7 @@ def run_conversation(
                         # and base64 image on every API call.
                         #
                         # The ``request_messages`` and ``conversation_history``
-                        # kwargs below are pre-existing raw passthroughs
-                        # consumed by the bundled langfuse plugin
-                        # (``plugins/observability/langfuse/__init__.py:_coerce_request_messages``).
+                        # kwargs below are pre-existing raw passthroughs.
                         # They predate ``request`` and are intentionally NOT
                         # sanitised — secrets are not expected here because
                         # ``api_kwargs`` is the same object passed to the
@@ -2234,8 +2232,7 @@ def run_conversation(
                         _request_payload = agent._api_request_payload_for_hook(api_kwargs)
                         # Anthropic (``system``) and Responses/Codex
                         # (``instructions``) move the system prompt out of
-                        # messages; pass it explicitly for observability
-                        # plugins (Langfuse).
+                        # messages; pass it explicitly for plugins.
                         system_prompt_for_hooks = _system_prompt_for_hooks(
                             api_kwargs, request_messages
                         )

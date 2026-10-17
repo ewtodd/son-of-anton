@@ -791,7 +791,7 @@ def cleanup_image_cache(max_age_hours: int = 24) -> int:
 # Audio cache utilities
 #
 # Same pattern as image cache -- voice messages from platforms are downloaded
-# here so the STT tool (OpenAI Whisper) can transcribe them from local files.
+# here so the agent can reference them by local file path.
 # ---------------------------------------------------------------------------
 
 AUDIO_CACHE_DIR = get_son_of_anton_dir("cache/audio", "audio_cache")
@@ -807,9 +807,7 @@ def get_audio_cache_dir() -> Path:
 def _sniff_audio_ext(data: bytes, fallback_ext: str) -> str:
     """Prefer a container-matching extension when audio magic bytes are obvious.
 
-    Thin wrapper around the shared sniffer in ``tools.audio_container`` —
-    ONE module owns container detection for both the outbound TTS repair
-    (``tools/tts_tool.py``) and this inbound cache path.
+    Thin wrapper around the shared sniffer in ``tools.audio_container``.
     """
     from tools.audio_container import sniff_audio_ext
 
@@ -960,23 +958,6 @@ def cleanup_video_cache(max_age_hours: int = 24) -> int:
 # ---------------------------------------------------------------------------
 
 DOCUMENT_CACHE_DIR = get_son_of_anton_dir("cache/documents", "document_cache")
-SCREENSHOT_CACHE_DIR = get_son_of_anton_dir("cache/screenshots", "browser_screenshots")
-
-
-def get_screenshot_cache_dir() -> Path:
-    """Return the browser screenshot cache directory, creating it if needed."""
-    d = _resolve_cache_dir("SCREENSHOT_CACHE_DIR", "cache/screenshots", "browser_screenshots")
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def cleanup_screenshot_cache(max_age_hours: int = 24) -> int:
-    """
-    Delete cached browser screenshots older than *max_age_hours*.
-
-    Returns the number of files removed.
-    """
-    return _cleanup_cache_dir(get_screenshot_cache_dir(), max_age_hours)
 
 
 # Import-time defaults; _resolve_cache_dir compares against these to tell a
@@ -986,7 +967,6 @@ _CACHE_DIR_IMPORT_DEFAULTS = {
     "AUDIO_CACHE_DIR": AUDIO_CACHE_DIR,
     "VIDEO_CACHE_DIR": VIDEO_CACHE_DIR,
     "DOCUMENT_CACHE_DIR": DOCUMENT_CACHE_DIR,
-    "SCREENSHOT_CACHE_DIR": SCREENSHOT_CACHE_DIR,
 }
 
 _SON_OF_ANTON_HOME = get_son_of_anton_home()
@@ -1006,19 +986,16 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
     AUDIO_CACHE_DIR,
     VIDEO_CACHE_DIR,
     DOCUMENT_CACHE_DIR,
-    SCREENSHOT_CACHE_DIR,
     _SON_OF_ANTON_HOME / "image_cache",
     _SON_OF_ANTON_HOME / "audio_cache",
     _SON_OF_ANTON_HOME / "video_cache",
     _SON_OF_ANTON_HOME / "document_cache",
-    _SON_OF_ANTON_HOME / "browser_screenshots",
     # Canonical cache layout — listed alongside the legacy *_cache dirs so
     # generated artifacts deliver on installs that have both (#31733).
     _SON_OF_ANTON_HOME / "cache" / "images",
     _SON_OF_ANTON_HOME / "cache" / "audio",
     _SON_OF_ANTON_HOME / "cache" / "videos",
     _SON_OF_ANTON_HOME / "cache" / "documents",
-    _SON_OF_ANTON_HOME / "cache" / "screenshots",
 )
 
 # Default recency window for trusting freshly-produced files (seconds).

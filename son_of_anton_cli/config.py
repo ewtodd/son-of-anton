@@ -276,19 +276,6 @@ _EXTRA_ENV_KEYS = frozenset({
     # support floor retired its only consumer (the v3→4 migration): it is no
     # longer listed here and doctor flags it as ignored.
     "SON_OF_ANTON_TOOL_PROGRESS_MODE",
-    # Langfuse observability plugin — optional tuning keys + standard SDK vars.
-    # Activation is via plugins.enabled (opt-in through `son-of-anton plugins enable
-    # observability/langfuse` or `son-of-anton tools → Langfuse`); credentials gate
-    # the plugin at runtime.
-    "SON_OF_ANTON_LANGFUSE_ENV",
-    "SON_OF_ANTON_LANGFUSE_RELEASE",
-    "SON_OF_ANTON_LANGFUSE_SAMPLE_RATE",
-    "SON_OF_ANTON_LANGFUSE_MAX_CHARS",
-    "SON_OF_ANTON_LANGFUSE_CAPTURE",
-    "SON_OF_ANTON_LANGFUSE_DEBUG",
-    "LANGFUSE_PUBLIC_KEY",
-    "LANGFUSE_SECRET_KEY",
-    "LANGFUSE_BASE_URL",
     # ACP (Agent Client Protocol) keys — profile-isolable so different
     # profiles can use different ACP backends without cross-leak.
     "SON_OF_ANTON_ACP_AUTH_METHOD",

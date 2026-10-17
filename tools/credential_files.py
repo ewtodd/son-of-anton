@@ -2,13 +2,12 @@
 
 Remote backends (e.g. SSH) create sandboxes with no host files.
 This module ensures that credential files and host-side cache directories
-(documents, images, audio, screenshots) are mounted or synced into those
+(documents, images, audio) are mounted or synced into those
 sandboxes so the agent can access them.
 
 **Credentials** — user config (``terminal.credential_files``).
 
-**Cache directories** — gateway-cached uploads, browser screenshots, TTS
-audio, and processed images.  Mounted read-only so the remote terminal can
+**Cache directories** — gateway-cached uploads and processed images.  Mounted read-only so the remote terminal can
 reference files the host side created (e.g. ``unzip`` an uploaded archive).
 
 Remote backends call :func:`get_credential_file_mounts` and
@@ -100,7 +99,7 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Cache directory mounts (documents, images, audio, videos, screenshots)
+# Cache directory mounts (documents, images, audio, videos)
 # ---------------------------------------------------------------------------
 
 # The cache subdirectories that should be mirrored into remote backends.

@@ -162,61 +162,6 @@ def _migrate_to_13(results: Dict[str, Any], quiet: bool) -> None:
             pass
 
 
-def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 13 → 14: migrate legacy flat stt.model to provider section ──
-    # Old configs (and cli-config.toml.example) had a flat `stt.model` key
-    # that was provider-agnostic.  When the provider was "local" this caused
-    # OpenAI model names (e.g. "whisper-1") to be fed to faster-whisper,
-    # crashing with "Invalid model size".  Move the value into the correct
-    # provider-specific section and remove the flat key.
-    _c = _cfg()
-    read_raw_config = _c.read_raw_config
-    _persist_migration = _c._persist_migration
-
-    # Read raw config (no defaults merged) to check what the user actually
-    # wrote, then apply changes to the merged config for saving.
-    raw = read_raw_config()
-    raw_stt = raw.get("stt", {})
-    if isinstance(raw_stt, dict) and "model" in raw_stt:
-        legacy_model = raw_stt["model"]
-        provider = raw_stt.get("provider", "local")
-        config = read_raw_config()
-        stt = config.get("stt", {})
-        # Remove the legacy flat key
-        stt.pop("model", None)
-        # Place it in the appropriate provider section only if the
-        # user didn't already set a model there
-        if provider in {"local", "local_command"}:
-            # Don't migrate an OpenAI model name into the local section
-            _local_models = {
-                "tiny.en", "tiny", "base.en", "base", "small.en", "small",
-                "medium.en", "medium", "large-v1", "large-v2", "large-v3",
-                "large", "distil-large-v2", "distil-medium.en",
-                "distil-small.en", "distil-large-v3", "distil-large-v3.5",
-                "large-v3-turbo", "turbo",
-            }
-            if legacy_model in _local_models:
-                # Check raw config — only set if user didn't already
-                # have a nested local.model
-                raw_local = raw_stt.get("local", {})
-                if not isinstance(raw_local, dict) or "model" not in raw_local:
-                    local_cfg = stt.setdefault("local", {})
-                    local_cfg["model"] = legacy_model
-            # else: drop it — it was an OpenAI model name, local section
-            # already defaults to "base" via DEFAULT_CONFIG
-        else:
-            # Cloud provider — put it in that provider's section only
-            # if user didn't already set a nested model
-            raw_provider = raw_stt.get(provider, {})
-            if not isinstance(raw_provider, dict) or "model" not in raw_provider:
-                provider_cfg = stt.setdefault(provider, {})
-                provider_cfg["model"] = legacy_model
-        config["stt"] = stt
-        _persist_migration(config)
-        if not quiet:
-            print("  ✓ Migrated legacy stt.model to provider-specific config")
-
-
 def _migrate_to_15(results: Dict[str, Any], quiet: bool) -> None:
     # ── Version 14 → 15: add explicit gateway interim-message gate ──
     _c = _cfg()
@@ -759,7 +704,6 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     # floor gate in run_migrations().
     (12, _migrate_to_12),
     (13, _migrate_to_13),
-    (14, _migrate_to_14),
     (15, _migrate_to_15),
     (16, _migrate_to_16),
     (17, _migrate_to_17),
