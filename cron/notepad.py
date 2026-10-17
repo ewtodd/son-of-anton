@@ -1,8 +1,8 @@
 """Per-job durable notepad for cron jobs.
 
 A tiny KV scratchpad each cron job can use to carry state across scheduled
-wake-ups (cursors, watermarks, watchlists). Stored in its own profile-local
-SQLite file next to the executions ledger, following the same
+wake-ups (cursors, watermarks, watchlists). Stored in its own SQLite file
+next to the executions ledger, following the same
 connection/pragma pattern as ``cron/executions.py``.
 
 Size caps (documented contract):
@@ -16,9 +16,6 @@ Size caps (documented contract):
 Write path is the CLI (``son-of-anton cron notepad <job_id> set <key> <value>``),
 which the running agent invokes via its terminal tool; no model tool is
 added.
-
-Inspired by: Amp (Sourcegraph) cron notepad (idea-level, proprietary — zero
-code).
 """
 
 from __future__ import annotations

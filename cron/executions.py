@@ -1,4 +1,4 @@
-"""Profile-local durable audit ledger for cron execution attempts.
+"""Durable audit ledger for cron execution attempts (cron/executions.db).
 
 The ledger records what is known about each attempt; it is not a retry queue.
 Interrupted attempts become ``unknown`` only after their exact owner process is
@@ -12,16 +12,11 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from son_of_anton_constants import get_son_of_anton_home
 from son_of_anton_time import now as _son_of_anton_now
 
-# Optional test override. Production resolves the path at transaction time so
-# dashboard operations that temporarily enter another profile cannot leak that
-# profile's execution records into the import-time home.
-EXECUTIONS_FILE: Optional[Path] = None
 MAX_TERMINAL_EXECUTIONS = 1000
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
@@ -29,7 +24,8 @@ _PROCESS_ID = uuid.uuid4().hex
 
 
 def _connect() -> sqlite3.Connection:
-    path = EXECUTIONS_FILE or (get_son_of_anton_home().resolve() / "cron" / "executions.db")
+    # Resolved per transaction so a SON_OF_ANTON_HOME set after import is honored.
+    path = get_son_of_anton_home().resolve() / "cron" / "executions.db"
     path.parent.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(path, timeout=5)
 
@@ -215,18 +211,13 @@ def recover_interrupted_executions() -> int:
 
 def list_executions(
     *, job_id: Optional[str] = None, limit: int = 50,
-    before_claimed_at: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Return indexed, newest-first execution history with cursor pagination."""
-    clauses: List[str] = []
+    """Return indexed, newest-first execution history."""
     params: List[Any] = []
+    where = ""
     if job_id is not None:
-        clauses.append("job_id=?")
+        where = " WHERE job_id=?"
         params.append(str(job_id))
-    if before_claimed_at is not None:
-        clauses.append("claimed_at < ?")
-        params.append(str(before_claimed_at))
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(max(1, min(int(limit), 500)))
     with _transaction() as conn:
         rows = conn.execute(
@@ -235,11 +226,6 @@ def list_executions(
             params,
         ).fetchall()
     return [dict(row) for row in rows]
-
-
-def latest_execution(job_id: str) -> Optional[Dict[str, Any]]:
-    rows = list_executions(job_id=job_id, limit=1)
-    return rows[0] if rows else None
 
 
 def latest_executions(job_ids: List[str]) -> Dict[str, Dict[str, Any]]:

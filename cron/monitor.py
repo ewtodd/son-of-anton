@@ -24,9 +24,6 @@ State lives in two places, both durable across scheduler restarts:
   ``last_changed_at`` (additive JSON fields, no migration needed);
 * ``OUTPUT_DIR/<job_id>/monitor_last_output.txt`` — the previous output
   text, kept only so the next change can render a diff.
-
-Inspired by: ChatGPT Work monitor tasks (idea-level, docs-only);
-enabler: #80774.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 Cron job management tools for Son of Anton Agent.
 
 Expose a single compacted action-oriented tool to avoid schema/context bloat.
-Compatibility wrappers remain for direct Python callers and legacy tests.
+The CLI (`son-of-anton cron`, /cron) drives the same ``cronjob()`` function.
 """
 
 import json
@@ -11,7 +11,6 @@ import re
 import sys
 import threading
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from son_of_anton_constants import display_son_of_anton_home
@@ -26,16 +25,11 @@ logger = logging.getLogger(__name__)
 _CRON_RUN_HEARTBEAT_INTERVAL = 10.0
 
 # Hard ceiling on how long the heartbeat keeps the parent watchdog at bay.
-# The child cron run has its own inactivity watchdog (SON_OF_ANTON_CRON_TIMEOUT,
-# default 600s) that bounds a wedged job, but with SON_OF_ANTON_CRON_TIMEOUT=0
-# (explicit "unlimited") a truly hung run_one_job would otherwise mask the
-# gateway watchdog forever — pre-#76502 the parent was at least reaped at
-# ~1800s. After this ceiling the heartbeat stops and the gateway watchdog
+# The child cron run has its own 600s inactivity watchdog, but a run wedged
+# outside it (pre-agent setup, delivery) must not mask the gateway watchdog
+# forever. After this ceiling the heartbeat stops and the gateway watchdog
 # regains authority over the turn.
 _CRON_RUN_HEARTBEAT_CEILING = 6 * 3600.0
-
-# Import from cron module (will be available when properly installed)
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
     AmbiguousJobReference,
@@ -404,15 +398,13 @@ def _normalize_deliver_param(value: Any) -> Optional[str]:
 def _validate_cron_base_url(
     provider: Optional[Any], base_url: Optional[Any]
 ) -> Optional[str]:
-    """Reject pairing a named provider's stored credential with an off-host base_url.
+    """Reject a stored job ``base_url`` that could receive a provider's key.
 
-    The cron tool is model-callable, so a prompt-injected job could set a real
-    provider plus an attacker ``base_url``; on fire the scheduler resolves that
-    provider's stored API key and sends it to the URL, exfiltrating the
-    credential (CWE-200/CWE-522). Allow a ``base_url`` override only when it
-    cannot leak a stored secret: no override at all, a configured custom/byok
-    provider that carries its own endpoint+key, or an override whose host
-    matches the named provider's own endpoint.
+    A job record (hand-edited, or written before this guard) could pair a
+    provider with an attacker ``base_url``; on fire the scheduler would
+    resolve that provider's stored API key and send it to the URL
+    (CWE-200/CWE-522). Only the bare ``custom`` provider, which carries its
+    own endpoint and key, may take a ``base_url`` override.
 
     Returns an error string if blocked, else None (valid).
     """
@@ -428,39 +420,8 @@ def _validate_cron_base_url(
             "base_url override requires an explicit provider. Set provider to a "
             "configured custom provider to use a custom endpoint."
         )
-    try:
-        from son_of_anton_cli.runtime_provider import (
-            has_named_custom_provider,
-            _get_named_custom_provider,
-        )
-        from utils import base_url_host_matches, base_url_hostname
-    except Exception:
-        # Can't resolve provider metadata -> fail closed.
-        return f"Unable to validate base_url override for provider {prov!r}; refused."
-
     if prov.lower() == "custom":
-        # Bare/inline 'custom' (and aliases that resolve to it) is pure BYOK: the
-        # runtime derives the key from a pool keyed by THIS base_url or from
-        # host-gated env vars, never an arbitrary stored secret. Safe to allow.
         return None
-    if has_named_custom_provider(prov):
-        # A NAMED custom provider carries a STORED key, and
-        # _resolve_named_custom_runtime prefers the override base_url while still
-        # sending that stored key — so an off-host override exfiltrates it.
-        # Require the override host to match the provider's CONFIGURED endpoint.
-        try:
-            cp = _get_named_custom_provider(prov)
-        except Exception:
-            cp = None
-        cfg_host = base_url_hostname((cp or {}).get("base_url", "")) if cp else ""
-        if cfg_host and base_url_host_matches(bu, cfg_host):
-            return None
-        return (
-            f"base_url {bu!r} is not allowed for provider {prov!r}. A named "
-            f"custom provider's stored credential may only be sent to its own "
-            f"configured endpoint ({cfg_host or 'unknown'})."
-        )
-    # Fail closed: any other provider name is refused.
     return (
         f"base_url {bu!r} is not allowed for provider {prov!r}. A named "
         f"provider's stored credential may only be sent to its own endpoint; "
@@ -717,11 +678,8 @@ def _run_claimed_job(
         # Manual runs invoked from a gateway agent execute outside the scheduler
         # ticker, but they still share the process with the live platform
         # adapters. Pass the gateway-owned adapter map and event loop through
-        # to run_one_job so delivery is scheduled on the loop that owns clients
-        # such as Matrix/aiohttp. Calling those clients from run_one_job's
-        # standalone asyncio.run() loop raises errors like "Timeout context
-        # manager should be used inside a task" and can break encrypted Matrix
-        # delivery (#61495 — salvaged from #63586 by @Fly-onlyone).
+        # to run_one_job so delivery is scheduled on the loop that owns the
+        # adapter's clients, not on a standalone asyncio.run() loop (#61495).
         gateway_module = sys.modules.get("gateway.run")
         runner_ref = getattr(gateway_module, "_gateway_runner_ref", None)
         runner = runner_ref() if callable(runner_ref) else None
@@ -828,8 +786,8 @@ def _try_dispatch_background_run(
     Returns
     -------
     None
-        Background delivery unavailable on this session runtime (one-shot
-        ``son-of-anton -z``, stateless HTTP, Kanban worker, nested cron run).
+        Background delivery unavailable on this session runtime (single-query
+        CLI, nested cron run).
         Caller falls back to the synchronous path unchanged.
     dict
         ``{"claimed": False, "success": False, "error": ...}`` — claim lost;
@@ -843,13 +801,10 @@ def _try_dispatch_background_run(
     """
     # Finite sessions cannot route a detached result back after the turn
     # ends — mirror delegate_task's gate and fall back to sync execution.
-    try:
-        from gateway.session_context import async_delivery_supported
+    from gateway.session_context import async_delivery_supported
 
-        if not async_delivery_supported():
-            return None
-    except Exception:
-        pass
+    if not async_delivery_supported():
+        return None
 
     job_id = job["id"]
     job_name = str(job.get("name") or job_id)
@@ -952,23 +907,10 @@ def _try_dispatch_background_run(
     except Exception:
         pass
 
-    try:
-        from tools.async_delegation import dispatch_async_delegation
-    except Exception as e:
-        logger.warning(
-            "cronjob run: async delegation registry unavailable (%s); "
-            "running job '%s' inline.", e, job_name,
-        )
-        result = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
-        result["dispatched"] = False
-        return result
+    from tools.async_delegation import dispatch_async_delegation
+    from tools.delegate_tool import _get_max_concurrent_children
 
-    try:
-        from tools.delegate_tool import _get_max_concurrent_children
-
-        max_async = _get_max_concurrent_children()
-    except Exception:
-        max_async = 3
+    max_async = _get_max_concurrent_children()
 
     started_at = time.time()
     deliver = job.get("deliver", "local")
@@ -1071,7 +1013,6 @@ def cronjob(
     include_disabled: bool = False,
     model: Optional[str] = None,
     provider: Optional[str] = None,
-    base_url: Optional[str] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
@@ -1126,12 +1067,6 @@ def cronjob(
                 if monitor_error:
                     return tool_error(monitor_error, success=False)
 
-            # Reject a model-supplied base_url that would route a named
-            # provider's stored credential to an attacker endpoint (F8).
-            base_url_error = _validate_cron_base_url(provider, base_url)
-            if base_url_error:
-                return tool_error(base_url_error, success=False)
-
             # Validate context_from references existing jobs
             if context_from:
                 from cron.jobs import get_job as _get_job
@@ -1163,7 +1098,6 @@ def cronjob(
                 origin=_origin_from_env(),
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
-                base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
                 script=_normalize_optional_job_value(script),
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
@@ -1337,29 +1271,20 @@ def cronjob(
                 updates["model"] = _normalize_optional_job_value(model)
             if provider is not None:
                 updates["provider"] = _normalize_optional_job_value(provider)
-            if base_url is not None:
-                updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
             if reasoning_effort is not None:
                 # CLI-only lane (see create above): update_job validates
                 # against the canonical grammar; empty string clears the pin.
                 updates["reasoning_effort"] = reasoning_effort
-            # Re-validate the EFFECTIVE provider/base_url on EVERY update, not
-            # only when this update supplies provider/base_url. A job persisted
-            # before this guard (or written directly to the jobs store) may
-            # already hold an unsafe named-provider + off-host base_url pair;
-            # if we only checked when the update touches those axes, editing any
-            # unrelated field (name, schedule, ...) would succeed and leave that
-            # exfil-capable pair active and schedulable (F8). The effective pair
-            # merges this update's normalized values over the stored job; an
-            # operator can still remediate in the same update by clearing
-            # base_url or pointing provider/base_url at a safe pair.
+            # Re-validate the stored base_url against the EFFECTIVE provider on
+            # EVERY update: a job written directly to the jobs store may hold
+            # an unsafe provider + off-host base_url pair, and editing any
+            # unrelated field must not leave that pair active and schedulable
+            # (F8). An operator can remediate in the same update by pointing
+            # provider at "custom".
             eff_provider = (
                 updates["provider"] if "provider" in updates else job.get("provider")
             )
-            eff_base_url = (
-                updates["base_url"] if "base_url" in updates else job.get("base_url")
-            )
-            base_url_error = _validate_cron_base_url(eff_provider, eff_base_url)
+            base_url_error = _validate_cron_base_url(eff_provider, job.get("base_url"))
             if base_url_error:
                 return tool_error(base_url_error, success=False)
             if script is not None:
@@ -1645,9 +1570,9 @@ def _cronjob_tool_handler(args, **kw):
         repeat=args.get("repeat"),
         deliver=args.get("deliver"),
         include_disabled=args.get("include_disabled", True),
-        # model / provider / base_url are intentionally NOT read from the
-        # agent's arguments: per-job inference pins are user-owned (dashboard,
-        # `son-of-anton cron create/edit --model`, or hand-edited jobs). The agent
+        # model / provider are intentionally NOT read from the agent's
+        # arguments: per-job inference pins are user-owned
+        # (`son-of-anton cron create/edit --model`, or hand-edited jobs). The agent
         # must not be able to point unattended spend at a different model.
         # Programmatic callers of cronjob() itself retain the parameters.
         reason=args.get("reason"),
