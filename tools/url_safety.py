@@ -5,24 +5,15 @@ could trick the agent into fetching internal resources like cloud
 metadata endpoints (169.254.169.254), localhost services, or private
 network hosts.
 
-The check can be globally disabled via ``security.allow_private_urls: true``
-in config.toml for environments where DNS resolves external domains to
-private/benchmark-range IPs (OpenWrt routers, corporate proxies, VPNs
-that use 198.18.0.0/15 or 100.64.0.0/10).  Even when disabled, cloud
-metadata hostnames (metadata.google.internal, 169.254.169.254) are
-**always** blocked — those are never legitimate agent targets.
-
 Limitations:
   - DNS rebinding (TOCTOU): an attacker-controlled DNS server with TTL=0
     can return a public IP for the check, then a private IP for the actual
-    connection. Son of Anton-owned direct httpx request paths should use
-    ``create_ssrf_safe_client()`` / ``create_ssrf_safe_async_client()`` so the
-    same policy is applied immediately before TCP connect and the client
-    connects to the validated IP while preserving Host/SNI semantics.
+    connection. Direct httpx request paths should use
+    ``create_ssrf_safe_async_client()`` so the same policy is applied
+    immediately before TCP connect and the client connects to the validated
+    IP while preserving Host/SNI semantics.
   - Redirect-based bypass is mitigated by httpx event hooks that re-validate
-    each redirect target in vision_tools, gateway platform adapters, and
-    media cache helpers. Web tools use third-party SDKs (Firecrawl/Tavily)
-    where redirect handling is on their servers.
+    each redirect target in vision_tools and the gateway platform adapter.
 """
 
 import ipaddress
@@ -33,9 +24,6 @@ import asyncio
 import re
 from typing import Any, Optional
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
-
-from son_of_anton_constants import get_son_of_anton_home_override
-from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -156,18 +144,15 @@ def sensitive_query_param_name(url: str) -> Optional[str]:
     return None
 
 
-# Hostnames that should always be blocked regardless of IP resolution
-# or any config toggle.  These are cloud metadata endpoints that an
-# attacker could use to steal instance credentials.
+# Cloud metadata hostnames an attacker could use to steal instance
+# credentials; always blocked.
 _BLOCKED_HOSTNAMES = frozenset({
     "metadata.google.internal",
     "metadata.goog",
 })
 
-# IPs and networks that should always be blocked regardless of the
-# allow_private_urls toggle.  These are cloud metadata / credential
-# endpoints — the #1 SSRF target — and the link-local range where
-# they all live.
+# Cloud metadata / credential endpoints — the #1 SSRF target — and the
+# link-local range where they all live.
 #
 # IPv4-mapped IPv6 variants are included because DNS resolvers may
 # return ``::ffff:x.x.x.x`` for IPv4-only hosts, and Python's
@@ -190,13 +175,6 @@ _ALWAYS_BLOCKED_NETWORKS = (
     ipaddress.ip_network("::ffff:169.254.0.0/112"), # IPv4-mapped link-local range
 )
 
-# Exact HTTPS hostnames allowed to resolve to private/benchmark-space IPs.
-# This is intentionally narrow: QQ media downloads can legitimately resolve
-# to 198.18.0.0/15 behind local proxy/benchmark infrastructure.
-_TRUSTED_PRIVATE_IP_HOSTS = frozenset({
-    "multimedia.nt.qq.com.cn",
-})
-
 _MAX_SSRF_CONNECT_IPS = 8
 
 # 100.64.0.0/10 (CGNAT / Shared Address Space, RFC 6598) is NOT covered by
@@ -204,69 +182,6 @@ _MAX_SSRF_CONNECT_IPS = 8
 # Must be blocked explicitly. Used by carrier-grade NAT, Tailscale/WireGuard
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
-
-# ---------------------------------------------------------------------------
-# Global toggle: allow private/internal IP resolution
-# ---------------------------------------------------------------------------
-# Cached after first read so we don't hit the filesystem on every URL check.
-_allow_private_resolved = False
-_cached_allow_private: bool = False
-
-
-def _global_allow_private_urls() -> bool:
-    """Return True when the user has opted out of private-IP blocking.
-
-    Checks (in priority order):
-    1. ``SON_OF_ANTON_ALLOW_PRIVATE_URLS`` env var  (``true``/``1``/``yes``)
-    2. ``security.allow_private_urls`` in config.toml
-
-    The single-profile result is cached for the process lifetime. Multiplexed
-    profile turns bypass that process-global cache because their config root is
-    context-local; ``read_raw_config()`` already provides path/mtime caching.
-    """
-    global _allow_private_resolved, _cached_allow_private
-
-    # A multiplex gateway serves several independently configured profiles in
-    # one process. Reusing the first profile's opt-out here would let it disable
-    # private-network blocking for every later profile in that process.
-    if get_son_of_anton_home_override() is not None:
-        return _resolve_allow_private_urls()
-
-    if _allow_private_resolved:
-        return _cached_allow_private
-
-    _allow_private_resolved = True
-    _cached_allow_private = _resolve_allow_private_urls()
-    return _cached_allow_private
-
-
-def _resolve_allow_private_urls() -> bool:
-    """Resolve the effective private-URL toggle from the active config scope."""
-
-    # 1. Env var override (highest priority)
-    env_val = os.getenv("SON_OF_ANTON_ALLOW_PRIVATE_URLS", "").strip().lower()
-    if env_val in {"true", "1", "yes"}:
-        return True
-    if env_val in {"false", "0", "no"}:
-        # Explicit false — don't fall through to config
-        return False
-
-    # 2. Config file
-    try:
-        from son_of_anton_cli.config import read_raw_config
-        cfg = read_raw_config()
-        # security.allow_private_urls (preferred)
-        sec = cfg.get("security", {})
-        if isinstance(sec, dict) and is_truthy_value(
-            sec.get("allow_private_urls"), default=False
-        ):
-            return True
-    except Exception:
-        # Config unavailable (e.g. tests, early import) — keep default
-        pass
-
-    return False
-
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if the IP should be blocked for SSRF protection."""
@@ -290,21 +205,11 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
-def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
-    """Return True when a trusted HTTPS hostname may bypass IP-class blocking."""
-    return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
-
-
 def is_safe_url(url: str) -> bool:
     """Return True if the URL target is not a private/internal address.
 
     Resolves the hostname to an IP and checks against private ranges.
     Fails closed: DNS errors and unexpected exceptions block the request.
-
-    When ``security.allow_private_urls`` is enabled (or the env var
-    ``SON_OF_ANTON_ALLOW_PRIVATE_URLS=true``), private-IP blocking is skipped.
-    Cloud metadata endpoints (169.254.169.254, metadata.google.internal)
-    remain blocked regardless — they are never legitimate agent targets.
     """
     try:
         parsed = urlparse(url)
@@ -316,23 +221,16 @@ def is_safe_url(url: str) -> bool:
         if not hostname:
             return False
 
-        # Block known internal hostnames — ALWAYS, even with toggle on
         if hostname in _BLOCKED_HOSTNAMES:
             logger.warning("Blocked request to internal hostname: %s", hostname)
             return False
-
-        # Check the global toggle AFTER blocking metadata hostnames
-        allow_all_private = _global_allow_private_urls()
-
-        allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
 
         # Try to resolve and check IP
         try:
             addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
         except socket.gaierror:
             # DNS resolution failed.  In sandbox / proxy environments
-            # (NVIDIA OpenShell, Docker + Squid, etc.) the host may
-            # block direct DNS — only HTTP(S) through the proxy is
+            # the host may block direct DNS — only HTTP(S) through the proxy is
             # permitted.  When a proxy is configured, delegate DNS to
             # the proxy rather than blocking the request outright.
             # The hostname was already checked against
@@ -367,7 +265,6 @@ def is_safe_url(url: str) -> bool:
                 logger.warning("Blocked request — unparseable IP address %r for hostname %s", sockaddr[0], hostname)
                 return False
 
-            # Always block cloud metadata IPs and link-local, even with toggle on
             if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
                 logger.warning(
                     "Blocked request to cloud metadata address: %s -> %s",
@@ -375,23 +272,12 @@ def is_safe_url(url: str) -> bool:
                 )
                 return False
 
-            if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
+            if _is_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to private/internal address: %s -> %s",
                     hostname, ip_str,
                 )
                 return False
-
-        if allow_all_private:
-            logger.debug(
-                "Allowing private/internal resolution (security.allow_private_urls=true): %s",
-                hostname,
-            )
-        elif allow_private_ip:
-            logger.debug(
-                "Allowing trusted hostname despite private/internal resolution: %s",
-                hostname,
-            )
 
         return True
 
@@ -415,11 +301,7 @@ class SSRFConnectionBlocked(ValueError):
     """Raised when connect-time DNS resolution violates the URL safety policy."""
 
 
-def _safe_connect_scheme(host: str, port: int, schemes_by_origin: dict[tuple[str, int], str]) -> str:
-    return schemes_by_origin.get((host, port)) or ("https" if port == 443 else "http")
-
-
-def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
+def _resolved_http_connect_ips(host: str, port: int) -> list[str]:
     """Resolve and validate *host* for one HTTP connect attempt.
 
     Unlike :func:`is_safe_url`, this is called from the HTTP transport at the
@@ -433,9 +315,6 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
 
     if hostname in _BLOCKED_HOSTNAMES:
         raise SSRFConnectionBlocked(f"Blocked request to internal hostname: {hostname}")
-
-    allow_all_private = _global_allow_private_urls()
-    allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
 
     try:
         addr_info = socket.getaddrinfo(
@@ -464,7 +343,7 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
                 f"Blocked request to cloud metadata address during connect: {hostname} -> {ip_str}"
             )
 
-        if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
+        if _is_blocked_ip(ip):
             raise SSRFConnectionBlocked(
                 f"Blocked request to private/internal address during connect: {hostname} -> {ip_str}"
             )
@@ -479,11 +358,10 @@ def _resolved_http_connect_ips(host: str, port: int, scheme: str) -> list[str]:
 
 
 class _SSRFGuardedAsyncNetworkBackend:
-    def __init__(self, schemes_by_origin_var: Any):
+    def __init__(self):
         from httpcore._backends.auto import AutoBackend
 
         self._backend = AutoBackend()
-        self._schemes_by_origin_var = schemes_by_origin_var
 
     async def connect_tcp(
         self,
@@ -495,9 +373,7 @@ class _SSRFGuardedAsyncNetworkBackend:
     ) -> Any:
         import httpcore
 
-        schemes_by_origin = self._schemes_by_origin_var.get({})
-        scheme = _safe_connect_scheme(host, port, schemes_by_origin)
-        ips = await asyncio.to_thread(_resolved_http_connect_ips, host, port, scheme)
+        ips = await asyncio.to_thread(_resolved_http_connect_ips, host, port)
 
         last_exc: Exception | None = None
         for ip in ips:
@@ -528,135 +404,6 @@ class _SSRFGuardedAsyncNetworkBackend:
         await self._backend.sleep(seconds)
 
 
-class _SSRFGuardedNetworkBackend:
-    def __init__(self, schemes_by_origin_var: Any):
-        from httpcore._backends.sync import SyncBackend
-
-        self._backend = SyncBackend()
-        self._schemes_by_origin_var = schemes_by_origin_var
-
-    def connect_tcp(
-        self,
-        host: str,
-        port: int,
-        timeout: float | None = None,
-        local_address: str | None = None,
-        socket_options: Any = None,
-    ) -> Any:
-        import httpcore
-
-        schemes_by_origin = self._schemes_by_origin_var.get({})
-        scheme = _safe_connect_scheme(host, port, schemes_by_origin)
-        ips = _resolved_http_connect_ips(host, port, scheme)
-
-        last_exc: Exception | None = None
-        for ip in ips:
-            try:
-                return self._backend.connect_tcp(
-                    ip,
-                    port,
-                    timeout=timeout,
-                    local_address=local_address,
-                    socket_options=socket_options,
-                )
-            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
-                last_exc = exc
-                continue
-        if last_exc is not None:
-            raise last_exc
-        raise SSRFConnectionBlocked(f"Blocked request - DNS returned no usable IPs for: {host}")
-
-    def connect_unix_socket(
-        self,
-        path: str,
-        timeout: float | None = None,
-        socket_options: Any = None,
-    ) -> Any:
-        raise SSRFConnectionBlocked("Blocked Unix socket connection in SSRF-safe transport")
-
-    def sleep(self, seconds: float) -> None:
-        self._backend.sleep(seconds)
-
-
-def _origin_scheme_context(request: Any) -> dict[tuple[str, int], str]:
-    host = request.url.host
-    port = request.url.port
-    scheme = request.url.scheme
-    if not host or port is None or scheme not in {"http", "https"}:
-        return {}
-    return {(host, port): scheme}
-
-
-def _install_ssrf_guard_on_async_transport(transport: Any, schemes_by_origin_var: Any) -> None:
-    state = getattr(transport, "__dict__", {}) if transport is not None else {}
-    if transport is None or state.get("_son_of_anton_ssrf_guarded", False):
-        return
-
-    pool = state.get("_pool")
-    if pool is None or not hasattr(pool, "_network_backend"):
-        raise SSRFConnectionBlocked("Unsupported async httpx transport cannot be made SSRF-safe")
-    pool._network_backend = _SSRFGuardedAsyncNetworkBackend(schemes_by_origin_var)
-
-    handle_async_request = getattr(transport, "handle_async_request", None)
-    if handle_async_request is None:
-        raise SSRFConnectionBlocked("Unsupported async httpx transport cannot be made SSRF-safe")
-
-    async def guarded_handle_async_request(request: Any) -> Any:
-        token = schemes_by_origin_var.set(_origin_scheme_context(request))
-        try:
-            return await handle_async_request(request)
-        finally:
-            schemes_by_origin_var.reset(token)
-
-    transport.handle_async_request = guarded_handle_async_request
-    transport._son_of_anton_ssrf_guarded = True
-
-
-def _install_ssrf_guard_on_transport(transport: Any, schemes_by_origin_var: Any) -> None:
-    state = getattr(transport, "__dict__", {}) if transport is not None else {}
-    if transport is None or state.get("_son_of_anton_ssrf_guarded", False):
-        return
-
-    pool = state.get("_pool")
-    if pool is None or not hasattr(pool, "_network_backend"):
-        raise SSRFConnectionBlocked("Unsupported httpx transport cannot be made SSRF-safe")
-    pool._network_backend = _SSRFGuardedNetworkBackend(schemes_by_origin_var)
-
-    handle_request = getattr(transport, "handle_request", None)
-    if handle_request is None:
-        raise SSRFConnectionBlocked("Unsupported httpx transport cannot be made SSRF-safe")
-
-    def guarded_handle_request(request: Any) -> Any:
-        token = schemes_by_origin_var.set(_origin_scheme_context(request))
-        try:
-            return handle_request(request)
-        finally:
-            schemes_by_origin_var.reset(token)
-
-    transport.handle_request = guarded_handle_request
-    transport._son_of_anton_ssrf_guarded = True
-
-
-def _install_ssrf_guard_on_async_client(client: Any) -> None:
-    import contextvars
-
-    schemes_by_origin_var = contextvars.ContextVar("son_of_anton_ssrf_async_origin_schemes")
-    state = getattr(client, "__dict__", {})
-    _install_ssrf_guard_on_async_transport(
-        state.get("_transport"), schemes_by_origin_var
-    )
-
-
-def _install_ssrf_guard_on_client(client: Any) -> None:
-    import contextvars
-
-    schemes_by_origin_var = contextvars.ContextVar("son_of_anton_ssrf_origin_schemes")
-    state = getattr(client, "__dict__", {})
-    _install_ssrf_guard_on_transport(
-        state.get("_transport"), schemes_by_origin_var
-    )
-
-
 def create_ssrf_safe_async_client(**kwargs: Any) -> Any:
     """Create an ``httpx.AsyncClient`` with connect-time SSRF validation.
 
@@ -669,16 +416,10 @@ def create_ssrf_safe_async_client(**kwargs: Any) -> Any:
     import httpx
 
     client = httpx.AsyncClient(**kwargs)
-    _install_ssrf_guard_on_async_client(client)
-    return client
-
-
-def create_ssrf_safe_client(**kwargs: Any) -> Any:
-    """Create an ``httpx.Client`` with connect-time SSRF validation."""
-    import httpx
-
-    client = httpx.Client(**kwargs)
-    _install_ssrf_guard_on_client(client)
+    pool = getattr(client.__dict__.get("_transport"), "_pool", None)
+    if pool is None or not hasattr(pool, "_network_backend"):
+        raise SSRFConnectionBlocked("Unsupported async httpx transport cannot be made SSRF-safe")
+    pool._network_backend = _SSRFGuardedAsyncNetworkBackend()
     return client
 
 

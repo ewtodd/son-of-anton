@@ -1393,7 +1393,6 @@ DEFAULT_CONFIG = {
 
     # Pre-exec security scanning via tirith
     "security": {
-        "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
         # Lockdown permission mode (temple-style): every terminal command and
         # every file write outside the session directory requires explicit
