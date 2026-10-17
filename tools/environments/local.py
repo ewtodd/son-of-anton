@@ -1231,11 +1231,10 @@ class LocalEnvironment(BaseEnvironment):
 
     def cleanup(self):
         """Clean up temp files."""
-        for f in (self._snapshot_path, self._cwd_file):
-            try:
-                os.unlink(f)
-            except OSError:
-                pass
+        try:
+            os.unlink(self._snapshot_path)
+        except OSError:
+            pass
         # Remove any orphaned atomic-write temp snapshots (snap.tmp.<bashpid>)
         # a failed/interrupted mv could have left behind (#38249).
         try:

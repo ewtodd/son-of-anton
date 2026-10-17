@@ -34,10 +34,8 @@ import contextvars
 import concurrent.futures
 import errno
 import fnmatch
-import inspect
 import json
 import logging
-import math
 import os
 import random
 import re

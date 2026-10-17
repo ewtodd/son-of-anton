@@ -3610,15 +3610,7 @@ def _await_coalesced_leader(session_key: str, leader, approval_data: dict,
     * ``once`` → returns ``None``: single-use consent covers only the
       leader's execution, so the caller must issue a fresh prompt.
 
-    Fires the pre/post approval hooks with ``coalesced=True`` so observers
-    see the follower's lifecycle without a duplicate user-facing prompt.
     """
-    command = approval_data.get("command", "")
-    description = approval_data.get("description", "")
-    primary_key = approval_data.get("pattern_key", "")
-    all_keys = approval_data.get("pattern_keys", [primary_key])
-
-
     timeout = _get_approval_timeout()
     from tools.environments.base import touch_activity_if_due
 
@@ -3654,7 +3646,6 @@ def _await_coalesced_leader(session_key: str, leader, approval_data: dict,
         # for the fresh prompt's own lifecycle, not here.
         return None
 
-    _outcome = "timeout" if not resolved else (choice if choice else "timeout")
     return {
         "resolved": resolved,
         "choice": choice,
@@ -3667,7 +3658,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                             *, surface: str = "gateway") -> dict:
     """Enqueue *approval_data*, notify the user, and block the calling agent
     thread until the request is resolved or the gateway approval timeout
-    elapses — firing pre/post approval hooks and cleaning up the queue entry.
+    elapses, then cleaning up the queue entry.
 
     Shared by the terminal command guard (``check_all_command_guards``) and
     the execute_code guard (``check_execute_code_guard``) so the fiddly
@@ -3678,11 +3669,6 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     notify callback raised.  Persistence of an approved choice and building
     the final tool-facing result dict remain the caller's responsibility.
     """
-    command = approval_data.get("command", "")
-    description = approval_data.get("description", "")
-    primary_key = approval_data.get("pattern_key", "")
-    all_keys = approval_data.get("pattern_keys", [primary_key])
-
     # ── Coalesce identical concurrent approvals (one prompt, one answer) ──
     # Parallel tool calls (a parallel terminal batch, execute_code RPC
     # handlers) can hit the same dangerous-command gate at the same time.
@@ -3788,10 +3774,6 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     _drop_entry()
 
     choice = entry.result
-    # Normalize outcome for the post hook. Unresolved (timeout) and None both
-    # mean the user never responded; report that explicitly so plugins can
-    # distinguish timeout from explicit deny.
-    _outcome = "timeout" if not resolved else (choice if choice else "timeout")
     return {"resolved": resolved, "choice": choice, "reason": entry.reason}
 
 

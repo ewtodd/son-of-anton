@@ -62,7 +62,7 @@ def realign_markdown_tables(*args, **kwargs):
 # User-managed env files should override stale shell exports on restart.
 from son_of_anton_constants import get_son_of_anton_home, display_son_of_anton_home
 from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
-from utils import base_url_host_matches, fast_toml_load, strip_decorative_glyphs
+from utils import fast_toml_load, strip_decorative_glyphs
 
 _son_of_anton_home = get_son_of_anton_home()
 _project_env = Path(__file__).parent / '.env'

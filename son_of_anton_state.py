@@ -37,9 +37,6 @@ from pathlib import Path
 from agent.session_activity import ActivityProvenance
 from agent.message_sanitization import _sanitize_surrogates
 from son_of_anton_constants import get_son_of_anton_home
-from son_of_anton_cli.sqlite_runtime import (
-    is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable,
-)
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
 from son_of_anton_state_common import (  # noqa: F401  (re-exported for back-compat)
