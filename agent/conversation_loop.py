@@ -72,12 +72,6 @@ from agent.model_metadata import (
     save_context_length,
 )
 from agent.process_bootstrap import _install_safe_stdio
-from agent.prompt_caching import (
-    build_prompt_cache_plan,
-    effective_cache_ttl,
-    strip_anthropic_cache_control,
-    strip_anthropic_tool_cache_control,
-)
 from agent.retry_utils import jittered_backoff
 from agent.repetition_guard import is_repetition_dominated
 # Bind before the turn starts so a source-tree swap cannot load a skewed
@@ -631,20 +625,6 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         from agent.system_prompt import restore_plugin_prompt_sections
 
         restore_plugin_prompt_sections(agent, stored_prompt)
-        # Reconstruct the cross-session-stable prefix for the early cache
-        # breakpoint. The static prefix is not persisted (only the full
-        # prompt is), so gateway surfaces that build a fresh AIAgent per
-        # turn would otherwise lose the two-block system layout after the
-        # first turn — flip-flopping the wire shape mid-conversation and
-        # silently degrading to the legacy single-breakpoint layout.
-        #
-        # ``reconstruct_static_prefix`` gates on ``_use_prompt_caching`` (so
-        # non-Anthropic routes skip the rebuild), applies the startswith
-        # safety gate (stored prompt bytes are never rewritten), and
-        # fails open to the legacy cache layout.
-        from agent.system_prompt import reconstruct_static_prefix
-
-        reconstruct_static_prefix(agent, system_message=system_message)
         return
     if stored_prompt:
         stored_state = "stale_runtime"
@@ -1137,81 +1117,38 @@ def _compaction_deferred_result(
     }
 
 
-def _ensure_cached_system_prompt_static(agent, system_message=None) -> None:
-    """Rebuild ``_cached_system_prompt_static`` when caching becomes active.
-
-    Sessions restored under a cache-off primary skip the static-prefix rebuild
-    (gated on ``_use_prompt_caching`` at restore time). A later failover to a
-    cache-on provider would otherwise redecorate with ``static_system_prefix=
-    None`` and silently fall back to the legacy system-plus-3 layout (#72626).
-
-    Thin wrapper over :func:`agent.system_prompt.reconstruct_static_prefix`,
-    which memoizes failed rebuilds so this stays cheap on the retry-loop hot
-    path (it runs at the top of every attempt).
-    """
-    from agent.system_prompt import reconstruct_static_prefix
-
-    reconstruct_static_prefix(
-        agent, system_message=system_message, log_label="failover redecoration"
-    )
-
-
-def _redecorate_prompt_cache_for_provider(
-    agent,
+def _flatten_single_text_parts(
     api_messages: List[Dict[str, Any]],
-    *,
-    system_message=None,
-    tools_for_api: Optional[List[Dict[str, Any]]] = None,
-) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Strip and re-apply cache_control for the *current* provider policy.
+) -> List[Dict[str, Any]]:
+    """Shallow-copy each message and send text-only part lists as strings.
 
-    Decoration runs once per call block before the retry loop for the primary
-    provider. ``try_activate_fallback`` refreshes ``_use_prompt_caching`` /
-    ``_use_native_cache_layout`` but the nine failover ``continue`` paths reused
-    the old ``api_messages`` (#72626). Mirror ``_reapply_reasoning_echo_for_provider``
-    by reshaping at the top of each retry attempt.
-
-    The source list is the mutated in-flight request (image shrink / ASCII /
-    reasoning_details recoveries already applied), never a pristine
-    pre-decoration snapshot.
+    A content list holding one plain ``{"type": "text"}`` part (or a system
+    message's two) goes on the wire as the joined string; organic multi-part
+    text and parts carrying extra keys keep their structure. Runs at the top
+    of every retry attempt on the mutated in-flight request.
     """
     messages: List[Dict[str, Any]] = [
         dict(m) if isinstance(m, dict) else m for m in (api_messages or [])
     ]
-    strip_anthropic_cache_control(messages)
-    planned_tools = strip_anthropic_tool_cache_control(
-        tools_for_api if tools_for_api is not None else getattr(agent, "tools", [])
-    )
-
-    # Direct attribute access matches the call-block decoration site — the
-    # flags are unconditionally initialized on AIAgent, and a getattr
-    # default here would mask a real init bug as silent cache-off.
-    if agent._use_prompt_caching:
-        _ensure_cached_system_prompt_static(agent, system_message=system_message)
-        static = getattr(agent, "_cached_system_prompt_static", None)
-        direct_tool_cache = getattr(
-            agent,
-            "_direct_native_anthropic_tool_cache_capability",
-            lambda: False,
-        )()
-        plan = build_prompt_cache_plan(
-            messages,
-            planned_tools,
-            # Clamp per-destination: a configured 1h regresses to 5m on
-            # Qwen/Alibaba routes, whose context cache is 5m-only (#84733).
-            cache_ttl=effective_cache_ttl(
-                agent._cache_ttl,
-                provider=agent.provider,
-                model=agent.model,
-            ),
-            native_anthropic=agent._use_native_cache_layout,
-            static_system_prefix=static if isinstance(static, str) else None,
-            direct_native_tool_cache=direct_tool_cache,
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        text_only = content and all(
+            isinstance(part, dict)
+            and part.get("type", "text") == "text"
+            and isinstance(part.get("text"), str)
+            and set(part.keys()) <= {"type", "text"}
+            for part in content
+        ) and (
+            len(content) == 1
+            or (msg.get("role") == "system" and len(content) == 2)
         )
-        messages = plan.messages
-        planned_tools = plan.tools
-
-    return messages, planned_tools
+        if text_only:
+            msg["content"] = "".join(part["text"] for part in content)
+    return messages
 
 
 def run_conversation(
@@ -1700,9 +1637,7 @@ def run_conversation(
         #
         # Son of Anton invariant: the system prompt is built ONCE per session
         # (cached on ``_cached_system_prompt``) and replayed verbatim on
-        # every turn. ``apply_anthropic_cache_control`` may split its stable
-        # prefix into content blocks on the wire, but the stored string and
-        # its byte-stability remain unchanged.
+        # every turn.
         effective_system = active_system_prompt or ""
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
@@ -1762,46 +1697,6 @@ def run_conversation(
         # non-whitespace, so it survives the whitespace-normalization pass
         # regardless of ordering (a single-space pad here previously had to
         # be sequenced after normalization to survive, forking the concept).
-
-        # Build the request-local cache sections only after every transcript
-        # mutation. The canonical tool registry stays undecorated.
-        #
-        # Runs LAST, after every message mutation above. Marking earlier
-        # defeats the prefix stability the mutations exist to create:
-        # ``_apply_cache_marker`` rewrites ``content`` from a plain string
-        # into a ``[{"type": "text", ...}]`` block, so the marked messages
-        # no longer match the ``isinstance(content, str)`` test in the
-        # whitespace-normalization pass and silently keep their raw
-        # leading/trailing whitespace. A tool result ending in "\n" is
-        # therefore sent unstripped while it sits in the last-3 window and
-        # stripped once it rolls out of it — the same message, different
-        # bytes on consecutive turns, which breaks the prefix match at
-        # exactly the point the breakpoints were meant to protect. Marking
-        # last also keeps breakpoints off messages that the orphan sweep or
-        # the thinking-only drop is about to remove or merge away.
-        tools_for_api = agent.tools
-        if agent._use_prompt_caching:
-            _static_system_prefix = getattr(agent, "_cached_system_prompt_static", None)
-            _initial_cache_plan = build_prompt_cache_plan(
-                api_messages,
-                tools_for_api,
-                # Clamp per-destination: a configured 1h regresses to 5m on
-                # Qwen/Alibaba routes, whose context cache is 5m-only (#84733).
-                cache_ttl=effective_cache_ttl(
-                    agent._cache_ttl,
-                    provider=agent.provider,
-                    model=agent.model,
-                ),
-                native_anthropic=agent._use_native_cache_layout,
-                static_system_prefix=(
-                    _static_system_prefix
-                    if isinstance(_static_system_prefix, str)
-                    else None
-                ),
-                direct_native_tool_cache=agent._direct_native_anthropic_tool_cache_capability(),
-            )
-            api_messages = _initial_cache_plan.messages
-            tools_for_api = _initial_cache_plan.tools
 
         # One image-stripped message estimate feeds both figures. Was: a
         # str(msg) char walk (re-serialized base64 every call) + a second
@@ -1916,23 +1811,8 @@ def run_conversation(
                 # unless the active provider needs it) so the fallback request
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
-                # Same story for prompt-cache decoration (#72626): try_activate_
-                # fallback refreshes the policy flags, but the decorated list
-                # still carries the primary's breakpoints (or none). Strip and
-                # re-render for the current provider before building kwargs.
-                api_messages, tools_for_api = _redecorate_prompt_cache_for_provider(
-                    agent,
-                    api_messages,
-                    system_message=system_message,
-                    tools_for_api=tools_for_api,
-                )
-                if tools_for_api == agent.tools:
-                    api_kwargs = agent._build_api_kwargs(api_messages)
-                else:
-                    api_kwargs = agent._build_api_kwargs(
-                        api_messages,
-                        tools_for_api=tools_for_api,
-                    )
+                api_messages = _flatten_single_text_parts(api_messages)
+                api_kwargs = agent._build_api_kwargs(api_messages)
                 # Outbound-request surrogate chokepoint (#50959): the messages
                 # were scrubbed above, but the rest of the request body —
                 # tool/function descriptions (session_search's ±-heavy text is
@@ -2981,17 +2861,8 @@ def run_conversation(
                     if agent.verbose_logging:
                         logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
                     
-                    # Surface cache hit stats for any provider that reports
-                    # them — not just those where we inject cache_control
-                    # markers.  OpenAI/Kimi/DeepSeek/Qwen all do automatic
-                    # server-side prefix caching and return
-                    # ``prompt_tokens_details.cached_tokens``; users
-                    # previously could not see their cache % because this
-                    # line was gated on ``_use_prompt_caching``, which is
-                    # only True for Anthropic-style marker injection.
-                    # ``canonical_usage`` is already normalised from all
-                    # three API shapes (Anthropic / Codex / OpenAI-chat)
-                    # so we can rely on its values directly.
+                    # Surface cache hit stats for any server that reports
+                    # them (automatic server-side prefix caching).
                     cached = canonical_usage.cache_read_tokens
                     written = canonical_usage.cache_write_tokens
                     prompt = usage_dict["prompt_tokens"]

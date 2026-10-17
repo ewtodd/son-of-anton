@@ -13,7 +13,6 @@ Methods covered:
 * ``drop_thinking_only_and_merge_users`` — Anthropic-style cleanup
 * ``extract_reasoning`` — pull reasoning fields out of API responses
 * ``dump_api_request_debug`` — write request body for post-mortem
-* ``anthropic_prompt_cache_policy`` — compute cache_control breakpoints
 * ``create_openai_client`` — build the per-agent OpenAI SDK client
 """
 
@@ -34,7 +33,7 @@ from agent.message_sanitization import _FULL_ARGS_LOG_BOUND
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.turn_context import drop_stale_api_content
-from utils import base_url_host_matches, base_url_hostname, atomic_json_write
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -883,11 +882,6 @@ def restore_primary_runtime(agent) -> bool:
         agent.api_key = rt["api_key"]
         agent._reasoning_echo_flag = rt.get("reasoning_echo_flag")
         agent._client_kwargs = dict(rt["client_kwargs"])
-        agent._use_prompt_caching = rt["use_prompt_caching"]
-        agent._use_native_cache_layout = rt.get("use_native_cache_layout", False)
-        if getattr(agent, "_cache_disabled", False):
-            agent._use_prompt_caching = False
-            agent._use_native_cache_layout = False
         agent.client = agent._create_openai_client(
             dict(rt["client_kwargs"]), reason="restore_primary", shared=True,
         )
@@ -1094,455 +1088,6 @@ def dump_api_request_debug(
         if agent.verbose_logging:
             logger.warning("Failed to dump API request debug payload: %s", dump_error)
         return None
-
-
-def _direct_native_anthropic_tool_cache_capability(
-    agent,
-    *,
-    provider: Optional[str] = None,
-    base_url: Optional[str] = None,
-    api_mode: Optional[str] = None,
-    model: Optional[str] = None,
-) -> bool:
-    """Return whether this resolved destination accepts native tool markers."""
-    return False
-
-
-def cache_ttl_means_disabled(ttl: Any) -> bool:
-    """Return True when a ``prompt_caching.cache_ttl`` value means caching off.
-
-    Single source of truth for the disable-synonym detection shared by
-    ``agent_init`` (live-agent ``_cache_disabled`` flag) and the stub policy
-    paths below. Keeping one predicate prevents the two sites from drifting
-    (a synonym added in only one place would recreate #76085).
-
-    Unknown values (e.g. ``"2h"``, integers) are NOT a disable — callers keep
-    caching enabled with the default TTL, matching ``agent_init``.
-    """
-    if ttl in ("5m", "1h"):
-        return False
-    if ttl is False or ttl is None:
-        return True
-    return str(ttl).lower() in ("off", "false", "disabled", "no", "none")
-
-
-# The two cache_ttl tiers accepted by config (anything else is either a
-# disable synonym or ignored). Shared by the config readers below and
-# mirrored by agent_init's live-agent snapshot.
-VALID_CACHE_TTLS = ("5m", "1h")
-
-
-def _raw_cache_ttl_from_config() -> Any:
-    """Read the raw ``prompt_caching.cache_ttl`` config value (may raise)."""
-    from son_of_anton_cli.config import load_config_readonly
-
-    pc_cfg = load_config_readonly().get("prompt_caching", {}) or {}
-    return pc_cfg.get("cache_ttl", "5m")
-
-
-def prompt_caching_disabled_from_config() -> bool:
-    """Return True when ``prompt_caching.cache_ttl`` is configured as off.
-
-    Same disable detection as ``agent_init`` (via ``cache_ttl_means_disabled``)
-    so stub-based policy paths (auxiliary fallback replan) honor the same
-    config contract without holding a live ``AIAgent`` (#76085 / #33555).
-    """
-    try:
-        ttl = _raw_cache_ttl_from_config()
-    except Exception:
-        return False
-    return cache_ttl_means_disabled(ttl)
-
-
-def configured_cache_ttl() -> Optional[str]:
-    """Return the configured ``prompt_caching.cache_ttl`` tier, if valid.
-
-    Mirrors ``agent_init``'s reading of the same key (``5m``/``1h`` accepted,
-    anything else ignored) so stub-based paths without a live ``AIAgent``
-    (auxiliary fallback replan) stop regressing a configured ``1h`` to the
-    5m default (#84733). Returns ``None`` for unset/disabled/unknown values;
-    ``effective_cache_ttl`` resolves ``None`` to ``5m`` downstream.
-    """
-    try:
-        ttl = _raw_cache_ttl_from_config()
-    except Exception:
-        return None
-    return ttl if ttl in VALID_CACHE_TTLS else None
-
-
-def blank_cache_policy_stub(cache_disabled: Optional[bool] = None):
-    """Build the destination-identity-blank stub for ``anthropic_prompt_cache_policy``.
-
-    Single sanctioned constructor for that stub. Callers that resolve cache
-    policy against a destination identified out-of-band (not a live
-    ``AIAgent``) must go through here so ``_cache_disabled`` is never left
-    off a hand-rolled ``SimpleNamespace`` (#76085).
-
-    When ``cache_disabled`` is omitted, falls back to the global config so
-    stub paths without an agent snapshot still honor an operator disable.
-    """
-    from types import SimpleNamespace
-
-    if cache_disabled is None:
-        cache_disabled = prompt_caching_disabled_from_config()
-    return SimpleNamespace(
-        provider="",
-        base_url="",
-        api_mode="",
-        model="",
-        _cache_disabled=bool(cache_disabled),
-    )
-
-
-def plan_cache_sections_for_destination(
-    messages: list,
-    tools: Optional[list],
-    *,
-    provider: str,
-    base_url: str,
-    api_mode: str,
-    model: str,
-    cache_disabled: Optional[bool] = None,
-    cache_ttl: Optional[str] = None,
-    static_system_prefix: Optional[str] = None,
-) -> Tuple[list, list]:
-    """Plan request-local cache sections for one resolved destination.
-
-    Core of the auxiliary fallback sender: resolve the cache policy for the destination's real
-    provider/base_url/api_mode/model, then either return stripped canonical
-    copies (non-caching route) or a :func:`build_prompt_cache_plan` layout
-    (caching route, with the direct-native tool marker when the destination
-    is api.anthropic.com on the Messages wire).
-
-    Never mutates ``messages`` or ``tools`` — both return values are
-    request-local copies.
-
-    ``cache_disabled`` threads the operator's ``prompt_caching.cache_ttl``
-    disable into the blank policy stub. When omitted, the live config is
-    consulted so auxiliary paths cannot re-enable markers after the
-    user turned caching off (#76085).
-
-    ``cache_ttl`` threads the operator's configured tier (default ``5m``)
-    into the destination plan so auxiliary requests stop regressing to
-    the 5m default while the main loop honors ``1h`` (#84733); it is
-    clamped per-destination by :func:`effective_cache_ttl` (Qwen → 5m).
-    ``static_system_prefix`` threads the builder-declared stable prefix so
-    the destination system prompt receives the same early breakpoint the
-    main loop applies instead of marking the whole prompt as a breakpoint.
-    """
-    from agent.prompt_caching import (
-        build_prompt_cache_plan,
-        effective_cache_ttl,
-        strip_anthropic_cache_control,
-        strip_anthropic_tool_cache_control,
-    )
-
-    stub = blank_cache_policy_stub(cache_disabled)
-    should_cache, native_layout = anthropic_prompt_cache_policy(
-        stub,
-        provider=provider,
-        base_url=base_url,
-        api_mode=api_mode,
-        model=model,
-    )
-    if not should_cache:
-        canonical_messages = copy.deepcopy(messages or [])
-        strip_anthropic_cache_control(canonical_messages)
-        return canonical_messages, strip_anthropic_tool_cache_control(tools)
-    plan = build_prompt_cache_plan(
-        messages,
-        tools,
-        cache_ttl=effective_cache_ttl(
-            # effective_cache_ttl resolves None → "5m"; markers are only
-            # emitted at all when should_cache passed above, so a
-            # cache-disabled agent (_cache_ttl=None) never reaches here
-            # with caching active.
-            cache_ttl,
-            provider=provider,
-            model=model,
-        ),
-        native_anthropic=native_layout,
-        static_system_prefix=(
-            static_system_prefix if isinstance(static_system_prefix, str) else None
-        ),
-        direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(
-            stub,
-            provider=provider,
-            base_url=base_url,
-            api_mode=api_mode,
-            model=model,
-        ),
-    )
-    return plan.messages, plan.tools
-
-
-def _is_litellm_route(provider_lower: str, base_url: str) -> bool:
-    """True when a route is a LiteLLM proxy, by provider id or host token.
-
-    Provider naming varies per install (``litellm``, ``custom:litellm``, or a
-    bare ``custom`` alias pointed at a LiteLLM host), so both signals are
-    checked. Both match ``litellm`` as a whole delimited token rather than a
-    raw substring: ``base_url_hostname``'s own docstring names substring host
-    matching as the false-positive class to avoid, and a plain
-    ``"litellm" in ...`` grants Anthropic markers to unrelated routes like
-    ``notlitellm.example.com`` or a provider named ``custom:notlitellm``.
-    A ``litellm`` *path* segment never qualifies — only the host does.
-    """
-    if _has_litellm_token(provider_lower, ":-_/"):
-        return True
-    return _has_litellm_token(base_url_hostname(base_url), ".-")
-
-
-def _has_litellm_token(value: str, delimiters: str) -> bool:
-    """True when ``value`` contains ``litellm`` as a whole delimited token."""
-    if not value:
-        return False
-    for delimiter in delimiters:
-        value = value.replace(delimiter, " ")
-    return "litellm" in value.split()
-
-
-def anthropic_prompt_cache_policy(
-    agent,
-    *,
-    provider: Optional[str] = None,
-    base_url: Optional[str] = None,
-    api_mode: Optional[str] = None,
-    model: Optional[str] = None,
-) -> tuple[bool, bool]:
-    """Decide whether to apply Anthropic prompt caching and which layout to use.
-
-    Returns ``(should_cache, use_native_layout)``:
-      * ``should_cache`` — inject ``cache_control`` breakpoints for this
-        request (applies to OpenRouter Claude, native Anthropic, and
-        third-party gateways that speak the native Anthropic protocol).
-      * ``use_native_layout`` — place markers on the *inner* content
-        blocks (native Anthropic accepts and requires this layout);
-        when False markers go on the message envelope (OpenRouter and
-        OpenAI-wire proxies expect the looser layout).
-
-    Third-party providers using the native Anthropic transport
-    (``api_mode == 'anthropic_messages'`` + Claude-named model) get
-    caching with the native layout so they benefit from the same
-    cost reduction as direct Anthropic callers, provided their
-    gateway implements the Anthropic cache_control contract
-    (MiniMax, Zhipu GLM, LiteLLM's Anthropic proxy mode all do).
-
-    Qwen / Alibaba-family models on OpenCode, OpenCode Go, and direct
-    Alibaba (DashScope) also honour Anthropic-style ``cache_control``
-    markers on OpenAI-wire chat completions. Upstream pi-mono #3392 /
-    pi #3393 documented this for opencode-go Qwen. Without markers
-    these providers serve zero cache hits, re-billing the full prompt
-    on every turn.
-
-    If the operator has set ``prompt_caching.cache_ttl`` to a falsy value
-    (``false``, ``null``, ``"off"``, etc.) in config.toml, prompt caching
-    is fully disabled — this early return ensures the disable survives
-    ``/model`` switches, fallback re-derivation, and runtime snapshot
-    restoration (#33555). We check ``"_cache_disabled"`` (set by
-    init_agent when the disable is detected) rather than ``_cache_ttl``
-    directly, because ``_cache_ttl`` is not yet set when the policy runs
-    during the initial ``init_agent`` call.
-    """
-    if getattr(agent, "_cache_disabled", False):
-        return (False, False)
-
-    eff_provider = (provider if provider is not None else agent.provider) or ""
-    eff_base_url = base_url if base_url is not None else (agent.base_url or "")
-    eff_api_mode = api_mode if api_mode is not None else (agent.api_mode or "")
-    eff_model = (model if model is not None else agent.model) or ""
-
-    if isinstance(eff_model, dict):
-        eff_model = eff_model.get('model') or eff_model.get('default') or ''
-    eff_model = eff_model if isinstance(eff_model, str) else str(eff_model or '')
-    model_lower = eff_model.lower()
-    provider_lower = eff_provider.lower()
-    is_claude = "claude" in model_lower
-    # Kimi / Moonshot family via OpenRouter: same cache_control wire format
-    # as Claude on OpenRouter (envelope layout).  Without this branch
-    # moonshotai/kimi-k2.6 falls through to (False, False), serving ~1%
-    # cache hits on 64K-token prompts and re-billing the full prompt on
-    # every turn.  Observed within-turn progression with cache enabled:
-    # 1% → 67% → 84% → 97% (#25970).  Reuses the canonical family matcher
-    # (covers bare k1./k2./k25 release slugs the substring check missed).
-    from agent.model_metadata import _model_name_is_kimi_family
-    is_kimi = (
-        _model_name_is_kimi_family(eff_model) or "moonshot" in model_lower
-    )
-    is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
-    # Nous Portal proxies to OpenRouter behind the scenes — identical
-    # OpenAI-wire envelope cache_control semantics. Treat it as an
-    # OpenRouter-equivalent endpoint for caching layout purposes.
-    # The Anthropic Messages wire is gone, so no route reaching this function
-    # is on it. Kept as named constants rather than threaded away: every
-    # branch below reads as the cache-layout decision it is.
-    is_anthropic_wire = False
-    is_native_anthropic = False
-    is_nous_portal = False
-
-    # A custom Anthropic-compatible route may use a bare model alias that is
-    # canonicalized only after Son of Anton sends the request. In that case model
-    # spelling cannot prove cache support. Honor an exact route+model
-    # capability declaration instead; explicit false is authoritative too.
-    # This preserves the runtime model id (and therefore request/cache keys)
-    # while avoiding unsafe alias-name guesses.
-    #
-    # Also consulted for a LiteLLM route on the OpenAI wire: that grant is
-    # inferred from the provider/host name, so an operator who explicitly
-    # declares prompt_caching for the route+model must still win over the
-    # inference — in either direction. Narrowed to the routes the LiteLLM
-    # branch below can actually grant (chat_completions + Claude): the lookup
-    # calls get_compatible_custom_providers, which rebuilds its normalized
-    # view on every call (~1.5ms uncached), and this function runs per
-    # request destination. Widening it unconditionally regressed the
-    # non-declaring common case ~200x (7.5us -> 1528us).
-    custom_prompt_caching = None
-    _litellm_openai_wire = (
-        eff_api_mode == "chat_completions"
-        and is_claude
-        and _is_litellm_route(provider_lower, eff_base_url)
-    )
-    if is_anthropic_wire or _litellm_openai_wire:
-        try:
-            from son_of_anton_cli.config import get_custom_provider_model_capability
-
-            custom_prompt_caching = get_custom_provider_model_capability(
-                model=eff_model,
-                base_url=eff_base_url,
-                capability="prompt_caching",
-                custom_providers=getattr(agent, "_custom_providers", None),
-            )
-        except Exception as _cap_exc:
-            logger.debug(
-                "custom-provider prompt_caching capability lookup failed: %s",
-                _cap_exc,
-            )
-    if custom_prompt_caching is not None:
-        # Layout follows the transport, not the declaration: the native
-        # inner-block form is only honored on the Anthropic Messages wire
-        # (see the LiteLLM OpenAI-wire branch below for why a top-level
-        # marker is dropped or 400s on chat_completions).
-        return custom_prompt_caching, custom_prompt_caching and is_anthropic_wire
-
-    # MiniMax-M3 rides MiniMax's server-side automatic prefix cache on the
-    # Anthropic wire (content-keyed, no marker needed); explicit cache_control
-    # is documented for M2.7/M2.5/M2.1/M2 only, so markers on M3 are dead
-    # weight — never observable (cache_creation always 0) nor billable.
-    # Checked BEFORE the native-Anthropic return: provider="anthropic"
-    # pointed at a MiniMax /anthropic proxy is a supported override
-    # (_anthropic_base_url_override_ok) that would otherwise return
-    # (True, True) above this exclusion.
-    # Docs: https://platform.minimax.io/docs/api-reference/text-prompt-caching
-    is_minimax_provider = provider_lower in {"minimax", "minimax-cn"}
-    is_minimax_host = (
-        base_url_host_matches(eff_base_url, "api.minimax.io")
-        or base_url_host_matches(eff_base_url, "api.minimaxi.com")
-    )
-    is_minimax_route = is_minimax_provider or is_minimax_host
-    if is_anthropic_wire and is_minimax_route:
-        from agent.model_metadata import _model_name_suggests_minimax_m3
-
-        if _model_name_suggests_minimax_m3(eff_model):
-            return False, False
-
-    if is_native_anthropic:
-        return True, True
-    # Envelope layout is an OpenAI-wire construct. Portal Claude on the native
-    # Messages route must fall through to the third-party anthropic_messages
-    # branch below, which emits inner-block cache_control breakpoints; the
-    # envelope form would be dropped and serve 0% cache hits.
-    if (
-        (is_openrouter or is_nous_portal)
-        and (is_claude or is_kimi)
-        and not is_anthropic_wire
-    ):
-        return True, False
-    # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
-    # cache_control path as Portal Claude. Portal proxies to OpenRouter
-    # and the upstream Qwen route accepts cache_control markers; without
-    # this branch the alibaba-family check below only matches
-    # provider=opencode/alibaba and Portal traffic falls through to
-    # (False, False), serving 0% cache hits and re-billing the full
-    # prompt on every turn.
-    if is_nous_portal and "qwen" in model_lower:
-        return True, False
-    if is_anthropic_wire and is_claude:
-        # Third-party Anthropic-compatible gateway.
-        return True, True
-
-    # LiteLLM fronting a Claude model on the OpenAI-compatible wire.
-    # The branch above only matches LiteLLM in Anthropic proxy mode
-    # (api_mode == "anthropic_messages"). A LiteLLM deployment that
-    # exposes /v1/chat/completions instead matched no grant branch above
-    # and fell through to (False, False): no cache_control is injected, the
-    # system prompt goes on the wire as a plain string, and the provider
-    # serves zero cache hits — the entire prompt is re-billed at full price
-    # every turn. Same failure class already documented above for
-    # Qwen/DashScope. The endpoint supports Anthropic-style cache_control
-    # fine; only the provider detection missed it (#84506).
-    #
-    # Gated on the Claude family only: a Gemini/GPT/Qwen route through the
-    # same proxy must not receive markers — some strict OpenAI-wire relays
-    # reject the cache_control block format outright (cf. the DeepSeek /
-    # OpenCode exclusion below, #77217).
-    #
-    # Envelope layout (native_anthropic=False), matching every other
-    # OpenAI-wire grant in this function. The native inner-block layout
-    # writes a TOP-LEVEL msg["cache_control"] on role:tool and
-    # empty-content messages and relies on the Anthropic adapter to
-    # relocate it — but that adapter only runs for api_mode ==
-    # "anthropic_messages" (agent/transports/anthropic.py), and the
-    # chat_completions transport performs no relocation. On this wire the
-    # native layout therefore (a) silently loses those breakpoints, spending
-    # 2 of the 4 available on markers the provider never sees, and (b) when
-    # LiteLLM relocates a top-level marker itself for an OpenRouter-backed
-    # Claude route, lands it on an empty text block — the HTTP 400
-    # "text content blocks must contain" shape handled in
-    # agent/anthropic_adapter.py (#69512).
-    #
-    # Gated on chat_completions explicitly rather than `not
-    # is_anthropic_wire`: other wires are separate transports with their
-    # own marker handling and must not be swept in.
-    if _litellm_openai_wire:
-        return True, False
-
-    # MiniMax on its Anthropic-compatible endpoint serves its own
-    # model family (MiniMax-M2.7, M2.5, M2.1, M2) with documented
-    # cache_control support (0.1× read pricing, 5-minute TTL).  The
-    # blanket is_claude gate above excludes these — opt them in
-    # explicitly via provider id or host match so users on
-    # provider=minimax / minimax-cn (or custom endpoints pointing at
-    # api.minimax.io/anthropic / api.minimaxi.com/anthropic) get the
-    # same cost reduction as Claude traffic.  MiniMax-M3 never reaches
-    # here — it is excluded before the native-Anthropic return above.
-    # Docs: https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache
-    if is_anthropic_wire and is_minimax_route:
-        return True, True
-
-    # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
-    # transport that accepts Anthropic-style cache_control markers and
-    # rewards them with real cache hits.  Without this branch
-    # qwen3.6-plus on opencode-go reports 0% cached tokens and burns
-    # through the subscription on every turn.
-    #
-    # NOTE: DeepSeek models on OpenCode are intentionally excluded.
-    # OpenCode Zen's relay rejects the Anthropic-style content block
-    # format that cache markers produce (content becomes a block array
-    # instead of a plain string), causing HTTP 400 (#77217).
-    # Single source of truth for the family set and the qwen-model
-    # predicate — shared with the effective_cache_ttl clamp so the
-    # opt-in and the TTL clamp can never desync (#84733).
-    from agent.prompt_caching import ALIBABA_FAMILY_PROVIDERS, is_qwen_model
-
-    model_is_qwen = is_qwen_model(model_lower)
-    provider_is_alibaba_family = provider_lower in ALIBABA_FAMILY_PROVIDERS
-    if provider_is_alibaba_family and model_is_qwen:
-        # Envelope layout (native_anthropic=False): markers on inner
-        # content parts, not top-level tool messages.  Matches
-        # pi-mono's "alibaba" cacheControlFormat.
-        return True, False
-
-    return False, False
 
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
@@ -1761,22 +1306,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     agent._config_context_length = _destination_context_intent
     _effective_context_length = _destination_context_intent
 
-    # ── Re-evaluate prompt caching ──
     # Refresh the custom-provider snapshot from the config just loaded above
-    # so the per-model ``prompt_caching`` capability lookup sees the same
-    # live list the context-length resolution used — without this, a flag
-    # added to config.toml after session start is invisible to a /model
-    # switch (the policy would read the stale init-time snapshot).
+    # so later per-model lookups see the same live list the context-length
+    # resolution used.
     if _sm_custom_providers is not None:
         agent._custom_providers = _sm_custom_providers
-    agent._use_prompt_caching, agent._use_native_cache_layout = (
-        agent._anthropic_prompt_cache_policy(
-            provider=new_provider,
-            base_url=agent.base_url,
-            api_mode=api_mode,
-            model=new_model,
-        )
-    )
 
     # ── Update context compactor ──
     if hasattr(agent, "context_compactor") and agent.context_compactor:
@@ -1855,8 +1389,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
-        "use_prompt_caching": agent._use_prompt_caching,
-        "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", None),
         "compactor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
@@ -2943,10 +2475,6 @@ __all__ = [
     "restore_primary_runtime",
     "extract_reasoning",
     "dump_api_request_debug",
-    "prompt_caching_disabled_from_config",
-    "blank_cache_policy_stub",
-    "plan_cache_sections_for_destination",
-    "anthropic_prompt_cache_policy",
     "create_openai_client",
     "switch_model",
     "invoke_tool",

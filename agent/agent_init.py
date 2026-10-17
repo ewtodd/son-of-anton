@@ -452,47 +452,6 @@ def init_agent(
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
     
-    # Anthropic prompt caching: auto-enabled for Claude models on native
-    # Anthropic, OpenRouter, and third-party gateways that speak the
-    # Anthropic protocol (``api_mode == 'anthropic_messages'``). Reduces
-    # input costs by ~75% on multi-turn conversations. Uses four breakpoints:
-    # the static system prefix, full system prompt, and last two messages
-    # (falling back to system-and-3 when no static prefix is available). See
-    # ``_anthropic_prompt_cache_policy`` for the layout-vs-transport decision.
-    agent._use_prompt_caching, agent._use_native_cache_layout = (
-        agent._anthropic_prompt_cache_policy()
-    )
-    agent._cache_disabled = False
-    # Anthropic supports "5m" (default) and "1h" cache TTL tiers. Read from
-    # config.toml under prompt_caching.cache_ttl; unknown values keep "5m".
-    # 1h tier costs 2x on write vs 1.25x for 5m, but amortizes across long
-    # sessions with >5-minute pauses between turns (#14971).
-    #
-    # Setting cache_ttl to a falsy value (false / null / "off" / "disabled" /
-    # "no" / "none") disables prompt caching entirely. This is useful for
-    # OAuth subscription users where cache writes bill against "extra usage"
-    # or for third-party proxies that inject their own cache_control markers
-    # (#13477). The disable propagates through anthropic_prompt_cache_policy()
-    # and restore_primary_runtime() so it survives /model switches and
-    # fallback re-derivation (#33555).
-    agent._cache_ttl = "5m"
-    try:
-        from son_of_anton_cli.config import load_config_readonly as _load_pc_cfg
-
-        from agent.agent_runtime_helpers import cache_ttl_means_disabled
-
-        _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
-        _ttl = _pc_cfg.get("cache_ttl", "5m")
-        if _ttl in {"5m", "1h"}:
-            agent._cache_ttl = _ttl
-        elif cache_ttl_means_disabled(_ttl):
-            agent._use_prompt_caching = False
-            agent._use_native_cache_layout = False
-            agent._cache_ttl = None
-            agent._cache_disabled = True
-    except Exception:
-        pass
-
     # Iteration budget: the LLM is only notified when it actually exhausts
     # the iteration budget (api_call_count >= max_iterations).  At that
     # point we inject ONE message, allow one final API call, and if the
@@ -770,16 +729,6 @@ def init_agent(
         prompt_preview = agent.ephemeral_system_prompt[:60] + "..." if len(agent.ephemeral_system_prompt) > 60 else agent.ephemeral_system_prompt
         print(f"🔒 Ephemeral system prompt: '{prompt_preview}' (not saved to trajectories)")
     
-    # Show prompt caching status
-    if agent._use_prompt_caching and not agent.quiet_mode:
-        if agent._use_native_cache_layout and agent.provider == "anthropic":
-            source = "native Anthropic"
-        elif agent._use_native_cache_layout:
-            source = "Anthropic-compatible endpoint"
-        else:
-            source = "Claude via OpenRouter"
-        print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")
-    
     # Session logging setup - auto-save conversation trajectories for debugging
     agent.session_start = datetime.now()
     if session_id:
@@ -835,10 +784,7 @@ def init_agent(
     
     # Cached system prompt -- built once per session, only rebuilt on compaction
     agent._cached_system_prompt: Optional[str] = None
-    # Cross-session-stable prefix of the cached prompt. It remains separate
-    # from the persisted string and is used only to place an early cache marker.
-    agent._cached_system_prompt_static: Optional[str] = None
-    
+
     # SQLite session store (optional -- provided by CLI or gateway)
     agent._session_db = session_db
     # Whether close() must also close that handle. Default False: a
@@ -1668,8 +1614,6 @@ def init_agent(
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
-        "use_prompt_caching": agent._use_prompt_caching,
-        "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", None),
         # Context engine state that _try_activate_fallback() overwrites.
         # Use getattr for model/base_url/api_key/provider since plugin

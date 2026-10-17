@@ -836,14 +836,6 @@ DEFAULT_CONFIG = {
                                       # Example: 1800 = compact after 30 min idle.
     },
 
-    # Anthropic prompt caching (Claude via native Anthropic API).
-    # cache_ttl: "5m" or "1h" (Anthropic-supported tiers). Other non-falsy
-    # values are silently ignored. Falsy values (false, null, "off",
-    # "disabled", "no", "none") disable prompt caching entirely.
-    "prompt_caching": {
-        "cache_ttl": "5m",
-    },
-
 
     # Auxiliary model config — provider:model for each side task.
     # Format: provider is the provider name, model is the model slug.
