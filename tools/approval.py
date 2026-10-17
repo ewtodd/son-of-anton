@@ -932,25 +932,15 @@ def _normalize_command_for_detection(command: str) -> str:
     # whose [^\n] class deliberately skips newlines and would otherwise leave
     # the dangling backslash wedged between tokens — defeating the structured
     # rm/mkfs/dd patterns (notably the HARDLINE root-delete floor, which cannot
-    # be bypassed even with yolo). Handles both \n and \r\n line endings. Line
-    # continuations carry no path separator, so this is a no-op on the Windows
-    # home-prefix folds below (which match C:\Users\alice\... — no newline).
+    # be bypassed even with yolo). Handles both \n and \r\n line endings.
     command = re.sub(r'\\\r?\n', '', command)
-    # Fold absolute home / active-profile-home prefixes into their canonical
+    # Fold absolute home / Son of Anton home prefixes into their canonical
     # ~/ and ~/.son-of-anton/ forms so static user-sensitive patterns catch
-    # /home/alice/.bashrc and C:\Users\alice\.bashrc the same way they catch
-    # ~/.bashrc. Resolve at detection time (not via an import-time snapshot) so
-    # it tracks HOME / SON_OF_ANTON_HOME even when those are set after this module is
-    # imported — as the hermetic test conftest and profile/session launchers do.
-    #
-    # This MUST run before the backslash-escape strip below: on Windows the home
-    # prefix is separated by backslashes (C:\Users\alice\...), which that strip
-    # would otherwise dissolve (-> C:Usersalice) and make the fold impossible.
-    # The fold matches either separator, so POSIX paths are unaffected by order.
-    #
-    # Fold the (more specific) Son of Anton home first: on Windows it nests under the
-    # user home (C:\Users\alice\AppData\...\son-of-anton), so folding the user home
-    # first would eat the prefix the Son of Anton-home fold needs.
+    # /home/alice/.bashrc the same way they catch ~/.bashrc. Resolve at
+    # detection time (not via an import-time snapshot) so it tracks HOME /
+    # SON_OF_ANTON_HOME even when those are set after this module is imported —
+    # as the hermetic test conftest does. The (more specific) Son of Anton home
+    # folds first.
     command = _rewrite_resolved_son_of_anton_home(command)
     command = _rewrite_resolved_user_home(command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
@@ -976,46 +966,36 @@ def _normalize_command_for_detection(command: str) -> str:
 # path token on a command line. Used to bound the path tail we normalize.
 _PATH_TOKEN_STOP = r"""\s'"`;|&<>()"""
 # One path segment (no separators, no terminators) preceded by a separator.
-_PATH_TAIL = r"(?P<tail>(?:[/\\][^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
+_PATH_TAIL = r"(?P<tail>(?:/[^/" + _PATH_TOKEN_STOP + r"]*)+)"
 
 
 @functools.lru_cache(maxsize=64)
 def _home_prefix_fold_regex(path: str):
     """Compile a regex matching *path* used as an absolute directory prefix.
 
-    The home components are matched with either separator (``/`` or ``\\``)
-    between them, followed by the rest of the path token (the ``tail`` group),
-    so a Windows native path (``C:\\Users\\alice\\.ssh\\authorized_keys``), its
-    forward-slash form, and mixed-separator forms all fold — and the tail's
-    backslashes get normalized to ``/`` by the caller so multi-segment static
-    patterns (``~/.ssh/authorized_keys``) still match. The trailing tail is
-    required (``+``), so a bare home with no path under it is not folded.
+    The home components may be separated by repeated slashes and must be
+    followed by the rest of the path token (the ``tail`` group), so a bare
+    home with no path under it is not folded.
 
     Returns ``None`` for an unset or degenerate path — one with fewer than two
-    components below the root — so a stray HOME / SON_OF_ANTON_HOME such as ``/``,
-    ``C:\\`` or ``""`` cannot rewrite unrelated filesystem prefixes. Cached
+    components below the root — so a stray HOME / SON_OF_ANTON_HOME such as
+    ``/`` or ``""`` cannot rewrite unrelated filesystem prefixes. Cached
     because the resolved home is stable across calls on this hot path.
     """
     if not path:
         return None
-    components = [c for c in re.split(r"[/\\]+", path) if c]
-    # Require at least two non-empty components below the root. For POSIX this
-    # mirrors the historical ``count("/") >= 2`` guard (``/home/alice`` folds,
-    # ``/home`` does not); for Windows it rejects a bare drive root (``C:\\``)
-    # while accepting a real home (``C:\\Users\\alice``).
+    components = [c for c in path.split("/") if c]
     if len(components) < 2:
         return None
-    body = r"[/\\]+".join(re.escape(c) for c in components)
-    # Optional leading root separator (POSIX ``/`` or UNC ``\\``); a Windows
-    # drive letter is captured as the first component.
-    return re.compile(r"[/\\]*" + body + _PATH_TAIL)
+    body = "/+".join(re.escape(c) for c in components)
+    return re.compile("/*" + body + _PATH_TAIL)
 
 
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
     """Fold each resolved home *path* prefix in *command* to *replacement*.
 
     *replacement* has no trailing separator (``~`` / ``~/.son-of-anton``); the matched
-    path tail (with its backslashes normalized to ``/``) supplies it. Longest
+    path tail supplies it. Longest
     candidate first so a deeper home (e.g. an explicit HOME)
     folds before a shorter overlapping one that would otherwise clobber it.
     """
@@ -1026,10 +1006,7 @@ def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
         seen.add(path)
         pattern = _home_prefix_fold_regex(path)
         if pattern is not None:
-            command = pattern.sub(
-                lambda m: replacement + m.group("tail").replace("\\", "/"),
-                command,
-            )
+            command = pattern.sub(lambda m: replacement + m.group("tail"), command)
     return command
 
 
@@ -1039,8 +1016,7 @@ def _rewrite_resolved_user_home(command: str) -> str:
     Resolves the home at detection time — its expanduser form, symlink-resolved
     form, and an explicitly set ``HOME`` — so absolute home paths are checked by
     the same static patterns as tilde and ``$HOME`` forms. ``HOME`` is consulted
-    directly alongside the ``~`` expanduser form. Matches both
-    ``/home/alice`` and ``/Users/alice`` separators. No-op when the home is
+    directly alongside the ``~`` expanduser form. No-op when the home is
     unset or degenerate.
     """
     try:
@@ -1064,8 +1040,8 @@ def _rewrite_resolved_son_of_anton_home(command: str) -> str:
     patterns match. In gateway deployments the agent often references
     the resolved absolute path directly (e.g. ``sed -i ...
     /home/son-of-anton/.son-of-anton/config.toml``) rather than ``~``, ``$HOME``, or
-    ``$SON_OF_ANTON_HOME``. Matches both POSIX and Windows separators. No-op when the
-    path can't be resolved or doesn't appear.
+    ``$SON_OF_ANTON_HOME``. No-op when the path can't be resolved or doesn't
+    appear.
     """
     try:
         from son_of_anton_constants import get_son_of_anton_home
@@ -2006,22 +1982,6 @@ def _command_detection_variants(command: str):
     grep_safe, _ = _grep_safe_detection_variant(normalized)
     seen = {grep_safe}
     yield grep_safe
-    # Windows-path variant (#69472): normalization treats backslashes as
-    # shell escapes and strips them, so `del C:\Users\me\.ssh\id_rsa`
-    # reaches the patterns as `del C:Usersme.sshid_rsa` — no path rule can
-    # ever match a backslash Windows path. When the RAW command contains a
-    # drive-letter or UNC backslash path, also yield a variant with
-    # backslashes flattened to forward slashes BEFORE normalization eats
-    # them. Gated on a real path shape (letter, colon, backslash — or
-    # double backslash UNC) so POSIX escape semantics (`echo a\"b`) are
-    # untouched on every other command.
-    if re.search(r"(?:[A-Za-z]:|\\\\)[\\\\]", command) or re.search(r"[A-Za-z]:\\", command):
-        win_variant = _normalize_command_for_detection(
-            _mask_quoted_newlines(command.replace("\\", "/"))
-        )
-        if win_variant not in seen:
-            seen.add(win_variant)
-            yield win_variant
     # Program-bearing options are parsed in their owning command's context.
     # Surfacing only their payload lets the hardline floor inspect the command
     # that will actually run without promoting similar flags or quoted prose.
