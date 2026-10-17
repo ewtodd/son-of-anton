@@ -18,25 +18,15 @@ def resolve_workspace_root(problem_name: str, model: str, kind: str) -> Path:
     Base directory: ``physics.workspace_root`` from config.toml when set,
     otherwise ``~/.son-of-anton/workspaces``.
     """
-    base = ""
-    try:
-        from son_of_anton_cli.config import load_config
+    from son_of_anton_constants import get_son_of_anton_home
 
-        base = str(((load_config() or {}).get("physics") or {}).get(
-            "workspace_root"
-        ) or "").strip()
-    except Exception:
-        base = ""
+    from .config import physics_config
 
+    base = str(physics_config().get("workspace_root") or "").strip()
     if base:
         base_dir = Path(os.path.expanduser(base))
     else:
-        try:
-            from son_of_anton_constants import get_son_of_anton_home
-
-            base_dir = Path(get_son_of_anton_home()) / "workspaces"
-        except Exception:
-            base_dir = Path.home() / ".son-of-anton" / "workspaces"
+        base_dir = Path(get_son_of_anton_home()) / "workspaces"
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_problem = (problem_name or "session").replace("/", "-")[:60]
@@ -119,14 +109,13 @@ def log_llm_call(
     output_tokens: int,
     stop_reason: str,
     duration_s: float,
-    system_prompt_chars: int,
-    user_content_chars: int,
-    response_chars: int,
-    reasoning_tokens: int = 0,
-    answer_tokens: int = 0,
     round: int = 0,
 ) -> None:
-    """Append one LLM-call event to EVENT_LOG.jsonl. Never raises."""
+    """Append one LLM-call event to EVENT_LOG.jsonl. Never raises.
+
+    The ``*_chars`` and reasoning/answer token fields are never measured and
+    always 0; they stay so every record keeps the shape readers expect.
+    """
     try:
         entry = {
             "kind": "llm_call",
@@ -138,11 +127,11 @@ def log_llm_call(
             "output_tokens": output_tokens,
             "stop_reason": stop_reason,
             "duration_s": duration_s,
-            "system_prompt_chars": system_prompt_chars,
-            "user_content_chars": user_content_chars,
-            "response_chars": response_chars,
-            "reasoning_tokens": reasoning_tokens,
-            "answer_tokens": answer_tokens,
+            "system_prompt_chars": 0,
+            "user_content_chars": 0,
+            "response_chars": 0,
+            "reasoning_tokens": 0,
+            "answer_tokens": 0,
             "round": round,
         }
         with open(Path(workspace_dir) / "EVENT_LOG.jsonl", "a", encoding="utf-8") as f:

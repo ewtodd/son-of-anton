@@ -206,7 +206,7 @@ def test_a_single_symbol_string_is_accepted(header_dir: Path) -> None:
 def test_the_toolset_declines_to_exist_with_nothing_to_serve(tmp_path) -> None:
     """No headers means no tools, rather than two that answer every question
     with 'not found'."""
-    assert ApiDocsToolset.from_config(config={}, interpreter=str(tmp_path)) is None
+    assert ApiDocsToolset.from_config(interpreter=str(tmp_path)) is None
 
 
 def test_the_composite_merges_sources_without_duplicating_names(

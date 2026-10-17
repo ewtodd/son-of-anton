@@ -42,7 +42,7 @@ def test_a_spec_path_is_loaded(spec_file: Path) -> None:
     assert spec.name == "decay_curve"
     assert spec.text.startswith("Measure the half-life")
     assert spec.answer_template.startswith("def answer")
-    assert spec.is_scored
+    assert spec.definition["checks"]
 
 
 def test_a_tilde_path_is_expanded(spec_file: Path, monkeypatch) -> None:
@@ -56,7 +56,6 @@ def test_a_tilde_path_is_expanded(spec_file: Path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(spec_file.parent))
     spec = load_spec(f"~/{spec_file.name}")
     assert spec.definition is not None, "the tilde was not expanded"
-    assert spec.is_scored
 
 
 def test_a_path_that_looks_like_a_spec_but_is_not_warns(tmp_path) -> None:
@@ -70,7 +69,6 @@ def test_plain_prose_is_the_problem_itself() -> None:
     spec = load_spec("Why is the sky blue?")
     assert spec.text == "Why is the sky blue?"
     assert spec.definition is None
-    assert spec.is_scored is False
 
 
 def test_a_toml_without_a_problem_key_is_not_a_spec(tmp_path: Path) -> None:
@@ -160,7 +158,7 @@ def test_the_runner_passes_the_spec(monkeypatch, tmp_path) -> None:
 
     spec_path = tmp_path / "problem.toml"
     spec_path.write_text(dump_toml(SPEC), encoding="utf-8")
-    run_module.run_problem(str(spec_path), mode="physics")
+    run_module.run_problem(str(spec_path))
 
     assert seen["problem_def"] == SPEC
     assert seen["problem_name"] == "decay_curve"
@@ -180,15 +178,6 @@ def test_max_iterations_is_settable(monkeypatch) -> None:
     )
     assert resolve_max_iterations(None, 50) == 12
     assert resolve_max_iterations(3, 50) == 3, "the flag must win over config"
-
-
-def test_an_unknown_mode_is_refused() -> None:
-    from autophysicist.run import run_problem
-
-    with pytest.raises(ValueError, match="unknown mode"):
-        run_problem("x", mode="nonsense")
-    with pytest.raises(ValueError, match="unknown mode"):
-        run_problem("x", mode="research")
 
 
 def test_script_timeout_is_settable(monkeypatch) -> None:
@@ -219,5 +208,5 @@ def test_the_runner_passes_the_script_timeout(monkeypatch, tmp_path) -> None:
         "autophysicist.runner.run_autophysicist", fake_autophysicist
     )
     monkeypatch.setattr("autophysicist.run._physics_config", dict)
-    run_module.run_problem("a question", mode="physics", script_timeout=900)
+    run_module.run_problem("a question", script_timeout=900)
     assert seen["sandbox_timeout"] == 900

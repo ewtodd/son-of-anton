@@ -1,18 +1,11 @@
-"""OpenAI-compatible LLM layer for the physics modes.
+"""OpenAI-compatible LLM layer for the physics mode.
 
-physics-intern shipped its own provider abstraction (Anthropic/OpenAI/
-Gemini/HuggingFace/vLLM). The fork collapses that into the son-of-anton
-configuration: the physics modes talk to the same endpoints as the main
-agent — a local llama-swap/vLLM server or the DeepSeek API — through the
-``openai`` SDK, which every supported endpoint speaks.
+The physics mode talks to the same kind of endpoint as the main agent, through
+the ``openai`` SDK. Endpoint resolution (first match wins):
 
-Endpoint resolution (first match wins):
-
-1. ``physics.base_url`` in config.toml (explicit local/remote endpoint)
-2. provider-specific defaults: deepseek -> api.deepseek.com, openai ->
-   api.openai.com
-3. ``custom_providers.<provider>.base_url`` in config.toml
-4. ``http://127.0.0.1:8080/v1`` (the llama-swap convention)
+1. ``physics.base_url`` (with ``physics.api_key_env``) in config.toml
+2. ``custom_providers.<provider>.base_url`` in config.toml
+3. ``http://127.0.0.1:8080/v1`` (the llama-swap convention)
 """
 
 from __future__ import annotations
@@ -31,6 +24,7 @@ from openai import (
     OpenAI,
 )
 
+from .core.config import agent_config as _load_agent_config
 from .core.tool_call import ToolCall
 from .core.workspace import log_llm_call
 
@@ -80,10 +74,6 @@ class LLMResponse:
     output_tokens: int
     stop_reason: str
     duration: float
-    reasoning_tokens: int = 0
-    answer_tokens: int = 0
-    reasoning_content: str = ""
-    log_path: str = ""
     new_input_tokens: int = 0
 
 
@@ -107,9 +97,6 @@ class AgentResult:
     truncated: bool = False
     duration: float = 0.0
     stop_reason: str = "end_turn"
-    token_alert_fired: bool = False
-    total_reasoning_tokens: int = 0
-    total_answer_tokens: int = 0
     total_new_input_tokens: int = 0
 
 
@@ -155,14 +142,6 @@ def new_prompt_tokens(usage, previous_prompt_tokens: int) -> int:
     return prompt if delta < 0 else delta
 
 
-def _load_agent_config() -> dict:
-    try:
-        from son_of_anton_cli.config import load_config
-        return load_config() or {}
-    except Exception:
-        return {}
-
-
 def _resolve_endpoint(config):
     """Return (OpenAI client, model name) from the son-of-anton config."""
     agent_cfg = _load_agent_config()
@@ -175,16 +154,9 @@ def _resolve_endpoint(config):
     base_url = physics.get("base_url") or ""
     api_key_env = physics.get("api_key_env") or ""
     if not base_url:
-        if provider == "deepseek":
-            base_url = "https://api.deepseek.com/v1"
-            api_key_env = api_key_env or "DEEPSEEK_API_KEY"
-        elif provider == "openai":
-            base_url = "https://api.openai.com/v1"
-            api_key_env = api_key_env or "OPENAI_API_KEY"
-        else:
-            custom = (agent_cfg.get("custom_providers") or {}).get(provider) or {}
-            base_url = custom.get("base_url") or "http://127.0.0.1:8080/v1"
-            api_key_env = api_key_env or custom.get("api_key_env") or "OPENAI_API_KEY"
+        custom = (agent_cfg.get("custom_providers") or {}).get(provider) or {}
+        base_url = custom.get("base_url") or "http://127.0.0.1:8080/v1"
+        api_key_env = api_key_env or custom.get("api_key_env") or "OPENAI_API_KEY"
 
     api_key = os.getenv(api_key_env, "") or "none"
     # max_retries=0: retrying is _create_with_retry's job. The SDK's own
@@ -292,8 +264,7 @@ def _clamp_physics_reasoning_effort(effort: str, model: str, config) -> str:
     endpoint rejects (a Qwen3-on-vLLM route 400s on minimal/high/max/ultra)
     would abort every iteration. When the route declares
     ``custom_providers.<name>.models.<model>.reasoning_efforts``, clamp
-    against it (nearest-weaker). Otherwise — including the deepseek/openai
-    default endpoints — return *effort* unchanged to preserve behaviour.
+    against it (nearest-weaker). Otherwise return *effort* unchanged.
     """
     if not model or not effort:
         return effort
@@ -463,9 +434,6 @@ def _log_round(config, agent_name, iteration, round_num, resp, duration, finish)
         getattr(resp.usage, "completion_tokens", 0) or 0,
         finish,
         round(duration, 2),
-        0,
-        0,
-        0,
         round=round_num,
     )
 
@@ -481,9 +449,6 @@ def _log_usage(config, agent_name, iteration, response, duration):
             response.output_tokens,
             response.stop_reason,
             round(duration, 2),
-            0,
-            0,
-            0,
         )
 
 

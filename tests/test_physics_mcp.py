@@ -16,7 +16,6 @@ import pytest
 
 from autophysicist.tools import ManagerToolExecutor
 from autophysicist.utils.mcp import (
-    DEFAULT_ROLES,
     MCPToolset,
     is_allowed,
     resolve_mcp_config,
@@ -58,29 +57,9 @@ def test_an_empty_roles_map_means_no_mcp() -> None:
     assert MCPToolset.from_config(config) is None
 
 
-def test_omitting_roles_takes_the_defaults() -> None:
-    settings = resolve_mcp_config(
-        {"physics": {"mcp": {"url": "http://x.invalid/mcp/"}}}
-    )
-    assert settings["roles"] == DEFAULT_ROLES
-
-
-def test_a_config_still_using_the_old_flat_allowlist_is_warned_about() -> None:
-    """Silently ignoring a hand-curated allowlist is the bug class this audit
-    kept finding: present, plausible, and read by nothing."""
-    with pytest.warns(UserWarning, match="no longer read"):
-        settings = resolve_mcp_config(
-            {
-                "physics": {
-                    "mcp": {
-                        "url": "http://x.invalid/mcp/",
-                        "allow": ["arxiv-get_abstract"],
-                        "agents": ["manager"],
-                    }
-                }
-            }
-        )
-    assert settings["roles"] == DEFAULT_ROLES
+def test_omitting_roles_means_no_mcp() -> None:
+    config = dict(GATEWAY, physics={"mcp": {"server": "oracle"}})
+    assert resolve_mcp_config(config) is None
 
 
 def test_missing_mcp_section_means_no_mcp() -> None:
@@ -92,22 +71,6 @@ def test_server_indirection_reuses_the_declared_endpoint(monkeypatch) -> None:
     settings = resolve_mcp_config(GATEWAY)
     assert settings["url"] == "http://gateway.invalid/mcp/"
     assert settings["headers"]["Authorization"] == "Bearer secret-token"
-
-
-def test_api_key_env_builds_the_header_when_none_is_declared(monkeypatch) -> None:
-    monkeypatch.setenv("SOME_KEY", "abc123")
-    settings = resolve_mcp_config(
-        {
-            "physics": {
-                "mcp": {
-                    "url": "http://gateway.invalid/mcp/",
-                    "api_key_env": "SOME_KEY",
-                    "roles": {"manager": ["arxiv"]},
-                }
-            }
-        }
-    )
-    assert settings["headers"]["Authorization"] == "Bearer abc123"
 
 
 def test_an_unreachable_endpoint_degrades_to_no_tools() -> None:

@@ -32,10 +32,10 @@ from pathlib import Path
 INDEX_TOOL = "analysis_utilities_api_index"
 READ_TOOL = "analysis_utilities_api_read"
 
-#: Roles that get these lookups when ``physics.api_docs.roles`` is absent.
-#: Both, and for the same reason: the Manager writes the brief that tells a
-#: sub-agent which utility to use, and gets it wrong in exactly the same way.
-DEFAULT_ROLES = ("manager", "subagent")
+#: Roles that get these lookups. Both, and for the same reason: the Manager
+#: writes the brief that tells a sub-agent which utility to use, and gets it
+#: wrong in exactly the same way.
+ROLES = ("manager", "subagent")
 
 #: The header that identifies an Analysis-Utilities include directory.
 _MARKER_HEADER = "PlottingUtils.hpp"
@@ -72,23 +72,9 @@ class Declaration:
     members: tuple[str, ...] = ()
 
 
-def _config() -> dict:
-    try:
-        from son_of_anton_cli.config import load_config
-
-        section = (load_config() or {}).get("physics")
-        return section if isinstance(section, dict) else {}
-    except Exception:
-        return {}
-
-
-def _candidate_dirs(interpreter: str | None, cfg: dict) -> list[Path]:
+def _candidate_dirs(interpreter: str | None) -> list[Path]:
     """Directories that might hold the headers, best guess first."""
     candidates: list[str] = []
-    configured = str(cfg.get("analysis_utilities_include") or "").strip()
-    if configured:
-        candidates.append(os.path.expanduser(configured))
-
     # The runtime wrapper exports ROOT_INCLUDE_PATH for its own interpreter,
     # which is the authoritative answer and needs no configuration. The agent
     # process does not have it, so ask the interpreter that does.
@@ -115,8 +101,7 @@ def _candidate_dirs(interpreter: str | None, cfg: dict) -> list[Path]:
 
 def find_header_dir(interpreter: str | None = None) -> Path | None:
     """Locate the Analysis-Utilities include directory, or None."""
-    cfg = _config()
-    for directory in _candidate_dirs(interpreter, cfg):
+    for directory in _candidate_dirs(interpreter):
         if (directory / _MARKER_HEADER).is_file():
             return directory
     return None
@@ -343,40 +328,20 @@ def render_symbols(declarations: list[Declaration], symbols: list[str]) -> str:
 class ApiDocsToolset:
     """Analysis-Utilities header lookups, served locally with no network."""
 
-    def __init__(
-        self,
-        declarations: list[Declaration],
-        roles: tuple[str, ...] = DEFAULT_ROLES,
-    ):
+    roles = ROLES
+
+    def __init__(self, declarations: list[Declaration]):
         self.declarations = declarations
-        self.roles = tuple(roles)
 
     @classmethod
-    def from_config(
-        cls, config: dict | None = None, interpreter: str | None = None
-    ) -> "ApiDocsToolset | None":
+    def from_config(cls, interpreter: str | None = None) -> "ApiDocsToolset | None":
         """Build the toolset, or None when it has nothing to serve."""
-        cfg = config if config is not None else _config()
-        section = cfg.get("api_docs")
-        if section is False:
-            return None
-        roles = DEFAULT_ROLES
-        if isinstance(section, dict):
-            declared = section.get("roles")
-            if isinstance(declared, (list, tuple)):
-                roles = tuple(str(r).strip() for r in declared if str(r).strip())
-        if not roles:
-            return None
-
         if interpreter is None:
-            try:
-                from .sandbox import resolve_interpreter
+            from .sandbox import resolve_interpreter
 
-                interpreter = resolve_interpreter()
-            except Exception:
-                interpreter = None
+            interpreter = resolve_interpreter()
         declarations = load_index(interpreter)
-        return cls(declarations, roles) if declarations else None
+        return cls(declarations) if declarations else None
 
     def enabled_for(self, role: str) -> bool:
         return bool(self.declarations) and self._role_matches(role)

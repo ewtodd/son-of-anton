@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import tomllib
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from utils import dump_toml
@@ -30,20 +30,6 @@ class ProblemSpec:
     name: str = "session"
     definition: dict | None = None
     answer_template: str = ""
-    _meta: dict = field(default_factory=dict)
-
-    @property
-    def meta(self) -> dict:
-        """The subset the loop's termination gate reads."""
-        if self._meta:
-            return self._meta
-        if not self.definition:
-            return {}
-        return {"steps": self.definition.get("steps", [])}
-
-    @property
-    def is_scored(self) -> bool:
-        return bool((self.definition or {}).get("checks"))
 
 
 def load_spec(message: str) -> ProblemSpec:

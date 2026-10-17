@@ -1,7 +1,6 @@
-"""Experimental answer checking for the physics modes.
+"""Experimental answer checking for the physics mode.
 
-Replaces physics-intern's symbolic (SymPy) theory checker. An experimental
-problem ships a spec that lists numeric ``checks``; the agent's workspace must
+An experimental problem ships a spec that lists numeric ``checks``; the agent's workspace must
 produce a ``RESULTS.txt`` of ``key = value`` lines (from its ROOT macro or
 Python analysis). Each check is compared against the expected value within
 tolerance.
@@ -121,16 +120,8 @@ def _check_one(spec: dict, results: dict[str, str]) -> dict:
     return check
 
 
-def run_formal_evaluation(
-    workspace_path: str,
-    problem_def: dict,
-    problem_path: str | None = None,
-) -> FormalEvalResult:
-    """Evaluate a workspace against the problem spec's numeric checks.
-
-    *problem_def* is the parsed problem.toml. *problem_path* is retained for
-    signature compatibility with the theory-era callers and ignored.
-    """
+def run_formal_evaluation(workspace_path: str, problem_def: dict) -> FormalEvalResult:
+    """Evaluate a workspace against the parsed problem.toml's numeric checks."""
     workspace = Path(workspace_path)
     _run_checker_script(workspace, problem_def)
     results = _load_results(workspace)

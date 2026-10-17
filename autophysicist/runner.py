@@ -23,7 +23,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from .core.config import Config, build_config  # noqa: E402
+from .core.config import Config  # noqa: E402
 from .core.console import console  # noqa: E402
 from .core.models import resolve_models  # noqa: E402
 from .core.problem_spec import ProblemSpec, write_spec  # noqa: E402
@@ -38,7 +38,7 @@ from .llm import (  # noqa: E402
     run_agent_loop,
 )
 from .core.metrics import MetricsTracker  # noqa: E402
-from .verification import (  # noqa: E402
+from .verification.experimental import (  # noqa: E402
     extract_answer_code,
     run_formal_evaluation,
     render_formal_evaluation,
@@ -306,8 +306,6 @@ def _run_iteration(
         max_tokens_hit=result.truncated,
         rounds=result.rounds,
         tool_calls=len(result.tool_calls),
-        reasoning_tokens=result.total_reasoning_tokens,
-        answer_tokens=result.total_answer_tokens,
     )
 
     return result, executor
@@ -403,7 +401,7 @@ def _read_iteration_counter(workspace_root: Path) -> int:
     return 0
 
 
-def _run_formal_verification(workspace_root: Path, problem_path: Path) -> None:
+def _run_formal_verification(workspace_root: Path) -> None:
     """Score the run's RESULTS.txt against the spec at the end of a run."""
     problem_file = workspace_root / "problem.toml"
     if not problem_file.exists():
@@ -421,18 +419,10 @@ def _run_formal_verification(workspace_root: Path, problem_path: Path) -> None:
         )
         return
 
-    # Build reference lookup path from problem name
-    problem_name = problem_def.get("name") if problem_def else None
-    ref_lookup_path = Path(problem_name + ".yaml") if problem_name else None
-
     console.print("\n[bold]Formal answer evaluation...[/]")
 
     try:
-        result = run_formal_evaluation(
-            str(workspace_root),
-            problem_def,
-            problem_path=ref_lookup_path,
-        )
+        result = run_formal_evaluation(str(workspace_root), problem_def)
         render_formal_evaluation(result)
         write_formal_eval_report(result, str(workspace_root))
         # Git commit the evaluation results
@@ -465,12 +455,9 @@ def run_autophysicist(
     answer_template: str = "",
     problem_def: dict | None = None,
     problem_name: str = "problem",
-    model: str | None = None,
     max_iterations: int = 50,
     token_budget: int = 64000,
-    scratchpad_window: int = 5,
     workspace_root: Path | None = None,
-    config_overrides: dict | None = None,
     sandbox_timeout: int = 60,
 ) -> Path:
     """Run the Autophysicist loop on one problem and return the workspace root.
@@ -480,8 +467,8 @@ def run_autophysicist(
     and the final verification against the problem spec.
     """
     # --- Config ---
-    config = build_config(None, overrides=config_overrides)
-    resolve_models(config, model)
+    config = Config()
+    resolve_models(config)
 
     # --- Workspace ---
     from autophysicist.core.workspace import (
@@ -503,8 +490,6 @@ def run_autophysicist(
         fresh = False
     else:
         # Absolute, under ~/.son-of-anton/workspaces (or physics.workspace_root).
-        # The old relative "workspaces/..." resolved against the process cwd —
-        # the profile HOME under the gateway, the user's project under the CLI.
         workspace_root = resolve_workspace_root(
             problem_name, config.model, "autophysicist"
         )
@@ -512,8 +497,6 @@ def run_autophysicist(
         fresh = True
 
     config.workspace_dir = str(workspace_root)
-    config.logs_dir = str(workspace_root / "logs")
-    Path(config.logs_dir).mkdir(parents=True, exist_ok=True)
     config.save(workspace_root)
 
     # --- Sandbox policy ---
@@ -544,7 +527,7 @@ def run_autophysicist(
 
     # --- Memory ---
     permanent_memory = PermanentMemory(workspace_root)
-    scratchpad = Scratchpad(workspace_root, window_size=scratchpad_window)
+    scratchpad = Scratchpad(workspace_root)
 
     # --- System prompt ---
     system_prompt = _load_system_prompt()
@@ -623,14 +606,7 @@ def run_autophysicist(
         "physics.context_length"
     )
     console.print(f"Runtime:    {policy.interpreter}")
-    console.print(
-        "Sandbox:    "
-        + (
-            "bubblewrap (no network, workspace-only writes)"
-            if policy.mode != "off"
-            else "OFF — computations run unconfined"
-        )
-    )
+    console.print("Sandbox:    bubblewrap (no network, workspace-only writes)")
     if policy.data_dirs:
         console.print(
             "Data (ro):  " + ", ".join(str(d) for d in policy.data_dirs)
@@ -785,7 +761,7 @@ def run_autophysicist(
             break
 
     # --- Formal evaluation ---
-    _run_formal_verification(workspace_root, Path(problem_name + ".toml"))
+    _run_formal_verification(workspace_root)
 
     # --- Final summary ---
     console.rule("[bold]Run Complete[/bold]")

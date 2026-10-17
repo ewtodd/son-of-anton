@@ -33,15 +33,6 @@ def test_config_builds_for_unregistered_models() -> None:
     assert config.max_tokens > 0
 
 
-def test_build_config_accepts_programmatic_overrides() -> None:
-    # The Autophysicist runner passes overrides=... (smoke-test regression).
-    from autophysicist.core.config import build_config
-
-    config = build_config(None, overrides={"model": "qwen3.6-35b-a3b"})
-    assert config.model == "qwen3.6-35b-a3b"
-    assert config.max_tokens > 0
-
-
 def test_formal_evaluation_render_does_not_raise(tmp_path: Path) -> None:
     # render_formal_evaluation imports the fork's console module
     # (autophysicist.core.console) — this was a live ModuleNotFoundError

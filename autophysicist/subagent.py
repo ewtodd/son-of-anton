@@ -390,8 +390,6 @@ def dispatch_subagent(
             # gets the same import back. Say what is actually installed.
             available = ""
             if "ModuleNotFoundError" in headline or "ImportError" in headline:
-                from .utils.sandbox import describe_runtime
-
                 available = (
                     "\n\nTHAT PACKAGE IS NOT INSTALLED AND WILL NOT BECOME "
                     "INSTALLED. Do not import it again, and do not try to "
