@@ -13,7 +13,7 @@ Usage:
     from tools.process_registry import process_registry
 
     # Spawn a background process (called from terminal_tool)
-    session = process_registry.spawn(env, "pytest -v", task_id="task_123")
+    session = process_registry.spawn_local("pytest -v", task_id="task_123")
 
     # Poll for status
     result = process_registry.poll(session.id)
@@ -70,9 +70,13 @@ WATCH_GLOBAL_MAX_PER_WINDOW = 15
 WATCH_GLOBAL_WINDOW_SECONDS = 10
 WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 
+# Grace window between SIGTERM and escalated SIGKILL when terminating a
+# background process tree.
+_DAEMON_TERM_GRACE_SECONDS = 2.0
+
 
 # ---------------------------------------------------------------------------
-# systemd cgroup isolation for gateway-spawned local executors (#70716)
+# systemd cgroup isolation for gateway-spawned local executors
 # ---------------------------------------------------------------------------
 # When Son of Anton runs as a systemd gateway with MemoryHigh/MemoryMax limits,
 # local background terminal commands inherit the gateway's cgroup.  A
@@ -99,33 +103,11 @@ _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
 def _worker_memory_max_bytes() -> int:
     """Return a finite per-worker cgroup limit without widening host risk.
 
-    The proposed local-memory-guard environment override is honored when it
-    tightens the safe bound, so this isolation composes with PR #57121 instead
-    of inventing a second knob.  An oversized override cannot widen host risk.
-    Otherwise retain the tighter of the gateway's current cgroup-v2
-    ``memory.max`` and half of physical RAM, capped at 4 GiB.  This keeps the
-    sibling worker outside the gateway cgroup while ensuring the worker cannot
-    consume memory up to the enclosing user slice or host limit.
+    The tighter of the gateway's current cgroup-v2 ``memory.max`` and half of
+    physical RAM, capped at 4 GiB.  This keeps the sibling worker outside the
+    gateway cgroup while ensuring the worker cannot consume memory up to the
+    enclosing user slice or host limit.
     """
-    override_bound: Optional[int] = None
-    override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
-    if override:
-        override_valid = False
-        try:
-            parsed = int(override) * 1024 * 1024
-            if parsed >= _MIN_WORKER_MEMORY_MAX_BYTES:
-                override_bound = parsed
-                override_valid = True
-        except ValueError:
-            pass
-        if not override_valid:
-            logger.warning(
-                "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB=%r; "
-                "expected an integer representing at least %d MiB",
-                override,
-                _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024),
-            )
-
     candidates: List[int] = []
     try:
         for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
@@ -154,8 +136,7 @@ def _worker_memory_max_bytes() -> int:
     except (OSError, ValueError, TypeError):
         pass
 
-    safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
-    return min(override_bound, safe_bound) if override_bound else safe_bound
+    return min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
 
 
 def _systemd_run_user_scope_available() -> bool:
@@ -242,12 +223,6 @@ def _is_supervised_gateway_process() -> bool:
     descendant. Require this process to own the live gateway PID file as well.
     That keeps transient systemd scopes limited to the gateway itself instead
     of terminal children in the same supervised process tree.
-
-    (``_SON_OF_ANTON_GATEWAY`` was once set by merely importing ``gateway.run``,
-    so this PID check was also the only thing keeping unrelated interactive
-    CLIs out. The marker is now set only by real gateway processes, but the
-    PID-ownership requirement stays — it is still what distinguishes the
-    gateway from its own children.)
     """
     if os.environ.get("_SON_OF_ANTON_GATEWAY") != "1":
         return False
@@ -272,7 +247,7 @@ def _build_systemd_scope_argv(
     """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation.
 
     The resulting cgroup gets its own memory accounting so an OOM in the
-    worker does not kill the gateway cgroup (#70716).  ``--collect`` makes
+    worker does not kill the gateway cgroup.  ``--collect`` makes
     the transient scope self-clean after exit; ``--unit`` gives it a
     recognisable name for ``systemctl --user status`` / journalctl.
     """
@@ -309,7 +284,7 @@ def _stop_systemd_unit(unit_name: str) -> bool:
 
     This reaps the *entire* cgroup — catching double-forked descendants that
     survive a plain PID signal because they were reparented to init inside the
-    scope (issue #70716, reviewer gap #2).  ``systemctl --user stop`` sends
+    scope.  ``systemctl --user stop`` sends
     SIGTERM to every process in the unit's cgroup and escalates to SIGKILL
     after the unit's ``TimeoutStopSec``.
 
@@ -372,19 +347,19 @@ class ProcessSession:
     host_start_time: Optional[int] = None       # kernel start ticks (/proc/<pid>/stat f22) — PID-reuse guard
     exited: bool = False                        # Whether the process has finished
     exit_code: Optional[int] = None             # Exit code (None if still running)
-    completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
-    termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
+    completion_reason: str = "exited"           # exited|killed
+    termination_source: str = ""                # kill source, e.g. process.kill|kill_all
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
-    systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run (#70716)
+    systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
     watcher_user_id: str = ""
     watcher_user_name: str = ""
     watcher_thread_id: str = ""
-    watcher_message_id: str = ""                # Triggering message id — reply anchor for topic routing
+    watcher_message_id: str = ""                # Triggering message id
     watcher_interval: int = 0                   # 0 = no watcher configured
     # Session-db id of the conversation that spawned this process. Lets the
     # gateway's completion pre-flight (_classify_completion_target) drop
@@ -463,11 +438,11 @@ class ProcessRegistry:
         # Track sessions the agent merely *observed* exited via poll().  poll()
         # is a read-only status check, so it does NOT mark _completion_consumed
         # (that would let a status check suppress the gateway/tui watcher's
-        # autonomous delivery turn — #10156).  But on the CLI the poll result
-        # is returned inline in the same turn, so the idle/post-turn drain must
-        # still skip the queued completion to avoid a duplicate [SYSTEM: ...]
-        # injection (the bug #8228 originally fixed).  drain_notifications()
-        # consults this set; the gateway/tui watchers deliberately do NOT.
+        # autonomous delivery turn).  But on the CLI the poll result is
+        # returned inline in the same turn, so the idle/post-turn drain must
+        # still skip the queued completion to avoid a duplicate injection.
+        # drain_notifications() consults this set; the gateway/tui watchers
+        # deliberately do NOT.
         self._poll_observed: set = set()
 
         # Global watch-match circuit breaker — across all sessions.
@@ -783,24 +758,6 @@ class ProcessRegistry:
         except Exception:
             return False
 
-    @staticmethod
-    def _daemon_term_grace_seconds() -> float:
-        """Grace window (s) between SIGTERM and escalated SIGKILL.
-
-        Read from ``terminal.daemon_term_grace_seconds`` in config.toml; floored
-        at 0 (0 disables escalation). Falls back to the DEFAULT_CONFIG value if
-        config is unreadable, so callers always get a sane number.
-        """
-        try:
-            from son_of_anton_cli.config import read_raw_config, cfg_get, DEFAULT_CONFIG
-            cfg = read_raw_config()
-            val = cfg_get(cfg, "terminal", "daemon_term_grace_seconds")
-            if val is None:
-                val = DEFAULT_CONFIG["terminal"]["daemon_term_grace_seconds"]
-            return max(float(val), 0.0)
-        except Exception:
-            return 2.0
-
     @classmethod
     def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> None:
         """Terminate a host-visible PID and its descendants.
@@ -812,13 +769,11 @@ class ProcessRegistry:
         background-session PID can never tree-kill a browser or other stranger.
 
         The process tree is walked with ``psutil`` and SIGTERMed
-        children before the parent so subprocess trees (e.g. Chromium
-        renderers/GPU helpers spawned by an ``agent-browser`` daemon)
-        don't get reparented to init and survive cleanup.  After a bounded
-        grace window (``terminal.daemon_term_grace_seconds``) any tree member
-        that ignored SIGTERM — a daemon stalled in its signal handler — is
-        escalated to SIGKILL so it can't leak indefinitely.  Set the grace to
-        0 to disable escalation (SIGTERM only).
+        children before the parent so subprocess trees don't get reparented
+        to init and survive cleanup.  After a bounded grace window
+        (``_DAEMON_TERM_GRACE_SECONDS``) any tree member that ignored SIGTERM
+        — a daemon stalled in its signal handler — is escalated to SIGKILL so
+        it can't leak indefinitely.
 
         ``psutil`` is a hard dependency (see ``pyproject.toml``); the
         bare-``os.kill`` fallback covers OSError / PermissionError.
@@ -862,9 +817,7 @@ class ProcessRegistry:
         # Escalate to SIGKILL for anything that ignored SIGTERM within the
         # grace window — a daemon stalled in its signal handler would otherwise
         # leak indefinitely.
-        grace = cls._daemon_term_grace_seconds()
-        if grace <= 0:
-            return
+        grace = _DAEMON_TERM_GRACE_SECONDS
         # Sleep out the grace window, then independently re-probe every target
         # and SIGKILL any survivor.  We deliberately do NOT trust
         # ``psutil.wait_procs``'s gone/alive partition here: it reaps via
@@ -909,14 +862,14 @@ class ProcessRegistry:
         Args:
             use_pty: If True, use a pseudo-terminal via ptyprocess for interactive
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
-                     subprocess.Popen if ptyprocess is not installed.
+                     subprocess.Popen if the PTY spawn fails.
             login_shell: True (the default) runs the command in the user's
                      interactive login shell, as a typed command would. False
                      runs it with plain ``-c``: no rc files, so their noise
                      never lands in the output. For programs launched by
                      absolute path that inherit this process's environment.
         """
-        # Guard against the `A && B &` subshell-wait trap (issue #68915).
+        # Guard against the `A && B &` subshell-wait trap.
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds
         # the stdout pipe open forever when B is a long-running server.
         # The rewriter wraps it to ``A && { B & }`` so no subshell fork.
@@ -948,9 +901,9 @@ class ProcessRegistry:
                     else [user_shell, "-c", safe_command]
                 )
 
-                # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
-                # Wrap the PTY command in a systemd scope so interactive
-                # executors get their own cgroup, same as pipe mode.
+                # Cgroup isolation for PTY mode: wrap the PTY command in a
+                # systemd scope so interactive executors get their own
+                # cgroup, same as pipe mode.
                 pty_in_supervised_gateway = _is_supervised_gateway_process()
                 pty_use_systemd_scope = (
                     pty_in_supervised_gateway and _systemd_run_user_scope_available()
@@ -998,8 +951,6 @@ class ProcessRegistry:
                 self._write_checkpoint()
                 return session
 
-            except ImportError:
-                logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
                 if pty_scope_attempted and session.systemd_unit:
@@ -1020,7 +971,7 @@ class ProcessRegistry:
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
 
-        # Cgroup isolation (#70716): when running in the live, supervised
+        # Cgroup isolation: when running in the live, supervised
         # systemd gateway, wrap the worker in its own transient systemd
         # scope so it gets a separate cgroup.  An OOM in the worker then
         # kills only the worker instead of taking down the whole gateway
@@ -1045,24 +996,12 @@ class ProcessRegistry:
                 unit_suffix=unit_suffix,
             )
             session.systemd_unit = f"son-of-anton-worker-{unit_suffix}.scope"
-            # CRITICAL (#70716 regression): systemd-run --scope does NOT give
-            # the worker a new session — the invoked process keeps the
-            # parent's session and inherits its controlling terminal.  From an
-            # interactive TUI this drops the worker into the same session as
-            # the foreground process group: background spawns then stop the
-            # whole session (observed as 5 dead TUIs in state T / "Arrêté").
-            # start_new_session=True gives systemd-run (and the scoped worker
-            # below it) a private session.  Cgroup isolation is preserved:
-            # the scope is attached to the invoked process, not to the
-            # spawning session.
-            popen_start_new_session = True
         else:
             spawn_argv = shell_argv
-            popen_start_new_session = True
             if in_supervised_gateway:
                 # Running under a supervisor but could not get a private
                 # cgroup — the worker shares the gateway cgroup, so an OOM
-                # in the worker can still kill the whole gateway (#70716).
+                # in the worker can still kill the whole gateway.
                 logger.debug(
                     "Local background executor not isolated in a systemd scope "
                     "(in_supervised_gateway=%s, systemd-run --user available=%s); "
@@ -1081,7 +1020,10 @@ class ProcessRegistry:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
-            start_new_session=popen_start_new_session,
+            # systemd-run --scope does NOT give the worker a new session, so
+            # without this a background spawn from the TUI would join (and
+            # stop) its foreground session. Cgroup isolation is unaffected.
+            start_new_session=True,
         )
 
         session.process = proc
@@ -1110,12 +1052,11 @@ class ProcessRegistry:
             # leak as untracked background processes.
             try:
                 if session.systemd_unit:
-                    # The worker runs in its own systemd scope and, since the
-                    # #70716 session-isolation fix, its own session.  Stop the
-                    # scope (kills every process in the worker cgroup), then
-                    # terminate the systemd-run wrapper PID as fallback.
-                    # Never killpg: scope teardown is the authoritative
-                    # cleanup for the worker cgroup.
+                    # The worker runs in its own systemd scope and session.
+                    # Stop the scope (kills every process in the worker
+                    # cgroup), then terminate the systemd-run wrapper PID as
+                    # fallback. Never killpg: scope teardown is the
+                    # authoritative cleanup for the worker cgroup.
                     _stop_systemd_unit(session.systemd_unit)
                     self._terminate_host_pid(proc.pid, session.host_start_time)
                 else:
@@ -1143,7 +1084,7 @@ class ProcessRegistry:
         in one burst at process exit. ``buffer.read1(4096)`` yields incremental
         chunks as bytes become available, then we decode to text.
 
-        Orphaned-pipe guard (issue #68915): when the user's command backgrounds
+        Orphaned-pipe guard: when the user's command backgrounds
         a long-lived process (``node server.js &``, ``sleep 300 &``), that
         grandchild inherits the write end of our stdout pipe via ``fork()``.
         The direct ``bash`` child exits promptly, but the pipe never reaches
@@ -1153,17 +1094,15 @@ class ProcessRegistry:
         only runs lazily from poll()/wait(), which an autonomous notification
         can't rely on). We therefore ``select()`` with a short poll interval
         and stop draining shortly after the direct child exits, even if the
-        pipe hasn't EOF'd — mirroring the foreground fix in
-        ``tools/environments/base.py::_wait_for_process`` (#8340).
+        pipe hasn't EOF'd — mirroring the foreground path in
+        ``tools/environments/base.py::_wait_for_process``.
         """
         first_chunk = True
         # Incremental decoder: raw pipe reads can split a multibyte UTF-8
         # character across two read1() chunks. A stateless per-chunk
         # ``bytes.decode(errors="replace")`` turns both halves into U+FFFD
         # mojibake. The incremental decoder holds the partial sequence until
-        # the continuation bytes arrive — same treatment the foreground path
-        # already has in ``tools/environments/base.py::_wait_for_process``.
-        # (Ported from openclaw/openclaw#112325.)
+        # the continuation bytes arrive.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def _append_chunk(chunk: str):
@@ -1182,65 +1121,34 @@ class ProcessRegistry:
             if proc is None or proc.stdout is None:
                 return
             stdout = proc.stdout
+            raw_read = stdout.buffer.read1
+            fd = stdout.fileno()
 
-            raw_read = getattr(getattr(stdout, "buffer", None), "read1", None)
+            import select as _select
 
-            # Resolve a real OS fd for the select() path. Mocked streams
-            # (unit tests, adapters) may lack fileno() — fall back to the
-            # historical blocking loop for those.
-            fd = None
-            if raw_read is not None:
-                fileno = getattr(stdout, "fileno", None)
+            idle_after_exit = 0
+            while True:
                 try:
-                    candidate = fileno() if callable(fileno) else None
-                except Exception:
-                    candidate = None
-                if isinstance(candidate, int) and candidate >= 0:
-                    fd = candidate
-
-            if fd is not None:
-                import select as _select
-
-                idle_after_exit = 0
-                while True:
-                    try:
-                        ready, _, _ = _select.select([fd], [], [], 0.2)
-                    except (ValueError, OSError):
-                        break  # fd already closed
-                    if ready:
-                        raw = raw_read(4096)
-                        if not raw:
-                            break  # true EOF — all writers closed
-                        chunk = decoder.decode(raw)
-                        if chunk:
-                            _append_chunk(chunk)
-                        idle_after_exit = 0
-                    elif proc.poll() is not None:
-                        # Direct child is gone and the pipe was idle for
-                        # ~200ms. Give it a few more cycles to catch any
-                        # buffered tail, then stop — otherwise we would wait
-                        # forever on a pipe held open by an orphaned
-                        # grandchild (issue #68915).
-                        idle_after_exit += 1
-                        if idle_after_exit >= 3:
-                            break
-            else:
-                while True:
-                    if raw_read is not None:
-                        raw = raw_read(4096)
-                        if not raw:
-                            break
-                        chunk = decoder.decode(raw)
-                        if not chunk:
-                            continue  # partial multibyte sequence — wait for more bytes
-                    else:
-                        # Fallback for mocked/alternate streams without a buffered raw
-                        # interface. This may be less "live", but keeps compatibility.
-                        chunk = stdout.read(4096)
-                        if not chunk:
-                            break
-
-                    _append_chunk(chunk)
+                    ready, _, _ = _select.select([fd], [], [], 0.2)
+                except (ValueError, OSError):
+                    break  # fd already closed
+                if ready:
+                    raw = raw_read(4096)
+                    if not raw:
+                        break  # true EOF — all writers closed
+                    chunk = decoder.decode(raw)
+                    if chunk:
+                        _append_chunk(chunk)
+                    idle_after_exit = 0
+                elif proc.poll() is not None:
+                    # Direct child is gone and the pipe was idle for
+                    # ~200ms. Give it a few more cycles to catch any
+                    # buffered tail, then stop — otherwise we would wait
+                    # forever on a pipe held open by an orphaned
+                    # grandchild.
+                    idle_after_exit += 1
+                    if idle_after_exit >= 3:
+                        break
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
@@ -1269,7 +1177,6 @@ class ProcessRegistry:
         pty = session._pty
         # PTY reads can split a multibyte UTF-8 character across chunks just
         # like pipe reads — hold partial sequences until the rest arrives.
-        # (Ported from openclaw/openclaw#112325.)
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def _append_text(text: str):
@@ -1555,8 +1462,7 @@ class ProcessRegistry:
         If the direct `Popen` child has exited but a descendant process (e.g.
         a daemon spawned by `son-of-anton update` restarting the gateway) is still
         holding the stdout pipe open, the reader blocks forever and poll()
-        keeps returning "running" indefinitely (issue #17327 — 74 polls over
-        7 minutes on Feishu).
+        keeps returning "running" indefinitely.
 
         This helper closes that window: when `session.exited` is still False
         but the direct child's `Popen.poll()` reports an exit code, drain any
@@ -1630,7 +1536,7 @@ class ProcessRegistry:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
         # Reconcile against real child state before reading session.exited.
-        # Guards against orphaned-pipe reader hangs (issue #17327).
+        # Guards against orphaned-pipe reader hangs.
         self._reconcile_local_exit(session)
 
         with session._lock:
@@ -1652,7 +1558,7 @@ class ProcessRegistry:
             # NOT mark the session _completion_consumed. wait()/read_log()
             # represent actual output consumption and do mark it. Marking
             # consumed here would let a status check silently suppress the
-            # notify_on_complete watcher's autonomous delivery turn (#10156).
+            # notify_on_complete watcher's autonomous delivery turn.
             #
             # We DO record it in _poll_observed so the CLI's inline drain still
             # dedups (the agent already saw the exit in this turn's poll result)
@@ -1679,10 +1585,7 @@ class ProcessRegistry:
         total_lines = len(lines)
 
         # Default (offset=None): last N lines. An explicit offset=0 means
-        # "start from the first line" — previously it was conflated with
-        # the default and silently returned the TAIL instead of the head
-        # (same falsy-coercion class as the wait() timeout guard; salvaged
-        # from PR #60004, credit @isheng-eqi).
+        # "start from the first line".
         if offset is None and limit > 0:
             selected = lines[-limit:]
             observed_completion_output = bool(selected) or total_lines == 0
@@ -1730,10 +1633,8 @@ class ProcessRegistry:
         timeout_note = None
 
         # Reject non-positive timeouts — the schema declares minimum=1, but
-        # not every caller enforces schemas before dispatch. timeout=0 is
-        # falsy, so without this guard it silently fell through
-        # (`0 or max_timeout`) to the DEFAULT wait instead of erroring.
-        # Salvaged from PR #60004 (credit @isheng-eqi).
+        # not every caller enforces schemas before dispatch, and timeout=0
+        # would otherwise fall through (`0 or max_timeout`) to the default.
         if requested_timeout is not None and requested_timeout <= 0:
             return {
                 "status": "error",
@@ -1761,7 +1662,7 @@ class ProcessRegistry:
                 return {"status": "not_found", "error": f"No process with ID {session_id}"}
             # Reconcile against real child state — guards against orphaned-
             # pipe reader hangs where the reader is blocked but the direct
-            # child has already exited (issue #17327).
+            # child has already exited.
             self._reconcile_local_exit(session)
             if session.exited:
                 self._completion_consumed.add(session_id)
@@ -1797,9 +1698,8 @@ class ProcessRegistry:
             "status": "timeout",
             "command": session.command,
             "output": strip_ansi(session.output_buffer[-1000:]),
-            # A wait window elapsing is NOT a failure — 511 exact-duplicate
-            # process calls in a production window show models re-issuing
-            # identical waits after misreading this result as an error.
+            # A wait window elapsing is NOT a failure — say so, or models
+            # re-issue identical waits after misreading it as an error.
             "process_running": True,
         }
         uptime = time.time() - session.started_at if session.started_at else None
@@ -1850,9 +1750,8 @@ class ProcessRegistry:
 
         if session.exited:
             # Even if the main process already exited, a double-forked
-            # descendant may still be alive in the systemd scope (#70716,
-            # reviewer gap #2 — the ``already_exited`` early return skipped
-            # unit cleanup).  Stop the scope to reap any survivors.
+            # descendant may still be alive in the systemd scope.  Stop the
+            # scope to reap any survivors.
             if session.systemd_unit:
                 _stop_systemd_unit(session.systemd_unit)
             with session._lock:
@@ -1890,7 +1789,7 @@ class ProcessRegistry:
                 # session also carries an owned systemd scope, stop that scope
                 # before returning: a daemonized descendant may still be alive
                 # there even though the wrapper PID exited or was recycled
-                # across the gateway restart (#70716, teknium1 review).
+                # across the gateway restart.
                 if not self._host_pid_is_ours(session.pid, session.host_start_time):
                     if session.systemd_unit:
                         _stop_systemd_unit(session.systemd_unit)
@@ -1907,19 +1806,11 @@ class ProcessRegistry:
                         "output": output,
                     }
                 self._terminate_host_pid(session.pid, session.host_start_time)
-            else:
-                return {
-                    "status": "error",
-                    "error": (
-                        "Recovered process cannot be killed after restart because "
-                        "its original runtime handle is no longer available"
-                    ),
-                }
 
-            # If the worker was spawned in its own systemd scope (#70716),
-            # stop the entire unit to reap any double-forked descendants that
-            # were reparented inside the scope and survived the PID signal
-            # above (reviewer gap #2).  ``systemctl --user stop`` sends
+            # If the worker was spawned in its own systemd scope, stop the
+            # entire unit to reap any double-forked descendants that were
+            # reparented inside the scope and survived the PID signal
+            # above.  ``systemctl --user stop`` sends
             # SIGTERM to every process in the cgroup and escalates to SIGKILL
             # after TimeoutStopSec.  This is additive — the PID-based kill
             # above already handled the main process; this catches stragglers.
@@ -1978,13 +1869,8 @@ class ProcessRegistry:
             return {"status": "error", "error": str(e)}
 
     def submit_stdin(self, session_id: str, data: str = "") -> dict:
-        """Send data + newline to a running process's stdin (like pressing Enter).
-
-        Uses a plain ``\\n`` line ending — correct for POSIX PTYs and Popen
-        pipes.
-        """
-        line_ending = "\n"
-        return self.write_stdin(session_id, data + line_ending)
+        """Send data + newline to a running process's stdin (like pressing Enter)."""
+        return self.write_stdin(session_id, data + "\n")
 
     def close_stdin(self, session_id: str) -> dict:
         """Close a running process's stdin / send EOF without killing the process."""
@@ -2030,7 +1916,7 @@ class ProcessRegistry:
         (``background: true``) registered under that gateway session are
         surfaced too, even if they belong to a different task — so the agent
         can discover a forgotten preview server that is blocking session
-        reset (#29177). Such cross-task entries are flagged with
+        reset. Such cross-task entries are flagged with
         ``"session_scoped": true``.
         """
         with self._lock:
@@ -2059,7 +1945,7 @@ class ProcessRegistry:
             }
             # Flag processes surfaced only because they share the gateway
             # session (not the current task) — these are the long-lived
-            # background processes a user may have forgotten about (#29177).
+            # background processes a user may have forgotten about.
             if task_id and session_key and s.task_id != task_id and s.session_key == session_key:
                 entry["session_scoped"] = True
             # Trigger metadata so a goal-loop judge can decide to wait on this
@@ -2243,9 +2129,7 @@ class ProcessRegistry:
                         entries.append({
                             "session_id": s.id,
                             # Redact inline credentials before persisting to
-                            # disk — the checkpoint file lives under
-                            # ~/.son-of-anton/processes.json with the raw command
-                            # (issue #77484). Recovery only uses command for
+                            # disk. Recovery only uses command for
                             # display/logging (the process is already running;
                             # adoption re-validates the PID, never re-runs the
                             # command), so masking is lossless.
@@ -2642,10 +2526,6 @@ def format_process_notification(evt: dict) -> "str | None":
         _signal = ", SIGTERM"
     if _reason == "killed":
         _status = f"terminated by {_source or 'Son of Anton'}"
-    elif _reason == "lost":
-        _status = "marked lost because the process backend disappeared"
-    elif _reason == "failed_start":
-        _status = "failed to start"
     elif _exit == 0:
         _status = "completed normally"
     else:
@@ -2727,8 +2607,7 @@ def _redact_process_result(result: dict) -> dict:
     model, session.db, and CLI display.
 
     Mirrors the foreground ``terminal`` redaction (terminal_tool.py) so the
-    two surfaces can't diverge — issue #43025 (background output was returned
-    verbatim). Respects ``security.redact_secrets`` (no force): output fields
+    two surfaces can't diverge. Respects ``security.redact_secrets`` (no force): output fields
     pass through ``redact_terminal_output`` which picks ``code_file`` based on
     the recorded command (env dumps get the ENV-assignment pass). The command
     string itself is also redacted in case it carried an inline credential.
@@ -2756,7 +2635,7 @@ def _handle_process(args, **kw):
     if action == "list":
         # Surface session-scoped background processes (e.g. a forgotten
         # preview server) in addition to this task's own — they share the
-        # gateway session_key and can block session reset (#29177).
+        # gateway session_key and can block session reset.
         try:
             from tools.approval import get_current_session_key
             session_key = get_current_session_key(default="") or ""
