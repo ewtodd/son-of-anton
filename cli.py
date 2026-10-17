@@ -747,15 +747,11 @@ def set_approval_callback(*args, **kwargs):
 # Guard to prevent cleanup from running multiple times on exit
 _cleanup_done = False
 _cleanup_in_progress = False
-# One-shot CLI finalization runs before process cleanup so plugins can observe
-# the session boundary while the agent is still attached. If a signal lands in
-# that narrow window, atexit cleanup must not emit that session finalization again.
-_single_query_finalize_attempted_session_ids: set[str | None] = set()
 # Session IDs that were handed off to the gateway via /handoff.  The CLI
 # process exits after a successful handoff, but the gateway now owns the
-# session lifecycle — _run_cleanup must NOT call finalize_session on these,
-# because doing so sets end_reason on a row the gateway just reopened and is
-# actively writing to (#88234).  The race made the handoff leg vanish from
+# session lifecycle — the CLI must not end these rows, because doing so sets
+# end_reason on a row the gateway just reopened and is actively writing to
+# (#88234).  The race made the handoff leg vanish from
 # session history and broke session_search recall for the handed-off session.
 _handed_off_session_ids: set[str | None] = set()
 # Weak reference to the active AIAgent for memory provider shutdown at exit
@@ -775,15 +771,6 @@ def _prepare_deferred_agent_startup() -> None:
     if os.environ.get("SON_OF_ANTON_DEFER_AGENT_STARTUP") != "1":
         return
     _deferred_agent_startup_done = True
-    try:
-        from son_of_anton_cli.plugins import discover_plugins
-
-        discover_plugins()
-    except Exception:
-        logger.warning(
-            "plugin discovery failed at deferred CLI startup",
-            exc_info=True,
-        )
     try:
         from son_of_anton_cli.mcp_startup import start_background_mcp_discovery
 
@@ -914,7 +901,7 @@ def _arm_exit_watchdog_on_shutdown_signal() -> None:
         pass  # never let the backstop break signal handling
 
 
-def _run_cleanup(*, notify_session_finalize: bool = True):
+def _run_cleanup():
     """Run resource cleanup exactly once."""
     global _cleanup_done, _cleanup_in_progress
     if _cleanup_done:
@@ -952,14 +939,6 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
             pass
         # Shut down memory provider (on_session_end + shutdown_all) at actual
         # session boundary — NOT per-turn inside run_conversation().
-        if notify_session_finalize:
-            cleanup_session_id = _active_agent_ref.session_id if _active_agent_ref else None
-            if _should_emit_cleanup_session_finalize(cleanup_session_id):
-                _notify_session_finalize(
-                    session_id=cleanup_session_id,
-                    platform="cli",
-                    reason="shutdown",
-                )
         try:
             if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
                 # Forward the agent's own transcript to the session-end hooks
@@ -987,41 +966,8 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
         _cleanup_in_progress = False
 
 
-def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
-    # A session that was handed off to the gateway is now owned by the
-    # gateway process.  The CLI must not finalize it on exit — that sets
-    # end_reason on a row the gateway reopened and is actively writing
-    # to, causing the handoff leg to vanish from session history (#88234).
-    if session_id is not None and session_id in _handed_off_session_ids:
-        return False
-    if not _single_query_finalize_attempted_session_ids:
-        return True
-    if session_id is None:
-        return False
-    if session_id in _single_query_finalize_attempted_session_ids:
-        return False
-    return True
-
-
-def _notify_session_finalize(
-    *,
-    session_id: str | None,
-    platform: str = "cli",
-    reason: str = "shutdown",
-) -> None:
-    try:
-        from son_of_anton_cli.lifecycle import finalize_session
-        finalize_session(
-            session_id=session_id,
-            platform=platform,
-            reason=reason,
-        )
-    except Exception:
-        pass
-
-
-def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") -> None:
-    """Best-effort on_session_end hook for interrupted non-interactive runs."""
+def _interrupt_single_query(cli, *, reason: str = "keyboard_interrupt") -> None:
+    """Best-effort interrupt of a non-interactive run cut short by Ctrl+C."""
     agent = getattr(cli, "agent", None)
     if agent is None:
         return
@@ -1032,52 +978,11 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
         pass
 
     session_id = getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
-    # Don't emit session-end for a session that was handed off to the
-    # gateway — the gateway owns the lifecycle now (#88234).
-    if session_id in _handed_off_session_ids:
-        return
     if session_id:
         try:
             cli.session_id = session_id
         except Exception:
             pass
-
-    try:
-        from son_of_anton_cli.lifecycle import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_end",
-            session_id=session_id,
-            task_id=getattr(agent, "_current_task_id", "") or "",
-            turn_id=getattr(agent, "_current_turn_id", "") or "",
-            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-            completed=False,
-            interrupted=True,
-            model=getattr(agent, "model", None),
-            platform=getattr(agent, "platform", None) or "cli",
-            reason=reason,
-        )
-    except Exception:
-        pass
-
-
-def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> None:
-    agent = getattr(cli, "agent", None)
-    session_id = getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
-    if session_id in _single_query_finalize_attempted_session_ids:
-        return
-    # Don't finalize a session that was handed off to the gateway —
-    # the gateway owns the lifecycle now (#88234).
-    if session_id in _handed_off_session_ids:
-        return
-
-    try:
-        _notify_session_finalize(
-            session_id=session_id,
-            platform=getattr(agent, "platform", None) or "cli",
-            reason=reason,
-        )
-    finally:
-        _single_query_finalize_attempted_session_ids.add(session_id)
 
 
 def _flush_one_shot_session_store(cli) -> None:
@@ -1148,8 +1053,7 @@ def _finalize_single_query(cli) -> None:
             _flush_one_shot_session_store(cli)
         except Exception:
             logger.debug("one-shot session store flush failed", exc_info=True)
-        _notify_single_query_session_finalize(cli)
-        _run_cleanup(notify_session_finalize=False)
+        _run_cleanup()
     finally:
         cli._release_active_session()
 
@@ -3040,25 +2944,6 @@ def _format_compaction_stats(stats: Optional[dict]) -> str:
     return " · ".join(parts)
 
 
-def _post_stream_transform_output(response: str, result: dict | None) -> str:
-    """Return text that still needs display after a streamed response transform.
-
-    A transform hook is allowed to replace the final response, not merely append
-    to it. When the transformed text retains the streamed response as a prefix,
-    printing only its suffix avoids duplicating the already-rendered body. A
-    replacement has no safe suffix, so deliberately print the complete final
-    response rather than silently dropping it.
-    """
-    if not result or not result.get("response_transformed"):
-        return ""
-
-    original = result.get("pre_transform_response") or ""
-    if original and response.startswith(original):
-        return response[len(original):]
-
-    return f"\n[Response transformed after streaming]\n{response}"
-
-
 _OUTPUT_HISTORY_ENABLED = True
 _OUTPUT_HISTORY_REPLAYING = False
 _OUTPUT_HISTORY_SUPPRESSED = False
@@ -3491,15 +3376,6 @@ def _looks_like_slash_command(text: str) -> bool:
     # After stripping the leading /, a command name has no slashes.
     # A path like /Users/foo/bar.md always does.
     return "/" not in first_word[1:]
-
-
-def _get_plugin_cmd_handler_names() -> set:
-    """Return plugin command names (without slash prefix) for dispatch matching."""
-    try:
-        from son_of_anton_cli.plugins import get_plugin_commands
-        return set(get_plugin_commands().keys())
-    except Exception:
-        return set()
 
 
 def save_config_value(key_path: str, value: any) -> bool:
@@ -5738,31 +5614,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         flush_tool_summary()
         _cli_visible_print()
     
-    def _notify_session_boundary(self, event_type: str) -> None:
-        """Fire a session-boundary plugin hook (on_session_finalize or on_session_reset).
-
-        Non-blocking — errors are caught and logged.  Safe to call from any
-        lifecycle point (shutdown, /new, /reset).
-        """
-        try:
-            from son_of_anton_cli.lifecycle import finalize_session, invoke_hook
-
-            context = {
-                "session_id": self.agent.session_id if self.agent else None,
-                "platform": getattr(self, "platform", None) or "cli",
-                "reason": (
-                    "new_session"
-                    if event_type == "on_session_reset"
-                    else "session_boundary"
-                ),
-            }
-            if event_type == "on_session_finalize":
-                finalize_session(**context)
-            else:
-                invoke_hook(event_type, **context)
-        except Exception:
-            pass
-
     def _discard_session_if_empty(self, session_id: Optional[str]) -> bool:
         """Drop a just-ended session row when it never gained content.
 
@@ -5827,10 +5678,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 list(self.conversation_history),
                 session_id=old_session_id,
             )
-            self._notify_session_boundary("on_session_finalize")
-        elif self.agent:
-            # First session or empty history — still finalize the old session
-            self._notify_session_boundary("on_session_finalize")
 
         if self._session_db and old_session_id:
             # Flush any un-persisted messages from the current turn to the
@@ -5988,7 +5835,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         # sanitize_title returned empty (whitespace-only / unprintable)
                         _cprint("  Title is empty after cleanup — session started untitled.")
                         title = None
-            self._notify_session_boundary("on_session_reset")
 
         if not silent:
             if title:
@@ -7137,22 +6983,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _cmd_def = _resolve_cmd(_base_word)
         canonical = _cmd_def.name if _cmd_def else _base_word
 
-        # pre_command observer hook (#64204): fires for every recognized
-        # slash command BEFORE its handler runs. Observer-only in v1 —
-        # return values are ignored (fire_pre_command_hook logs directives
-        # at debug). Never raises, so a broken plugin can't break dispatch.
-        if _cmd_def is not None:
-            from son_of_anton_cli.plugins import fire_pre_command_hook
-            _rest_parts = cmd_original.split(None, 1)
-            fire_pre_command_hook(
-                surface="cli",
-                command=canonical,
-                alias_used=_base_word,
-                args_raw=_rest_parts[1].strip() if len(_rest_parts) > 1 else "",
-                session_key=getattr(self, "session_id", None),
-                platform="cli",
-            )
-
         # A bare `/resume` prompt is one-shot: any command other than the
         # resume/sessions handlers (which manage the pending state themselves)
         # disarms it so a later number isn't swallowed as a stale selection.
@@ -7374,70 +7204,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # The auto-reload path (file watcher) calls _reload_mcp directly
             # without this confirmation.
             self._confirm_and_reload_mcp(cmd_original)
-        elif canonical == "plugins":
-            try:
-                # Discover from disk (bundled + user), matching `son-of-anton plugins
-                # list` — so installed-but-not-enabled plugins are visible here
-                # too. The plugin manager only knows about *loaded* plugins, so
-                # using it alone made freshly-installed, not-yet-enabled plugins
-                # look like "nothing installed".
-                from son_of_anton_cli.plugins_cmd import (
-                    _discover_all_plugins,
-                    _get_disabled_set,
-                    _get_enabled_set,
-                    _plugin_status,
-                )
-
-                entries = _discover_all_plugins()
-                enabled = _get_enabled_set()
-                disabled = _get_disabled_set()
-
-                # `/plugins` is a quick glance — default to user-installed
-                # plugins (what the user actually added). Bundled provider/
-                # platform plugins are summarized on one line; the full
-                # catalog lives behind `son-of-anton plugins list`.
-                user_entries = [e for e in entries if e[3] != "bundled"]
-                bundled_count = len(entries) - len(user_entries)
-
-                if not user_entries:
-                    print("No user plugins installed.")
-                    print("  Install one: son-of-anton plugins install owner/repo")
-                    print(f"  Or drop a plugin directory into {display_son_of_anton_home()}/plugins/")
-                    if bundled_count:
-                        print(f"  ({bundled_count} bundled plugins available — see: son-of-anton plugins list)")
-                else:
-                    # Loaded-plugin details (tools/hooks/commands counts, errors)
-                    # keyed by name, when available.
-                    loaded: dict = {}
-                    try:
-                        from son_of_anton_cli.plugins import get_plugin_manager
-                        for p in get_plugin_manager().list_plugins():
-                            loaded[p["name"]] = p
-                    except Exception:
-                        loaded = {}
-
-                    print(f"User plugins ({len(user_entries)}):")
-                    for name, version, _desc, source, _dir, key in sorted(user_entries):
-                        state = _plugin_status(name, enabled, disabled, key=key)
-                        glyph = {"enabled": "+", "disabled": "-"}.get(state, "o")
-                        ver = f" v{version}" if version else ""
-                        info = loaded.get(name) or {}
-                        bits = []
-                        if info.get("tools"):
-                            bits.append(f"{info['tools']} tools")
-                        if info.get("hooks"):
-                            bits.append(f"{info['hooks']} hooks")
-                        if info.get("commands"):
-                            bits.append(f"{info['commands']} commands")
-                        detail = f" ({', '.join(bits)})" if bits else ""
-                        label = "" if state == "enabled" else f" [{state}]"
-                        error = f" — {info['error']}" if info.get("error") else ""
-                        print(f"  {glyph} {name}{ver}{label}{detail}{error}")
-                    if bundled_count:
-                        print(f"  (+{bundled_count} bundled — see: son-of-anton plugins list)")
-                    print("  Enable/disable: son-of-anton plugins enable/disable <name>")
-            except Exception as e:
-                print(f"Plugin system error: {e}")
         elif canonical == "stop":
             self._handle_stop_command()
         elif canonical == "agents":
@@ -7520,23 +7286,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         self._console_print(f"[bold red]Quick command '{base_cmd}' has no target defined")
                 else:
                     self._console_print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')")
-            # Check for plugin-registered slash commands
-            elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
-                from son_of_anton_cli.plugins import (
-                    get_plugin_command_handler,
-                    resolve_plugin_command_result,
-                )
-                plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
-                if plugin_handler:
-                    user_args = cmd_original[len(base_cmd):].strip()
-                    try:
-                        result = resolve_plugin_command_result(
-                            plugin_handler(user_args)
-                        )
-                        if result:
-                            _cprint(str(result))
-                    except Exception as e:
-                        _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
             else:
                 # Prefix matching: if input uniquely identifies one command, execute it.
                 # Matches against the built-in COMMANDS so that execution-time
@@ -10121,11 +9870,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.
-                    # A transform hook runs after streaming. Show a suffix for
-                    # append-only changes, or the complete replacement otherwise.
-                    _post_stream_text = _post_stream_transform_output(response, result)
-                    if _post_stream_text.strip():
-                        _cprint(_post_stream_text)
+                    pass
                 else:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
@@ -10726,7 +10471,7 @@ def main(
                             else:
                                 result = _run_query()
                         except KeyboardInterrupt:
-                            _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
+                            _interrupt_single_query(cli, reason="keyboard_interrupt")
                             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
                             sys.exit(130)
                         # Sync session_id if mid-run compaction created a

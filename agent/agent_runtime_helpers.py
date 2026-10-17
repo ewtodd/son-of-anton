@@ -1428,11 +1428,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
-                 tool_call_id: Optional[str] = None, messages: list = None,
-                 pre_tool_block_checked: bool = False,
-                 skip_tool_request_middleware: bool = False,
-                 tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
-                 skip_tool_execution_middleware: bool = False) -> str:
+                 tool_call_id: Optional[str] = None, messages: list = None) -> str:
     """Invoke a single tool and return the result string. No display logic.
 
     Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
@@ -1442,188 +1438,61 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     if not isinstance(function_args, dict):
         function_args = {}
 
-    _tool_middleware_trace = list(tool_request_middleware_trace or [])
-    try:
-        from son_of_anton_cli.middleware import apply_tool_request_middleware
-
-        if not skip_tool_request_middleware:
-            _tool_request_mw = apply_tool_request_middleware(
-                function_name,
-                function_args,
-                task_id=effective_task_id or "",
-                session_id=getattr(agent, "session_id", "") or "",
-                tool_call_id=tool_call_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
-                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-            )
-            function_args = _tool_request_mw.payload
-            _tool_middleware_trace = _tool_request_mw.trace
-    except Exception as _mw_err:
-        logger.debug("tool_request middleware error: %s", _mw_err)
-
-    # Check plugin hooks for a block or approval directive before executing.
-    block_message: Optional[str] = None
-    if not pre_tool_block_checked:
-        try:
-            from son_of_anton_cli.plugins import _dispatch_pre_tool_call_hooks
-            block_message, modified_args = _dispatch_pre_tool_call_hooks(
-                function_name, function_args, task_id=effective_task_id or "",
-                session_id=getattr(agent, "session_id", "") or "",
-                tool_call_id=tool_call_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
-                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                middleware_trace=list(_tool_middleware_trace),
-            )
-            if modified_args is not None:
-                function_args = modified_args
-        except Exception:
-            block_message = None
-    if block_message is not None:
-        result = json.dumps({"error": block_message}, ensure_ascii=False)
-        try:
-            from model_tools import _emit_post_tool_call_hook
-            _emit_post_tool_call_hook(
-                function_name=function_name,
-                function_args=function_args,
-                result=result,
-                task_id=effective_task_id or "",
-                session_id=getattr(agent, "session_id", "") or "",
-                tool_call_id=tool_call_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
-                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                status="blocked",
-                error_type="plugin_block",
-                error_message=block_message,
-                middleware_trace=list(_tool_middleware_trace),
-            )
-        except Exception:
-            pass
-        return result
-
-    tool_start_time = time.monotonic()
-
-    def _finish_agent_tool(result: Any, observed_args: Optional[dict] = None) -> Any:
-        hook_args = observed_args if isinstance(observed_args, dict) else function_args
-        try:
-            from model_tools import _emit_post_tool_call_hook
-            _emit_post_tool_call_hook(
-                function_name=function_name,
-                function_args=hook_args,
-                result=result,
-                task_id=effective_task_id or "",
-                session_id=getattr(agent, "session_id", "") or "",
-                tool_call_id=tool_call_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
-                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                duration_ms=int((time.monotonic() - tool_start_time) * 1000),
-                middleware_trace=list(_tool_middleware_trace),
-            )
-        except Exception:
-            pass
-        return result
-
     if function_name == "todo":
-        def _execute(next_args: dict) -> Any:
-            from tools.todo_tool import todo_tool as _todo_tool
-            return _finish_agent_tool(
-                _todo_tool(
-                    todos=next_args.get("todos"),
-                    merge=next_args.get("merge", False),
-                    store=agent._todo_store,
-                ),
-                next_args,
-            )
-    elif function_name == "session_search":
-        def _execute(next_args: dict) -> Any:
-            session_db = agent._get_session_db_for_recall()
-            if not session_db:
-                from son_of_anton_state import format_session_db_unavailable
-                return _finish_agent_tool(json.dumps({"success": False, "error": format_session_db_unavailable()}), next_args)
-            from tools.session_search_tool import session_search as _session_search
-            return _finish_agent_tool(
-                _session_search(
-                    query=next_args.get("query", ""),
-                    role_filter=next_args.get("role_filter"),
-                    limit=next_args.get("limit", 3),
-                    session_id=next_args.get("session_id"),
-                    around_message_id=next_args.get("around_message_id"),
-                    window=next_args.get("window", 5),
-                    sort=next_args.get("sort"),
-                    detail=next_args.get("detail", "adaptive"),
-                    db=session_db,
-                    current_session_id=agent.session_id,
-                ),
-                next_args,
-            )
-    elif function_name == "memory":
-        def _execute(next_args: dict) -> Any:
-            target = next_args.get("target", "memory")
-            operations = next_args.get("operations")
-            from tools.memory_tool import memory_tool as _memory_tool
-            result = _memory_tool(
-                action=next_args.get("action"),
-                target=target,
-                content=next_args.get("content"),
-                old_text=next_args.get("old_text"),
-                operations=operations,
-                scope=next_args.get("scope"),
-                store=agent._memory_store,
-            )
-            return _finish_agent_tool(result, next_args)
-    elif function_name == "clarify":
-        def _execute(next_args: dict) -> Any:
-            from tools.clarify_tool import clarify_tool as _clarify_tool
-            return _finish_agent_tool(
-                _clarify_tool(
-                    question=next_args.get("question", ""),
-                    choices=next_args.get("choices"),
-                    multi_select=next_args.get("multi_select", False),
-                    questions=next_args.get("questions"),
-                    callback=agent.clarify_callback,
-                ),
-                next_args,
-            )
-    elif function_name == "delegate_task":
-        def _execute(next_args: dict) -> Any:
-            return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
-    else:
-        def _execute(next_args: dict) -> Any:
-            dispatch_kwargs = dict(
-                tool_call_id=tool_call_id,
-                session_id=agent.session_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
-                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-                enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
-                skip_pre_tool_call_hook=True,
-                skip_tool_request_middleware=True,
-                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                tool_request_middleware_trace=list(_tool_middleware_trace),
-            )
-            if skip_tool_execution_middleware:
-                dispatch_kwargs["skip_tool_execution_middleware"] = True
-            return _ra().handle_function_call(
-                function_name,
-                next_args,
-                effective_task_id,
-                **dispatch_kwargs,
-            )
-
-    if skip_tool_execution_middleware:
-        return _execute(function_args)
-
-    from son_of_anton_cli.middleware import run_tool_execution_middleware
-
-    return run_tool_execution_middleware(
+        from tools.todo_tool import todo_tool as _todo_tool
+        return _todo_tool(
+            todos=function_args.get("todos"),
+            merge=function_args.get("merge", False),
+            store=agent._todo_store,
+        )
+    if function_name == "session_search":
+        session_db = agent._get_session_db_for_recall()
+        if not session_db:
+            from son_of_anton_state import format_session_db_unavailable
+            return json.dumps({"success": False, "error": format_session_db_unavailable()})
+        from tools.session_search_tool import session_search as _session_search
+        return _session_search(
+            query=function_args.get("query", ""),
+            role_filter=function_args.get("role_filter"),
+            limit=function_args.get("limit", 3),
+            session_id=function_args.get("session_id"),
+            around_message_id=function_args.get("around_message_id"),
+            window=function_args.get("window", 5),
+            sort=function_args.get("sort"),
+            detail=function_args.get("detail", "adaptive"),
+            db=session_db,
+            current_session_id=agent.session_id,
+        )
+    if function_name == "memory":
+        from tools.memory_tool import memory_tool as _memory_tool
+        return _memory_tool(
+            action=function_args.get("action"),
+            target=function_args.get("target", "memory"),
+            content=function_args.get("content"),
+            old_text=function_args.get("old_text"),
+            operations=function_args.get("operations"),
+            scope=function_args.get("scope"),
+            store=agent._memory_store,
+        )
+    if function_name == "clarify":
+        from tools.clarify_tool import clarify_tool as _clarify_tool
+        return _clarify_tool(
+            question=function_args.get("question", ""),
+            choices=function_args.get("choices"),
+            multi_select=function_args.get("multi_select", False),
+            questions=function_args.get("questions"),
+            callback=agent.clarify_callback,
+        )
+    if function_name == "delegate_task":
+        return agent._dispatch_delegate_task(function_args)
+    return _ra().handle_function_call(
         function_name,
         function_args,
-        lambda next_args: _execute(next_args if isinstance(next_args, dict) else function_args),
-        original_args=function_args,
-        task_id=effective_task_id or "",
-        session_id=getattr(agent, "session_id", "") or "",
-        tool_call_id=tool_call_id or "",
-        turn_id=getattr(agent, "_current_turn_id", "") or "",
-        api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+        effective_task_id,
+        session_id=agent.session_id or "",
+        enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
+        enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
     )
 
 

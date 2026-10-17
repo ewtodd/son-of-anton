@@ -26,7 +26,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.rate_limit_tracker import RateLimitState
@@ -241,14 +241,12 @@ def init_agent(
     thinking_callback: callable = None,
     reasoning_callback: callable = None,
     clarify_callback: callable = None,
-    step_callback: callable = None,
     stream_delta_callback: callable = None,
     interim_assistant_callback: callable = None,
     tool_gen_callback: callable = None,
     status_callback: callable = None,
     notice_callback: callable = None,
     notice_clear_callback: callable = None,
-    event_callback: Optional[Callable[[str, dict], None]] = None,
     max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None,
     request_overrides: Dict[str, Any] = None,
@@ -372,13 +370,11 @@ def init_agent(
     agent.thinking_callback = thinking_callback
     agent.reasoning_callback = reasoning_callback
     agent.clarify_callback = clarify_callback
-    agent.step_callback = step_callback
     agent.stream_delta_callback = stream_delta_callback
     agent.interim_assistant_callback = interim_assistant_callback
     agent.status_callback = status_callback
     agent.notice_callback = notice_callback
     agent.notice_clear_callback = notice_clear_callback
-    agent.event_callback = event_callback
     agent.tool_gen_callback = tool_gen_callback
 
     

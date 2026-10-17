@@ -445,24 +445,6 @@ def _ra():
     return run_agent
 
 
-def _system_prompt_for_hooks(api_kwargs: Any, request_messages: Any) -> Any:
-    """System prompt as actually sent to the provider, for observability hooks.
-
-    Providers move it out of ``messages``: Anthropic Messages uses a separate
-    ``system`` kwarg (str or content-block list), the Responses/Codex API uses
-    top-level ``instructions``; Chat Completions keeps it as ``messages[0]``.
-    Returns None when the request carries no system prompt.
-    """
-    system_prompt = api_kwargs.get("system")
-    if system_prompt is None:
-        system_prompt = api_kwargs.get("instructions")
-    if system_prompt is None and isinstance(request_messages, list) and request_messages:
-        first = request_messages[0]
-        if isinstance(first, dict) and first.get("role") == "system":
-            system_prompt = first.get("content")
-    return system_prompt
-
-
 def _billing_or_entitlement_message(
     *,
     capability: str,
@@ -619,12 +601,6 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt
-        # Prompt-section callbacks are new-session-only. Recover their frozen
-        # bytes from the persisted full prompt so a later compaction rebuild
-        # keeps them without evaluating plugin state in this resumed process.
-        from agent.system_prompt import restore_plugin_prompt_sections
-
-        restore_plugin_prompt_sections(agent, stored_prompt)
         return
     if stored_prompt:
         stored_state = "stale_runtime"
@@ -652,20 +628,6 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # First turn of a new session (or recovering from a broken stored
     # prompt) — build from scratch.
     agent._cached_system_prompt = agent._build_system_prompt(system_message)
-
-    # Plugin hook: on_session_start — fired once when a brand-new
-    # session is created (not on continuation).  Plugins can use this
-    # to initialise session-scoped state (e.g. warm a memory cache).
-    try:
-        from son_of_anton_cli.lifecycle import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_start",
-            session_id=agent.session_id,
-            model=agent.model,
-            platform=getattr(agent, "platform", None) or "",
-        )
-    except Exception as exc:
-        logger.warning("on_session_start hook failed: %s", exc)
 
 
 
@@ -1258,14 +1220,12 @@ def run_conversation(
             "session_id": agent.session_id,
         }
     user_message = _ctx.user_message
-    original_user_message = _ctx.original_user_message
     messages = _ctx.messages
     conversation_history = _ctx.conversation_history
     active_system_prompt = _ctx.active_system_prompt
     effective_task_id = _ctx.effective_task_id
-    turn_id = _ctx.turn_id
     current_turn_user_idx = _ctx.current_turn_user_idx
-    _plugin_user_context = _ctx.plugin_user_context
+    _user_context = _ctx.user_context
 
     # Commentary deduplication spans all provider continuations and tool calls
     # within one user turn, but must not suppress the same phrase next turn.
@@ -1308,11 +1268,6 @@ def run_conversation(
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
             _apply_active_turn_redirect(agent, messages, _redirect_text)
-            if isinstance(original_user_message, str):
-                original_user_message = (
-                    f"{original_user_message}\n\n"
-                    f"User correction during the turn: {_redirect_text}"
-                )
             agent._persist_session(messages, conversation_history)
 
         # Check for interrupt request (e.g., user sent new message)
@@ -1348,34 +1303,6 @@ def run_conversation(
             if not agent.quiet_mode:
                 agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
             break
-
-        # Fire step_callback for gateway hooks (agent:step event)
-        if agent.step_callback is not None:
-            try:
-                prev_tools = []
-                for _idx, _m in enumerate(reversed(messages)):
-                    if _m.get("role") == "assistant" and _m.get("tool_calls"):
-                        _fwd_start = len(messages) - _idx
-                        _results_by_id = {}
-                        for _tm in messages[_fwd_start:]:
-                            if _tm.get("role") != "tool":
-                                break
-                            _tcid = _tm.get("tool_call_id")
-                            if _tcid:
-                                _results_by_id[_tcid] = _tm.get("content", "")
-                        prev_tools = [
-                            {
-                                "name": tc["function"]["name"],
-                                "result": _results_by_id.get(tc.get("id")),
-                                "arguments": tc["function"].get("arguments"),
-                            }
-                            for tc in _m["tool_calls"]
-                            if isinstance(tc, dict)
-                        ]
-                        break
-                agent.step_callback(api_call_count, prev_tools)
-            except Exception as _step_err:
-                logger.debug("step_callback error (iteration %s): %s", api_call_count, _step_err)
 
         # ── Pre-API-call /steer drain ──────────────────────────────────
         # If a /steer arrived during the previous API call (while the model
@@ -1562,8 +1489,7 @@ def run_conversation(
             api_msg.pop("_row_id", None)
 
             # Inject ephemeral context into the current turn's user message.
-            # Sources: memory manager prefetch + plugin pre_llm_call hooks
-            # with target="user_message" (the default).  Both are
+            # Sources: retrieval recall + gateway notes.  Both are
             # API-call-time only — the original message in `messages` is
             # never mutated beyond the api_content stamp, so nothing leaks
             # into the clean transcript content.
@@ -1579,7 +1505,7 @@ def run_conversation(
                     # Callers that bypass the prologue stamping: compose live.
                     _composed = compose_user_api_content(
                         api_msg.get("content", ""),
-                        _plugin_user_context,
+                        _user_context,
                         getattr(agent, "_turn_rag_context", ""),
                     )
                     if _composed is not None:
@@ -1593,7 +1519,7 @@ def run_conversation(
                 # live, so the provider prompt-cache prefix stays byte-stable
                 # instead of diverging at the injection point and
                 # re-prefilling everything after it. User rows carry the
-                # prefetch/plugin injection sidecar; user AND assistant rows
+                # recall/gateway injection sidecar; user AND assistant rows
                 # can carry a sanitize-divergence sidecar (content that
                 # ``get_messages_as_conversation``'s sanitize_context/strip
                 # would rewrite on reload — see the capture in
@@ -1630,7 +1556,7 @@ def run_conversation(
         # External recall context is injected into the user message, not the system
         # prompt, so the stable cache prefix remains unchanged.
         #
-        # NOTE: Plugin context from pre_llm_call hooks is injected into the
+        # NOTE: Recall and gateway context is injected into the
         # user message (see injection block above), NOT the system prompt.
         # This is intentional — system prompt modifications break the prompt
         # cache prefix.  The system prompt is reserved for Son of Anton internals.
@@ -1702,7 +1628,7 @@ def run_conversation(
         # str(msg) char walk (re-serialized base64 every call) + a second
         # messages walk inside estimate_request_tokens_rough. Tools added
         # separately (compaction needs them: 50+ tools = 20-30K tokens).
-        # total_chars is a rough (~) proxy — verbose log + hook metric only.
+        # total_chars is a rough (~) proxy for the verbose log.
         approx_tokens = estimate_messages_tokens_rough(api_messages)
         request_pressure_tokens = approx_tokens + (
             _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
@@ -1797,8 +1723,6 @@ def run_conversation(
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
         api_kwargs = None  # Guard against UnboundLocalError in except handler
-        api_request_id = f"{turn_id}:api:{api_call_count}"
-        agent._current_api_request_id = api_request_id
 
         while retry_count < max_retries:
             try:
@@ -1825,92 +1749,6 @@ def run_conversation(
                 _sanitize_structure_surrogates(api_kwargs)
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
-                try:
-                    from son_of_anton_cli.middleware import apply_llm_request_middleware
-
-                    _llm_request_mw = apply_llm_request_middleware(
-                        api_kwargs,
-                        task_id=effective_task_id,
-                        turn_id=turn_id,
-                        api_request_id=api_request_id,
-                        session_id=agent.session_id or "",
-                        platform=agent.platform or "",
-                        model=agent.model,
-                        provider=agent.provider,
-                        base_url=agent.base_url,
-                        api_mode=agent.api_mode,
-                        api_call_count=api_call_count,
-                    )
-                    api_kwargs = _llm_request_mw.payload
-                    _original_api_kwargs = _llm_request_mw.original_payload
-                    _llm_middleware_trace = _llm_request_mw.trace
-                except Exception:
-                    _original_api_kwargs = dict(api_kwargs)
-                    _llm_middleware_trace = []
-
-                try:
-                    from son_of_anton_cli.lifecycle import (
-                        has_hook,
-                        invoke_hook as _invoke_hook,
-                    )
-                    if has_hook("pre_api_request"):
-                        request_messages = api_kwargs.get("messages")
-                        if not isinstance(request_messages, list):
-                            request_messages = api_kwargs.get("input")
-                        if not isinstance(request_messages, list):
-                            request_messages = api_messages
-                        # Shallow-copy the outer list so plugins that retain the
-                        # reference for async snapshotting don't observe later
-                        # mutations of api_messages.  The inner dicts are not
-                        # mutated by the agent loop, so a shallow copy is
-                        # sufficient; a deepcopy would walk every tool result
-                        # and base64 image on every API call.
-                        #
-                        # The ``request_messages`` and ``conversation_history``
-                        # kwargs below are pre-existing raw passthroughs.
-                        # They predate ``request`` and are intentionally NOT
-                        # sanitised — secrets are not expected here because
-                        # ``api_kwargs`` is the same object passed to the
-                        # provider client.  New consumers should read the
-                        # sanitised view from ``request["body"]["messages"]``.
-                        _request_payload = agent._api_request_payload_for_hook(api_kwargs)
-                        # Anthropic (``system``) and Responses/Codex
-                        # (``instructions``) move the system prompt out of
-                        # messages; pass it explicitly for plugins.
-                        system_prompt_for_hooks = _system_prompt_for_hooks(
-                            api_kwargs, request_messages
-                        )
-                        _invoke_hook(
-                            "pre_api_request",
-                            task_id=effective_task_id,
-                            turn_id=turn_id,
-                            api_request_id=api_request_id,
-                            session_id=agent.session_id or "",
-                            user_message=original_user_message,
-                            conversation_history=list(messages),
-                            platform=agent.platform or "",
-                            model=agent.model,
-                            provider=agent.provider,
-                            base_url=agent.base_url,
-                            api_mode=agent.api_mode,
-                            api_call_count=api_call_count,
-                            retry_count=retry_count,
-                            request_messages=list(request_messages)
-                            if isinstance(request_messages, list)
-                            else [],
-                            system_prompt=system_prompt_for_hooks,
-                            message_count=len(api_messages),
-                            tool_count=len(agent.tools or []),
-                            approx_input_tokens=approx_tokens,
-                            request_char_count=total_chars,
-                            max_tokens=agent.max_tokens,
-                            started_at=api_start_time,
-                            middleware_trace=list(_llm_middleware_trace),
-                            request=_request_payload,
-                        )
-                except Exception:
-                    pass
-
 
                 # Always prefer the streaming path — even without stream
                 # consumers.  Streaming gives us fine-grained health
@@ -1956,8 +1794,6 @@ def run_conversation(
                         )
                     return agent._interruptible_api_call(next_api_kwargs)
 
-                from son_of_anton_cli.middleware import run_llm_execution_middleware
-
                 _model_request_active = getattr(agent, "_model_request_active", None)
                 _redirect_lock = getattr(agent, "_pending_redirect_lock", None)
                 # Under the redirect lock, so a yield either lands before this
@@ -1986,22 +1822,7 @@ def run_conversation(
                     break
                 _redirect_crossed_response = False
                 try:
-                    response = run_llm_execution_middleware(
-                        api_kwargs,
-                        _perform_api_call,
-                        original_request=_original_api_kwargs,
-                        task_id=effective_task_id,
-                        turn_id=turn_id,
-                        api_request_id=api_request_id,
-                        session_id=agent.session_id or "",
-                        platform=agent.platform or "",
-                        model=agent.model,
-                        provider=agent.provider,
-                        base_url=agent.base_url,
-                        api_mode=agent.api_mode,
-                        api_call_count=api_call_count,
-                        middleware_trace=list(_llm_middleware_trace),
-                    )
+                    response = _perform_api_call(api_kwargs)
                 finally:
                     if _redirect_lock is not None:
                         with _redirect_lock:
@@ -2068,21 +1889,6 @@ def run_conversation(
                         error_details.append("response.choices is empty")
 
                 if response_invalid:
-                    agent._invoke_api_request_error_hook(
-                        task_id=effective_task_id,
-                        turn_id=turn_id,
-                        api_request_id=api_request_id,
-                        api_call_count=api_call_count,
-                        api_start_time=api_start_time,
-                        api_kwargs=api_kwargs,
-                        error_type="InvalidAPIResponse",
-                        error_message=", ".join(error_details) or "Invalid API response",
-                        status_code=getattr(getattr(response, "error", None), "code", None),
-                        retry_count=retry_count,
-                        max_retries=max_retries,
-                        retryable=True,
-                        reason="invalid_response",
-                    )
                     # Stop spinner silently — retry status is now buffered
                     # and only surfaced if every retry+fallback exhausts.
                     if thinking_spinner:
@@ -2258,21 +2064,6 @@ def run_conversation(
                     if not _refusal_text:
                         _refusal_text = (agent._extract_reasoning(_refusal_result) or "").strip()
 
-                    agent._invoke_api_request_error_hook(
-                        task_id=effective_task_id,
-                        turn_id=turn_id,
-                        api_request_id=api_request_id,
-                        api_call_count=api_call_count,
-                        api_start_time=api_start_time,
-                        api_kwargs=api_kwargs,
-                        error_type="ContentPolicyBlocked",
-                        error_message=_refusal_text or "model declined to respond (content_filter)",
-                        status_code=None,
-                        retry_count=retry_count,
-                        max_retries=max_retries,
-                        retryable=False,
-                        reason=FailoverReason.content_policy_blocked.value,
-                    )
 
                     if thinking_spinner:
                         thinking_spinner.stop("")
@@ -3202,21 +2993,6 @@ def run_conversation(
                     classified.reason.value, classified.status_code,
                     classified.retryable, classified.should_compact,
                     classified.should_rotate_credential, classified.should_fallback,
-                )
-                agent._invoke_api_request_error_hook(
-                    task_id=effective_task_id,
-                    turn_id=turn_id,
-                    api_request_id=api_request_id,
-                    api_call_count=api_call_count,
-                    api_start_time=api_start_time,
-                    api_kwargs=api_kwargs,
-                    error_type=type(api_error).__name__,
-                    error_message=str(api_error),
-                    status_code=status_code,
-                    retry_count=retry_count,
-                    max_retries=max_retries,
-                    retryable=classified.retryable,
-                    reason=classified.reason.value,
                 )
 
                 # Image-too-large recovery: shrink oversized native image
@@ -4426,48 +4202,6 @@ def run_conversation(
                     assistant_message.content = "\n".join(parts)
                 else:
                     assistant_message.content = str(raw)
-
-            try:
-                from son_of_anton_cli.lifecycle import (
-                    has_hook,
-                    invoke_hook as _invoke_hook,
-                )
-                if has_hook("post_api_request"):
-                    _assistant_tool_calls = (
-                        getattr(assistant_message, "tool_calls", None) or []
-                    )
-                    _assistant_text = assistant_message.content or ""
-                    _api_ended_at = api_start_time + api_duration
-                    _invoke_hook(
-                        "post_api_request",
-                        task_id=effective_task_id,
-                        turn_id=turn_id,
-                        api_request_id=api_request_id,
-                        session_id=agent.session_id or "",
-                        platform=agent.platform or "",
-                        model=agent.model,
-                        provider=agent.provider,
-                        base_url=agent.base_url,
-                        api_mode=agent.api_mode,
-                        api_call_count=api_call_count,
-                        api_duration=api_duration,
-                        started_at=api_start_time,
-                        ended_at=_api_ended_at,
-                        finish_reason=finish_reason,
-                        message_count=len(api_messages),
-                        response_model=getattr(response, "model", None),
-                        response=agent._api_response_payload_for_hook(
-                            response,
-                            assistant_message,
-                            finish_reason=finish_reason,
-                        ),
-                        usage=agent._usage_summary_for_api_request_hook(response),
-                        assistant_message=assistant_message,
-                        assistant_content_chars=len(_assistant_text),
-                        assistant_tool_call_count=len(_assistant_tool_calls),
-                    )
-            except Exception:
-                pass
 
             # Handle assistant response
             if assistant_message.content and not agent.quiet_mode:
@@ -5790,9 +5524,7 @@ def run_conversation(
         messages=messages,
         conversation_history=conversation_history,
         effective_task_id=effective_task_id,
-        turn_id=turn_id,
         user_message=user_message,
-        original_user_message=original_user_message,
         _turn_exit_reason=_turn_exit_reason,
     )
 

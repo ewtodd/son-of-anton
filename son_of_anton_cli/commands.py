@@ -204,8 +204,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools",
                aliases=("reload_mcp",)),
-    CommandDef("plugins", "List installed plugins and their status",
-               "Tools", cli_only=True),
 
     # Info
     CommandDef("commands", "Browse all commands (paginated)", "Info",
@@ -339,26 +337,6 @@ GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
     if not cmd.cli_only or cmd.gateway_config_gate
     for name in (cmd.name, *cmd.aliases)
 )
-
-
-def is_gateway_known_command(name: str | None) -> bool:
-    """Return True if ``name`` resolves to a gateway-dispatchable slash command.
-
-    This covers both built-in commands (``GATEWAY_KNOWN_COMMANDS`` derived
-    from ``COMMAND_REGISTRY``) and plugin-registered commands, which are
-    looked up lazily so importing this module never forces plugin
-    discovery. Gateway code uses this to decide whether to emit
-    ``command:<name>`` hooks — plugin commands get the same lifecycle
-    events as built-ins.
-    """
-    if not name:
-        return False
-    if name in GATEWAY_KNOWN_COMMANDS:
-        return True
-    for plugin_name, _description, _args_hint in _iter_plugin_command_entries():
-        if plugin_name == name:
-            return True
-    return False
 
 
 # Commands with explicit mid-run (running-agent) behavior in gateway/run.py.
@@ -500,36 +478,6 @@ GATEWAY_HELP_CORE: frozenset[str] = frozenset({
     # Info
     "usage", "help", "commands",
 })
-
-
-def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
-    """Yield (name, description, args_hint) tuples for all plugin slash commands.
-
-    Plugin commands are registered via
-    :func:`son_of_anton_cli.plugins.PluginContext.register_command`. They behave
-    like ``CommandDef`` entries for gateway surfacing: they appear in the
-    gateway command menu.
-
-    Lookup is lazy so importing this module never forces plugin discovery
-    (which can trigger filesystem scans and environment-dependent
-    behavior).
-    """
-    try:
-        from son_of_anton_cli.plugins import get_plugin_commands
-    except Exception:
-        return []
-    try:
-        commands = get_plugin_commands() or {}
-    except Exception:
-        return []
-    entries: list[tuple[str, str, str]] = []
-    for name, meta in commands.items():
-        if not isinstance(name, str) or not isinstance(meta, dict):
-            continue
-        description = str(meta.get("description") or f"Run /{name}")
-        args_hint = str(meta.get("args_hint") or "").strip()
-        entries.append((name, description, args_hint))
-    return entries
 
 
 # ---------------------------------------------------------------------------

@@ -51,9 +51,7 @@ def finalize_turn(
     messages,
     conversation_history,
     effective_task_id,
-    turn_id,
     user_message,
-    original_user_message,
     _turn_exit_reason,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
@@ -231,8 +229,8 @@ def finalize_turn(
         if not interrupted and not failed:
             try:
                 _compactor = getattr(agent, "context_compactor", None)
-                # Strict `is True` + isinstance gates: plugin context engines
-                # (and MagicMock compactors in tests) satisfy getattr/duck
+                # Strict `is True` + isinstance gates: MagicMock compactors in
+                # tests satisfy getattr/duck
                 # checks with truthy auto-attributes — a bare truthiness check
                 # here called _micro_compact on a mock and spliced its (empty-
                 # iterating) return value over the transcript, wiping it.
@@ -414,53 +412,6 @@ def finalize_turn(
         except Exception as _exp_err:
             logger.debug("turn-completion explainer failed: %s", _exp_err)
 
-    _response_transformed = False
-    _pre_transform_response = None
-
-    # Plugin hook: transform_llm_output
-    # Fired once per turn after the tool-calling loop completes.
-    # Plugins can transform the LLM's output text before it's returned.
-    # First hook to return a string wins; None/empty return leaves text unchanged.
-    if final_response and not interrupted:
-        try:
-            from son_of_anton_cli.lifecycle import invoke_hook as _invoke_hook
-            _transform_results = _invoke_hook(
-                "transform_llm_output",
-                response_text=final_response,
-                session_id=agent.session_id or "",
-                model=agent.model,
-                platform=getattr(agent, "platform", None) or "",
-            )
-            for _hook_result in _transform_results:
-                if isinstance(_hook_result, str) and _hook_result:
-                    _pre_transform_response = final_response
-                    final_response = _hook_result
-                    _response_transformed = True
-                    break  # First non-empty string wins
-        except Exception as exc:
-            logger.warning("transform_llm_output hook failed: %s", exc)
-
-    # Plugin hook: post_llm_call
-    # Fired once per turn after the tool-calling loop completes.
-    # Plugins can use this to persist conversation data (e.g. sync
-    # to an external memory system).
-    if final_response and not interrupted:
-        try:
-            from son_of_anton_cli.lifecycle import invoke_hook as _invoke_hook
-            _invoke_hook(
-                "post_llm_call",
-                session_id=agent.session_id,
-                task_id=effective_task_id,
-                turn_id=turn_id,
-                user_message=original_user_message,
-                assistant_response=final_response,
-                conversation_history=list(messages),
-                model=agent.model,
-                platform=getattr(agent, "platform", None) or "",
-            )
-        except Exception as exc:
-            logger.warning("post_llm_call hook failed: %s", exc)
-
     # Extract reasoning from the CURRENT turn only.  Walk backwards
     # but stop at the user message that started this turn — anything
     # earlier is from a prior turn and must not leak into the reasoning
@@ -502,8 +453,6 @@ def finalize_turn(
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
         "yielded": yielded,
-        "response_transformed": _response_transformed,
-        "pre_transform_response": _pre_transform_response,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
         "model": agent.model,
         "provider": agent.provider,
@@ -567,25 +516,5 @@ def finalize_turn(
 
     # Clear stream callback so it doesn't leak into future calls
     agent._stream_callback = None
-
-    # Plugin hook: on_session_end
-    # Fired at the very end of every run_conversation call.
-    # Plugins can use this for cleanup, flushing buffers, etc.
-    try:
-        from son_of_anton_cli.lifecycle import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_end",
-            session_id=agent.session_id,
-            task_id=effective_task_id,
-            turn_id=turn_id,
-            completed=completed,
-            failed=failed,
-            interrupted=interrupted,
-            turn_exit_reason=_turn_exit_reason,
-            model=agent.model,
-            platform=getattr(agent, "platform", None) or "",
-        )
-    except Exception as exc:
-        logger.warning("on_session_end hook failed: %s", exc)
 
     return result
