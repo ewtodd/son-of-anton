@@ -21,7 +21,6 @@ import inspect
 import json
 import logging
 import os
-import queue
 import re
 import sys
 import signal
@@ -4584,6 +4583,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             f"{platform.value} connect timed out after {timeout:g}s"
         )
 
+    @property
     def should_exit_cleanly(self) -> bool:
         return self._exit_cleanly
 
@@ -6598,9 +6598,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             try:
                 from gateway import restart_loop_guard as _rlg
 
-                _max_restarts, _window, _max_gap = self._restart_loop_guard_config()
                 if _rlg.check_and_record(
-                    _max_restarts, _window, max_gap_seconds=_max_gap
+                    _rlg.DEFAULT_MAX_RESTARTS,
+                    _rlg.DEFAULT_WINDOW_SECONDS,
+                    max_gap_seconds=_rlg.DEFAULT_MAX_GAP_SECONDS,
                 ):
                     return 0
             except Exception as exc:  # noqa: BLE001 — breaker must fail OPEN

@@ -1500,35 +1500,8 @@ DEFAULT_CONFIG = {
         # producing ~/.son-of-anton/sessions/sessions.json entirely.
         "write_sessions_json": True,
 
-        # Auto-resume restart-loop breaker (#30719, defense-3). When the
-        # gateway is killed mid-turn (SIGTERM) and revived by a supervisor
-        # (launchd KeepAlive / systemd Restart=), it auto-resumes the
-        # restart-interrupted session on the next boot. If the resumed turn
-        # keeps triggering another kill (e.g. the agent runs a raw
-        # `launchctl kickstart ai.son-of-anton.gateway` that defenses 1-2 don't
-        # cover), the result is a tight SIGTERM-respawn loop. This breaker
-        # chains restart-interrupted boots together and, once `max_restarts`
-        # of them chain up, SKIPS auto-resume for that boot — the gateway
-        # still starts and serves real inbound messages, it just stops
-        # replaying the session that keeps killing it. Set `max_restarts` to
-        # 0 to disable the breaker.
-        # Two boots belong to the same chain when they are no more than
-        # `max_gap_seconds` apart (floored by `window_seconds`). Chaining on
-        # the GAP rather than on a fixed window is what makes the breaker see
-        # SLOW crash cycles: a loop whose period exceeds the window used to
-        # prune its own history on every boot, so the counter never left 1 and
-        # the breaker never tripped — e.g. the ~150s wedged-event-loop cycle in
-        # #81642 (stall -> ~90s liveness-watchdog hard-exit -> respawn ->
-        # auto-resume replays the same session), which also makes
-        # `son-of-anton update` hang because it can never drain the gateway.
-        "restart_loop_guard": {
-            "max_restarts": 3,
-            "window_seconds": 60,
-            "max_gap_seconds": 300,
-        },
-
-        # Portable respawn-storm circuit breaker (complements
-        # ``restart_loop_guard`` above). Counts gateway (re)starts in a sliding
+        # Portable respawn-storm circuit breaker (complements the auto-resume
+        # breaker in gateway/restart_loop_guard.py). Counts gateway (re)starts in a sliding
         # window and, when too many land, sleeps an exponential backoff before
         # booting so a crash-looping supervisor (launchd KeepAlive, systemd
         # Restart=always) can't hammer the process into a respawn storm.

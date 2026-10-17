@@ -35,10 +35,9 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
-from son_of_anton_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
+from son_of_anton_cli.config import atomic_config_write, clear_model_endpoint_credentials
 from utils import (
     atomic_json_write,
-    is_truthy_value,
 )
 
 logger = logging.getLogger("gateway.run")
@@ -178,16 +177,6 @@ class GatewaySlashCommandsMixin:
         # (Conversation-scoped overrides + security state were already
         # cleared via _clear_conversation_scope above.)
 
-        # Resolve session config info to surface to the user, scoped to the
-        # profile serving this source so a multiplexed /reset //new banner
-        # reports the profile's model, not the base config's (#59003).
-        try:
-            session_info = await asyncio.to_thread(
-                self._reset_notice_session_info, source
-            )
-        except Exception:
-            session_info = ""
-
         if new_entry:
             header = t("gateway.reset.header_default")
         else:
@@ -217,9 +206,6 @@ class GatewaySlashCommandsMixin:
                 # sanitize_title returned empty (whitespace-only / unprintable)
                 _title_note = t("gateway.reset.title_empty_untitled")
         header = header + _title_note
-
-        if session_info:
-            return EphemeralReply(f"{header}\n\n{session_info}")
         return EphemeralReply(header)
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
@@ -3171,7 +3157,7 @@ class GatewaySlashCommandsMixin:
             with open(temp_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
-            adapter = self.get_adapter(source.platform)
+            adapter = self.adapters.get(source.platform)
             if adapter:
                 await adapter.send_document(
                     chat_id=source.chat_id,

@@ -129,3 +129,32 @@ def test_note_to_self_survives_ignore() -> None:
                              "syncMessage": {"sentMessage": {
                                  "message": "note", "destination": own}}}}
     assert _run(_adapter("ignore"), envelope) > 0
+
+
+def test_a_group_reply_becomes_a_message_event() -> None:
+    """An allowed group message, quoting an earlier one, reaches the gateway.
+
+    Drives the whole intake through to ``handle_message`` and requires that
+    nothing raises on the way: a constructor argument the event no longer
+    accepts once turned every inbound Signal message into an SSE error.
+    """
+    from gateway.config import PlatformConfig
+
+    a = SignalAdapter(PlatformConfig(enabled=True, extra={"account": "+15550000000"}))
+    a.dm_mode = "ignore"
+    a.group_allow_from = {"gW"}
+    events = []
+
+    async def _handle(event):
+        events.append(event)
+
+    a.handle_message = _handle
+    envelope = _group("what about this?", "gW")
+    envelope["envelope"]["dataMessage"]["quote"] = {
+        "id": 7, "text": "the earlier answer", "author": "+15550000000"}
+
+    asyncio.run(a._handle_envelope(envelope))
+
+    assert len(events) == 1
+    assert events[0].text == "what about this?"
+    assert events[0].reply_to_text == "the earlier answer"

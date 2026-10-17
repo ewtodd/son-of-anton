@@ -706,7 +706,6 @@ class SignalAdapter(BasePlatformAdapter):
         reply_to_id = str(quote_data.get("id")) if quote_data.get("id") else None
         reply_to_text = quote_data.get("text")
         reply_to_author = self._extract_quote_author(quote_data)
-        reply_to_author_name = quote_data.get("authorName") or quote_data.get("authorProfileName")
         reply_to_is_own = self._quote_references_own_message(reply_to_id, reply_to_author)
 
         # Process attachments
@@ -799,8 +798,6 @@ class SignalAdapter(BasePlatformAdapter):
             },
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
-            reply_to_author_id=reply_to_author,
-            reply_to_author_name=reply_to_author_name,
             reply_to_is_own_message=reply_to_is_own,
         )
 
