@@ -36,8 +36,8 @@ Two properties shape almost every design decision and are the lens for reviewing
   We do not do it (the one exception is context compaction).
 - **The core is a narrow waist; capability lives at the edges.** Every model tool we add
   is sent on every API call, so the bar for a new *core* tool is high. Most new capability
-  should arrive as a built-in slash command, a CLI command, a plugin, or an MCP server — not
-  as core surface.
+  should arrive as a built-in slash command, a CLI command, or an MCP server — not as core
+  surface.
 
 ## Contribution Rubric — What We Want / What We Don't
 
@@ -45,7 +45,7 @@ Two properties shape almost every design decision and are the lens for reviewing
   the exact line where it manifests, and fixes the whole bug class — sibling call paths
   included — not just the one site the reporter hit.
 - **Keep the core narrow.** Prefer, in order: extend existing code → CLI command →
-  service-gated tool → plugin → MCP server in the catalog → new core tool (last resort).
+  service-gated tool → MCP server → new core tool (last resort).
   See "The Footprint Ladder" below.
 - **Extend, don't duplicate.** Before adding a module/manager/hook, check whether existing
   infrastructure already covers the use case.
@@ -87,20 +87,19 @@ Each rung adds more permanent surface than the one above. Choose the highest
    setup. Examples: `son-of-anton cron`, `son-of-anton problem`.
 3. **Service-gated tool (`check_fn`)** — needs structured params/returns AND only appears
    when a prerequisite is configured. Zero footprint otherwise.
-4. **Plugin** — user/niche capability that doesn't ship in core. Lives in
-   `~/.son-of-anton/plugins/` or a pip package, discovered at runtime.
-5. **MCP server (in the catalog)** — if the capability genuinely needs to be a tool
-   (structured I/O the agent invokes) but isn't core-fundamental, prefer building it as an
-   MCP server over growing the core toolset. The built-in MCP client connects to it; zero
-   permanent core-schema footprint.
-6. **New core tool** — only when the capability is fundamental, broadly useful to nearly
+4. **MCP server** — if the capability genuinely needs to be a tool (structured I/O the
+   agent invokes) but isn't core-fundamental, build it as an MCP server rather than grow the
+   core toolset. The built-in MCP client connects to it; zero permanent core-schema
+   footprint. (There is no plugin system: it was removed 2026-10-17 with nothing using it.)
+5. **New core tool** — only when the capability is fundamental, broadly useful to nearly
    every user, and unreachable via terminal + file (or an MCP server). Examples of correct
    core tools: terminal, read_file, web_search.
 
 ## Development Environment
 
-This fork is Nix-first. Python dependencies are sealed in a uv2nix venv; the `son-of-anton`
-wrapper exposes the bundled plugins via `SON_OF_ANTON_BUNDLED_PLUGINS`.
+This fork is Nix-first, Linux-only. Python dependencies are sealed in a uv2nix venv; the
+`son-of-anton` wrapper puts its runtime tools (ripgrep, git, tirith, bubblewrap, …) on PATH
+and points `SON_OF_ANTON_BUNDLED_LOCALES` at the shipped locales.
 
 ```bash
 nix build                # sealed uv2nix venv + wrapper in result/bin/
@@ -157,12 +156,11 @@ son-of-anton/
 ├── son_of_anton_constants.py   # get_son_of_anton_home(), display_son_of_anton_home()
 ├── son_of_anton_logging.py     # setup_logging() — agent.log / errors.log / gateway.log
 ├── agent/                # Agent internals (providers, memory, caching, compaction, ...)
-├── son_of_anton_cli/           # CLI subcommands, plugins loader, skin engine
+├── son_of_anton_cli/           # CLI subcommands, skin engine, relay host/worker
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
 │   └── environments/     # Terminal environment (local)
 ├── gateway/              # Messaging gateway — run.py + session.py + platforms/
 │   └── platforms/        # signal — the only messaging platform
-├── plugins/              # Plugin system (see "Plugins" below)
 ├── autophysicist/       # Vendored physics mode (Autophysicist)
 │   ├── llm.py            # OpenAI-compatible layer resolving endpoints from config.toml
 │   └── verification/     # Experimental verification (RESULTS.txt, formal eval)
@@ -192,8 +190,8 @@ run_agent.py, cli.py, environments/
 
 ## AIAgent Class (run_agent.py)
 
-The real `AIAgent.__init__` takes many parameters (credentials, routing, callbacks,
-session context, budget, credential pool, etc.). Read `run_agent.py` for the full list.
+The real `AIAgent.__init__` takes many parameters (endpoint, callbacks, session context,
+budget, etc.). Read `run_agent.py` for the full list.
 
 ```python
 class AIAgent:
@@ -211,8 +209,7 @@ class AIAgent:
         session_id: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
-        # ... plus callbacks, thread/user/chat IDs, budgets, fallback_model,
-        # prefill_messages, etc.
+        # ... plus callbacks, thread/user/chat IDs, budgets, prefill_messages, etc.
     ): ...
 
     def chat(self, message: str) -> str:
@@ -414,7 +411,7 @@ first, the worker continues its own turn. The gateway's exit handling leaves the
 the live taker and reports nothing (`relay_finish_run` → `yielded`); the taker unbinds
 (`relay_pickup` → `took_over`), reloads the transcript and continues the turn with
 `run_conversation(continue_turn=True)` — no user message is appended, nothing is
-injected into the existing one (no plugin/memory/RAG context), so the request replays the
+injected into the existing one (no memory/RAG context), so the request replays the
 stored rows, prompt and tools byte for byte — then runs the leftovers in order. Ctrl+C
 while waiting withdraws the request. Compaction in progress is a step like a tool: it
 finishes, then the yield lands.
@@ -424,7 +421,6 @@ finishes, then the yield lands.
 ## Physics Mode (autophysicist/)
 
 - `autophysicist/llm.py` resolves endpoints in order: `physics.base_url` (config.toml) →
-  provider defaults (openai → `api.openai.com`) →
   `custom_providers.<provider>.base_url` → `http://127.0.0.1:8080/v1`. Retry +
   context-length detection included.
 - Autophysicist is a callable `run_autophysicist(...)`; runs are driven
@@ -471,11 +467,7 @@ a known limitation, not a bug.
 ## Adding New Tools
 
 Before adding any tool, settle the footprint question first (see "The Footprint Ladder"):
-most capabilities should NOT be core tools. For custom or local-only tools, use the plugin
-route: create `~/.son-of-anton/plugins/<name>/plugin.toml` and
-`~/.son-of-anton/plugins/<name>/__init__.py`, then register tools with
-`ctx.register_tool(...)`. Plugin toolsets are discovered automatically and can be enabled
-or disabled without touching `tools/` or `toolsets.py`.
+most capabilities should NOT be core tools; a local-only tool belongs in an MCP server.
 
 Built-in/core tools require changes in **2 files**:
 
@@ -568,46 +560,20 @@ inherit missing values from `default`. Activate with `/skin <name>` or `display.
 config.toml. See the file for the full key list (colors, spinner faces/verbs/wings, tool
 prefix, branding).
 
-## Plugins
+## Model provider
 
-Two plugin surfaces; both live under `plugins/` so repo-shipped plugins are discovered
-alongside user-installed ones in `~/.son-of-anton/plugins/` and pip entry points.
-
-### General plugins (`son_of_anton_cli/plugins.py` + `plugins/<name>/`)
-
-`PluginManager` discovers plugins from `~/.son-of-anton/plugins/`, `./.son-of-anton/plugins/`,
-and pip entry points. Each plugin exposes a `register(ctx)` that can register lifecycle
-hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`,
-`on_session_end`), tools (`ctx.register_tool(...)`), and CLI subcommands
-(`ctx.register_cli_command(...)`).
-
-**Discovery timing pitfall:** `discover_plugins()` only runs as a side effect of importing
-`model_tools.py`. Code paths that read plugin state without importing `model_tools.py`
-first must call `discover_plugins()` explicitly (idempotent).
-
-**Rule:** plugins MUST NOT modify core files (`run_agent.py`, `cli.py`, `gateway/run.py`,
-`son_of_anton_cli/main.py`, etc.). If a plugin needs a capability the framework doesn't
-expose, widen the generic plugin surface (new hook, new ctx method) — never hardcode
-plugin-specific logic into core.
-
-**No new third-party-product plugins in-tree.** Plugins that integrate someone else's
-product (observability backends, vendor SaaS, analytics) ship as standalone plugin repos
-users install into `~/.son-of-anton/plugins/` (or via pip entry points). This is a
-coupling-and-maintenance decision, not a quality bar. (Directories already in the tree are
-existing precedent, not an invitation.)
-
-### Model-provider plugins (`plugins/model-providers/<name>/`)
-
-Inference backend profiles, each calling `providers.register_provider(ProviderProfile(...))`
-at module load. The fork ships **custom**; user plugins of the same name
-override bundled ones (last-writer-wins). Local endpoints (llama-swap, ollama, vllm) are
-configured as `custom_providers` in config.toml — not as registry entries.
+One provider: OpenAI-compatible chat completions configured under
+`custom_providers.<name>` (`base_url`, `key_env`, `discover_models` for the live
+`/v1/models` catalog, per-model `reasoning_effort` / `reasoning_efforts`). The main loop,
+auxiliary tasks (title generation, compaction), delegation, cron and `/model` all resolve
+through `son_of_anton_cli/runtime_provider.py`. There is no provider registry, OAuth,
+credential pool or fallback chain (removed 2026-10-16).
 
 ## Skills
 
 Removed (2026-10-15). There is no skill loader, tool, index, hub, sync, slash command or
 `son-of-anton skills` subcommand, and no `skills` config section. New capability arrives as
-a built-in slash command (see `/plan`), a CLI command, a plugin, or an MCP server. What
+a built-in slash command (see `/plan`), a CLI command, or an MCP server. What
 remains on purpose: `son_of_anton_state_common.describe_skill_invocation` and
 `son-of-anton sessions retitle-skills` read `/skill` turns stored before the removal, and
 cron and the gateway warn about legacy `skills` fields in old job records and config.
@@ -704,9 +670,6 @@ Rules that still hold for home-safe code:
 Use `get_son_of_anton_home()` for code paths, `display_son_of_anton_home()` for
 user-facing output. Hardcoding ignores a configured `SON_OF_ANTON_HOME`.
 
-### DO NOT use `\033[K` (ANSI erase-to-EOL) in spinner/display code
-Leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-padding.
-
 ### `_last_resolved_tool_names` is a process-global in `model_tools.py`
 `_run_single_child()` in `delegate_tool.py` saves and restores it around subagent
 execution. Code reading this global may see stale values during child agent runs.
@@ -743,16 +706,14 @@ slash-command registry invariants, core-tool registration, skin fallback).
 Tests for removed features were pruned with the
 features. Add tests when fixing a bug or adding a feature, not as snapshots of current data.
 
-### Pre-commit hooks
+### Before committing
 
-`.pre-commit-config.toml` wires the local gates (no CI by design — they are fast):
+There is no CI. Run the gates yourself:
 
-```bash
-nix develop -c pre-commit install   # one time
-```
-
-- `ruff check` — the repo's single enabled rule (PLW1514, explicit `encoding=`)
-- `scripts/run_tests.sh` — the full contract suite (runs in seconds)
+- `ruff check .` — the repo's single enabled rule (PLW1514, explicit `encoding=`); also keep
+  `ruff check --select F401,F811,F821,F841 .` clean
+- `scripts/run_tests.sh` — the full contract suite (under two minutes)
+- `nix flake check` — package, modules and the venv import sweep
 
 ### Don't write change-detector tests
 
@@ -768,9 +729,9 @@ behavior. Extract the logic into a small pure/DI-testable function and call it f
 
 ### Don't fake the host OS
 
-Use `@pytest.mark.linux_only` / `macos_only` / `windows_only` markers, never a bare
-`skipif` — the CI classifier greps for the marker *name*. Pure functions that take a
-platform as data can stay unmarked.
+Linux is the only supported host. Mark a test that needs Linux-specific behaviour with
+`@pytest.mark.linux_only`, never a bare `skipif`; pure functions that take a platform as data
+stay unmarked.
 
 ## Operational Notes
 
@@ -782,11 +743,7 @@ platform as data can stay unmarked.
   repos directly.
 - **The agent name:** the GitHub account is `son-of-anton-bot`, and it is the only
   author on a commit — see "Commit convention" above.
-- **Known loose ends** (tracked in `STATUS.md`): the credential-gated deep-Nous tail
-  has been excised — `son_of_anton_cli/auth.py`'s Nous OAuth/portal flow and the
-  `agent/auxiliary_client.py` Nous branch are gone (`nous_account.py`,
-  `agent/portal_tags.py`, root `models.py`, and the proxy's `nous_portal.py` adapter
-  were already gone). Only stale prose remains: the gateway relay's enroll docstring
-  still names `resolve_nous_access_token()` (never called in code), and `openrouter`
-  stays a live provider (used by `tools/openrouter_client.py`). Physics runs are
-  synchronous turns.
+- **Known loose ends** (tracked in `STATUS.md`): with `web.backend = "searxng"`,
+  `web_extract` is offered but always answers that SearXNG cannot extract pages; the relay
+  keeps project work out of a single_user chat only through the relay tool's description;
+  physics runs are synchronous turns.

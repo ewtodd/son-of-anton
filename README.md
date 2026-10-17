@@ -762,8 +762,9 @@ Son of Anton is a hard fork of
 [Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
 v0.20.5 (upstream commit `fcbd1076a9`), stripped to an always-on daemon. The
 agent loop, memory, session search and cron started as upstream's and have been
-reworked since. Upstream's skills system, background review, profiles, Ink
-interface and most of its provider surface are gone.
+reworked since. Upstream's skills system, background review, profiles, plugin
+system and Ink interface are gone, as are every messaging platform but Signal
+and every model provider but an OpenAI-compatible endpoint.
 <!---->
 The Autophysicist mode began as a port of
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern)
