@@ -25,7 +25,6 @@ import re
 import time
 import threading
 import atexit
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -42,153 +41,29 @@ def _redact_terminal_error_text(value: Any) -> str:
     return redact_sensitive_text("" if value is None else str(value), force=True)
 
 
-# ---------------------------------------------------------------------------
-# Global interrupt event: set by the agent when a user interrupt arrives.
-# The terminal tool polls this during command execution so it can kill
-# long-running subprocesses immediately instead of blocking until timeout.
-# ---------------------------------------------------------------------------
-from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
 from tools.registry import tool_error
 from tools.shell_heredoc import strip_inert_heredoc_bodies
-# display_son_of_anton_home imported lazily at call site (stale-module safety during son-of-anton update)
 
 
-# =============================================================================
-# Scratch directory helper (used for orphaned sandbox cleanup)
-# =============================================================================
-
-
-def _get_scratch_dir() -> Path:
-    """Return the host-side directory scanned for orphaned sandbox leftovers.
-
-    Honors an explicit ``TERMINAL_SCRATCH_DIR`` override and otherwise lives
-    under the shared sandbox root (``{SON_OF_ANTON_HOME}/sandboxes/``).
-    """
-    custom_scratch = os.getenv("TERMINAL_SCRATCH_DIR")
-    if custom_scratch:
-        scratch_path = Path(custom_scratch)
-        scratch_path.mkdir(parents=True, exist_ok=True)
-        return scratch_path
-
-    from tools.environments.base import get_sandbox_dir
-
-    sandbox = get_sandbox_dir() / "local"
-    sandbox.mkdir(parents=True, exist_ok=True)
-    return sandbox
-
-
-def _safe_parse_import_env(
-    name: str,
-    default: Any,
-    converter,
-    type_label: str,
-):
-    """Parse module-level numeric env vars without breaking import.
-
-    Terminal tool is imported by CLI, ACP, tests, and tool discovery. A single
-    malformed env var must not make the whole module unloadable at import time.
-    """
-    raw = os.getenv(name)
-    if raw is None or raw == "":
-        return default
-    try:
-        return converter(raw)
-    except (TypeError, ValueError):
-        logger.warning(
-            "Invalid value for %s: %r (expected %s). Falling back to %r.",
-            name,
-            raw,
-            type_label,
-            default,
-        )
-        return default
-
-
-# Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
-FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env(
-    "TERMINAL_MAX_FOREGROUND_TIMEOUT",
-    600,
-    int,
-    "integer",
-)
-
-# Disk usage warning threshold (in GB)
-DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env(
-    "TERMINAL_DISK_WARNING_GB",
-    500.0,
-    float,
-    "number",
-)
-
-
-# Cache for disk usage warning to avoid full rglob scan on every call.
-# The check is advisory-only — staleness for up to 5 minutes is acceptable.
-_disk_usage_cache: dict = {"timestamp": 0.0, "result": False}
-_DISK_USAGE_CACHE_TTL = 300.0  # seconds
-
-
-def _check_disk_usage_warning():
-    """Check if total disk usage exceeds warning threshold.
-
-    Result is cached for :data:`_DISK_USAGE_CACHE_TTL` seconds (default:
-    5 minutes) to avoid an expensive recursive filesystem scan on every
-    terminal command.  The check is advisory-only so a stale result is
-    harmless.
-    """
-    import time as _time_mod
-    now = _time_mod.monotonic()
-    if now - _disk_usage_cache["timestamp"] < _DISK_USAGE_CACHE_TTL:
-        return _disk_usage_cache["result"]
-    try:
-        scratch_dir = _get_scratch_dir()
-
-        # Get total size of son-of-anton directories
-        total_bytes = 0
-        import glob
-        for path in glob.glob(str(scratch_dir / "son-of-anton-*")):
-            for f in Path(path).rglob('*'):
-                if f.is_file():
-                    try:
-                        total_bytes += f.stat().st_size
-                    except OSError as e:
-                        logger.debug("Could not stat file %s: %s", f, e)
-        
-        total_gb = total_bytes / (1024 ** 3)
-        
-        exceeded = total_gb > DISK_USAGE_WARNING_THRESHOLD_GB
-        if exceeded:
-            logger.warning("Disk usage (%.1fGB) exceeds threshold (%.0fGB). Consider running cleanup_all_environments().",
-                           total_gb, DISK_USAGE_WARNING_THRESHOLD_GB)
-        _disk_usage_cache["timestamp"] = _time_mod.monotonic()
-        _disk_usage_cache["result"] = exceeded
-        return exceeded
-    except Exception as e:
-        logger.debug("Disk usage warning check failed: %s", e, exc_info=True)
-        # Don't update cache on error so the next call retries.
-        return False
+# Hard cap on foreground timeout.
+FOREGROUND_MAX_TIMEOUT = 600
 
 
 # Interactive sudo password cache.
 #
 # Scope the cache to the active session when a session key is available, then
-# fall back to callback identity (ACP / CLI interactive callbacks), then the
+# fall back to callback identity (CLI interactive callbacks), then the
 # current thread. This prevents one interactive session from reusing another
 # session's cached sudo password inside the same long-lived process.
 _sudo_password_cache: dict[str, str] = {}
 _sudo_password_cache_lock = threading.Lock()
 
-# Optional UI callbacks for interactive prompts. When set, these are called
-# instead of the default /dev/tty or input() readers. The CLI registers these
-# so prompts route through prompt_toolkit's event loop.
-# Callback slots used by the approval prompt and sudo password prompt
-# routines. Stored in thread-local state so overlapping ACP sessions —
-# each running in its own ThreadPoolExecutor thread — don't stomp on
-# each other's callbacks. See GHSA-qg5c-hvr5-hjgr.
-#
-# CLI mode is single-threaded, so each thread (the only one) holds its
-# own callback exactly like before. Gateway mode resolves approvals via
-# the per-session queue in tools.approval, not through these callbacks,
-# so it's unaffected.
+# Optional UI callbacks for the approval and sudo password prompts. When set,
+# these are called instead of the default /dev/tty reader; the CLI registers
+# them so prompts route through its UI. Stored in thread-local state so
+# concurrent worker threads don't stomp on each other's callbacks. Gateway
+# mode resolves approvals via the per-session queue in tools.approval, not
+# through these callbacks.
 _callback_tls = threading.local()
 
 
@@ -201,21 +76,12 @@ def _get_approval_callback():
 
 
 def set_sudo_password_callback(cb):
-    """Register a callback for sudo password prompts (used by CLI).
-
-    Per-thread scope — ACP sessions that run concurrently in a
-    ThreadPoolExecutor each have their own callback slot.
-    """
+    """Register a callback for sudo password prompts (used by CLI). Per-thread."""
     _callback_tls.sudo_password = cb
 
 
 def set_approval_callback(cb):
-    """Register a callback for dangerous command approval prompts.
-
-    Per-thread scope — ACP sessions that run concurrently in a
-    ThreadPoolExecutor each have their own callback slot. See
-    GHSA-qg5c-hvr5-hjgr.
-    """
+    """Register a callback for dangerous command approval prompts. Per-thread."""
     _callback_tls.approval = cb
 
 
@@ -390,12 +256,12 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     
     Only works in interactive mode (SON_OF_ANTON_INTERACTIVE=1).
     If a _sudo_password_callback is registered (by the CLI), delegates to it
-    so the prompt integrates with prompt_toolkit's UI.  Otherwise reads
-    directly from /dev/tty with echo disabled.
+    so the prompt integrates with the CLI's UI.  Otherwise reads directly
+    from /dev/tty with echo disabled.
     """
     import sys
     
-    # Use the registered callback when available (prompt_toolkit-compatible)
+    # Use the registered callback when available
     _sudo_cb = _get_sudo_password_callback()
     if _sudo_cb is not None:
         try:
@@ -856,8 +722,6 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     """
     Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
 
-    This is a shared helper used by all execution environments to provide
-    consistent sudo handling across local, SSH, and container environments.
 
     Returns:
         (transformed_command, sudo_stdin) where:
@@ -872,13 +736,8 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
           returned unchanged so it fails gracefully with
           "sudo: a password is required".
 
-    Callers that drive a subprocess directly (local, ssh)
-    should prepend sudo_stdin to their stdin_data and pass the merged bytes to
-    Popen's stdin pipe.
-
-    Callers that cannot pipe subprocess stdin must embed the password in the
-    command string themselves; see their execute() methods for how they
-    handle the non-None sudo_stdin case.
+    The caller prepends sudo_stdin to its stdin_data and passes the merged
+    bytes to Popen's stdin pipe.
 
     If SUDO_PASSWORD is not set and an interactive UI is available
     (SON_OF_ANTON_INTERACTIVE=1 or a registered sudo password callback):
@@ -953,30 +812,16 @@ PTY: set pty=true for interactive CLIs (they hang without it). Pipe git output t
 _active_environments: Dict[str, Any] = {}
 _last_activity: Dict[str, float] = {}
 _env_lock = threading.Lock()
-_creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
+_creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for env creation
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
 _cleanup_thread = None
 _cleanup_running = False
 
 
-# Per-task environment overrides. Nothing registers any; kept empty for the
-# execute_code environment lookup that still reads it.
-_task_env_overrides: Dict[str, Dict[str, Any]] = {}
-
-# ── Per-session cwd records (cwd rearchitecture, step 1) ────────────────────
-#
-# The durable source of truth for "which directory is THIS session working
-# in". Keyed by the raw session/task key (NOT the collapsed container id):
-# the terminal env is shared across sessions, so any cwd state stored on the
-# env is a global mutable timeshared between sessions — the root cause of the
-# wrong-worktree bug class (env.cwd_owner stamping, _last_known_cwd, and the
-# ownership ladder in file_tools are all patches over that misplacement).
-#
-# Step 1 (this change): dual-write only. Every site that learns a session's
-# live cwd (post-command tracking, cwd-override registration) also records it
-# here. Readers still use the legacy env.cwd ladder. Later steps flip
-# file_tools and _resolve_command_cwd to read this store, then delete the
-# env-side tracking + ownership guards.
+# Per-session cwd records: the durable source of truth for "which directory
+# is THIS session working in". Keyed by the raw session/task key (NOT the
+# collapsed environment id): the terminal env is shared across sessions, so
+# cwd state stored on the env would be shared mutable state between them.
 _session_cwd: Dict[str, str] = {}
 _session_cwd_lock = threading.Lock()
 
@@ -1017,10 +862,9 @@ def clear_session_cwd(session_key: str) -> None:
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
-    """Map a tool-call ``task_id`` to the sandbox key used by
-    ``_active_environments``: every task (the top-level agent and every
-    ``delegate_task`` child) shares the one ``"default"`` sandbox — one shell,
-    one workspace, one set of installed packages.
+    """Map a tool-call ``task_id`` to the key used by ``_active_environments``:
+    every task (the top-level agent and every ``delegate_task`` child) shares
+    the one ``"default"`` environment.
     """
     return "default"
 
@@ -1057,31 +901,18 @@ def _safe_getcwd() -> str:
         return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
 
 
-# One-shot guard for the config-fallback bridge below.  Purely an
-# optimization: after the first attempt either TERMINAL_ENV is set (bridge
-# succeeded — merged config always carries terminal.backend) or the import
-# failed and retrying every call would be wasted work.
+# One-shot guard for the config-fallback bridge below.
 _terminal_config_bridge_attempted = False
 
 
 def _ensure_terminal_env_bridged() -> None:
     """Backfill TERMINAL_* env vars from config.toml when no launcher did.
 
-    terminal_tool reads ALL terminal settings from os.environ (TERMINAL_*).
-    The CLI (cli.py ``env_mappings``), the gateway (gateway/run.py
-    ``_terminal_env_map``), and TUI/dashboard PTY launches
-    (``apply_terminal_config_to_env``) bridge ``terminal.*`` config into env
-    vars at startup — but processes that skip all of those paths (``son-of-anton
-    serve`` / the Desktop app backend's in-process agents, the desktop cron
-    ticker, ACP) used to silently fall back to the local backend even when
-    config.toml selects ``terminal.backend: ssh``, running commands on the
-    host the user intended to sandbox (#63141, #54449, #61115, #65696).
-
-    Explicit terminal config keys win: when config.toml has a ``terminal``
-    section, each key present there overrides its matching env value (which may
-    be stale from ``son-of-anton setup``). Environment values for omitted terminal
-    keys are preserved. When no terminal section exists, exported/.env values
-    keep working unchanged.
+    terminal_tool reads its settings from os.environ (TERMINAL_*). The CLI
+    and the gateway bridge ``terminal.*`` config into env vars at startup;
+    this covers processes that skip both. Keys present in config.toml's
+    ``terminal`` section override matching env values; env values for
+    omitted keys are preserved.
     """
     global _terminal_config_bridge_attempted
     if _terminal_config_bridge_attempted:
@@ -1124,18 +955,13 @@ def _get_env_config() -> Dict[str, Any]:
     return {
         "env_type": env_type,
         "cwd": cwd,
-        "host_cwd": None,
         "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
         "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
     }
 
 
 def _create_environment(cwd: str, timeout: int, **_ignored):
-    """Create the local execution environment.
-
-    ``env_type``/``image``/``ssh_config``/... keywords from older call sites
-    are accepted and ignored: local is the only backend.
-    """
+    """Create the local execution environment (extra keywords are ignored)."""
     return _LocalEnvironment(cwd=cwd, timeout=timeout)
 
 
@@ -1143,15 +969,12 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     """Clean up environments that have been inactive for longer than lifetime_seconds."""
     current_time = time.time()
 
-    # Check the process registry -- skip cleanup for sandboxes with active
-    # background processes (their _last_activity gets refreshed to keep them alive).
-    try:
-        from tools.process_registry import process_registry
-        for task_id in list(_last_activity.keys()):
-            if process_registry.has_active_processes(task_id):
-                _last_activity[task_id] = current_time  # Keep sandbox alive
-    except ImportError:
-        pass
+    # Skip cleanup for environments with active background processes (their
+    # _last_activity gets refreshed to keep them alive).
+    from tools.process_registry import process_registry
+    for task_id in list(_last_activity.keys()):
+        if process_registry.has_active_processes(task_id):
+            _last_activity[task_id] = current_time
 
     # Phase 1: collect stale entries and remove them from tracking dicts while
     # holding the lock.  Do NOT call env.cleanup() inside the lock -- backend
@@ -1172,33 +995,16 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
             for task_id, _ in envs_to_stop:
                 _creation_locks.pop(task_id, None)
 
-    # Phase 2: stop the actual sandboxes OUTSIDE the lock so other tool calls
-    # are not blocked while sandboxes shut down.
+    # Phase 2: clean up OUTSIDE the lock so other tool calls are not blocked.
+    from tools.file_tools import clear_file_ops_cache
     for task_id, env in envs_to_stop:
-        # Invalidate stale file_ops cache entry (Bug fix: prevents
-        # ShellFileOperations from referencing a dead sandbox)
+        # Invalidate the file_ops cache entry so it can't reference a dead env.
+        clear_file_ops_cache(task_id)
         try:
-            from tools.file_tools import clear_file_ops_cache
-            clear_file_ops_cache(task_id)
-        except ImportError:
-            pass
-
-        try:
-            if hasattr(env, 'cleanup'):
-                env.cleanup()
-            elif hasattr(env, 'stop'):
-                env.stop()
-            elif hasattr(env, 'terminate'):
-                env.terminate()
-
+            env.cleanup()
             logger.info("Cleaned up inactive environment for task: %s", task_id)
-
         except Exception as e:
-            error_str = str(e)
-            if "404" in error_str or "not found" in error_str.lower():
-                logger.info("Environment for task %s already cleaned up", task_id)
-            else:
-                logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+            logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
 
 def _cleanup_thread_worker():
@@ -1239,140 +1045,62 @@ def _stop_cleanup_thread():
 
 
 def get_active_env(task_id: str):
-    """Return the active BaseEnvironment for *task_id*, or None."""
-    lookup = _resolve_container_task_id(task_id)
+    """Return the active environment for *task_id*, or None."""
     with _env_lock:
-        return _active_environments.get(lookup) or _active_environments.get(task_id)
-
-
-def is_persistent_env(task_id: str) -> bool:
-    """Return True if the active environment for task_id is configured for
-    cross-turn persistence.
-
-    Used by the agent loop to skip per-turn teardown for backends whose whole
-    point is to survive between turns.
-    The idle reaper (``_cleanup_inactive_envs``) handles persistent envs once
-    they exceed ``terminal.lifetime_seconds``.
-    """
-    env = get_active_env(task_id)
-    if env is None:
-        return False
-    if getattr(env, "_session_scoped", False):
-        return True
-    return bool(getattr(env, "_persistent", False))
+        return _active_environments.get(_resolve_container_task_id(task_id))
 
 
 def cleanup_all_environments():
     """Clean up ALL active environments. Use with caution."""
     task_ids = list(_active_environments.keys())
     cleaned = 0
-    
+
     for task_id in task_ids:
         try:
             cleanup_vm(task_id)
             cleaned += 1
         except Exception as e:
             logger.error("Error cleaning %s: %s", task_id, e, exc_info=True)
-    
-    # Also clean any orphaned directories
-    scratch_dir = _get_scratch_dir()
-    import glob
-    for path in glob.glob(str(scratch_dir / "son-of-anton-*")):
-        try:
-            shutil.rmtree(path, ignore_errors=True)
-            logger.info("Removed orphaned: %s", path)
-        except OSError as e:
-            logger.debug("Failed to remove orphaned path %s: %s", path, e)
-    
+
     if cleaned > 0:
         logger.info("Cleaned %d environments", cleaned)
     return cleaned
 
 
-def cleanup_vm(task_id: str, *, force_remove: bool = False):
-    """Manually clean up a specific environment by task_id.
+def cleanup_vm(task_id: str):
+    """Clean up a specific environment by task_id.
 
-    *force_remove* (default False) is forwarded to backends that accept it.
-    The default of False matches session-lifecycle semantics: this function
-    is called from ``AIAgent.close()`` (TUI session close, gateway session
-    teardown) and the per-turn cleanup branch for non-persistent envs, both
-    of which should honor the user's persist-mode preference.
-
-    Pass ``force_remove=True`` for actual user-initiated teardown
-    (e.g. ``/reset``-style flows that haven't been wired yet, or future
-    "destroy my sandbox" commands).
-
-    The idle reaper passes the env through ``env.cleanup()`` directly (not
-    via this function), so persist-mode idle envs are similarly no-op'd —
-    only the orphan reaper at next startup reclaims them.
+    Called from ``AIAgent.close()`` (TUI session close, gateway session
+    teardown) and the per-turn cleanup.
     """
-    # Remove from tracking dicts while holding the lock, but defer the
-    # actual (potentially slow) env.cleanup() call to outside the lock
-    # so other tool calls aren't blocked.
-    env = None
+    # Remove from tracking dicts while holding the lock, but defer
+    # env.cleanup() to outside the lock so other tool calls aren't blocked.
     with _env_lock:
         env = _active_environments.pop(task_id, None)
         _last_activity.pop(task_id, None)
 
-    # Clean up per-task creation lock
     with _creation_locks_lock:
         _creation_locks.pop(task_id, None)
 
-    # Invalidate stale file_ops cache entry
-    try:
-        from tools.file_tools import clear_file_ops_cache
-        clear_file_ops_cache(task_id)
-    except ImportError:
-        pass
+    from tools.file_tools import clear_file_ops_cache
+    clear_file_ops_cache(task_id)
 
     if env is None:
         return
 
     try:
-        if hasattr(env, 'cleanup'):
-            # Pass force_remove only if the env's cleanup() accepts it.
-            import inspect
-            sig = inspect.signature(env.cleanup)
-            if "force_remove" in sig.parameters:
-                env.cleanup(force_remove=force_remove)
-            else:
-                env.cleanup()
-        elif hasattr(env, 'stop'):
-            env.stop()
-        elif hasattr(env, 'terminate'):
-            env.terminate()
-
+        env.cleanup()
         logger.info("Manually cleaned up environment for task: %s", task_id)
-
     except Exception as e:
-        error_str = str(e)
-        if "404" in error_str or "not found" in error_str.lower():
-            logger.info("Environment for task %s already cleaned up", task_id)
-        else:
-            logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+        logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
 
 def _atexit_cleanup():
-    """Stop cleanup thread and shut down all remaining sandboxes on exit."""
+    """Stop the cleanup thread and clean up all remaining environments on exit."""
     _stop_cleanup_thread()
     if _active_environments:
-        count = len(_active_environments)
-        logger.info("Shutting down %d remaining sandbox(es)...", count)
-        # Snapshot the env objects BEFORE cleanup_all_environments empties
-        # the dict; we need them to wait on backend cleanup after the
-        # registry has been cleared.
-        envs_to_wait = list(_active_environments.values())
+        logger.info("Shutting down %d remaining environment(s)...", len(_active_environments))
         cleanup_all_environments()
-        # Block briefly so backend teardown actually completes before the
-        # interpreter exits.
-        for env in envs_to_wait:
-            wait_fn = getattr(env, "wait_for_cleanup", None)
-            if wait_fn is None:
-                continue
-            try:
-                wait_fn(timeout=15.0)
-            except Exception as e:  # never block shutdown on a bad backend
-                logger.debug("wait_for_cleanup raised on exit: %s", e)
 
 atexit.register(_atexit_cleanup)
 
@@ -1736,7 +1464,7 @@ def terminal_tool(
         env_type = config["env_type"]
 
         # All task_ids (the top-level agent and every delegate_task child)
-        # share one sandbox.
+        # share one environment.
         effective_task_id = _resolve_container_task_id(task_id)
 
         cwd = get_session_cwd(task_id) or config["cwd"]
@@ -1777,30 +1505,16 @@ def terminal_tool(
         # Start cleanup thread
         _start_cleanup_thread()
 
-        # Get or create environment.
-        # Use a per-task creation lock so concurrent tool calls for the same
-        # task_id wait for the first one to finish creating the sandbox,
-        # instead of each creating their own (wasting resources).
+        # Get or create environment. A per-task creation lock makes concurrent
+        # tool calls wait for the first one to finish creating the environment
+        # instead of each creating their own.
         env: Any = None
         with _env_lock:
-            # Prefer the collapsed container id, but fall back to an env cached
-            # under the raw task_id. Per-session surfaces (ACP/gateway/dashboard)
-            # with a CWD-only override collapse to "default" for container
-            # sharing, yet an env may already be cached under the originating
-            # task_id; honor it instead of spawning a duplicate.
-            _existing_key = (
-                effective_task_id if effective_task_id in _active_environments
-                else (task_id if task_id and task_id in _active_environments else None)
-            )
-            if _existing_key is not None:
-                _last_activity[_existing_key] = time.time()
-                env = _active_environments[_existing_key]
-                needs_creation = False
-            else:
-                needs_creation = True
+            env = _active_environments.get(effective_task_id)
+            if env is not None:
+                _last_activity[effective_task_id] = time.time()
 
-        if needs_creation:
-            # Per-task lock: only one thread creates the sandbox, others wait
+        if env is None:
             with _creation_locks_lock:
                 if effective_task_id not in _creation_locks:
                     _creation_locks[effective_task_id] = threading.Lock()
@@ -1809,29 +1523,13 @@ def terminal_tool(
             with task_lock:
                 # Double-check after acquiring the per-task lock
                 with _env_lock:
-                    _existing_key = (
-                        effective_task_id if effective_task_id in _active_environments
-                        else (task_id if task_id and task_id in _active_environments else None)
-                    )
-                    if _existing_key is not None:
-                        _last_activity[_existing_key] = time.time()
-                        env = _active_environments[_existing_key]
-                        needs_creation = False
+                    env = _active_environments.get(effective_task_id)
+                    if env is not None:
+                        _last_activity[effective_task_id] = time.time()
 
-                if needs_creation:
-                    _check_disk_usage_warning()
+                if env is None:
                     logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
-                    try:
-                        new_env = _create_environment(cwd=cwd, timeout=effective_timeout)
-                    except ImportError as e:
-                        return json.dumps({
-                            "output": "",
-                            "exit_code": -1,
-                            "error": _redact_terminal_error_text(
-                                f"Terminal tool disabled: environment creation failed ({e})"
-                            ),
-                            "status": "disabled"
-                        }, ensure_ascii=False)
+                    new_env = _create_environment(cwd=cwd, timeout=effective_timeout)
 
                     with _env_lock:
                         _active_environments[effective_task_id] = new_env
@@ -1839,7 +1537,6 @@ def terminal_tool(
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
-        assert env is not None  # all creation failure paths return above
 
         # The session key that drives cwd records: get_current_session_key()'s
         # contextvar doesn't cross tool-worker threads, so fall back to the raw
@@ -1849,30 +1546,15 @@ def terminal_tool(
 
         session_key = get_current_session_key(default="") or (task_id or "")
 
-        # Hard-block: gateway lifecycle commands (systemctl/launchctl/son-of-anton
+        # Hard-block: gateway lifecycle commands (systemctl/son-of-anton
         # restart|stop targeting son-of-anton-gateway) must never run inside the
         # gateway process itself. The restart would SIGTERM the gateway, which
         # kills this very subprocess before it can complete — the service may
-        # never restart. This mirrors the `son-of-anton gateway restart` guard in
-        # son_of_anton_cli/gateway.py and the cron-path guard in son_of_anton_cli/cron.py,
-        # but applies unconditionally (force=True cannot help here).
+        # never restart. Applies unconditionally (force=True cannot help here).
         if os.environ.get("_SON_OF_ANTON_GATEWAY") == "1":
             from cron.lifecycle_guard import (
                 contains_gateway_lifecycle_command_or_referenced_script,
-                contains_launchctl_submit_command,
             )
-            if contains_launchctl_submit_command(command):
-                return json.dumps({
-                    "output": "",
-                    "exit_code": 1,
-                    "error": (
-                        "Blocked: launchctl submit/bootstrap registers a persistent "
-                        "KeepAlive job and is unsafe from inside the gateway process. "
-                        "Use Son of Anton cron for one-shot delayed work, or install an "
-                        "explicit LaunchAgent from a separate shell."
-                    ),
-                    "status": "error",
-                }, ensure_ascii=False)
             guard_cwd_base = get_session_cwd(session_key)
             if guard_cwd_base is None:
                 guard_cwd_base = getattr(env, "cwd", None) or cwd
@@ -2009,17 +1691,8 @@ def terminal_tool(
                     result_data["pty_note"] = pty_disabled_reason
 
                 # Nudge: background=True without notify_on_complete=True OR
-                # watch_patterns is a silent process. The agent has NO way to
-                # learn it finished short of calling process(action="poll"/"wait")
-                # explicitly. That's correct only for genuine long-lived
-                # processes that never exit (servers, watchers). For every
-                # bounded task (tests, builds, CI pollers, deploys, batch
-                # jobs) the agent almost certainly wanted notification and
-                # forgot the flag. May 2026 PR #31231 incident: bg CI poller
-                # ran fine, exited green, agent never noticed — user had to
-                # surface the result. Cheap nudge here costs ~one read for
-                # server cases (false positive) and prevents silent
-                # blindness for bounded-task cases (false negative).
+                # watch_patterns is a silent process — correct only for
+                # long-lived processes that never exit (servers, watchers).
                 if background and not notify_on_complete and not watch_patterns:
                     result_data["hint"] = (
                         "background=true without notify_on_complete=true means "
@@ -2034,49 +1707,16 @@ def terminal_tool(
                         "that never exit (servers, watchers, daemons)."
                     )
 
-                # Nudge: homebrewed CI watcher built from `gh pr view`
-                # `--json statusCheckRollup` or `gh pr checks` piped through
-                # `jq` is the #1 cause of silent CI-watcher failures in
-                # son-of-anton dev work. May 2026 PRs that surfaced this
-                # exact failure mode: #31329, #31448, #31695, #31709, #31745,
-                # #32264, #33131. Failure modes seen:
-                #   * `gh pr view --json statusCheckRollup --jq ...` with
-                #     `from_entries` choking on null `conclusion` keys, loop
-                #     silently exits with empty status, never terminates.
-                #   * `for i in $(seq 1 60); do ... 2>&1` block-buffered stdout
-                #     never flushed to background-process capture; SIGTERM
-                #     cuts the buffer before flush; `process(action='log')`
-                #     returns total_lines=0 forever.
-                #   * conclusion vs. status field confusion: filtering for
-                #     `PENDING` in `.conclusion` while in-progress checks have
-                #     empty conclusion → poller declares all-green while 18/23
-                #     checks still IN_PROGRESS.
-                #   * grepping for TTY-only banners ("All checks were
-                #     successful") that never appear when stdout is piped.
-                # The canonical patterns named in the hint below avoid
-                # every one of these — drive the loop off exit codes or on
-                # tab-separated `awk -F"\t" "$2==\"pending\""` (column 2).
-                # The detector here is deliberately narrow: it flags the
-                # statusCheckRollup JSON-API path and the `gh pr checks` +
-                # jq combination, but NOT the canonical column-2 awk
-                # poller (which uses awk on tabs, not as a generic
-                # stdout parser). When we detect the homebrew shape, point
-                # the agent at the canonical snippet rather than letting
-                # it ship another broken poller.
+                # Nudge: a homebrewed CI poller (`gh pr view --json
+                # statusCheckRollup`, `gh pr checks | jq`) is a known-broken
+                # shape; point the agent at the canonical exit-code poller.
                 if background and command:
                     _gh = ("gh pr view" in command or "gh pr checks" in command)
                     _has_jq = (
                         " jq " in command or "| jq" in command or "$(jq" in command
                     )
                     _bad_shape = (
-                        # The JSON-API anti-pattern. Even without jq, going
-                        # through `--json statusCheckRollup` + parsing puts
-                        # you in conclusion-vs-status field hell.
                         "statusCheckRollup" in command
-                        # gh pr checks piped to jq is also wrong — `gh pr
-                        # checks` doesn't emit JSON, so any `| jq` here is
-                        # confused intent. The canonical column-2 poller
-                        # uses awk-on-tabs, not jq.
                         or (_gh and _has_jq)
                     )
                     if _bad_shape:
@@ -2119,8 +1759,7 @@ def terminal_tool(
                         get_session_env as _gse,
                     )
 
-                    # Finite sessions (stateless HTTP requests and one-shot
-                    # Kanban workers) cannot route a completion back to the
+                    # Finite sessions cannot route a completion back to the
                     # agent after the turn/process ends. Refuse the promise:
                     # drop the flags and tell the agent to poll.
                     if not _async_ok():
@@ -2248,7 +1887,7 @@ def terminal_tool(
                         "cwd": command_cwd,
                         # Foreground model-facing output: cap retention while
                         # streaming (head/tail window) so a verbose command
-                        # can't OOM the gateway before truncation (#64435).
+                        # can't OOM the gateway before truncation.
                         # Internal env.execute() consumers (file ops cat
                         # reads, RPC reads) intentionally stay unbounded.
                         "bounded_capture": True,
@@ -2285,12 +1924,10 @@ def terminal_tool(
                 # Got a result
                 break
 
-            # Dual-write (cwd rearch step 1): the env's post-command tracking
-            # (marker parse / local sync) has just updated env.cwd with the
-            # directory this command finished in. That cwd belongs to THIS
-            # session — record it under the session key so the durable record
-            # never depends on the shared env surviving or on who drives the
-            # env next.
+            # The env's post-command tracking (marker parse) has just updated
+            # env.cwd with the directory this command finished in. That cwd
+            # belongs to THIS session — record it under the session key so the
+            # record never depends on the shared env or on who drives it next.
             #
             # BUT: a per-command ``workdir`` override is transient by contract
             # (docstring: "Working directory for this command"). Recording it
@@ -2378,7 +2015,7 @@ def terminal_tool(
             # credential dump, so redact_terminal_output runs the ENV pass
             # (code_file=False) to mask opaque tokens with no vendor prefix.
             # Real prefixes, auth headers, JWTs, private keys are masked in
-            # both modes. See issue #43025.
+            # both modes.
             from agent.redact import redact_terminal_output
             output = redact_terminal_output(output.strip(), command) if output else ""
 
@@ -2419,10 +2056,6 @@ def terminal_tool(
             }
             # cwd echo: when the command changed the session's working
             # directory (cd, pushd, ...), tell the model where it ended up.
-            # Production mining shows 60% of terminal calls carry a
-            # defensive 'cd X && ' prefix because the model can't see cwd
-            # state; echoing it on change removes the guesswork (pattern
-            # borrowed from crush's <cwd> injection).
             #
             # Gated on the same observation flag as the record above: without
             # it, an interrupted command echoes the shared env's leftover cwd
@@ -2434,8 +2067,7 @@ def terminal_tool(
                     result_dict["cwd"] = str(post_cwd)
             except Exception:
                 pass
-            # Truncation metadata (codex/opencode/goose pattern): report the
-            # pre-truncation size and a spill-file handle so the model can
+            # Truncation metadata: report the pre-truncation size and a spill-file handle so the model can
             # retrieve the omitted middle with read_file/search_files instead
             # of re-running the command. The spill was written raw by the
             # collector; redact it here with the same pass as the visible
@@ -2480,7 +2112,7 @@ def terminal_tool(
                     # Approved command was interrupted mid-run by a genuine Stop.
                     # Keep the audit trail but never imply success: the bare
                     # "...approved by the user." note must not co-occur with the
-                    # interrupt exit code (satisfies the 3-part-signature DONE).
+                    # interrupt exit code.
                     result_dict["approval"] = approval_note.rstrip(".") + ", then interrupted."
                 else:
                     result_dict["approval"] = approval_note

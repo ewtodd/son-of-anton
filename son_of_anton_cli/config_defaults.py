@@ -491,12 +491,6 @@ DEFAULT_CONFIG = {
         "backend": "local",
         "cwd": ".",  # Use current directory
         "timeout": 180,
-        # Bounded grace period (seconds) between SIGTERM and an escalated
-        # SIGKILL when terminating a host process tree (browser daemons, etc.).
-        # A daemon that stalls in its SIGTERM handler is force-killed after this
-        # window so it can't leak indefinitely. 0 disables escalation (SIGTERM
-        # only — the historical behavior). Floored internally at 0.
-        "daemon_term_grace_seconds": 2.0,
         # Environment variables to pass through to sandboxed execution
         # (terminal and execute_code).
         "env_passthrough": [],
