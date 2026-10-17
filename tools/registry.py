@@ -15,12 +15,10 @@ Import chain (circular-import safe):
 """
 
 import ast
-import functools
 import importlib
 import hashlib
 import json
 import logging
-import sys
 import threading
 import time
 from pathlib import Path
@@ -239,15 +237,6 @@ class ToolEntry:
         self.dynamic_schema_overrides = dynamic_schema_overrides
 
 
-class _PluginOverridePolicy:
-    """Identity-bearing authorization record for one plugin generation."""
-
-    __slots__ = ("allowed",)
-
-    def __init__(self, allowed: bool) -> None:
-        self.allowed = bool(allowed)
-
-
 # ---------------------------------------------------------------------------
 # check_fn TTL cache
 #
@@ -396,18 +385,6 @@ class ToolRegistry:
     def __init__(self):
         # Built-in and other process-global registrations.
         self._tools: Dict[str, ToolEntry] = {}
-        # Plugin registrations are overlays keyed by resolved SON_OF_ANTON_HOME. A
-        # profile sees its own overlay first and then the global built-ins.
-        self._scoped_tools: Dict[str, Dict[str, ToolEntry]] = {}
-        # Plugin module namespace -> operator opt-in for built-in override.
-        # Authorization records are lifecycle-managed; the separate scope map
-        # remains durable so delayed callbacks stay profile-confined.
-        self._plugin_override_policy: Dict[
-            tuple[Optional[str], str], _PluginOverridePolicy
-        ] = {}
-        # Scope attribution stays durable after policy removal so delayed code
-        # remains confined to the profile where its module was loaded.
-        self._plugin_module_scopes: Dict[str, Set[Optional[str]]] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
         # MCP dynamic refresh can mutate the registry while other threads are
@@ -426,20 +403,10 @@ class ToolRegistry:
         """Return the active profile's canonical registry scope."""
         return son_of_anton_home_key()
 
-    def _merged_tools(self, scope: Optional[str] = None) -> Dict[str, ToolEntry]:
-        """Return global tools overlaid with one profile's plugin tools."""
-        active_scope = scope or self.current_scope_key()
-        merged = dict(self._tools)
-        merged.update(self._scoped_tools.get(active_scope, {}))
-        return merged
-
-    def _snapshot_state(
-        self,
-        scope: Optional[str] = None,
-    ) -> tuple[List[ToolEntry], Dict[str, Callable]]:
+    def _snapshot_state(self) -> tuple[List[ToolEntry], Dict[str, Callable]]:
         """Return a coherent snapshot of registry entries and toolset checks."""
         with self._lock:
-            entries = list(self._merged_tools(scope).values())
+            entries = list(self._tools.values())
             checks = dict(self._toolset_checks)
             for entry in entries:
                 if entry.check_fn is not None:
@@ -474,30 +441,12 @@ class ToolRegistry:
                 return True
         return False
 
-    def get_entry(
-        self,
-        name: str,
-        *,
-        scope: Optional[str] = None,
-    ) -> Optional[ToolEntry]:
-        """Return the active profile's entry by name, falling back to global."""
+    def get_entry(self, name: str) -> Optional[ToolEntry]:
+        """Return the registered entry for *name*, if any."""
         with self._lock:
-            return self._merged_tools(scope).get(name)
+            return self._tools.get(name)
 
-    def snapshot_registration(
-        self,
-        name: str,
-        *,
-        scope: Optional[str] = None,
-    ) -> Optional[ToolEntry]:
-        """Return the local slot state without following global fallback."""
-        with self._lock:
-            target = self._tools if scope is None else self._scoped_tools.get(scope, {})
-            return target.get(name)
-
-    def schema_fingerprint(
-        self, scope: Optional[str] = None, *, exclude_mcp: bool = False
-    ) -> str:
+    def schema_fingerprint(self, *, exclude_mcp: bool = False) -> str:
         """Return a content hash of the tool surface an agent would freeze.
 
         Covers every merged entry's (name, toolset, schema) plus the toolset
@@ -506,7 +455,7 @@ class ToolRegistry:
         re-registration of an identical entry, e.g. an MCP refresh answering
         a no-op ``tools/list_changed``), the fingerprint changes only when
         the effective schema set does, so it is the right key for "must a
-        cached agent be rebuilt?". Memoized per (scope, generation, flag).
+        cached agent be rebuilt?". Memoized per (generation, flag).
 
         ``exclude_mcp`` leaves out MCP-provided tools (``mcp-*`` toolsets)
         and aliases that resolve to them. MCP tools come and go as servers
@@ -514,15 +463,14 @@ class ToolRegistry:
         freeze (``agent.turn_context.run_between_turns_mcp_refresh``) and an
         explicit ``/reload-mcp`` — not by rebuilding the agent.
         """
-        active_scope = scope or self.current_scope_key()
-        memo_key = (active_scope, exclude_mcp)
+        memo_key = exclude_mcp
         with self._lock:
             generation = self._generation
             memo = getattr(self, "_fingerprint_memo", None) or {}
             hit = memo.get(memo_key)
             if hit is not None and hit[0] == generation:
                 return hit[1]
-            entries = list(self._merged_tools(active_scope).values())
+            entries = list(self._tools.values())
             aliases = dict(self._toolset_aliases)
         if exclude_mcp:
             entries = [e for e in entries if not is_mcp_toolset(e.toolset)]
@@ -594,171 +542,6 @@ class ToolRegistry:
     # Registration
     # ------------------------------------------------------------------
 
-    def register_plugin_override_policy(
-        self,
-        module_namespace: str,
-        allowed: bool,
-        *,
-        scope: Optional[str] = None,
-    ) -> _PluginOverridePolicy:
-        """Bind a plugin module namespace to its current operator opt-in.
-
-        The identity-bearing result lets plugin unload/reload revoke a stale
-        authorization without losing durable module-to-profile attribution.
-        """
-        with self._lock:
-            policy = _PluginOverridePolicy(allowed)
-            self._plugin_override_policy[(scope, module_namespace)] = policy
-            self._plugin_module_scopes.setdefault(module_namespace, set()).add(scope)
-            return policy
-
-    def snapshot_plugin_override_policy(
-        self,
-        module_namespace: str,
-        *,
-        scope: Optional[str] = None,
-    ) -> Optional[_PluginOverridePolicy]:
-        """Return one local authorization generation without fallback."""
-        with self._lock:
-            return self._plugin_override_policy.get((scope, module_namespace))
-
-    def restore_plugin_override_policy(
-        self,
-        module_namespace: str,
-        current: _PluginOverridePolicy,
-        previous: Optional[_PluginOverridePolicy],
-        *,
-        scope: Optional[str] = None,
-    ) -> bool:
-        """CAS-restore policy state while retaining durable scope attribution."""
-        with self._lock:
-            key = (scope, module_namespace)
-            if self._plugin_override_policy.get(key) is not current:
-                return False
-            if previous is None:
-                self._plugin_override_policy.pop(key, None)
-            else:
-                self._plugin_override_policy[key] = previous
-            return True
-
-    def _plugin_override_allowed(
-        self,
-        scope: Optional[str],
-        module_namespace: str,
-    ) -> bool:
-        policy = self._plugin_override_policy.get((scope, module_namespace))
-        if policy is None and scope is not None:
-            policy = self._plugin_override_policy.get((None, module_namespace))
-        return bool(policy and policy.allowed)
-
-    def _plugin_owner_of(self, handler: Callable) -> Optional[str]:
-        """Return the plugin module namespace that defined *handler*, or None
-        if it was not defined in a loaded plugin module.
-
-        Authorization is bound to where the handler was DEFINED
-        (``handler.__globals__["__name__"]``), which is fixed at definition
-        time and cannot drift with the call site, thread, or timing. Lambdas
-        and nested functions inherit the defining module's globals, so a
-        plugin cannot launder an override through a callback. Built-in/MCP
-        handlers live outside the plugin namespace and return None (unchanged
-        behavior).
-        """
-        mod = self._callable_module(handler)
-        if not mod:
-            return None
-        return self._plugin_namespace_of_module(mod)
-
-    @staticmethod
-    def _callable_module(handler: Callable) -> str:
-        """Resolve defining module through wrappers, partials, and objects."""
-        current = handler
-        seen: Set[int] = set()
-        while id(current) not in seen:
-            seen.add(id(current))
-            if isinstance(current, functools.partial):
-                current = current.func
-                continue
-            func = getattr(current, "__func__", None)
-            if func is not None:
-                current = func
-                continue
-            globals_dict = getattr(current, "__globals__", None)
-            if isinstance(globals_dict, dict):
-                module_name = globals_dict.get("__name__", "")
-                if module_name:
-                    return str(module_name)
-            wrapped = getattr(current, "__wrapped__", None)
-            if wrapped is not None:
-                current = wrapped
-                continue
-            break
-        module_name = getattr(current, "__module__", "")
-        if module_name:
-            return str(module_name)
-        return str(getattr(type(current), "__module__", "") or "")
-
-    def _plugin_namespace_of_module(
-        self,
-        module_namespace: str,
-    ) -> Optional[str]:
-        """Resolve a module/submodule to its durable plugin namespace."""
-        with self._lock:
-            matches = [
-                namespace
-                for namespace in self._plugin_module_scopes
-                if module_namespace == namespace
-                or module_namespace.startswith(f"{namespace}.")
-            ]
-            if matches:
-                return max(matches, key=len)
-        # Also gate plugin modules currently loading but not yet policy-recorded
-        # (defensive: a handler defined in the plugin namespace is plugin code).
-        if module_namespace.startswith("son_of_anton_plugins."):
-            return ".".join(module_namespace.split(".")[:2])
-        return None
-
-    def _plugin_scope_of(self, module_namespace: str) -> Optional[str]:
-        """Return the profile scope bound to a loaded plugin module."""
-        with self._lock:
-            scopes = self._plugin_module_scopes.get(module_namespace)
-            if not scopes:
-                return None
-            active_scope = self.current_scope_key()
-            if active_scope in scopes:
-                return active_scope
-            if len(scopes) == 1:
-                return next(iter(scopes))
-            raise PermissionError(
-                f"Plugin module {module_namespace!r} is active in multiple "
-                "profiles and cannot register outside one of those scopes."
-            )
-
-    def plugin_scope_for_module(self, module_namespace: str) -> Optional[str]:
-        """Public host lookup for a loaded plugin module's immutable scope."""
-        owner = self._plugin_namespace_of_module(module_namespace)
-        return self._plugin_scope_of(owner or module_namespace)
-
-    def plugin_scope_for_callable(self, callback: Callable) -> Optional[str]:
-        """Return the durable plugin scope for any supported callable shape."""
-        module_name = self._callable_module(callback)
-        return self.plugin_scope_for_module(module_name) if module_name else None
-
-    @staticmethod
-    def _caller_module() -> str:
-        """Best-effort module name of whoever called the registry method that
-        invoked this helper (two frames up: this helper, then the registry
-        method itself, then the actual caller).
-
-        ``deregister()`` takes only a tool name — unlike ``register()`` it has
-        no handler argument to bind authorization to via ``_plugin_owner_of``.
-        Frame inspection is the only way to know who is asking.
-        """
-        try:
-            frame = sys._getframe(2)
-            return frame.f_globals.get("__name__", "") or ""
-        except Exception:
-            return ""
-
     def register(
         self,
         name: str,
@@ -772,92 +555,27 @@ class ToolRegistry:
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
-        override: bool = False,
-        scope: Optional[str] = None,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
-        ``override=True`` is an explicit opt-in for plugins that intend to
-        replace an existing built-in tool implementation (e.g. swap the
-        default browser tool for a headed-Chrome CDP backend). Without it,
-        registrations that would shadow an existing tool from a different
-        toolset are rejected to prevent accidental overwrites.
+        A registration that would shadow an existing tool from a different
+        toolset is rejected; re-registering within the same toolset (an MCP
+        refresh) replaces the entry.
         """
-        handler_owner = self._plugin_owner_of(handler)
-        caller_owner = self._plugin_namespace_of_module(self._caller_module())
-        owner = caller_owner or handler_owner
-        if scope is None and owner is not None:
-            scope = self._plugin_scope_of(owner)
         with self._lock:
-            target = (
-                self._tools
-                if scope is None
-                else self._scoped_tools.setdefault(scope, {})
-            )
-            existing = (
-                self._tools.get(name)
-                if scope is None
-                else self._merged_tools(scope).get(name)
-            )
-            shadows_global = (
-                owner is not None
-                and scope is not None
-                and name not in target
-                and name in self._tools
-            )
-            if shadows_global:
-                if not override:
-                    logger.error(
-                        "Tool registration REJECTED: plugin %r attempted to "
-                        "shadow global tool %r without override=True",
-                        owner,
-                        name,
-                    )
-                    return
-                if not self._plugin_override_allowed(scope, owner):
-                    raise PermissionError(
-                        f"Plugin module {owner!r} cannot override built-in "
-                        f"tool {name!r} without operator opt-in "
-                        f"(allow_tool_override)."
-                    )
+            existing = self._tools.get(name)
             if existing and existing.toolset != toolset:
-                if override:
-                    if owner is not None and not self._plugin_override_allowed(
-                        scope, owner
-                    ):
-                        logger.error(
-                            "Tool registration REJECTED: plugin %r attempted to "
-                            "override built-in tool %r (existing toolset %r) without "
-                            "operator opt-in. Set "
-                            "plugins.entries.<plugin_id>.allow_tool_override: true "
-                            "in config.toml to allow it.",
-                            owner, name, existing.toolset,
-                        )
-                        raise PermissionError(
-                            f"Plugin module {owner!r} cannot override built-in "
-                            f"tool {name!r} without operator opt-in "
-                            f"(allow_tool_override)."
-                        )
-                    # Explicit opt-in (or non-plugin caller): replace the tool.
-                    # Logged at INFO so the override is auditable in agent.log.
-                    logger.info(
-                        "Tool '%s': toolset '%s' overriding existing toolset '%s' "
-                        "(override=True opt-in)",
-                        name, toolset, existing.toolset,
-                    )
-                else:
-                    # Reject every cross-toolset shadow, including MCP-to-MCP
-                    # collisions. Legitimate MCP reconnect/refresh re-registers
-                    # within the same canonical toolset and remains allowed.
-                    logger.error(
-                        "Tool registration REJECTED: '%s' (toolset '%s') would "
-                        "shadow existing tool from toolset '%s'. Pass "
-                        "override=True to register() if the replacement is "
-                        "intentional, or deregister the existing tool first.",
-                        name, toolset, existing.toolset,
-                    )
-                    return
-            target[name] = ToolEntry(
+                # Reject every cross-toolset shadow, including MCP-to-MCP
+                # collisions. Legitimate MCP reconnect/refresh re-registers
+                # within the same canonical toolset and remains allowed.
+                logger.error(
+                    "Tool registration REJECTED: '%s' (toolset '%s') would "
+                    "shadow existing tool from toolset '%s'. Deregister the "
+                    "existing tool first.",
+                    name, toolset, existing.toolset,
+                )
+                return
+            self._tools[name] = ToolEntry(
                 name=name,
                 toolset=toolset,
                 schema=schema,
@@ -876,90 +594,22 @@ class ToolRegistry:
             # banner.py reads (presence only, never called) to classify an
             # already-unavailable toolset as lazy-init vs disabled. Keep the
             # write path for that classification.
-            if scope is None and check_fn and toolset not in self._toolset_checks:
+            if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
             self._generation += 1
 
     def deregister(self, name: str) -> None:
         """Remove a tool from the registry.
 
-        Also cleans up the toolset check if no other tools remain in the
-        same toolset.  Used by MCP dynamic tool discovery to nuke-and-repave
-        when a server sends ``notifications/tools/list_changed``.
-
-        Gated by the same operator opt-in policy ``register(override=True)``
-        enforces. Without this, a plugin could bypass that gate entirely by
-        deregistering a tool it doesn't own and then calling plain
-        ``register()`` over the now-empty slot — ``register()`` only runs its
-        override check when an ``existing`` entry is present, so removing it
-        first skips the check altogether. MCP toolsets (``mcp-*``) are exempt:
-        dynamic tool discovery legitimately nukes-and-repaves its own tools on
-        every refresh and has no plugin-override concept.
+        Also cleans up the toolset check and aliases if no other tools remain
+        in the same toolset.  Used by MCP dynamic tool discovery to
+        nuke-and-repave when a server sends ``notifications/tools/list_changed``.
         """
         with self._lock:
-            caller_mod = self._caller_module()
-            caller_owner = self._plugin_namespace_of_module(caller_mod)
-            caller_scope = (
-                self._plugin_scope_of(caller_owner)
-                if caller_owner is not None
-                else None
-            )
-            target = (
-                self._scoped_tools.get(caller_scope, {})
-                if caller_scope is not None
-                else self._tools
-            )
-            entry = target.get(name)
-            if entry is None and caller_scope is not None:
-                if name in self._tools:
-                    raise PermissionError(
-                        f"Scoped plugin module {caller_mod!r} cannot deregister "
-                        f"process-global tool {name!r}; register a scoped "
-                        "override instead."
-                    )
-                return
+            entry = self._tools.pop(name, None)
             if entry is None:
                 return
-            if not is_mcp_toolset(entry.toolset):
-                owner = self._plugin_owner_of(entry.handler)
-                # Ownership check: bind to the plugin package root
-                # (``son_of_anton_plugins.{name}``), not the exact module string.
-                # A handler defined in ``son_of_anton_plugins.pkg.handlers`` is
-                # still owned by the ``son_of_anton_plugins.pkg`` package — exact
-                # string equality would wrongly block root-module cleanup code
-                # from removing tools registered by a submodule of the same
-                # plugin (egilewski review on #55840).
-                same_plugin = bool(owner and caller_owner == owner)
-                if (
-                    caller_owner is not None
-                    and not same_plugin
-                    and not self._plugin_override_allowed(
-                        caller_scope, caller_owner
-                    )
-                ):
-                    logger.error(
-                        "Tool deregistration REJECTED: plugin %r attempted to "
-                        "remove tool %r (toolset %r) it does not own, without "
-                        "operator opt-in. Set "
-                        "plugins.entries.%s.allow_tool_override: true in "
-                        "config.toml to allow it.",
-                        caller_mod, name, entry.toolset, caller_mod,
-                    )
-                    raise PermissionError(
-                        f"Plugin module {caller_mod!r} cannot deregister tool "
-                        f"{name!r} (toolset {entry.toolset!r}) without operator "
-                        f"opt-in (allow_tool_override)."
-                    )
-            del target[name]
-            if caller_scope is not None and not target:
-                self._scoped_tools.pop(caller_scope, None)
-            # Drop the toolset check and aliases if this was the last tool in
-            # that toolset.
-            toolset_still_exists = any(
-                e.toolset == entry.toolset
-                for e in self._merged_tools(caller_scope).values()
-            )
-            if not toolset_still_exists:
+            if not any(e.toolset == entry.toolset for e in self._tools.values()):
                 self._toolset_checks.pop(entry.toolset, None)
                 self._toolset_aliases = {
                     alias: target
@@ -968,73 +618,6 @@ class ToolRegistry:
                 }
             self._generation += 1
         logger.debug("Deregistered tool: %s", name)
-
-    def restore_registration(
-        self,
-        name: str,
-        current: ToolEntry,
-        previous: Optional[ToolEntry],
-        *,
-        scope: Optional[str] = None,
-    ) -> bool:
-        """Restore a host-owned registration if it is still current.
-
-        This is the narrow inverse used by the plugin ownership ledger.  The
-        identity check is deliberate: another plugin (or another
-        ``PluginManager`` in a multi-profile process) may have registered a
-        newer entry under the same name, in which case unloading this entry
-        must leave the newer entry untouched.
-        """
-        with self._lock:
-            target = (
-                self._tools
-                if scope is None
-                else self._scoped_tools.setdefault(scope, {})
-            )
-            if target.get(name) is not current:
-                return False
-
-            if previous is None:
-                target.pop(name, None)
-            else:
-                target[name] = previous
-            if scope is not None and not target:
-                self._scoped_tools.pop(scope, None)
-
-            # Rebuild the affected toolset checks from the surviving entries.
-            # A plugin may have replaced an entry in the same toolset, so
-            # simply leaving the current check_fn behind would retain stale
-            # plugin state after restoration.
-            affected_toolsets = {current.toolset}
-            if previous is not None:
-                affected_toolsets.add(previous.toolset)
-            for toolset in affected_toolsets:
-                surviving = [
-                    entry for entry in self._merged_tools(scope).values()
-                    if entry.toolset == toolset
-                ]
-                check_fn = next(
-                    (entry.check_fn for entry in surviving if entry.check_fn),
-                    None,
-                )
-                if scope is None:
-                    if check_fn is None:
-                        self._toolset_checks.pop(toolset, None)
-                    else:
-                        self._toolset_checks[toolset] = check_fn
-                if not surviving and not any(
-                    entry.toolset == toolset
-                    for entries in self._scoped_tools.values()
-                    for entry in entries.values()
-                ):
-                    self._toolset_aliases = {
-                        alias: target
-                        for alias, target in self._toolset_aliases.items()
-                        if target != toolset
-                    }
-            self._generation += 1
-        logger.debug("Restored tool registration: %s", name)
-        return True
 
     # ------------------------------------------------------------------
     # Schema retrieval
@@ -1128,8 +711,6 @@ class ToolRegistry:
         self,
         name: str,
         args: dict,
-        *,
-        scope: Optional[str] = None,
         **kwargs,
     ) -> str | dict:
         """Execute a tool handler by name.
@@ -1140,7 +721,7 @@ class ToolRegistry:
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
         """
-        entry = self.get_entry(name, scope=scope)
+        entry = self.get_entry(name)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:

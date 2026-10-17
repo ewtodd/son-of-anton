@@ -203,14 +203,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         _has_native_mcp = bool((_load_cfg() or {}).get("mcp_servers"))
     except Exception:
         _has_native_mcp = True  # can't tell — take the full path
-    _has_portable_mcp = False
-    if not _has_native_mcp:
-        try:
-            from son_of_anton_cli.plugins import get_portable_mcp_server_names_nowait
-            _has_portable_mcp = bool(get_portable_mcp_server_names_nowait())
-        except Exception:
-            _has_portable_mcp = True
-    if _has_native_mcp or _has_portable_mcp:
+    if _has_native_mcp:
         try:
             from tools.mcp_tool import get_mcp_status
             mcp_status = get_mcp_status()

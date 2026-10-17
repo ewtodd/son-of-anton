@@ -62,19 +62,6 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     built_in = [name for name in normalized if validate_toolset(name)]
     unresolved = [name for name in normalized if name not in built_in]
 
-    if unresolved:
-        try:
-            from son_of_anton_cli.plugins import discover_plugins
-
-            discover_plugins()
-            plugin_valid = [name for name in unresolved if validate_toolset(name)]
-        except Exception:
-            plugin_valid = []
-
-        if plugin_valid:
-            built_in.extend(plugin_valid)
-            unresolved = [name for name in unresolved if name not in plugin_valid]
-
     if any(name in {"all", "*"} for name in built_in):
         ignored = [name for name in normalized if name not in {"all", "*"}]
         if ignored:

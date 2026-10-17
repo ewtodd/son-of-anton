@@ -1371,10 +1371,8 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "mcp_servers",       # MCP server definitions written by setup/tools flows
     # Roots read from the raw user TOML (or written by our own flows) that are
     # intentionally absent from DEFAULT_CONFIG:
-    "plugins",           # plugin enable/disable lists (son_of_anton_cli/plugins_cmd.py)
     "smart_model_routing",   # written by the setup wizard (son_of_anton_cli/setup.py)
     "platform_toolsets",     # written by the setup wizard (son_of_anton_cli/setup.py)
-    "known_plugin_toolsets", # written/read by son_of_anton_cli/tools_config.py toolset-save flow
     "known_builtin_toolsets",  # ditto — which builtin toolsets a platform's checklist has offered
     "session_reset",         # top-level form read by gateway/config.py + setup
     "group_sessions_per_user",   # top-level form bridged by gateway/config.py

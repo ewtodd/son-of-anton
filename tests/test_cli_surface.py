@@ -98,12 +98,30 @@ def _epilogue_commands() -> set[str]:
     return found
 
 
-def test_every_command_in_the_help_text_exists(parser) -> None:
-    from son_of_anton_cli.main import _BUILTIN_SUBCOMMANDS
+@pytest.fixture(scope="module")
+def main_commands() -> set:
+    """Every subcommand the real ``main()`` registers, read from its --help."""
+    import contextlib
+    import io
+    import sys
 
-    # The fixture attaches a subset; check against everything main() registers.
-    known = _registered_commands(parser) | set(_BUILTIN_SUBCOMMANDS)
-    missing = sorted(_epilogue_commands() - known)
+    from son_of_anton_cli import main as cli_main
+
+    out = io.StringIO()
+    argv = sys.argv
+    sys.argv = ["son-of-anton", "--help"]
+    try:
+        with contextlib.redirect_stdout(out), pytest.raises(SystemExit):
+            cli_main.main()
+    finally:
+        sys.argv = argv
+    choices = re.search(r"\{([a-z,-]+)\}", out.getvalue())
+    assert choices, "--help printed no subcommand list"
+    return set(choices.group(1).split(","))
+
+
+def test_every_command_in_the_help_text_exists(main_commands) -> None:
+    missing = sorted(_epilogue_commands() - main_commands)
     assert not missing, (
         f"--help advertises commands that do not exist: {missing}. Every one "
         "answers 'invalid choice' when a user tries it."
@@ -142,17 +160,16 @@ def test_the_gateway_has_no_service_lifecycle_verbs() -> None:
     )
 
 
-def test_the_session_name_splitter_lists_only_real_commands(parser) -> None:
+def test_the_session_name_splitter_lists_only_real_commands(main_commands) -> None:
     """A phantom name here truncates a session name at that word."""
     import inspect
 
-    from son_of_anton_cli.main import _BUILTIN_SUBCOMMANDS, _coalesce_session_name_args
+    from son_of_anton_cli.main import _coalesce_session_name_args
 
     source = inspect.getsource(_coalesce_session_name_args)
     listed = set(re.findall(r'^\s+"([a-z-]+)",\s*$', source, re.MULTILINE))
-    known = _registered_commands(parser) | set(_BUILTIN_SUBCOMMANDS)
-    assert listed <= known, (
-        f"_SUBCOMMANDS names commands that do not exist: {sorted(listed - known)}"
+    assert listed <= main_commands, (
+        f"_SUBCOMMANDS names commands that do not exist: {sorted(listed - main_commands)}"
     )
 
 

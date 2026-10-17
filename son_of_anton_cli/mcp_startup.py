@@ -17,11 +17,7 @@ def _has_configured_mcp_servers() -> bool:
 
         raw_config = read_raw_config() or {}
         mcp_servers = raw_config.get("mcp_servers")
-        if isinstance(mcp_servers, dict) and len(mcp_servers) > 0:
-            return True
-        from son_of_anton_cli.agent_plugins import has_enabled_agent_plugin_mcp
-
-        return has_enabled_agent_plugin_mcp(raw_config)
+        return isinstance(mcp_servers, dict) and len(mcp_servers) > 0
     except Exception:
         # Be conservative: if config probing fails, try discovery in the
         # background so startup still can't block.

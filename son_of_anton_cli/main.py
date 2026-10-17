@@ -1284,35 +1284,14 @@ def cmd_problem(args, parser=None):
     return 2
 
 
-# Top-level subcommands that argparse knows about WITHOUT running plugin
-# discovery.  Used to short-circuit eager plugin imports (which can take
-# 500ms+ pulling in google.cloud.pubsub_v1, aiohttp, grpc, etc.) when the
-# user's invocation clearly doesn't need any plugin-registered subcommand.
-#
-# Keep this in sync with the ``subparsers.add_parser("NAME", ...)`` calls
-# below in ``main()``. Missing an entry here only costs a one-time
-# discovery; extra entries here would let a plugin command silently fail
-# to parse.
-_BUILTIN_SUBCOMMANDS = frozenset(
-    {
-        "chat", "config", "cron", "gateway", "mcp",
-        "nuke", "pause", "problem", "resume", "sessions", "status",
-        # Help-ish invocations — plugin commands not being listed in
-        # top-level --help is an acceptable trade-off for skipping an
-        # expensive eager import of every bundled plugin module.
-        "help",
-    }
-)
-
-
 # Top-level flags that take a value. Needed by ``_first_positional_argv``
 # so that in ``son-of-anton -m gpt5 chat``, ``gpt5`` is correctly skipped as a
 # flag value rather than misclassified as a subcommand. Kept in sync with
 # the top-level flags declared in ``son_of_anton_cli/_parser.py``.
 #
 # Correctness-safe either way: missing an entry here only makes the
-# fast-path bail out too eagerly (we run plugin discovery when we didn't
-# need to); extra entries would make us skip a real positional.
+# fast chat launch bail out to the full parser; extra entries would make us
+# skip a real positional.
 _TOP_LEVEL_VALUE_FLAGS = frozenset(
     {
         "-z", "--oneshot",
@@ -1359,14 +1338,14 @@ def _first_positional_index(argv: list) -> int | None:
 def _first_positional_argv() -> str | None:
     """Return the first non-flag, non-flag-value token in ``sys.argv[1:]``.
 
-    Used by ``main()`` to decide whether plugin discovery has to run at
-    argparse-setup time. Handles common invocations like
+    Used by the fast chat launch to tell a chat invocation from a
+    subcommand. Handles common invocations like
     ``son-of-anton -m gpt5 --provider openai chat "msg"`` by skipping the
     values attached to known top-level flags.
 
     Does NOT fully simulate argparse — unknown ``--foo=bar`` / ``--foo
     bar`` flags degrade gracefully (``bar`` may be wrongly classified as
-    a positional, which at worst forces a one-time plugin discovery).
+    a positional, which at worst sends the launch through the full parser).
     """
     argv = sys.argv[1:]
     idx = _first_positional_index(argv)
@@ -1379,7 +1358,7 @@ def _rewrite_bare_prompt(argv: list, known_commands) -> list:
     ``son-of-anton "hello"`` and ``son-of-anton chat -q hello`` are the same
     single-query mode, but the parser only declares the latter: subparsers
     make the first positional a required command choice. A first positional
-    that is not a registered subcommand (built-in or plugin) is treated as
+    that is not a registered subcommand is treated as
     the prompt, together with any immediately following non-flag tokens, so
     unquoted multi-word prompts work too. Flags before it stay before the
     injected ``chat``; flags after it belong to the chat subparser.
@@ -1392,27 +1371,6 @@ def _rewrite_bare_prompt(argv: list, known_commands) -> list:
         end += 1
     prompt = " ".join(argv[idx:end + 1])
     return argv[:idx] + ["chat", "-q", prompt] + argv[end + 1:]
-
-
-def _plugin_cli_discovery_needed() -> bool:
-    """True when the CLI might be invoking a plugin-registered subcommand.
-
-    Returning False lets ``main()`` skip plugin discovery entirely during
-    argparse setup, saving ~500-650ms per invocation for users whose
-    enabled plugins don't contribute any CLI command.
-    """
-    first = _first_positional_argv()
-    if first is None:
-        # Bare ``son-of-anton`` or only flags → defaults to ``chat``.
-        return False
-    if first in _BUILTIN_SUBCOMMANDS:
-        return False
-    # Unknown token — could be a plugin subcommand, OR a chat prompt
-    # starting with a non-flag word. Either way we need discovery: if it
-    # IS a plugin command, argparse needs the subparser; if it's a chat
-    # prompt, argparse will route it via positional handling and the
-    # extra discovery cost is amortized over a full agent run anyway.
-    return True
 
 
 _AGENT_COMMANDS = {None, "chat"}
@@ -1436,9 +1394,9 @@ def _should_background_mcp_startup(args) -> bool:
 
 
 def _prepare_agent_startup(args) -> None:
-    """Discover plugins/MCP/hooks for commands that can run an agent turn."""
+    """Start MCP discovery for commands that can run an agent turn."""
     # --yolo: chokepoint guarantee that SON_OF_ANTON_YOLO_MODE is set before ANY
-    # plugin/tool discovery below imports tools.approval, which freezes
+    # tool discovery below imports tools.approval, which freezes
     # _YOLO_MODE_FROZEN at import time (PR #7994 security design).  main()'s
     # dispatch path also sets this earlier, but _prepare_agent_startup() is
     # reachable from other launchers too, so the guarantee lives here where
@@ -1454,22 +1412,6 @@ def _prepare_agent_startup(args) -> None:
     ):
         return
 
-    try:
-        from son_of_anton_cli.plugins import start_background_plugin_discovery
-
-        # Discovery runs in a daemon thread so its ~150ms of manifest
-        # scanning + plugin imports overlaps the rest of startup (cli /
-        # prompt_toolkit imports, worktree git calls). Correctness is
-        # unchanged: every synchronous reader goes through
-        # discover_plugins(), which joins this thread first — including
-        # the discover_plugins() call model_tools makes at import time,
-        # which happens before any tool list is built.
-        start_background_plugin_discovery()
-    except Exception:
-        logger.warning(
-            "plugin discovery failed at CLI startup",
-            exc_info=True,
-        )
     _run_inline_mcp_discovery = True
     if _command_has_dedicated_mcp_startup(args):
         # These entrypoints already do their own MCP startup later on the real
@@ -1556,8 +1498,7 @@ def _try_fast_chat_launch() -> bool:
     except SystemExit:
         return False
     if unknown:
-        # Flags the light parser doesn't know — could belong to a plugin
-        # subcommand or a newer full-parser flag. Fall back to full dispatch.
+        # Flags the light parser doesn't know belong to the full parser.
         return False
     if getattr(args, "version", False):
         return False
@@ -1728,35 +1669,6 @@ def main():
     # rag command  (retrieval index management)
     # =========================================================================
     build_rag_parser(subparsers, cmd_rag=cmd_rag)
-
-    # =========================================================================
-    # Plugin CLI commands — dynamically registered by general plugins.
-    # Plugins provide a register_cli(subparser) function that builds their
-    # own argparse tree.  No hardcoded plugin commands in main.py.
-    #
-    # Skipped when the invocation is already targeting a known built-in
-    # subcommand — ``son-of-anton --help``, ``son-of-anton logs``,
-    # etc.  This avoids eagerly importing every bundled plugin module
-    # (google.cloud.pubsub_v1, aiohttp, grpc, PIL …) which costs
-    # 500-650ms on typical installs.
-    # =========================================================================
-    if _plugin_cli_discovery_needed():
-        try:
-            from son_of_anton_cli.plugins import discover_plugins, get_plugin_manager
-
-            discover_plugins()
-            for cmd_info in get_plugin_manager()._cli_commands.values():
-                plugin_parser = subparsers.add_parser(
-                    cmd_info["name"],
-                    help=cmd_info["help"],
-                    description=cmd_info.get("description", ""),
-                    formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
-                )
-                cmd_info["setup_fn"](plugin_parser)
-                if cmd_info.get("handler_fn") is not None:
-                    plugin_parser.set_defaults(func=cmd_info["handler_fn"])
-        except Exception as _exc:
-            logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
 
     # =========================================================================
     # mcp command  (parser built in son_of_anton_cli/subcommands/mcp.py)
@@ -2356,9 +2268,7 @@ def main():
         set(subparsers.choices.keys()) if hasattr(subparsers, "choices") else set()
     )
     # ``son-of-anton "prompt"`` → ``chat -q "prompt"``. Runs after the session
-    # name coalescing so ``-c auth notes`` is not mistaken for a prompt, and
-    # after the plugin subparsers are registered so a plugin command name is
-    # never swallowed as prompt text.
+    # name coalescing so ``-c auth notes`` is not mistaken for a prompt.
     _processed_argv = _rewrite_bare_prompt(_processed_argv, _known_cmds)
 
     # ── Defensive subparser routing (bpo-9338 workaround) ───────────
@@ -2404,20 +2314,18 @@ def main():
         _startup_fast.print_fast_version_info()
         return
 
-    # --yolo: set SON_OF_ANTON_YOLO_MODE *before* plugin discovery.  The call to
-    # _prepare_agent_startup() below triggers discover_plugins() → tool
-    # imports, and tools.approval freezes _YOLO_MODE_FROZEN at module
+    # --yolo: set SON_OF_ANTON_YOLO_MODE *before* tool discovery.  The call to
+    # _prepare_agent_startup() below triggers tool imports, and
+    # tools.approval freezes _YOLO_MODE_FROZEN at module
     # import time (PR #7994, security hardening against prompt-injection).
     # If the env var is set only later (e.g. inside cmd_chat), the frozen
     # value is already False and --yolo silently does nothing.
     if getattr(args, "yolo", False):
         os.environ["SON_OF_ANTON_YOLO_MODE"] = "1"
 
-    # Discover Python plugins and register shell hooks once, before any
-    # command that can fire lifecycle hooks.  Both are idempotent; gated
-    # so introspection/management commands (son-of-anton hooks list, cron
-    # list, gateway status, mcp list, ...) don't pay discovery cost or
-    # trigger consent prompts for hooks the user is still inspecting.
+    # Start MCP discovery for commands that can run an agent turn; gated so
+    # introspection commands (cron list, gateway status, mcp list, ...) don't
+    # pay for it.
     _prepare_agent_startup(args)
 
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final

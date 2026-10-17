@@ -67,45 +67,6 @@ _DEFAULT_OFF_TOOLSETS: set = set()
 
 
 
-def _get_effective_configurable_toolsets():
-    """Return CONFIGURABLE_TOOLSETS + any plugin-provided toolsets.
-
-    Plugin toolsets are appended at the end so they appear after the
-    built-in toolsets in the TUI checklist. A plugin whose toolset key
-    already appears in ``CONFIGURABLE_TOOLSETS`` is skipped — bundled
-    plugins share their toolset key with the built-in entry, and we want
-    the built-in label/description to win.
-    Without the dedupe, ``son-of-anton tools`` → "reconfigure existing" would
-    list the same toolset twice.
-    """
-    result = list(CONFIGURABLE_TOOLSETS)
-    seen = {ts_key for ts_key, _, _ in result}
-    try:
-        from son_of_anton_cli.plugins import discover_plugins, get_plugin_toolsets
-        discover_plugins()  # idempotent — ensures plugins are loaded
-        for entry in get_plugin_toolsets():
-            if entry[0] in seen:
-                continue
-            seen.add(entry[0])
-            result.append(entry)
-    except Exception:
-        pass
-    return result
-
-
-def _get_plugin_toolset_keys() -> set:
-    """Return the set of toolset keys provided by plugins."""
-    try:
-        from son_of_anton_cli.plugins import get_plugin_toolset_keys_nowait
-        # Non-blocking on the CLI startup path: while background plugin
-        # discovery is still importing modules, this serves last launch's
-        # persisted key set (used only to exclude plugin toolsets from
-        # composite expansion) instead of joining the discovery thread.
-        return get_plugin_toolset_keys_nowait()
-    except Exception:
-        return set()
-
-
 # Platform display config — derived from the canonical registry so every
 # module shares the same data.  Kept as dict-of-dicts for backward
 # compatibility with existing ``PLATFORMS[key]["label"]`` access patterns.
@@ -142,20 +103,13 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
 
 
 def enabled_mcp_server_names(config: dict) -> Set[str]:
-    """Names of MCP servers globally enabled in config.toml or by a plugin.
+    """Names of MCP servers globally enabled in config.toml.
 
     Shared by the gateway/CLI platform resolver (``_get_platform_tools``) and
     the cron per-job toolset resolver (``cron.scheduler``) so every path agrees
     on MCP membership. A server is enabled unless its config sets an explicitly
     falsey ``enabled`` (per ``_parse_enabled_flag``: false/0/no/off) — a missing
     flag or an unrecognized value is treated as enabled.
-
-    Portable Agent Plugins contribute MCP servers in-memory rather than via
-    ``config.toml`` (see ``PluginManager.get_portable_mcp_servers``). Those are
-    included here so their tools fold into platform toolsets like native
-    servers do — the user's opt-in is enabling the plugin itself. Without this,
-    a portable server registers with the MCP runtime but its tools never reach
-    the model's schema.
     """
     mcp_servers = (config or {}).get("mcp_servers") or {}
     names = {
@@ -164,16 +118,6 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
         if isinstance(server_cfg, dict)
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
-    try:
-        from son_of_anton_cli.plugins import (
-            get_portable_mcp_server_names_nowait,
-        )
-
-        portable = get_portable_mcp_server_names_nowait()
-        # Native config wins on a name collision (mirrors _load_mcp_config).
-        names |= portable - set(mcp_servers)
-    except Exception:
-        logger.debug("Failed to include portable MCP servers", exc_info=True)
     return names
 
 
@@ -203,12 +147,8 @@ def _get_platform_tools(
     toolset_names = [str(ts) for ts in toolset_names]
 
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
-    plugin_ts_keys = _get_plugin_toolset_keys()
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
-    # Plugin-provided toolsets are first-class on a platform-toolsets list —
-    # explicit config like ``[son-of-anton-cli, video]`` must survive filtering just
-    # like a built-in configurable toolset would. See issue #81163.
-    explicit_known_keys = configurable_keys | plugin_ts_keys
+    explicit_known_keys = configurable_keys
 
     # If the saved list contains any configurable keys directly, the user
     # has explicitly configured this platform — use direct membership.
@@ -230,7 +170,7 @@ def _get_platform_tools(
         # survive.
         composite_tools = set()
         for ts_name in toolset_names:
-            if ts_name in configurable_keys or ts_name in plugin_ts_keys:
+            if ts_name in configurable_keys:
                 continue
             if ts_name not in TOOLSETS:
                 continue
@@ -294,7 +234,7 @@ def _get_platform_tools(
     claimed = set()
     for ts_key in enabled_toolsets:
         claimed.update(resolve_toolset(ts_key))
-    skip = configurable_keys | plugin_ts_keys | platform_default_keys
+    skip = configurable_keys | platform_default_keys
     skip |= {k for k in TOOLSETS if k.startswith("son-of-anton-")}
     skip |= set(_DEFAULT_OFF_TOOLSETS) - {platform}
     for ts_key, ts_def in TOOLSETS.items():
@@ -314,34 +254,12 @@ def _get_platform_tools(
             enabled_toolsets.add(ts_key)
             claimed.update(ts_tools)
 
-    # Plugin toolsets: enabled by default unless explicitly disabled, or
-    # unless the toolset is in _DEFAULT_OFF_TOOLSETS (shipped as a bundled
-    # plugin but the user must opt in via `son-of-anton tools`).
-    # A plugin toolset is "known" for a platform once `son-of-anton tools`
-    # has been saved for that platform (tracked via known_plugin_toolsets).
-    # Unknown plugins default to enabled; known-but-absent = disabled.
-    if plugin_ts_keys:
-        known_map = config.get("known_plugin_toolsets", {}) or {}
-        known_for_platform = set(known_map.get(platform, []) or [])
-        for pts in plugin_ts_keys:
-            if pts in toolset_names:
-                # Explicitly listed in config — enabled
-                enabled_toolsets.add(pts)
-            elif pts in _DEFAULT_OFF_TOOLSETS:
-                # Opt-in plugin toolset — stay off until user picks it
-                continue
-            elif pts not in known_for_platform:
-                # New plugin not yet seen by son-of-anton tools — default enabled
-                enabled_toolsets.add(pts)
-            # else: known but not in config = user disabled it
-
     # Preserve any explicit non-configurable toolset entries (for example,
     # custom toolsets or MCP server names saved in platform_toolsets).
     explicit_passthrough = {
         ts
         for ts in toolset_names
         if ts not in configurable_keys
-        and ts not in plugin_ts_keys
         and ts not in platform_default_keys
     }
 
@@ -417,10 +335,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     """
     config.setdefault("platform_toolsets", {})
 
-    # Get the set of all configurable toolset keys (built-in + plugin)
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
-    plugin_keys = _get_plugin_toolset_keys()
-    configurable_keys |= plugin_keys
 
     # Also exclude platform default toolsets (son-of-anton-cli, etc.)
     # These are "super" toolsets that resolve to ALL tools, so preserving them
@@ -447,15 +362,6 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
 
     # Merge preserved entries with new enabled toolsets
     config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
-
-    # Track which plugin toolsets are "known" for this platform so we can
-    # distinguish "new plugin, default enabled" from "user disabled it".
-    if plugin_keys:
-        # setdefault does NOT replace a present-but-null key ("known_plugin_toolsets:"
-        # in config.toml parses to None) — normalize before indexing into it.
-        if not isinstance(config.get("known_plugin_toolsets"), dict):
-            config["known_plugin_toolsets"] = {}
-        config["known_plugin_toolsets"][platform] = sorted(plugin_keys)
 
     # Same record for builtin toolsets: which ones this platform's checklist
     # has actually put in front of the user. Without it, a toolset the user
@@ -564,26 +470,11 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
 
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
-    effective = _get_effective_configurable_toolsets()
-    builtin_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
-
     print(f"Built-in toolsets ({platform}):")
-    for ts_key, label, _ in effective:
-        if ts_key not in builtin_keys:
-            continue
+    for ts_key, label, _ in CONFIGURABLE_TOOLSETS:
         status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
                   else color("✗ disabled", Colors.RED))
         print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
-
-    # Plugin toolsets
-    plugin_entries = [(k, l) for k, l, _ in effective if k not in builtin_keys]
-    if plugin_entries:
-        print()
-        print(f"Plugin toolsets ({platform}):")
-        for ts_key, label in plugin_entries:
-            status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
-                      else color("✗ disabled", Colors.RED))
-            print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
 
     if mcp_servers:
         print()
@@ -624,7 +515,7 @@ def tools_disable_enable_command(args):
     toolset_targets = [t for t in targets if ":" not in t]
     mcp_targets = [t for t in targets if ":" in t]
 
-    valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS} | _get_plugin_toolset_keys()
+    valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     unknown_toolsets = [t for t in toolset_targets if t not in valid_toolsets]
     if unknown_toolsets:
         for name in unknown_toolsets:

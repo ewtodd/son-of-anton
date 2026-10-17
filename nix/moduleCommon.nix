@@ -335,7 +335,6 @@ let
     "sessions"
     "logs"
     "memories"
-    "plugins"
   ];
 in
 {

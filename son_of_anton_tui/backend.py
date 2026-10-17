@@ -259,13 +259,6 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
         self._should_exit = False
 
         try:
-            from son_of_anton_cli.plugins import get_plugin_manager
-
-            get_plugin_manager()._cli_ref = self
-        except Exception:
-            pass
-
-        try:
             from son_of_anton_cli.config import get_config_path as _get_config_path
 
             _cfg_path = _get_config_path()
@@ -408,24 +401,6 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
                     self._discard_session_if_empty(agent.session_id)
                 except (Exception, KeyboardInterrupt):
                     pass
-
-        # on_session_end already fired per-turn on normal completion, so this is
-        # only the safety net for quitting mid-turn.
-        if was_running:
-            try:
-                from son_of_anton_cli.lifecycle import invoke_hook
-
-                invoke_hook(
-                    "on_session_end",
-                    session_id=agent.session_id,
-                    completed=False,
-                    interrupted=True,
-                    model=getattr(agent, "model", None),
-                    platform=getattr(agent, "platform", None) or "cli",
-                    reason="shutdown",
-                )
-            except Exception:
-                pass
 
         try:
             _cli._run_cleanup()

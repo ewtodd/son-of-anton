@@ -546,17 +546,6 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
     if not isinstance(task_config, dict):
         task_config = {}
-    try:
-        from son_of_anton_cli.plugins import get_plugin_auxiliary_tasks
-
-        for entry in get_plugin_auxiliary_tasks():
-            if entry.get("key") == task:
-                defaults = entry.get("defaults") or {}
-                if isinstance(defaults, dict):
-                    return {**defaults, **task_config}
-                break
-    except Exception:
-        pass
     return task_config
 
 

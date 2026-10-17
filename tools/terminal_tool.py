@@ -1967,28 +1967,6 @@ def terminal_tool(
                         "command."
                     )
 
-            # Foreground terminal output canonicalization seam: process capture
-            # is already bounded by BaseEnvironment before sudo checks and hooks
-            # run. Plugins may replace that bounded string; replacements are
-            # still subject to the final output limit below.
-            # The hook is fail-open, and the first valid string return wins.
-            try:
-                from son_of_anton_cli.lifecycle import invoke_hook
-                hook_results = invoke_hook(
-                    "transform_terminal_output",
-                    command=command,
-                    output=output,
-                    returncode=returncode,
-                    task_id=effective_task_id or "",
-                    env_type=env_type,
-                )
-                for hook_result in hook_results:
-                    if isinstance(hook_result, str):
-                        output = hook_result
-                        break
-            except Exception:
-                pass
-            
             # Truncate output if too long, keeping both head and tail
             from tools.tool_output_limits import get_max_bytes
             MAX_OUTPUT_CHARS = get_max_bytes()

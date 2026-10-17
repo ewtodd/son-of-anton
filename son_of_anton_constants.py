@@ -982,8 +982,6 @@ FIRST_PARTY_MODULE_ROOTS: frozenset = frozenset({
     "cron",
     "gateway",
     "autophysicist",
-    "plugins",
-    "providers",
     "tools",
     "cli",
     "model_tools",

@@ -7,7 +7,7 @@
   pyproject-nix,
   pyproject-build-systems,
   # Filtered Python source (see son-of-anton.nix pythonSrc) — keeps
-  # plugins/nix/JS edits from invalidating the venv derivation.
+  # nix/ edits from invalidating the venv derivation.
   pythonSrc,
   dependency-groups ? [ "all" ],
 }:

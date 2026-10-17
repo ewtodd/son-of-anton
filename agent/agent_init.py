@@ -669,21 +669,6 @@ def init_agent(
     except Exception as e:
         raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
 
-    # Keep a stable identity for the pool entry that supplied this runtime.
-    # OAuth refreshes can replace the runtime token before a failed request is
-    # recovered, so the mutable API-key value alone cannot reliably attribute
-    # the failure to its source entry.
-    
-    # A multiplexed gateway may enter a different SON_OF_ANTON_HOME after
-    # ``model_tools`` was first imported. Ensure that profile's keyed plugin
-    # manager has discovered its registrations before taking the tool snapshot.
-    try:
-        from son_of_anton_cli.plugins import discover_plugins
-
-        discover_plugins()
-    except Exception:
-        logger.warning("Plugin discovery failed during agent setup", exc_info=True)
-
     # Get available tools with filtering. Capture the registry generation this
     # snapshot is derived from FIRST, so a later concurrent refresh can tell
     # whether it holds a newer or staler view (see refresh_agent_mcp_tools).

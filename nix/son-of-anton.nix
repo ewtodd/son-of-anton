@@ -1,7 +1,7 @@
 # nix/son-of-anton.nix — Son of Anton Agent package (Python only)
 #
 # The fork ships no JS surfaces, so this is a single sealed uv2nix venv plus
-# a wrapper that exposes the bundled plugins and locales.
+# a wrapper that exposes the bundled locales.
 #
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
 # Override the tools on the wrapper's PATH with
@@ -31,7 +31,7 @@
   extraPackages ? [ ],
 }:
 let
-  # Filtered Python source — keeps plugins/nix/JS edits from
+  # Filtered Python source — keeps nix/ edits from
   # invalidating the venv derivation. README.md and LICENSE must stay:
   # pyproject.toml references them (readme / license-files).
   pythonSrc = lib.cleanSourceWith {
@@ -49,7 +49,6 @@ let
           "tests"
           "tests-js"
           "nix"
-          "plugins"
           ".github"
         ];
         excludedFiles = [
@@ -73,14 +72,6 @@ let
     };
 
   sonOfAntonVenv = (mkSonOfAntonVenv [ "all" ]).venv;
-
-  # Import bundled plugins. Keeping them out of the Python site-packages
-  # keeps import semantics identical to a dev checkout — the loader reads
-  # them from SON_OF_ANTON_BUNDLED_PLUGINS.
-  bundledPlugins = lib.cleanSourceWith {
-    src = ../plugins;
-    filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
-  };
 
   bundledLocales = lib.cleanSourceWith {
     src = ../locales;
@@ -121,13 +112,10 @@ stdenv.mkDerivation (finalAttrs: {
     # Symlinks, not copies: these are all store paths already, and the
     # wrapper env vars just hold paths.
     mkdir -p $out/share/son-of-anton $out/bin
-    ln -s ${bundledPlugins} $out/share/son-of-anton/plugins
     ln -s ${bundledLocales} $out/share/son-of-anton/locales
 
     makeWrapper ${sonOfAntonVenv}/bin/son-of-anton $out/bin/son-of-anton \
       --suffix PATH : "${runtimePath}" \
-      --prefix PYTHONPATH : "$out/share/son-of-anton" \
-      --set SON_OF_ANTON_BUNDLED_PLUGINS $out/share/son-of-anton/plugins \
       --set SON_OF_ANTON_BUNDLED_LOCALES $out/share/son-of-anton/locales \
       --set-default SON_OF_ANTON_BIN $out/bin/son-of-anton \
       --set SON_OF_ANTON_PYTHON ${sonOfAntonVenv}/bin/python3

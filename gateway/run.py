@@ -9937,24 +9937,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if self._draining:
             return f"Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
-        # Plugin-registered slash commands
-        if command:
-            try:
-                from son_of_anton_cli.plugins import get_plugin_command_handler
-                # Normalize underscores to hyphens so underscored
-                # autocomplete form matches plugin commands registered with
-                # hyphens.
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
-                    if asyncio.iscoroutine(result):
-                        result = await result
-                    return str(result) if result else None
-            except Exception as e:
-                logger.warning("Plugin command dispatch failed: %s", e)
-
-        # Genuinely unrecognized /command: not a built-in, not a plugin's.
+        # Genuinely unrecognized /command: not a built-in.
         # Warn the user instead of silently forwarding it to the LLM as free
         # text (which leads to silent-failure behavior like the model
         # inventing a delegate_task call). Normalize to hyphenated form
