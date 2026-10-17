@@ -184,7 +184,6 @@ _ensure_project_root_on_path_fast()
 if _try_ultrafast_version():
     raise SystemExit(0)
 
-import subprocess
 from pathlib import Path
 from typing import Optional
 
