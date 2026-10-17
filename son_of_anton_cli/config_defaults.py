@@ -873,25 +873,6 @@ DEFAULT_CONFIG = {
     # Each aux task is independent — main-agent provider routing does NOT
     # propagate to aux calls by design.
     "auxiliary": {
-        # Same-provider retries for a transient transport blip (connection
-        # reset / timeout / 5xx / 408) on ANY auxiliary call before falling
-        # back. Default 2 (→ 3 total attempts), clamped [0,6]. Matters most for
-        # pinned calls, where provider fallback is not a meaningful recovery,
-        # so an unretried blip silently loses the call.
-        "transient_retries": 2,
-        # Restrict the auxiliary auto-chain's aggregator fallback to free
-        # (:free) SKUs. When true, the aggregator step is skipped entirely
-        # unless the resolved fallback model ends in ":free" — a PAID lane
-        # is never engaged for background auxiliary traffic (compaction,
-        # title generation, session search, vision, web extract).
-        "free_only": False,
-        # Endpoints that reject NON-streaming chat requests outright (e.g.
-        # Tencent Copilot returns HTTP 400 "Non-stream chat request is
-        # currently not supported"). Auxiliary calls to a matching endpoint
-        # are sent with stream=True and aggregated client-side. Entries are
-        # case-insensitive substrings matched against the endpoint URL;
-        # copilot.tencent.com is always treated as stream-only.
-        "stream_only_base_urls": [],
         "vision": {
             "provider": "auto",    # auto | deepseek | openai-api | custom
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
@@ -934,48 +915,11 @@ DEFAULT_CONFIG = {
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
         "title_generation": {
-            "enabled": True,
             "provider": "auto",
             "model": "",
-            "prefer_fast_model": False,  # opt in to provider fast tier; auto otherwise uses the main model
             "base_url": "",
             "api_key": "",
             "timeout": 30,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-            "language": "",
-            # How the title model is prompted.
-            #   "chat"       — instruction system prompt + JSON-schema response.
-            #                  Correct for general instruct models.
-            #   "completion" — raw /v1/completions continuation of
-            #                  "User: <message>\nTitle: ", plain-text output,
-            #                  no system prompt. Required by small purpose-built
-            #                  title models (e.g. SupraLabs/supra-title-50M),
-            #                  which copy the few-shot examples out of the chat
-            #                  prompt instead of reading the user's message.
-            #                  Needs an explicit base_url.
-            "prompt_style": "chat",
-            # Sampling for prompt_style="completion" only. Defaults follow the
-            # supra-title model card; a 50M model loops without a repetition
-            # penalty, and greedy decoding (temperature 0) is its worst case.
-            # top_k/repeat_penalty are llama.cpp knobs sent via extra_body.
-            "completion_sampling": {
-                "temperature": 0.4,
-                "top_k": 40,
-                "top_p": 0.85,
-                "repeat_penalty": 1.2,
-                "max_tokens": 24,
-            },
-        },
-        # Profile describer — auto-generates a 1-2 sentence description
-        # of what a profile is good at. Invoked by
-        # ``son-of-anton profile describe <name> --auto``. Short, cheap call.
-        "profile_describer": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 60,
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },

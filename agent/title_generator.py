@@ -13,8 +13,7 @@ Two stages, both off the critical path:
 
 Provenance (``derived`` < ``llm`` < ``user``) is enforced by the storage layer,
 so stage 2 can only ever replace stage 1, and neither can replace a name the
-user typed. That ordering is the industry-standard one — Codex CLI encodes the
-same ``custom > ai > fallback`` precedence in its session importer.
+user typed.
 """
 
 import json
@@ -31,44 +30,33 @@ logger = logging.getLogger(__name__)
 
 # Callback signature: (task_name, exception) -> None. Used to surface
 # auxiliary failures to the user through AIAgent._emit_auxiliary_failure
-# so silent-drops (e.g. OpenRouter 402 exhausting the fallback chain)
-# become visible instead of piling up as NULL session titles.
+# instead of piling up as NULL session titles.
 FailureCallback = Callable[[str, BaseException], None]
 
 # Callback signature: (title, source) -> None, where source is the provenance
 # the title was persisted under (``derived`` for the instant slice of the user's
 # own words, ``llm`` for the model's upgrade of it).
-#
-# Titling is two-stage, and the stage matters to the consumer. A local surface
-# wants both, so the sidebar renames instantly and sharpens a second later. A
-# consumer that spends a rate-limited remote call per title — renaming a Discord
-# thread, a Telegram topic — wants ``llm`` only: acting on both burns two calls
-# to end up at the same name, and on Discord (2 renames per 10 minutes per
-# channel) the throwaway one can be what survives.
 TitleCallback = Callable[[str, str], None]
 
 # Validation callback: () -> bool. Called right before the LLM request in
 # generate_title(). Return False to skip — e.g. the user switched models
 # after this background thread captured its runtime snapshot, and sending
-# the request would reload a model the runtime already evicted (#19027).
+# the request would reload a model the runtime already evicted.
 RuntimeValidator = Callable[[], bool]
 
-# Cap on the text handed to the model. Claude Code and OpenClaw independently
-# converged on the same 1000-char budget; a title needs the opening intent, not
+# Cap on the text handed to the model: a title needs the opening intent, not
 # a pasted stack trace.
 MAX_TITLE_INPUT_CHARS = 1000
 
 # Cap on the instant derived title. Deliberately shorter than the model's
-# budget: a raw sentence fragment reads worse the longer it runs. Cline and
-# Codex CLI independently landed on the same ~50-char slice.
+# budget: a raw sentence fragment reads worse the longer it runs.
 MAX_DERIVED_TITLE_CHARS = 48
 
 # Upper bound on accepted title word count. Titling is a 3-7 word task; a
-# small tiny-model sometimes ignores the task and answers the user's message
+# small model sometimes ignores the task and answers the user's message
 # instead — that answer must never become the session title (see the
-# answer-shaped output guard in generate_title; port of
-# can1357/oh-my-pi#7306). 12 leaves headroom for legitimate wordy titles
-# while excluding full-sentence answers.
+# answer-shaped output guard in generate_title). 12 leaves headroom for
+# legitimate wordy titles while excluding full-sentence answers.
 _MAX_TITLE_WORDS = 12
 
 _TITLE_PROMPT_TEMPLATE = (
@@ -82,7 +70,7 @@ _TITLE_PROMPT_TEMPLATE = (
     "- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n"
     "- Never answer the message. Name it.\n"
     "- Always produce something, even for a bare greeting.\n"
-    "__LANGUAGE_RULE__\n"
+    "- Write the title in the same language as the user's message.\n"
     'Good: {"title": "Fix login button on mobile"}\n'
     'Good: {"title": "Postgres connection pool exhaustion"}\n'
     'Good: {"title": "Friendly greeting"}\n'
@@ -91,9 +79,6 @@ _TITLE_PROMPT_TEMPLATE = (
     'does not respond on mobile devices"}\n\n'
     'Reply with JSON only: {"title": "..."}'
 )
-
-_LANGUAGE_RULE_MATCH_USER = "- Write the title in the same language as the user's message."
-_LANGUAGE_RULE_PINNED = "- Write the title in {language}."
 
 # JSON schema constraining the response to a single title field. Removes the
 # whole class of "model answered the prompt instead of titling it" failures
@@ -116,8 +101,8 @@ _TITLE_RESPONSE_FORMAT = {
 # Control-tag wrappers that surround machine-authored content inside what is
 # nominally a "user" message. Titling from these is what produces a session
 # named after a slash command or an injected reminder rather than the user's
-# actual request. Ported from Codex CLI's RECOGNIZED_CONTROL_WRAPPERS, which
-# strips them (and keeps titling) rather than refusing outright.
+# actual request; they are stripped (and titling continues) rather than
+# refused outright.
 _CONTROL_WRAPPERS = (
     ("<command-message>", "</command-message>"),
     ("<command-name>", "</command-name>"),
@@ -141,47 +126,7 @@ _MACHINE_PREFIXES = (
     "[Runtime note:",
     "[System note:",
     "[SYSTEM]",
-    # Model-switch marker from tui_gateway.server._append_model_switch_marker.
-    # It is persisted with role="user" (strict OpenAI-compatible providers
-    # reject a system message that is not first — #48338), so without this
-    # entry it looks like a real opening turn: switching models before the
-    # first real message titled the session
-    # "[System: The active model for this chat has…" instead of the user's
-    # actual question. Keep in sync with
-    # tui_gateway.server._MODEL_SWITCH_MARKER_PREFIX.
-    "[System: The active model for this chat has changed to ",
 )
-
-
-def _title_language() -> str:
-    """Return configured title language, or empty string to match the user."""
-    try:
-        from son_of_anton_cli.config import load_config_readonly
-
-        return str(
-            ((load_config_readonly() or {}).get("auxiliary") or {})
-            .get("title_generation", {})
-            .get("language", "")
-        ).strip()
-    except Exception:
-        return ""
-
-
-def _auto_title_enabled() -> bool:
-    """Return whether automatic session title generation is enabled."""
-    try:
-        # Lazy imports, matching _title_language(): title_generator is imported
-        # from agent code paths where a module-level son_of_anton_cli import risks
-        # circularity, and the read-only loader avoids config-migration writes.
-        from son_of_anton_cli.config import load_config_readonly
-        from utils import is_truthy_value
-
-        config = load_config_readonly()
-        title_config = (config.get("auxiliary") or {}).get("title_generation") or {}
-        return is_truthy_value(title_config.get("enabled"), default=True)
-    except Exception:
-        logger.debug("Failed to read title_generation.enabled", exc_info=True)
-        return True
 
 
 def strip_control_wrappers(text: str) -> str:
@@ -382,14 +327,12 @@ def generate_title(
 ) -> Optional[str]:
     """Generate a session title from the user's opening message.
 
-    Runs on the ``title_generation`` auxiliary task, which resolves to a
-    small/fast model tier. Thinking is disabled and the response is constrained
-    to ``{"title": "..."}`` so there is no preamble or reasoning to strip.
+    Runs on the ``title_generation`` auxiliary task, with the response
+    constrained to ``{"title": "..."}`` so there is no preamble to strip.
 
-    Titles come from the user's message alone — every surveyed implementation
-    that titles well (Claude Code, OpenCode, Cursor, OpenClaw) does the same.
-    Waiting for the assistant is what made this slow, and it bought nothing:
-    the user's opening message already states the intent worth naming.
+    Titles come from the user's message alone: waiting for the assistant is
+    what made this slow, and the opening message already states the intent
+    worth naming.
 
     ``failure_callback`` is invoked with ``(task, exception)`` when the
     auxiliary call raises — the caller typically wires this to
@@ -400,12 +343,8 @@ def generate_title(
     returns False (e.g. the user's model was switched since the background
     thread captured its runtime snapshot), the call is skipped silently —
     no request is sent, so a stale title request can't reload a model the
-    runtime already unloaded (#19027).
+    runtime already unloaded.
     """
-    if not _auto_title_enabled():
-        logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
-        return None
-
     if runtime_validator is not None:
         try:
             if not runtime_validator():
@@ -419,18 +358,8 @@ def generate_title(
     if not user_snippet.strip():
         return None
 
-    language = _title_language()
-    language_rule = (
-        _LANGUAGE_RULE_PINNED.format(language=language)
-        if language
-        else _LANGUAGE_RULE_MATCH_USER
-    )
-    # Placeholder substitution, not str.format: the prompt embeds literal JSON
-    # braces as few-shot examples, which format() would try to interpolate.
-    prompt = _TITLE_PROMPT_TEMPLATE.replace("__LANGUAGE_RULE__", language_rule)
-
     messages = [
-        {"role": "system", "content": prompt},
+        {"role": "system", "content": _TITLE_PROMPT_TEMPLATE},
         {"role": "user", "content": user_snippet},
     ]
 
@@ -438,8 +367,8 @@ def generate_title(
         response = call_llm(
             task="title_generation",
             messages=messages,
-            # A title is a handful of tokens. The old 500-token ceiling let a
-            # chatty model burn seconds generating prose we then threw away.
+            # A title is a handful of tokens; a higher ceiling lets a chatty
+            # model burn seconds generating prose we then throw away.
             max_tokens=64,
             temperature=0.3,
             timeout=timeout,
@@ -455,7 +384,6 @@ def generate_title(
         # assistant blob as the session title, which is still an assistant
         # blob — reject instead so the caller retries on the next exchange
         # (maybe_auto_title fires for the first two exchanges).
-        # Port of can1357/oh-my-pi#7306.
         if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
             logger.debug(
                 "Rejecting answer-shaped title output (%d words > %d)",
@@ -485,8 +413,8 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
     The write goes through ``set_auto_title`` (precedence check + write in one
     transaction) so a manual ``/title`` set while generation was in flight is
     never overwritten. ``ValueError`` means the name is taken by an unrelated
-    session (the unique-title index); rather than leave the session untitled
-    (#50537), append a ``#N`` suffix via ``get_next_title_in_lineage``.
+    session (the unique-title index); rather than leave the session untitled,
+    append a ``#N`` suffix via ``get_next_title_in_lineage``.
 
     ``dedupe=False`` re-raises that collision instead. The derived title is the
     one write on the turn's critical path, and it is also the one that collides
@@ -499,34 +427,22 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
     Returns the title actually persisted, or None when a higher-authority
     title already held the row (nothing was written).
     """
-    auto_fn = getattr(session_db, "set_auto_title", None)
-
     def _set(candidate):
-        if auto_fn is not None:
-            if not auto_fn(session_id, candidate, source=source):
-                logger.debug(
-                    "Skipping %s title: a higher-authority title already holds "
-                    "session %s",
-                    source, session_id,
-                )
-                return None
-            return candidate
-        # Older store without provenance support.
-        legacy_fn = getattr(session_db, "set_auto_title_if_empty", None)
-        if legacy_fn is not None:
-            return candidate if legacy_fn(session_id, candidate) else None
-        ok = session_db.set_session_title(session_id, candidate)
-        if ok is False:
-            raise RuntimeError(f"session {session_id} not found when storing title")
+        if not session_db.set_auto_title(session_id, candidate, source=source):
+            logger.debug(
+                "Skipping %s title: a higher-authority title already holds "
+                "session %s",
+                source, session_id,
+            )
+            return None
         return candidate
 
     try:
         return _set(title)
     except ValueError:
-        next_title_fn = getattr(session_db, "get_next_title_in_lineage", None)
-        if not dedupe or next_title_fn is None:
+        if not dedupe:
             raise
-        deduped = next_title_fn(title)
+        deduped = session_db.get_next_title_in_lineage(title)
         if not deduped or deduped == title:
             raise
         return _set(deduped)
@@ -585,12 +501,7 @@ def auto_title_session(
 
     Never lets an exception escape: this is a daemon-thread target, and an
     escaping exception would spray a raw traceback into the user's terminal
-    via the default threading excepthook. The canonical trigger is the
-    post-``son-of-anton update`` stale-module window, where this function's lazy
-    imports read NEW source from disk while already-cached modules
-    (``agent.portal_tags`` etc.) are still the OLD version — the resulting
-    ImportError repeats on every auto-title attempt until the long-running
-    process restarts.
+    via the default threading excepthook.
     """
     try:
         _auto_title_session(
@@ -603,13 +514,8 @@ def auto_title_session(
             runtime_validator=runtime_validator,
         )
     except Exception as e:
-        # WARNING (not debug) so operators see it in agent.log; the message
-        # names the likely cause so "restart the process" is discoverable.
-        logger.warning(
-            "Auto-title failed (harmless; if this started after an update, "
-            "restart the running Son of Anton process): %s",
-            e,
-        )
+        # WARNING (not debug) so operators see it in agent.log.
+        logger.warning("Auto-title failed (harmless): %s", e)
         logger.debug("Auto-title traceback", exc_info=True)
         if failure_callback is not None:
             try:
@@ -634,25 +540,17 @@ def _auto_title_session(
     # Skip when a title of at least LLM authority is already stored. A derived
     # title is expected here — upgrading it is the whole point of this call.
     try:
-        source_fn = getattr(session_db, "get_session_title_source", None)
-        if source_fn is not None:
-            existing_source = source_fn(session_id)
-            if existing_source is not None and existing_source != "derived":
-                return
-        elif session_db.get_session_title(session_id):
+        existing_source = session_db.get_session_title_source(session_id)
+        if existing_source is not None and existing_source != "derived":
             return
     except Exception:
         return
 
-    # This runs on a bare daemon thread spawned AFTER the turn's ambient
-    # conversation context was reset, so publish it here from the session id
-    # we already hold — the title-generation LLM call then carries the same
-    # ``conversation=`` Portal tag as the turn it titles. Root-of-lineage for
-    # consistency with the agent loop.
+    # This runs on a bare daemon thread spawned after the turn's accounting
+    # context was reset, so publish it here: the title call's token usage is
+    # then recorded against this session (task='title_generation').
     from agent.aux_accounting import set_accounting_context
 
-    # Same for the accounting context, so the title call's token usage is
-    # recorded against this session (task='title_generation', #23270).
     set_accounting_context(session_db, session_id)
 
     title = generate_title(
@@ -768,12 +666,6 @@ def maybe_auto_title(
         return
 
     if not is_titleable_user_message(user_message):
-        return
-
-    # Config read comes after the cheap guards so the file isn't touched on
-    # every subsequent turn of a long session.
-    if not _auto_title_enabled():
-        logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
 
     apply_instant_title(session_db, session_id, user_message, title_callback)
