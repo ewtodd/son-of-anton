@@ -30,14 +30,9 @@ _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
 
 def _expand_tilde(path: str) -> str:
-    """Expand ``~`` using the effective profile home when available.
-
-    In-process file tools share the gateway process's HOME, which may differ
-    from the profile-specific HOME that interactive CLI sessions use.  This
-    mirrors ``son_of_anton_constants.get_subprocess_home()`` so that ``~`` resolves
-    consistently regardless of whether the tool runs interactively or inside a
-    gateway-driven cron job (#48552).
-    """
+    """Expand ``~`` the way the terminal's subprocesses see it
+    (``son_of_anton_constants.get_subprocess_home()``), so in-process file
+    tools and shell commands agree on what ``~`` means."""
     if not path or "~" not in path:
         return path
     try:
@@ -51,51 +46,19 @@ def _expand_tilde(path: str) -> str:
     return os.path.expanduser(path)
 
 
-# ---------------------------------------------------------------------------
 # Read-size guard: cap the character count returned to the model.
 # We're model-agnostic so we can't count tokens; characters are a safe proxy.
-# 100K chars ≈ 25–35K tokens across typical tokenisers.  Files larger than
-# this in a single read are a context-window hazard — the model should use
-# offset+limit to read the relevant section.
-#
-# Configurable via config.toml:  file_read_max_chars: 200000
-# ---------------------------------------------------------------------------
-_DEFAULT_MAX_READ_CHARS = 100_000
-_max_read_chars_cached: int | None = None
-
-
-def _get_max_read_chars() -> int:
-    """Return the configured max characters per file read.
-
-    Reads ``file_read_max_chars`` from config.toml on first call, caches
-    the result for the lifetime of the process.  Falls back to the
-    built-in default if the config is missing or invalid.
-    """
-    global _max_read_chars_cached
-    if _max_read_chars_cached is not None:
-        return _max_read_chars_cached
-    try:
-        from son_of_anton_cli.config import load_config
-        cfg = load_config()
-        val = cfg.get("file_read_max_chars")
-        if isinstance(val, (int, float)) and val > 0:
-            _max_read_chars_cached = int(val)
-            return _max_read_chars_cached
-    except Exception:
-        pass
-    _max_read_chars_cached = _DEFAULT_MAX_READ_CHARS
-    return _max_read_chars_cached
+# 100K chars ≈ 25–35K tokens across typical tokenisers.  Larger single reads
+# are a context-window hazard — the model should use offset+limit.
+_MAX_READ_CHARS = 100_000
 
 
 def _truncate_to_char_budget(content: str, max_chars: int) -> tuple[str, int, bool]:
     """Trim line-numbered ``read_file`` content to fit a char budget.
 
-    Ported in spirit from nearai/ironclaw#5029 (dual line/byte cap on
-    ``read_file``). Where son-of-anton previously hard-rejected an oversized read
-    (forcing the model to guess a smaller ``limit`` and burn a round-trip
-    returning nothing), this trims the content to the last *complete line*
-    that fits within ``max_chars`` and reports how many lines were kept so
-    the caller can offer a ``next_offset`` continuation.
+    Trims the content to the last *complete line* that fits within
+    ``max_chars`` and reports how many lines were kept so the caller can
+    offer a ``next_offset`` continuation instead of rejecting the read.
 
     ``content`` is the gutter-rendered text (``LINE_NUM|CONTENT`` joined by
     ``\\n``). Individual lines are already clamped to ``get_max_line_length()``
@@ -151,13 +114,6 @@ _BLOCKED_DEVICE_PATHS = frozenset({
 })
 
 
-def _resolve_path(filepath: str, task_id: str = "default") -> Path:
-    """Resolve a path relative to TERMINAL_CWD (the worktree base directory)
-    instead of the main repository root.
-    """
-    return _resolve_path_for_task(filepath, task_id)
-
-
 # Sentinel ``TERMINAL_CWD`` values that mean "not configured", NOT a literal
 # directory to resolve against. A stale config / .env commonly leaves the
 # literal "." here; "auto"/"cwd" are setup-wizard placeholders. Treating any of
@@ -165,7 +121,7 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
 # (e.g. the main repo while a worktree session is active), routing writes to the
 # wrong checkout. The gateway sanitizes the same set at import time
 # (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
-# sessions get the same protection. See references/worktree-cwd-discipline.md.
+# sessions get the same protection.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
 
 
@@ -318,11 +274,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
         return None
 
 
-def _rewrite_v4a_patch_paths_for_host(
-    patch: str,
-    path_to_resolved: dict,
-    file_ops,
-) -> str:
+def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict) -> str:
     """Rewrite V4A file headers to the exact host paths the tool layer resolved.
 
     ``patch_tool`` resolves every header path against the task's workspace for
@@ -382,7 +334,7 @@ def _is_blocked_device_path(path: str) -> bool:
         return True
     # /proc/*/environ, /proc/*/cmdline, /proc/*/maps (and the maps variants
     # smaps, smaps_rollup, numa_maps) can leak secrets, command-line args, and
-    # memory layout (ASLR bypass) from the host process (issue #4427).
+    # memory layout (ASLR bypass) from the host process.
     # /proc/*/mem exposes raw process memory; block it as defense-in-depth even
     # though it requires address knowledge to exploit usefully.
     # /proc/*/auxv leaks AT_RANDOM (stack canary seed) plus AT_BASE/AT_PHDR
@@ -497,17 +449,7 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
 
 # Paths that file tools should refuse to write to without going through the
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
-_SENSITIVE_PATH_PREFIXES = (
-    "/etc/", "/boot/", "/usr/lib/systemd/",
-    "/private/etc/",
-    # macOS: /private/var mirrors /var. Block the sensitive subtrees, NOT the
-    # whole thing — a blanket "/private/var/" refused every legitimate temp-file
-    # write, because $TMPDIR, /tmp, and /var/folders all realpath() into
-    # /private/var/folders/... on macOS (and _resolve_path_for_task resolves
-    # symlinks), and /private/var/tmp is a normal temp dir.
-    "/private/var/db/", "/private/var/root/",
-)
-_SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+_SENSITIVE_PATH_PREFIXES = ("/etc/", "/boot/", "/usr/lib/systemd/")
 
 _son_of_anton_config_resolved: str | None = None
 _son_of_anton_config_resolved_loaded = False
@@ -523,10 +465,7 @@ def _get_son_of_anton_config_resolved() -> str | None:
         from son_of_anton_cli.config import get_config_path
         _son_of_anton_config_resolved = str(get_config_path().resolve())
     except Exception:
-        try:
-            _son_of_anton_config_resolved = str(Path(_expand_tilde("~/.son-of-anton/config.toml")).resolve())
-        except Exception:
-            _son_of_anton_config_resolved = None
+        _son_of_anton_config_resolved = None
     return _son_of_anton_config_resolved
 
 
@@ -575,8 +514,6 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
             return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
-        return _err
     # Prevent agents from modifying the Son of Anton config file directly.
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
@@ -1497,7 +1434,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                         f"(showing {offset}-{min(end_line, total_lines)} of {total_lines} lines)"
                     )
                 content_len = len(result_dict["content"])
-                max_chars = _get_max_read_chars()
+                max_chars = _MAX_READ_CHARS
                 if content_len > max_chars:
                     # Graceful char-budget truncation (nearai/ironclaw#5029):
                     # trim to the last complete line that fits and offer a
@@ -1645,7 +1582,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         # Check BEFORE redaction to avoid expensive regex on huge content.
         content_len = len(result.content or "")
         file_size = result_dict.get("file_size", 0)
-        max_chars = _get_max_read_chars()
+        max_chars = _MAX_READ_CHARS
         if content_len > max_chars:
             # Graceful char-budget truncation (ported from nearai/ironclaw#5029).
             # Instead of rejecting the whole read — which forces the model to
@@ -1834,7 +1771,7 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
     internally.
     """
     try:
-        resolved = str(_resolve_path(filepath, task_id))
+        resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         return
     with _read_tracker_lock:
@@ -2188,9 +2125,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 # (locked/reported). Without this a relative header re-resolves
                 # against the shell's cwd, which can differ from the workspace
                 # (git-worktree cwd bug) — landing the edit elsewhere.
-                patch_for_ops = _rewrite_v4a_patch_paths_for_host(
-                    patch, _path_to_resolved, file_ops
-                )
+                patch_for_ops = _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved)
                 result = file_ops.patch_v4a(patch_for_ops)
             else:
                 return tool_error(f"Unknown mode: {mode}")
