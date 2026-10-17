@@ -82,7 +82,10 @@ def test_show_all_widens_to_the_live_catalog(monkeypatch) -> None:
 
 
 def test_providers_keyed_catalog_pins_too(monkeypatch) -> None:
-    """The newer ``providers:`` schema gets the same declared-subset default."""
+    """The newer ``providers:`` schema gets the same declared-subset default
+    (the pickers read config through ``get_compatible_custom_providers``)."""
+    from son_of_anton_cli.config import get_compatible_custom_providers
+
     monkeypatch.setattr(
         "son_of_anton_cli.model_switch._fetch_picker_live_models",
         lambda *args, **kwargs: list(FULL_CATALOG),
@@ -90,13 +93,15 @@ def test_providers_keyed_catalog_pins_too(monkeypatch) -> None:
     rows = list_authenticated_providers(
         current_provider="custom",
         current_base_url=BASE_URL,
-        user_providers={
-            "custom": {
-                "base_url": BASE_URL,
-                "api_key": "test-key",
-                "models": dict(DECLARED),
+        custom_providers=get_compatible_custom_providers({
+            "providers": {
+                "custom": {
+                    "base_url": BASE_URL,
+                    "api_key": "test-key",
+                    "models": dict(DECLARED),
+                }
             }
-        },
+        }),
         probe_custom_providers=True,
         probe_current_custom_provider=True,
     )

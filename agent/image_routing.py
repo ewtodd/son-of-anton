@@ -428,22 +428,6 @@ def _lookup_supports_vision(
         return override
     if not provider or not model:
         return None
-    caps = None
-    try:
-        from agent.models_dev import get_model_capabilities
-        # allow_network=True on purpose: vision-capability lookup runs when
-        # an image actually needs routing (not per turn), and the #31179
-        # text-only-main guard depends on catalog data — a cold cache
-        # returning "unknown" would fall back to attempting the call and
-        # reintroduce the bug. This preserves the historical
-        # network-on-cold-cache behavior for this one path; the fetch is
-        # cached (4h TTL) and backoff-limited after failures.
-        caps = get_model_capabilities(provider, model, allow_network=True)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("image_routing: caps lookup failed for %s:%s — %s", provider, model, exc)
-    if caps is not None:
-        return bool(caps.supports_vision)
-
     base_url = _resolve_inference_base_url(cfg, provider)
     if not base_url and (provider or "").strip().lower() == "ollama":
         base_url = "http://localhost:11434/v1"

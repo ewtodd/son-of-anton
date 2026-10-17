@@ -27,7 +27,6 @@ from typing import Any, Dict, List, Optional
 
 from agent.message_sanitization import summarize_message_for_log as _summarize_user_message_for_log
 from agent.conversation_compaction import (
-    COMPACTION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPACTION_RETRY_MESSAGES_STATUS_TEMPLATE,
     COMPACTION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPACTION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
@@ -79,12 +78,7 @@ from agent.prompt_caching import (
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
 )
-from agent.retry_utils import (
-    adaptive_rate_limit_backoff,
-    is_zai_coding_overload_error,
-    jittered_backoff,
-    zai_coding_overload_retry_ceiling,
-)
+from agent.retry_utils import jittered_backoff
 from agent.repetition_guard import is_repetition_dominated
 from agent.trajectory import has_incomplete_scratchpad
 # Bind before the turn starts so a source-tree swap cannot load a skewed
@@ -94,7 +88,6 @@ from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent import empty_response_guard as _empty_guard
 from son_of_anton_constants import PARTIAL_STREAM_STUB_ID
 from son_of_anton_logging import set_session_context
-from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
 
@@ -488,67 +481,6 @@ def _billing_or_entitlement_message(
     provider_label = (provider or "").strip() or "the selected provider"
     model_label = (model or "").strip() or "the selected model"
 
-    # Anthropic Claude Pro/Max OAuth subscriptions surface exhaustion of the
-    # metered "extra usage" bucket as a hard 400 ("You're out of extra
-    # usage"). Point at the exact settings page and note the cycle-reset
-    # option, since the generic "add credits with that provider" line doesn't
-    # apply to a subscription — the user waits for the reset or switches to an
-    # API key.
-    if (provider or "").strip().lower() == "anthropic":
-        # ``unverified`` (ClassifiedError.billing_unverified, #82154): the
-        # "out of extra usage" 400 is ambiguous — Anthropic returns the same
-        # body when its server-side content filter rejects part of the request
-        # on a subscription OAuth token, so the message reliably misdirects
-        # diagnosis toward buying quota. Hedge the claim and name the other
-        # cause. A confirmed verdict (e.g. a real 402 or an API-key credit
-        # depletion) keeps the assertive wording.
-        if unverified:
-            lines = [
-                (
-                    f"{provider_label} reported that your Claude subscription usage may be "
-                    f"exhausted for {model_label} (included quota + extra-usage credits) — "
-                    "but this specific error is not proof of a billing problem."
-                ),
-                "If https://claude.ai/settings/usage still shows quota remaining, this is "
-                "probably NOT a billing problem: on a Claude subscription (OAuth) token "
-                "Anthropic returns this same message when its content filter rejects part "
-                "of the request — typically a phrase in the system prompt.",
-                "If usage really is exhausted: wait for the billing cycle to reset, or add "
-                "extra usage at https://claude.ai/settings/usage",
-                "You can also switch to an Anthropic API key or another provider with "
-                "/model <model> --provider <provider>.",
-                # The exhaustion latch replays the stored error without issuing
-                # a request, so a real fix looks like it didn't work.
-                "Retry with a fresh credential state: `son-of-anton auth reset anthropic`. Until "
-                "that cooldown clears, this error can be replayed from cache without "
-                "contacting the API.",
-            ]
-        else:
-            lines = [
-                (
-                    f"{provider_label} reported that your Claude subscription usage is "
-                    f"exhausted for {model_label} (included quota + extra-usage credits)."
-                ),
-                "Options: wait for the billing cycle to reset, or add extra usage at "
-                "https://claude.ai/settings/usage",
-                "You can also switch to an Anthropic API key or another provider with "
-                "/model <model> --provider <provider>.",
-            ]
-        return "\n".join(lines)
-
-    # Provider-agnostic billing URL derivation (OpenAI, DeepSeek, xAI, Groq,
-    # OpenRouter, …) so every text surface — CLI, gateway messaging, TUI
-    # transcript — shows the same actionable link, not just OpenRouter.
-    try:
-        from agent.billing_links import build_billing_block
-
-        _link = build_billing_block(provider=provider, base_url=base_url, model=model)
-        if _link.provider_label:
-            provider_label = _link.provider_label
-        billing_url = _link.billing_url
-    except Exception:
-        billing_url = None
-
     lines = [
         (
             f"{provider_label} reported that billing, credits, or account "
@@ -556,29 +488,8 @@ def _billing_or_entitlement_message(
         ),
         "Add credits or update billing with that provider, then retry.",
     ]
-    if billing_url:
-        lines.append(f"{provider_label} billing: {billing_url}")
     lines.append("You can switch providers temporarily with /model <model> --provider <provider>.")
     return "\n".join(lines)
-
-
-def _billing_block_dict(
-    provider, base_url, model, message="", *, unverified: bool = False
-) -> Optional[dict]:
-    """Best-effort structured billing descriptor (None if billing_links is unavailable)."""
-    try:
-        from agent.billing_links import build_billing_block
-
-        block = build_billing_block(
-            provider=provider, base_url=str(base_url), model=model, message=message
-        ).to_dict()
-    except Exception:
-        return None
-    if block is not None and unverified:
-        # Carry the classifier's ambiguity into the structured descriptor so
-        # every surface rendering the block can hedge too (#82154).
-        block["unverified"] = True
-    return block
 
 
 def _billing_terminal_label(summary: str, unverified: bool) -> str:
@@ -636,9 +547,6 @@ def _billing_failure_result(
         # The billing verdict may rest on an ambiguous body (#82154) — carry
         # that through the structured result, not just the prose.
         "billing_unverified": unverified,
-        "billing_block": _billing_block_dict(
-            provider, base_url, model, guidance, unverified=unverified
-        ),
     }
 
 
@@ -1228,68 +1136,6 @@ def _compaction_deferred_result(
         "compaction_deferred": True,
         "session_id": agent.session_id,
     }
-
-
-def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool:
-    """Rewrite a cache-decorated system message in place, keeping its blocks.
-
-    ``apply_anthropic_cache_control`` runs once per call block, *before* the
-    retry loop, and splits the system prompt into ``[static prefix, volatile
-    tail]`` text blocks carrying the cache_control breakpoints. Assigning a bare
-    string over that list drops both breakpoints, so the failover retry ships
-    the whole system prompt uncached and re-bills it in full.
-
-    ``rewrite_prompt_model_identity`` only touches the LAST ``Model:`` /
-    ``Provider:`` lines, and those live in the volatile tail — so the static
-    prefix stays byte-identical and its cache entry keeps matching. Returns
-    False when the shape is not one we can safely patch, so the caller falls
-    back to the plain-string assignment.
-    """
-    content = system_message.get("content")
-    if not isinstance(content, list) or not content:
-        return False
-    if not all(
-        isinstance(part, dict) and part.get("type") == "text" for part in content
-    ):
-        return False
-    if len(content) == 1:
-        content[0]["text"] = effective
-        return True
-    if len(content) == 2:
-        head = content[0].get("text") or ""
-        if head and effective.startswith(head):
-            tail = effective[len(head):]
-            if tail:
-                content[1]["text"] = tail
-                return True
-    return False
-
-
-def _sync_failover_system_message(agent, api_messages, active_system_prompt):
-    """Refresh the in-flight system message after a provider failover.
-
-    ``try_activate_fallback`` rewrites the ``Model:``/``Provider:`` identity
-    lines on ``agent._cached_system_prompt`` (see
-    ``rewrite_prompt_model_identity``) so the agent reports the model that is
-    actually answering.  But the current call block's ``api_messages`` were
-    built from the pre-failover prompt, and the retry loop rebuilds
-    ``api_kwargs`` from that list each iteration — without this sync the
-    whole turn (and every gateway turn, since fallback re-activates per
-    message while the primary is down) ships the stale identity.
-
-    Mutates ``api_messages[0]`` in place and returns the prompt to use as
-    ``active_system_prompt`` for subsequent call-block rebuilds.
-    """
-    sp = getattr(agent, "_cached_system_prompt", None)
-    if not isinstance(sp, str) or not sp:
-        return active_system_prompt
-    if api_messages and api_messages[0].get("role") == "system":
-        effective = sp
-        if agent.ephemeral_system_prompt:
-            effective = (effective + "\n\n" + agent.ephemeral_system_prompt).strip()
-        if not _rewrite_system_content_blocks(api_messages[0], effective):
-            api_messages[0]["content"] = effective
-    return sp
 
 
 def _ensure_cached_system_prompt_static(agent, system_message=None) -> None:
@@ -2411,8 +2257,6 @@ def run_conversation(
                             "call_role": (
                                 "delegated"
                                 if getattr(agent, "is_subagent", False)
-                                else "fallback"
-                                if int(getattr(agent, "_fallback_index", 0) or 0) > 0
                                 else "primary"
                             ),
                             "retry_count": retry_count,
@@ -2559,19 +2403,6 @@ def run_conversation(
                     # upstream server error, or malformed response.
                     retry_count += 1
                     
-                    # Eager fallback: empty/malformed responses are a common
-                    # rate-limit symptom.  Switch to fallback immediately
-                    # rather than retrying with extended backoff.
-                    if agent._fallback_index < len(agent._fallback_chain):
-                        agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
-                    if agent._try_activate_fallback():
-                        active_system_prompt = _sync_failover_system_message(
-                            agent, api_messages, active_system_prompt)
-                        retry_count = 0
-                        compaction_attempts = 0
-                        _retry.primary_recovery_attempted = False
-                        _retry.restart_with_rebuilt_messages = True
-                        break
 
                     # Check for error field in response (some providers include this)
                     error_msg = "Unknown"
@@ -2635,17 +2466,6 @@ def run_conversation(
                     agent._buffer_vprint(f"   ⏱️  {_failure_hint}")
                     
                     if retry_count >= max_retries:
-                        # Try fallback before giving up
-                        if agent._has_pending_fallback():
-                            agent._buffer_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
-                        if agent._try_activate_fallback():
-                            active_system_prompt = _sync_failover_system_message(
-                                agent, api_messages, active_system_prompt)
-                            retry_count = 0
-                            compaction_attempts = 0
-                            _retry.primary_recovery_attempted = False
-                            _retry.restart_with_rebuilt_messages = True
-                            break
                         # Terminal — flush buffered retry trace so user sees what happened.
                         agent._flush_status_buffer()
                         agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
@@ -2768,21 +2588,6 @@ def run_conversation(
                     if agent.thinking_callback:
                         agent.thinking_callback("")
 
-                    # Deterministic for the unchanged prompt — never retry.
-                    # Try a configured fallback once (a different model may not
-                    # refuse); otherwise surface the refusal terminally.
-                    if agent._has_pending_fallback():
-                        agent._buffer_status(
-                            "⚠️ Model declined to respond (safety refusal) — trying fallback..."
-                        )
-                    if agent._try_activate_fallback():
-                        active_system_prompt = _sync_failover_system_message(
-                            agent, api_messages, active_system_prompt)
-                        retry_count = 0
-                        compaction_attempts = 0
-                        _retry.primary_recovery_attempted = False
-                        _retry.restart_with_rebuilt_messages = True
-                        break
 
                     agent._flush_status_buffer()
                     _refusal_log = (
@@ -2982,46 +2787,6 @@ def run_conversation(
                         _cf_terminated = getattr(
                             response, "_content_filter_terminated", False
                         )
-                        if (
-                            _cf_terminated
-                            and agent._fallback_index < len(agent._fallback_chain)
-                        ):
-                            agent._vprint(
-                                f"{agent.log_prefix}🛡️  Content filter terminated "
-                                f"stream — activating fallback provider...",
-                                force=True,
-                            )
-                            agent._emit_status(
-                                "Content filter terminated stream; switching to fallback..."
-                            )
-                            if agent._try_activate_fallback():
-                                # Roll the partial content (if any was already
-                                # appended in a prior continuation pass) back to
-                                # the last clean turn so the fallback provider
-                                # gets a coherent continuation point.
-                                if truncated_response_parts:
-                                    messages = agent._get_messages_up_to_last_assistant(messages)
-                                # Unmark survivors: their text left the stitched partial.
-                                for _frag in messages:
-                                    if isinstance(_frag, dict):
-                                        _frag.pop("_length_continuation_fragment", None)
-                                        _frag.pop("_length_continuation_nudge", None)
-                                agent._session_messages = messages
-                                length_continue_retries = 0
-                                truncated_response_parts = []
-                                retry_count = 0
-                                compaction_attempts = 0
-                                _retry.primary_recovery_attempted = False
-                                _retry.restart_with_rebuilt_messages = True
-                                break
-                            # No fallback available — fall through to normal
-                            # continuation (best-effort, may loop).
-                            agent._vprint(
-                                f"{agent.log_prefix}⚠️  No fallback provider "
-                                f"configured — retrying with same provider "
-                                f"(may re-hit filter)...",
-                                force=True,
-                            )
                         if assistant_message is not None and not _trunc_has_tool_calls:
                             length_continue_retries += 1
                             # An EMPTY partial-stream stub (stream dropped
@@ -3434,7 +3199,6 @@ def run_conversation(
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
                 
-                _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call
                 # success" only means we got bytes back, not that we got
                 # usable content. Empty responses still loop through the
@@ -3751,9 +3515,7 @@ def run_conversation(
                     )
                     continue
 
-                # ── Bedrock AnthropicBedrock SDK streaming failure ──
                 status_code = getattr(api_error, "status_code", None)
-                error_context = agent._extract_api_error_context(api_error)
 
                 # ── Classify the error for structured recovery decisions ──
                 _compactor = getattr(agent, "context_compactor", None)
@@ -3787,16 +3549,6 @@ def run_conversation(
                     retryable=classified.retryable,
                     reason=classified.reason.value,
                 )
-
-                recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
-                    status_code=status_code,
-                    has_retried_429=_retry.has_retried_429,
-                    classified_reason=classified.reason,
-                    error_context=error_context,
-                    billing_unverified=classified.billing_unverified,
-                )
-                if recovered_with_pool:
-                    continue
 
                 # Image-too-large recovery: shrink oversized native image
                 # parts in-place and retry once.  Triggered by Anthropic's
@@ -3850,80 +3602,6 @@ def run_conversation(
                             "multimodal-tool-content recovery: no list-type tool "
                             "messages with image parts found; surfacing original error."
                         )
-
-                # Anthropic OAuth subscription rejected the 1M-context beta
-                # header ("long context beta is not yet available for this
-                # subscription"). Disable the beta for the rest of this
-                # session, rebuild the client, and retry once.  1M-capable
-                # subscriptions never hit this branch — they accept the
-                # beta and keep full 1M context.  See PR #17680 for the
-                # original report (we chose reactive recovery over the
-                # proposed unconditional omit so capable subscriptions
-                # don't silently lose the capability).
-                if (
-                    classified.reason == FailoverReason.oauth_long_context_beta_forbidden
-                    and not _retry.oauth_1m_beta_retry_attempted
-                ):
-                    _retry.oauth_1m_beta_retry_attempted = True
-                    if not getattr(agent, "_oauth_1m_beta_disabled", False):
-                        agent._oauth_1m_beta_disabled = True
-                        agent._vprint(
-                            f"{agent.log_prefix}🔕 OAuth subscription doesn't support "
-                            f"the 1M-context beta — disabled for this session and retrying...",
-                            force=True,
-                        )
-                        continue
-
-                # Thinking block signature recovery.
-                #
-                # Anthropic signs thinking blocks against the full turn
-                # content. Any upstream mutation (context compaction,
-                # session truncation, message merging) invalidates the
-                # signature and the API replies HTTP 400 ("invalid
-                # signature" or "cannot be modified"). Recovery strips
-                # ``reasoning_details`` so the retry sends no thinking
-                # blocks at all. One-shot per outer loop.
-                #
-                # The strip targets ``api_messages``, which is the
-                # API-call-time list that ``_build_api_kwargs`` consumes
-                # on every retry. ``api_messages`` was populated once at
-                # the start of the turn from shallow copies of
-                # ``messages``, so mutating it does not touch the
-                # canonical store. The previous implementation popped
-                # ``reasoning_details`` from ``messages`` instead, which
-                # had two problems: ``api_messages`` carried its own
-                # reference to the field through the shallow copy, so the
-                # retry's wire payload still included thinking blocks and
-                # the recovery never reached the API; and the mutation
-                # persisted into ``state.db`` through any subsequent
-                # ``_persist_session`` call, permanently corrupting the
-                # conversation. Future turns would replay the stripped
-                # state, hit the same 400, and the agent would terminate
-                # with ``max_retries_exhausted``, often spawning
-                # cascading compaction-ended sessions chained off the
-                # corrupted parent.
-                if (
-                    classified.reason == FailoverReason.thinking_signature
-                    and not _retry.thinking_sig_retry_attempted
-                ):
-                    _retry.thinking_sig_retry_attempted = True
-                    _api_stripped = 0
-                    for _m in api_messages:
-                        if isinstance(_m, dict) and "reasoning_details" in _m:
-                            _m.pop("reasoning_details", None)
-                            _api_stripped += 1
-                    agent._vprint(
-                        f"{agent.log_prefix}⚠️  Thinking block signature invalid, "
-                        f"stripped reasoning_details from api_messages for retry...",
-                        force=True,
-                    )
-                    logger.warning(
-                        "%sThinking block signature recovery: stripped "
-                        "reasoning_details from %d api_messages "
-                        "(canonical messages unchanged)",
-                        agent.log_prefix, _api_stripped,
-                    )
-                    continue
 
                 # ── llama.cpp grammar-parse recovery ──────────────────
                 # llama.cpp's ``json-schema-to-grammar`` converter rejects
@@ -4001,36 +3679,6 @@ def run_conversation(
                         agent._buffer_vprint(f"   📋 Details: {_err_body_str}")
                 agent._buffer_vprint(f"   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
 
-                # Actionable hint for the "no tool endpoints" error.
-                # Buffered like the rest of the retry trace — surfaced only
-                # if every retry+fallback exhausts.
-                if "support tool use" in error_msg:
-                    agent._buffer_vprint(
-                        f"   💡 No providers for {_model} support tool calling with your current settings."
-                    )
-
-                # Actionable hint for a bare 404 on a provider whose catalogue
-                # uses ``vendor/model`` ids.  A model id that lost its prefix
-                # (e.g. ``nemotron-…`` instead of ``nvidia/nemotron-…``) gets
-                # a content-free "404 page not found" from the provider that
-                # never names the model, so it reads like an outage or an auth
-                # failure.  Name the real cause and the exact id to use (#78796).
-                if getattr(api_error, "status_code", None) == 404:
-                    try:
-                        from son_of_anton_cli.model_normalize import suggest_prefixed_model_id
-
-                        _suggestion = suggest_prefixed_model_id(_provider, _model)
-                    except Exception:
-                        _suggestion = None
-                    if _suggestion:
-                        agent._buffer_vprint(
-                            f"   💡 Model '{_model}' is not a valid id for provider {_provider} — "
-                            f"it is missing its vendor prefix."
-                        )
-                        agent._buffer_vprint(
-                            f"      Did you mean '{_suggestion}'?  Re-pick it with `son-of-anton model`."
-                        )
-
                 # Check for interrupt before deciding to retry
                 if agent._interrupt_requested or agent._yield_pending():
                     # Preserve a pending redirect (mid-stream correction): the
@@ -4080,7 +3728,6 @@ def run_conversation(
                 # does not require compaction.  Exempt them from this guard
                 # so the retry still fires even when compaction is disabled.
                 _overflow_reasons = {
-                    FailoverReason.long_context_tier,
                     FailoverReason.payload_too_large,
                     FailoverReason.context_overflow,
                 }
@@ -4125,72 +3772,7 @@ def run_conversation(
                         "compaction_disabled": True,
                     }
 
-                # ── Anthropic Sonnet long-context tier gate ───────────
-                # Anthropic returns HTTP 429 "Extra usage is required for
-                # long context requests" when a Claude Max (or similar)
-                # subscription doesn't include the 1M-context tier.  This
-                # is NOT a transient rate limit — retrying or switching
-                # credentials won't help.  Reduce context to 200k (the
-                # standard tier) and compact.
-                if classified.reason == FailoverReason.long_context_tier:
-                    _reduced_ctx = 200000
-                    compactor = agent.context_compactor
-                    old_ctx = compactor.context_length
-                    if old_ctx > _reduced_ctx:
-                        compactor.update_model(
-                            model=agent.model,
-                            context_length=_reduced_ctx,
-                            base_url=agent.base_url,
-                            api_key=getattr(agent, "api_key", ""),
-                            provider=agent.provider,
-                            api_mode=agent.api_mode,
-                        )
-                        # Context probing flags — only set on built-in
-                        # compactor (plugin engines manage their own).
-                        if hasattr(compactor, "_context_probed"):
-                            compactor._context_probed = True
-                            # Don't persist — this is a subscription-tier
-                            # limitation, not a model capability.  If the
-                            # user later enables extra usage the 1M limit
-                            # should come back automatically.
-                            compactor._context_probe_persistable = False
-                        agent._buffer_vprint(
-                            f"⚠️  Anthropic long-context tier "
-                            f"requires extra usage — reducing context: "
-                            f"{old_ctx:,} → {_reduced_ctx:,} tokens"
-                        )
-
-                    compaction_attempts += 1
-                    if compaction_attempts <= max_compaction_attempts:
-                        original_len = len(messages)
-                        # Option A (LCM issue 441): overhead-aware request size so recovery arms on
-                        # the true request (msgs + tools + system), not the tool-blind message count.
-                        messages, active_system_prompt = agent._compact_context(
-                            messages, system_message,
-                            approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
-                            task_id=effective_task_id,
-                        )
-                        conversation_history = conversation_history_after_compaction(
-                            agent, messages, conversation_history
-                        )
-                        if len(messages) < original_len or old_ctx > _reduced_ctx:
-                            agent._buffer_status(
-                                COMPACTION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE.format(
-                                    new_ctx=_reduced_ctx, old_ctx=old_ctx
-                                )
-                            )
-                            time.sleep(2)
-                            _retry.restart_with_compacted_messages = True
-                            break
-                    # Fall through to normal error handling if compaction
-                    # is exhausted or didn't help.
-
-                # Eager fallback for rate-limit errors (429 or quota exhaustion)
-                # and transport errors (connection failure / timeout / provider
-                # overloaded).  Rate limits and billing: switch immediately —
-                # the primary provider won't recover within the retry window.
-                # Transport errors: allow 1 retry first (transient hiccups
-                # recover), then fall back if the provider is truly unreachable.
+                # Rate limits and billing get the rate-limit backoff below.
                 is_rate_limited = classified.reason in {
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
@@ -4211,140 +3793,9 @@ def run_conversation(
                     if classified.reason == FailoverReason.rate_limit
                     else None
                 )
-                _is_transport_failure = classified.reason in {
-                    FailoverReason.timeout,
-                    FailoverReason.overloaded,
-                }
-                # Z.AI Coding Plan GLM-5.2 overload 429s classify as
-                # `overloaded` (to spare the credential pool), but `overloaded`
-                # is excluded from `is_rate_limited` — the gate for the adaptive
-                # Z.AI backoff below. Detect the overload directly so its
-                # long-backoff schedule runs, and raise the retry ceiling so the
-                # long tier (30/60/90/120s) is reachable. See
-                # zai_coding_overload_retry_ceiling() for the ceiling rationale.
-                _is_zai_coding_overload = is_zai_coding_overload_error(
-                    base_url=str(_base), model=_model, error=api_error
-                )
-                if _is_zai_coding_overload:
-                    max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
-                _should_fallback = (
-                    (is_rate_limited and _wrapped_output_cap_budget is None)
-                    or (_is_transport_failure and retry_count >= 2)
-                )
-                if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
-                    # Don't eagerly fallback if credential pool rotation may
-                    # still recover.  See _pool_may_recover_from_rate_limit
-                    # for the single-credential-pool exception.  Fixes #11314.
-                    #
-                    # Exception: an upstream-aggregator 429 — the credential
-                    # pool can't help when the *upstream* model (DeepSeek,
-                    # etc.) is throttling OpenRouter, so always fall back to a
-                    # different model regardless of pool state.
-                    _is_upstream = classified.reason == FailoverReason.upstream_rate_limit
-                    pool_may_recover = (
-                        False if _is_upstream
-                        else _ra()._pool_may_recover_from_rate_limit(
-                            agent._credential_pool,
-                        )
-                    )
-                    if not pool_may_recover:
-                        if _is_upstream:
-                            _upstream_name = (classified.error_context or {}).get(
-                                "upstream_provider", "aggregator"
-                            )
-                            agent._buffer_status(
-                                f"⚠️ Upstream {_upstream_name} rate-limited — "
-                                "switching to fallback model..."
-                            )
-                        elif classified.reason == FailoverReason.billing:
-                            if classified.billing_unverified:
-                                # Ambiguous body (#82154) — don't assert billing.
-                                agent._buffer_status(
-                                    "⚠️ Provider reported usage/credit exhaustion "
-                                    "(unverified — may be a content-filter rejection) "
-                                    "— switching to fallback provider..."
-                                )
-                            else:
-                                agent._buffer_status(
-                                    "⚠️ Billing or credits exhausted — switching to fallback provider..."
-                                )
-                        elif _is_transport_failure:
-                            agent._buffer_status(
-                                "⚠️ Provider unreachable — switching to fallback provider..."
-                            )
-                        else:
-                            agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
-                        if agent._try_activate_fallback(reason=classified.reason):
-                            active_system_prompt = _sync_failover_system_message(
-                                agent, api_messages, active_system_prompt)
-                            retry_count = 0
-                            compaction_attempts = 0
-                            _retry.primary_recovery_attempted = False
-                            _retry.restart_with_rebuilt_messages = True
-                            break
-
-                # ── Auth-failure provider failover ───────────────────────
-                # A 401/403 that survives the per-provider credential-refresh
-                # attempt above (each guarded by its own
-                # ``*_auth_retry_attempted`` flag) means the active provider's
-                # credential or endpoint is broken in a way refreshing can't
-                # fix (revoked OAuth, blocked/expired key, an account pinned to
-                # a dead/staging endpoint). Previously the loop only printed
-                # "switch providers manually" advice and fell through, so a
-                # user with a configured fallback chain kept thrashing on the
-                # same dead credential every turn instead of failing over.
-                # Escalate to the fallback chain here, mirroring the rate-
-                # limit/billing failover above. When no fallback is configured
-                # (or the chain is exhausted), _try_activate_fallback returns
-                # False and we fall through to the existing terminal handling
-                # + provider-specific troubleshooting guidance unchanged.
-                if (
-                    classified.is_auth
-                    and not _retry.auth_failover_attempted
-                    and agent._fallback_index < len(agent._fallback_chain)
-                ):
-                    _retry.auth_failover_attempted = True
-                    agent._buffer_status(
-                        "🔐 Authentication failed and could not be refreshed — "
-                        "switching to fallback provider..."
-                    )
-                    if agent._try_activate_fallback(reason=classified.reason):
-                        active_system_prompt = _sync_failover_system_message(
-                            agent, api_messages, active_system_prompt)
-                        retry_count = 0
-                        compaction_attempts = 0
-                        _retry.primary_recovery_attempted = False
-                        _retry.restart_with_rebuilt_messages = True
-                        break
-
                 is_payload_too_large = (
                     classified.reason == FailoverReason.payload_too_large
                 )
-
-                # Actionable hint for GitHub Models (Azure) 413 errors.
-                # The free tier enforces a hard 8K token cap per request,
-                # which Son of Anton' system prompt + tool schemas alone exceed.
-                # Compaction can't help — the floor is the system prompt
-                # itself, not the conversation — so surface a clear "not
-                # compatible" message instead of looping into three futile
-                # compaction attempts.
-                if (
-                    status_code == 413
-                    and isinstance(agent.base_url, str)
-                    and base_url_host_matches(agent.base_url, "models.inference.ai.azure.com")
-                ):
-                    agent._vprint(
-                        f"{agent.log_prefix}   💡 GitHub Models free tier (models.inference.ai.azure.com) caps every",
-                        force=True,
-                    )
-                    agent._vprint(
-                        f"{agent.log_prefix}      request at ~8K tokens. Son of Anton' system prompt + tool schemas baseline",
-                        force=True,
-                    )
-                    agent._vprint(
-                        f"{agent.log_prefix}      exceeds that floor, so this endpoint cannot run an agentic loop.",
-                        force=True,
-                    )
 
                 if is_payload_too_large:
                     compaction_attempts += 1
@@ -4602,20 +4053,6 @@ def run_conversation(
                     # and try compaction; guessing probe tiers can incorrectly
                     # turn a user-configured 1M window into 256K/128K/64K.
                     new_ctx = get_context_length_from_provider_error(error_msg, old_ctx)
-                    _provider_lower = (getattr(agent, "provider", "") or "").lower()
-                    _base_lower = (getattr(agent, "base_url", "") or "").rstrip("/").lower()
-                    is_minimax_provider = (
-                        _provider_lower in {"minimax", "minimax-cn"}
-                        or _base_lower.startswith((
-                            "https://api.minimax.io/anthropic",
-                            "https://api.minimaxi.com/anthropic",
-                        ))
-                    )
-                    minimax_delta_only_overflow = (
-                        is_minimax_provider
-                        and new_ctx is None
-                        and "context window exceeds limit (" in error_msg
-                    )
 
                     if new_ctx is not None:
                         agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
@@ -4641,11 +4078,6 @@ def run_conversation(
                             compactor._context_probed = True
                             compactor._context_probe_persistable = True
                         agent._buffer_vprint(f"⚠️  Context length exceeded — using provider limit: {old_ctx:,} → {new_ctx:,} tokens")
-                    elif minimax_delta_only_overflow:
-                        agent._buffer_vprint(
-                            f"Provider reported overflow amount only; "
-                            f"keeping context_length at {old_ctx:,} tokens and compacting."
-                        )
                     else:
                         agent._buffer_vprint(
                             f"⚠️  Context length exceeded, but provider did not report a max context length; "
@@ -4799,34 +4231,11 @@ def run_conversation(
                             FailoverReason.overloaded,
                             FailoverReason.context_overflow,
                             FailoverReason.payload_too_large,
-                            FailoverReason.long_context_tier,
-                            FailoverReason.thinking_signature,
                         }
                     )
                 ) and not is_context_length_error
 
                 if is_client_error:
-                    # Try fallback before aborting — a different provider may
-                    # not have the same issue (rate limit, auth, etc.). Only
-                    # announce the attempt when a fallback chain actually
-                    # exists; otherwise "trying fallback..." is a lie and the
-                    # session looks like it's recovering when it's about to
-                    # abort silently (#35314, #17446).
-                    if agent._has_pending_fallback():
-                        if classified.reason == FailoverReason.content_policy_blocked:
-                            agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
-                        elif classified.reason == FailoverReason.ssl_cert_verification:
-                            agent._buffer_status("⚠️ TLS certificate verification failed — trying fallback...")
-                        else:
-                            agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
-                        active_system_prompt = _sync_failover_system_message(
-                            agent, api_messages, active_system_prompt)
-                        retry_count = 0
-                        compaction_attempts = 0
-                        _retry.primary_recovery_attempted = False
-                        _retry.restart_with_rebuilt_messages = True
-                        break
                     if api_kwargs is not None:
                         agent._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
@@ -4870,23 +4279,10 @@ def run_conversation(
                             unverified=classified.billing_unverified,
                         ):
                             pass
-                        elif _provider == "nous" and status_code == 401:
-                            agent._vprint(f"{agent.log_prefix}   💡 Nous Portal OAuth token was rejected (HTTP 401). Your token may be", force=True)
-                            agent._vprint(f"{agent.log_prefix}      expired, revoked, or your account may be out of credits. To fix:", force=True)
-                            agent._vprint(f"{agent.log_prefix}      1. Re-authenticate: son-of-anton portal", force=True)
-                            agent._vprint(f"{agent.log_prefix}      2. Check your portal account: https://portal.nousresearch.com", force=True)
-                            # ``:free`` is OpenRouter slug syntax; Nous Portal will reject
-                            # the model name even after a successful re-auth.
-                            if isinstance(_model, str) and _model.endswith(":free"):
-                                agent._vprint(f"{agent.log_prefix}      ⚠️  Note: `{_model}` looks like an OpenRouter slug (`:free` suffix).", force=True)
-                                agent._vprint(f"{agent.log_prefix}         Nous Portal won't recognize that model name. Either switch to a", force=True)
-                                agent._vprint(f"{agent.log_prefix}         Nous catalog model, or run `/model openrouter:{_model}` to use OpenRouter.", force=True)
                         else:
                             agent._vprint(f"{agent.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
                             agent._vprint(f"{agent.log_prefix}      • Is the key valid? Check the provider key in your .env", force=True)
                             agent._vprint(f"{agent.log_prefix}      • Does your account have access to {_model}?", force=True)
-                            if base_url_host_matches(str(_base), "openrouter.ai"):
-                                agent._vprint(f"{agent.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
                     else:
                         agent._vprint(f"{agent.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
                     # Content-policy blocks deserve their own actionable
@@ -4901,14 +4297,6 @@ def run_conversation(
                         )
                         agent._vprint(
                             f"{agent.log_prefix}      • Try rephrasing the request, narrowing the context, or splitting into smaller steps.",
-                            force=True,
-                        )
-                        agent._vprint(
-                            f"{agent.log_prefix}      • Configure a fallback provider so future blocks route automatically:",
-                            force=True,
-                        )
-                        agent._vprint(
-                            f"{agent.log_prefix}        son-of-anton fallback add   (interactive picker — same as `son-of-anton model`)",
                             force=True,
                         )
                     # TLS certificate failures are environment problems, not
@@ -5008,25 +4396,7 @@ def run_conversation(
                     ):
                         _retry.primary_recovery_attempted = True
                         retry_count = 0
-                        # Primary transport recovery starts a fresh attempt
-                        # cycle. Re-open fallback state so a follow-on 429 can
-                        # still activate fallback_providers after stale
-                        # pre-recovery fallback/credential-pool bookkeeping.
-                        _retry.has_retried_429 = False
-                        agent._fallback_index = 0
-                        agent._fallback_activated = False
                         continue
-                    # Try fallback before giving up entirely
-                    if agent._has_pending_fallback():
-                        agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                    if agent._try_activate_fallback():
-                        active_system_prompt = _sync_failover_system_message(
-                            agent, api_messages, active_system_prompt)
-                        retry_count = 0
-                        compaction_attempts = 0
-                        _retry.primary_recovery_attempted = False
-                        _retry.restart_with_rebuilt_messages = True
-                        break
                     # Terminal — flush buffered retry/fallback trace.
                     agent._flush_status_buffer()
                     _final_summary = agent._summarize_api_error(api_error)
@@ -5168,12 +4538,6 @@ def run_conversation(
                         )
                         if _billing_guidance:
                             _final_response += f"\n\n{_billing_guidance}"
-                        # Structured recovery descriptor so every surface renders
-                        # the same link + label from one signal (see helper).
-                        _billing_block = _billing_block_dict(
-                            _provider, _base, _model, _billing_guidance,
-                            unverified=_billing_unverified,
-                        )
                     else:
                         _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
                     if _is_thinking_timeout:
@@ -5238,30 +4602,10 @@ def run_conversation(
                             except (TypeError, ValueError):
                                 pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
-                _backoff_policy = None
-                if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
-                    wait_time, _backoff_policy = adaptive_rate_limit_backoff(
-                        retry_count,
-                        base_url=str(_base),
-                        model=_model,
-                        error=api_error,
-                        default_wait=wait_time,
+                if is_rate_limited:
+                    agent._buffer_status(
+                        f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})..."
                     )
-                if is_rate_limited or _is_zai_coding_overload:
-                    _policy_note = ""
-                    if _backoff_policy == "zai_coding_overload_long":
-                        _policy_note = " (Z.AI Coding overload adaptive long backoff)"
-                    elif _backoff_policy == "zai_coding_overload_short":
-                        _policy_note = " (Z.AI Coding overload short retry)"
-                    _wait_reason = "Provider overloaded" if _is_zai_coding_overload and not is_rate_limited else "Rate limited"
-                    _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
-                    # Normal retries are buffered to avoid noisy transient chatter. Long
-                    # Z.AI Coding waits are different: they can last minutes, so surface
-                    # progress immediately instead of making the TUI look frozen.
-                    if _backoff_policy == "zai_coding_overload_long":
-                        agent._emit_status(_rate_limit_status)
-                    else:
-                        agent._buffer_status(_rate_limit_status)
                 else:
                     agent._buffer_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
                 logger.warning(
@@ -5270,7 +4614,7 @@ def run_conversation(
                     retry_count,
                     max_retries,
                     agent._client_log_context(),
-                    _backoff_policy or "default",
+                    "default",
                     api_error,
                 )
                 # Sleep in small increments so we can respond to interrupts quickly
@@ -5359,17 +4703,6 @@ def run_conversation(
                 messages, user_message
             )
             agent._persist_user_message_idx = current_turn_user_idx
-            continue
-
-        if _retry.restart_with_rebuilt_messages:
-            # A stream stall or provider failure was escalated to the
-            # fallback chain (10 activation sites in the retry loop set this
-            # flag and break here).  Re-issue the API call against the
-            # now-active fallback provider.  Refund the budget/count for the
-            # stalled attempt so the fallback gets a fair turn.
-            api_call_count -= 1
-            agent.iteration_budget.refund()
-            _retry.restart_with_rebuilt_messages = False
             continue
 
         if _retry.restart_with_length_continuation:
@@ -6447,43 +5780,6 @@ def run_conversation(
                             "to avoid repeat charges"
                         )
 
-                    # ── Exhausted retries — try fallback provider ──
-                    # Before giving up with "(empty)", attempt to
-                    # switch to the next provider in the fallback
-                    # chain.  This covers the case where a model
-                    # (e.g. GLM-4.5-Air) consistently returns empty
-                    # due to context degradation or provider issues.
-                    if _truly_empty and agent._fallback_chain:
-                        logger.warning(
-                            "Empty response after %d retries — "
-                            "attempting fallback (model=%s, provider=%s)",
-                            agent._empty_content_retries, agent.model,
-                            agent.provider,
-                        )
-                        agent._buffer_status(
-                            "⚠️ Model returning empty responses — "
-                            "switching to fallback provider..."
-                        )
-                        if agent._try_activate_fallback():
-                            active_system_prompt = _sync_failover_system_message(
-                                agent, api_messages, active_system_prompt)
-                            agent._empty_content_retries = 0
-                            agent._buffer_status(
-                                f"↻ Switched to fallback: {agent.model} "
-                                f"({agent.provider})"
-                            )
-                            logger.info(
-                                "Fallback activated after empty responses: "
-                                "now using %s on %s",
-                                agent.model, agent.provider,
-                            )
-                            # This site sits directly in the OUTER iteration
-                            # loop (not the retry loop), so `continue` already
-                            # restarts the iteration against the fallback's
-                            # context window (#84733). A `break` here would
-                            # exit the outer loop and end the turn without
-                            # ever calling the fallback.
-                            continue
 
                     # Exhausted retries and fallback chain (or no
                     # fallback configured).  Fall through to the
@@ -6535,9 +5831,7 @@ def run_conversation(
                             agent.provider,
                         )
                         agent._emit_status(
-                            "❌ Model returned no content after all retries"
-                            + (" and fallback attempts." if agent._fallback_chain else
-                               ". No fallback providers configured.")
+                            "❌ Model returned no content after all retries."
                         )
 
                     # Deliver a labeled reasoning excerpt instead of a bare
@@ -6555,9 +5849,8 @@ def run_conversation(
                     if reasoning_text:
                         final_response = (
                             "⚠️ The model produced only internal reasoning and "
-                            "no final answer, despite retries"
-                            + (" and fallback" if agent._fallback_chain else "")
-                            + ". Its last reasoning, which may contain the "
+                            "no final answer, despite retries. Its last "
+                            "reasoning, which may contain the "
                             "answer:\n\n" + reasoning_preview
                         )
                     else:
@@ -6567,11 +5860,6 @@ def run_conversation(
                 # Reset retry counter/signature on successful content
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
-                # Successful content reached — surface the one-shot fallback
-                # switch notice (if a fallback activated this turn) before
-                # dropping the noisy retry buffer, so a provider/model switch
-                # stays visible even when the fallback succeeds.
-                agent._emit_pending_fallback_notice()
                 agent._clear_status_buffer()
 
                 from agent.agent_runtime_helpers import trailing_continue_intent

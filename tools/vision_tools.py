@@ -965,17 +965,6 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
             return True
         return False
 
-    # Check the provider's registered profile for the supports_vision flag.
-    # This covers vision-capable providers like xiaomi, minimax, etc. that
-    # aren't in the hardcoded list above.
-    try:
-        from providers import get_provider_profile
-        profile = get_provider_profile(p)
-        if profile is not None and profile.supports_vision:
-            return True
-    except Exception:
-        pass
-
     # Other vision-capable provider stacks. Conservative default: False.
     # Add explicit entries here as we verify each provider's tool-result
     # multimodal support empirically.

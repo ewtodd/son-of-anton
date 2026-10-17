@@ -106,41 +106,9 @@ def _resolve_safe_cwd(cwd: str) -> str:
 # Son of Anton-internal env vars that should NOT leak into terminal subprocesses.
 _SON_OF_ANTON_PROVIDER_ENV_FORCE_PREFIX = "_SON_OF_ANTON_FORCE_"
 
-# Son of Anton-managed AWS *inference* credentials for ``auth_type="aws_sdk"``
-# providers (Bedrock).  Scoped DELIBERATELY NARROW: this lists only the
-# Bedrock-specific bearer token, which is a Son of Anton inference secret exactly
-# analogous to ``OPENAI_API_KEY`` — nobody drives the ``aws``/``terraform``/
-# ``boto3`` toolchain off it, so stripping it from terminal/execute_code
-# subprocesses costs no user capability.
-#
-# The GENERAL AWS credential chain (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
-# AWS_SESSION_TOKEN, AWS_PROFILE, and the config/role pointers) is INTENTIONALLY
-# left inheritable.  The local terminal is the user's trusted operator shell; the agent having the same general AWS access the
-# user's own shell has is the intended posture, not a leak.  Hard-blocklisting
-# those vars would (a) regress every user who runs aws/terraform/cdk/boto3 in
-# the agent terminal — not just Bedrock users, since the registry is iterated
-# unconditionally — and (b) be unrecoverable, because env_passthrough.py
-# refuses to re-allow anything in this blocklist (GHSA-rhgp-j443-p4rf).  See
-# issue #32314 discussion.
-_AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({
-    "AWS_BEARER_TOKEN_BEDROCK",
-})
-
-
 def _build_provider_env_blocklist() -> frozenset:
-    """Derive the blocklist from provider, tool, and gateway config."""
+    """Derive the blocklist from tool and gateway config."""
     blocked: set[str] = set()
-
-    try:
-        from son_of_anton_cli.auth import PROVIDER_REGISTRY
-        for pconfig in PROVIDER_REGISTRY.values():
-            blocked.update(pconfig.api_key_env_vars)
-            if pconfig.auth_type == "aws_sdk":
-                blocked.update(_AWS_SDK_CREDENTIAL_ENV_VARS)
-            if pconfig.base_url_env_var:
-                blocked.add(pconfig.base_url_env_var)
-    except ImportError:
-        pass
 
     try:
         from son_of_anton_cli.config import OPTIONAL_ENV_VARS
@@ -225,16 +193,6 @@ def _build_provider_env_blocklist() -> frozenset:
         "VERCEL_PROJECT_ID",
         "VERCEL_TEAM_ID",
     })
-    # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT stripped.  It is set and
-    # owned by the user's Claude Code install (subscription OAuth), not a
-    # Son of Anton-managed inference credential — Claude subscription auth is not a
-    # working Son of Anton provider path.  Stripping it broke agent-spawned
-    # ``claude`` CLIs: the child fell through to the shared macOS Keychain /
-    # ``~/.claude/.credentials.json`` store and, on auth failure, cleared it,
-    # logging the user out of their interactive Claude sessions (#55878).
-    # It arrives via the registry loop above (anthropic api_key_env_vars),
-    # so remove it explicitly.
-    blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")
     return frozenset(blocked)
 
 

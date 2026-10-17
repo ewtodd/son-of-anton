@@ -23,8 +23,7 @@ import pytest
 
 import agent.model_metadata as mm
 from agent.chat_completion_helpers import _probe_endpoint_reasoning_decl
-from agent.reasoning_effort import EFFORT_LADDER, supported_efforts_for
-from providers import get_provider_profile
+from agent.reasoning_effort import EFFORT_LADDER, custom_reasoning_extras, supported_efforts_for
 
 GATEWAY = "http://gateway.invalid:4002/v1"
 
@@ -117,23 +116,14 @@ def gateway(monkeypatch):
     return fake
 
 
-@pytest.fixture
-def profile():
-    p = get_provider_profile("custom")
-    assert p is not None
-    return p
-
-
 def _probe(model, api_key="sk-route"):
     agent = SimpleNamespace(provider="custom", base_url=GATEWAY, model=model, api_key=api_key)
     _probe_endpoint_reasoning_decl(agent)
 
 
-def _sent(profile, model, effort):
-    _extra, top = profile.build_api_kwargs_extras(
-        reasoning_config={"enabled": True, "effort": effort},
-        model=model,
-        base_url=GATEWAY,
+def _sent(model, effort):
+    _extra, top = custom_reasoning_extras(
+        {"enabled": True, "effort": effort}, model=model, base_url=GATEWAY
     )
     return top.get("reasoning_effort")
 
@@ -159,18 +149,18 @@ def test_a_lookup_without_a_key_never_requests(gateway) -> None:
 @pytest.mark.parametrize(
     ("model", "listed"), [(DSV4, DSV4_EFFORTS), (QWEN, QWEN_EFFORTS), (API, API_EFFORTS)]
 )
-def test_every_level_sent_is_one_the_endpoint_listed(gateway, profile, model, listed) -> None:
+def test_every_level_sent_is_one_the_endpoint_listed(gateway, model, listed) -> None:
     _probe(model)
     for effort in EFFORT_LADDER:
         if effort == "none":
             continue  # the disable path, below
-        assert _sent(profile, model, effort) in listed, effort
+        assert _sent(model, effort) in listed, effort
 
 
-def test_clamping_never_escalates_without_an_alias(gateway, profile) -> None:
+def test_clamping_never_escalates_without_an_alias(gateway) -> None:
     _probe(QWEN)
     for effort in EFFORT_LADDER[1:]:
-        sent = _sent(profile, QWEN, effort)
+        sent = _sent(QWEN, effort)
         if effort in QWEN_EFFORTS:
             assert sent == effort
         else:
@@ -178,21 +168,21 @@ def test_clamping_never_escalates_without_an_alias(gateway, profile) -> None:
             assert sent == (weaker[-1] if weaker else QWEN_EFFORTS[1]), effort
 
 
-def test_a_listed_alias_decides_the_level(gateway, profile) -> None:
+def test_a_listed_alias_decides_the_level(gateway) -> None:
     _probe(DSV4)
     for asked, wire in DSV4_ALIASES.items():
-        assert _sent(profile, DSV4, asked) == wire
+        assert _sent(DSV4, asked) == wire
 
 
-def test_disabling_thinking_omits_none_where_the_endpoint_lacks_it(gateway, profile) -> None:
+def test_disabling_thinking_omits_none_where_the_endpoint_lacks_it(gateway) -> None:
     _probe(API)
-    _extra, top = profile.build_api_kwargs_extras(
-        reasoning_config={"enabled": False}, model=API, base_url=GATEWAY
+    _extra, top = custom_reasoning_extras(
+        {"enabled": False}, model=API, base_url=GATEWAY
     )
     assert "reasoning_effort" not in top
     _probe(DSV4)
-    _extra, top = profile.build_api_kwargs_extras(
-        reasoning_config={"enabled": False}, model=DSV4, base_url=GATEWAY
+    _extra, top = custom_reasoning_extras(
+        {"enabled": False}, model=DSV4, base_url=GATEWAY
     )
     assert top.get("reasoning_effort") == "none"
 
@@ -202,7 +192,7 @@ def test_the_picker_offers_the_listed_vocabulary(gateway) -> None:
     assert supported_efforts_for(QWEN, provider="custom", base_url=GATEWAY) == QWEN_EFFORTS
 
 
-def test_a_declared_set_wins_over_the_listed_one(gateway, profile, son_of_anton_home) -> None:
+def test_a_declared_set_wins_over_the_listed_one(gateway, son_of_anton_home) -> None:
     declared = ("low", "medium")
     (son_of_anton_home / "config.toml").write_text(
         f"""
@@ -216,11 +206,6 @@ reasoning_efforts = {list(declared)!r}
     )
     _probe(DSV4)
     for effort in EFFORT_LADDER[1:]:
-        assert _sent(profile, DSV4, effort) in declared, effort
+        assert _sent(DSV4, effort) in declared, effort
     assert supported_efforts_for(DSV4, provider="custom", base_url=GATEWAY) == declared
 
-
-def test_other_providers_are_not_probed(gateway) -> None:
-    agent = SimpleNamespace(provider="openrouter", base_url=GATEWAY, model=DSV4, api_key="k")
-    _probe_endpoint_reasoning_decl(agent)
-    assert gateway.calls == []

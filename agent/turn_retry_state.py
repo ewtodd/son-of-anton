@@ -2,17 +2,15 @@
 
 The inner retry loop in ``run_conversation`` (``while retry_count <
 max_retries``) makes several distinct recovery attempts on a single model API
-call: a credential-pool 429 retry, a per-provider OAuth refresh (anthropic,
-nous), a long-context compaction restart, a length-
-continuation restart, and a handful of format-recovery branches (thinking-
-signature stripping, multimodal-tool-content stripping, llama.cpp grammar
-fallback, image shrink, 1M-beta header).
+call: a compaction restart, a length-continuation restart, a transport
+rebuild, and a handful of format-recovery branches (multimodal-tool-content
+stripping, llama.cpp grammar fallback, image shrink).
 
 Each of those branches is guarded by a one-shot boolean so it fires at most
 once per attempt. They used to be ~16 bare ``*_attempted`` / ``has_retried_*``
 / ``restart_with_*`` locals declared inline before the loop and threaded
 through its 2,400-line body. ``TurnRetryState`` collapses them into one object
-the loop mutates in place (``state.anthropic_auth_retry_attempted = True``), giving
+the loop mutates in place (``state.image_shrink_retry_attempted = True``), giving
 the recovery bookkeeping a single named, testable home.
 
 Loop-control variables (``retry_count``, ``max_retries``,
@@ -39,35 +37,17 @@ class TurnRetryState:
     to decide whether to rebuild the request and retry.
     """
 
-    # ── Per-provider OAuth / credential refresh guards ───────────────────
-    anthropic_auth_retry_attempted: bool = False
-
     # ── Format / payload recovery guards ─────────────────────────────────
-    thinking_sig_retry_attempted: bool = False
-    native_compaction_reject_retry_attempted: bool = False
     image_shrink_retry_attempted: bool = False
     multimodal_tool_content_retry_attempted: bool = False
-    oauth_1m_beta_retry_attempted: bool = False
     llama_cpp_grammar_retry_attempted: bool = False
 
-    # ── Transport / rate-limit recovery ──────────────────────────────────
+    # ── Transport recovery ───────────────────────────────────────────────
     primary_recovery_attempted: bool = False
-    has_retried_429: bool = False
-
-    # ── Auth-failure provider failover ───────────────────────────────────
-    # Set once we've escalated a persistent 401/403 (after the per-provider
-    # credential-refresh attempt above failed) to the fallback chain, so we
-    # don't loop on the same auth failover within one attempt.
-    auth_failover_attempted: bool = False
 
     # ── Restart signals (read by the outer loop after the attempt) ───────
     restart_with_compacted_messages: bool = False
     restart_with_length_continuation: bool = False
-    # Set when a content-filter stream stall (e.g. MiniMax "new_sensitive")
-    # has been escalated to the fallback chain: the partial-stream content
-    # was rolled back off ``messages`` and the loop should re-issue the API
-    # call against the newly-activated provider (#32421).
-    restart_with_rebuilt_messages: bool = False
     # A user correction cancelled the in-flight provider request. The outer
     # loop must append a role-safe checkpoint + user message, rebuild the API
     # payload, and retry the same logical iteration.

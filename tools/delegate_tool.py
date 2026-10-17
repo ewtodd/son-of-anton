@@ -1380,13 +1380,10 @@ def _build_child_agent(
 
         child_thinking_cb = _child_thinking
 
-    # The child inherits the parent's endpoint, credentials, reasoning and
-    # fallback provider chain (so subagents recover from rate limits exactly
-    # like the top-level agent does).
+    # The child inherits the parent's endpoint, credentials and reasoning.
     effective_model = model or parent_agent.model
     effective_provider = getattr(parent_agent, "provider", None)
     effective_base_url = _inherit_parent_base_url(parent_agent, parent_agent.base_url)
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
 
     child_max_tokens = getattr(parent_agent, "max_tokens", None)
     child_optional_kwargs: Dict[str, Any] = {}
@@ -1440,7 +1437,6 @@ def _build_child_agent(
 
                 reasoning_config=getattr(parent_agent, "reasoning_config", None),
                 prefill_messages=getattr(parent_agent, "prefill_messages", None),
-                fallback_model=parent_fallback,
                 enabled_toolsets=child_toolsets,
                 disabled_toolsets=child_disabled_toolsets,
                 quiet_mode=True,
@@ -1502,14 +1498,6 @@ def _build_child_agent(
     parent_sid = getattr(parent_agent, "session_id", None)
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
         child._session_init_model_config["_delegate_from"] = parent_sid
-
-    # Share a credential pool with the child when possible so subagents can
-    # rotate credentials on rate limits instead of getting pinned to one key.
-    child_pool = _resolve_child_credential_pool(
-        effective_provider, parent_agent, effective_base_url
-    )
-    if child_pool is not None:
-        child._credential_pool = child_pool
 
     # Register child for interrupt propagation
     if hasattr(parent_agent, "_active_children"):
@@ -1748,18 +1736,6 @@ def _run_single_child(
     _saved_tool_names = getattr(
         child, "_delegate_saved_tool_names", list(model_tools._last_resolved_tool_names)
     )
-
-    child_pool = getattr(child, "_credential_pool", None)
-    leased_cred_id = None
-    if child_pool is not None:
-        leased_cred_id = child_pool.acquire_lease()
-        if leased_cred_id is not None:
-            try:
-                leased_entry = child_pool.current()
-                if leased_entry is not None and hasattr(child, "_swap_credential"):
-                    child._swap_credential(leased_entry)
-            except Exception as exc:
-                logger.debug("Failed to bind child to leased credential: %s", exc)
 
     # Heartbeat: periodically propagate child activity to the parent so the
     # gateway inactivity timeout doesn't fire while the subagent is working.
@@ -2446,12 +2422,6 @@ def _run_single_child(
         # child was never registered (e.g. ID missing on test doubles).
         if _subagent_id:
             _unregister_subagent(_subagent_id, agent=child)
-
-        if child_pool is not None and leased_cred_id is not None:
-            try:
-                child_pool.release_lease(leased_cred_id)
-            except Exception as exc:
-                logger.debug("Failed to release credential lease: %s", exc)
 
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
@@ -3364,89 +3334,6 @@ def delegate_task(
     return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
 
 
-def _resolve_child_credential_pool(
-    effective_provider: Optional[str],
-    parent_agent,
-    effective_base_url: Optional[str] = None,
-):
-    """Resolve a credential pool for the child agent.
-
-    Rules:
-    1. Same provider as the parent -> share the parent's pool so cooldown state
-       and rotation stay synchronized.
-    2. Different provider -> try to load that provider's own pool.
-    3. No pool available -> return None and let the child keep the inherited
-       fixed credential behavior.
-
-    Custom endpoints are a special case: every direct ``delegation.base_url``
-    runtime collapses to ``provider="custom"``, so bare provider equality would
-    treat two *different* custom endpoints as interchangeable and let the child
-    inherit the parent's pool. Leasing from that pool then overwrites the
-    child's delegated ``base_url`` with the parent's endpoint (issue #7833).
-    We therefore resolve custom runtimes by endpoint identity (the
-    ``custom:<name>`` pool key derived from the base_url) and only share the
-    parent's pool when both resolve to the *same* custom endpoint.
-    """
-    if not effective_provider:
-        return getattr(parent_agent, "_credential_pool", None)
-
-    parent_provider = getattr(parent_agent, "provider", None) or ""
-    parent_pool = getattr(parent_agent, "_credential_pool", None)
-
-    # Custom endpoints: distinguish by endpoint identity, not the bare "custom"
-    # provider string. Two custom runtimes are only interchangeable when they
-    # resolve to the same custom:<name> pool key.
-    if effective_provider == "custom":
-        try:
-            from agent.credential_pool import get_custom_provider_pool_key, load_pool
-
-            child_key = get_custom_provider_pool_key(effective_base_url)
-            if child_key is None:
-                # Unregistered endpoint (raw delegation.base_url with no
-                # matching custom_providers entry) -> no shared pool exists.
-                # Keep the child's fixed delegated credential rather than
-                # risk inheriting the parent's custom endpoint.
-                return None
-
-            # Reuse the parent's pool only when it is the same custom endpoint.
-            parent_key = get_custom_provider_pool_key(
-                getattr(parent_agent, "base_url", None)
-            )
-            if (
-                parent_pool is not None
-                and parent_provider == "custom"
-                and parent_key is not None
-                and parent_key == child_key
-            ):
-                return parent_pool
-
-            pool = load_pool(child_key)
-            if pool is not None and pool.has_credentials():
-                return pool
-        except Exception as exc:
-            logger.debug(
-                "Could not resolve custom credential pool for child endpoint '%s': %s",
-                effective_base_url,
-                exc,
-            )
-        return None
-
-    if parent_pool is not None and effective_provider == parent_provider:
-        return parent_pool
-
-    try:
-        from agent.credential_pool import load_pool
-
-        pool = load_pool(effective_provider)
-        if pool is not None and pool.has_credentials():
-            return pool
-    except Exception as exc:
-        logger.debug(
-            "Could not load credential pool for child provider '%s': %s",
-            effective_provider,
-            exc,
-        )
-    return None
 
 
 def _load_config() -> dict:

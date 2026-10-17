@@ -39,14 +39,6 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-# Presence-sensitive sentinel: /fast stores "priority" or None (explicit
-# normal), so key PRESENCE — not value truthiness — decides whether the
-# override applies.  ``_UNSET_TIER`` means "no override recorded".
-_UNSET_TIER = object()
-
-# Public alias for callers outside this module.
-SERVICE_TIER_UNSET = _UNSET_TIER
-
 
 @dataclass
 class TurnState:
@@ -97,8 +89,6 @@ class ConversationState:
     one_turn_restore: Optional[Dict[str, Any]] = None
     # /reasoning per-session override.
     reasoning_override: Optional[Dict[str, Any]] = None
-    # /fast per-session override: "priority" or None; _UNSET_TIER = absent.
-    service_tier_override: Any = _UNSET_TIER
     # Last successfully-resolved non-empty model (#35314 recovery).
     last_resolved_model: str = ""
     # Busy-follow-up overflow FIFO (adapter slot holds the head).
@@ -118,7 +108,6 @@ class ConversationState:
         self.model_override = None
         self.one_turn_restore = None
         self.reasoning_override = None
-        self.service_tier_override = _UNSET_TIER
         self.last_resolved_model = ""
         self.queued_events = []
         self.sidecar_notes = []
@@ -214,10 +203,6 @@ def _present_not_none(v: Any) -> bool:
 
 def _present_nonzero(v: Any) -> bool:
     return bool(v)
-
-
-def _present_not_unset(v: Any) -> bool:
-    return v is not _UNSET_TIER
 
 
 class SessionFieldView(MutableMapping):
@@ -379,9 +364,6 @@ LEGACY_FIELD_SPECS: Dict[str, _FieldSpec] = {
     ),
     "_session_reasoning_overrides": _FieldSpec(
         "conversation", "reasoning_override", lambda: None, _present_not_none
-    ),
-    "_session_service_tier_overrides": _FieldSpec(
-        "conversation", "service_tier_override", lambda: _UNSET_TIER, _present_not_unset
     ),
     "_last_resolved_model": _FieldSpec(
         "conversation", "last_resolved_model", str, _present_nonzero

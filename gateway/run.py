@@ -54,7 +54,6 @@ from agent.turn_context import (
     compaction_made_progress,
 )
 from son_of_anton_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
-from son_of_anton_cli.fallback_config import get_fallback_chain
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -2160,7 +2159,6 @@ from gateway.turn_lease import (
     TurnLeaseTimeoutError,
 )
 from gateway.session_state import (
-    SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET,
     SessionState,
     legacy_dict_property,
     legacy_lease_token_property,
@@ -2233,7 +2231,6 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     "_session_model_overrides",
     "_pending_one_turn_model_restores",
     "_session_reasoning_overrides",
-    "_session_service_tier_overrides",
     "_pending_model_notes",
     "_last_resolved_model",
     "_queued_events",
@@ -2258,26 +2255,14 @@ def _resolve_runtime_agent_kwargs() -> dict:
     var lookups internally for legacy compatibility, but the gateway does
     not consult environment variables for behavioral config — config.toml
     is authoritative.
-
-    If the primary provider fails with an authentication error, attempt to
-    resolve credentials using the fallback provider chain from config.toml
-    before giving up.
     """
     from son_of_anton_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
         _get_model_config,
     )
-    from son_of_anton_cli.auth import AuthError
-
     try:
         runtime = resolve_runtime_provider()
-    except AuthError as auth_exc:
-        logger.warning("Primary provider auth failed: %s — trying fallback", auth_exc)
-        fb_config = _try_resolve_fallback_provider()
-        if fb_config is not None:
-            return fb_config
-        raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
@@ -2307,9 +2292,6 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "provider": runtime.get("provider"),
         "requested_provider": runtime.get("requested_provider"),
         "api_mode": runtime.get("api_mode"),
-        "command": runtime.get("command"),
-        "args": list(runtime.get("args") or []),
-        "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
     }
 
@@ -2475,75 +2457,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "provider": runtime.get("provider"),
         "requested_provider": runtime.get("requested_provider"),
         "api_mode": runtime.get("api_mode"),
-        "command": runtime.get("command"),
-        "args": list(runtime.get("args") or []),
-        "credential_pool": runtime.get("credential_pool"),
     }
-
-
-def _credential_pool_for_provider(provider: Optional[str]):
-    """Return the live credential pool for a provider id (e.g. ``custom:hyper``)."""
-    if not provider or not str(provider).strip():
-        return None
-    try:
-        return _resolve_runtime_agent_kwargs_for_provider(str(provider).strip()).get(
-            "credential_pool"
-        )
-    except Exception:
-        logger.debug(
-            "Failed to resolve credential pool for provider=%s",
-            provider,
-            exc_info=True,
-        )
-        return None
-
-
-def _try_resolve_fallback_provider() -> dict | None:
-    """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
-    from son_of_anton_cli.runtime_provider import resolve_runtime_provider
-    try:
-        # Canonical gateway loader: managed overlay + ${VAR} expansion +
-        # root-model normalization now reach the fallback chain too (a raw
-        # read here used to miss administrator-pinned fallback_providers).
-        cfg = _load_gateway_runtime_config()
-        fb_list = get_fallback_chain(cfg)
-        if not fb_list:
-            return None
-        for entry in fb_list:
-            try:
-                from son_of_anton_cli.fallback_config import resolve_entry_api_key
-
-                runtime = resolve_runtime_provider(
-                    requested=entry.get("provider"),
-                    explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=resolve_entry_api_key(entry),
-                )
-                # Log the literal `provider` key from config, not the resolved
-                # runtime category — an Ollama fallback resolves through the
-                # OpenAI-compatible path and would otherwise be logged as
-                # "openrouter", contradicting the operator's config (#32790).
-                logger.info(
-                    "Fallback provider resolved: %s model=%s",
-                    entry.get("provider") or runtime.get("provider"),
-                    entry.get("model"),
-                )
-                return {
-                    "api_key": runtime.get("api_key"),
-                    "base_url": runtime.get("base_url"),
-                    "provider": runtime.get("provider"),
-                    "requested_provider": runtime.get("requested_provider"),
-                    "api_mode": runtime.get("api_mode"),
-                    "command": runtime.get("command"),
-                    "args": list(runtime.get("args") or []),
-                    "credential_pool": runtime.get("credential_pool"),
-                    "model": entry.get("model"),
-                }
-            except Exception as fb_exc:
-                logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
-                continue
-    except Exception:
-        pass
-    return None
 
 
 def _event_media_type_at(event, index: int) -> str:
@@ -3793,9 +3707,6 @@ class TurnRunner:
             model=model,
         )
         self._runner._reasoning_config = reasoning_config
-        self._runner._service_tier = self._runner._resolve_session_service_tier(
-            source=ctx.source, session_key=ctx.session_key
-        )
         # Set up stream consumer for token streaming or interim commentary.
         _stream_consumer = None
         _stream_delta_cb = None
@@ -4067,18 +3978,6 @@ class TurnRunner:
                         logger.debug("Reusing cached agent for session %s", ctx.session_key)
                         reused_cached_agent = True
 
-        # Lock released — refresh the fallback chain from disk for the
-        # reused agent OUTSIDE the cache lock (config.toml read is disk
-        # I/O; the idle-sweep watcher contends on this lock and stalls
-        # Discord heartbeats — same reasoning as #52197).  A chain
-        # configured after this agent was cached (or after gateway start)
-        # must reach the next turn (#60955).  Per-session turn
-        # serialization (_running_agents) keeps this safe post-lock.
-        if reused_cached_agent and agent is not None:
-            self._runner._apply_fallback_chain_to_agent(
-                agent, self._runner._refresh_fallback_model(),
-            )
-
         # Lock released — now schedule cleanup of any cross-process-evicted
         # agent on a daemon thread so memory-provider shutdown / socket
         # teardown never blocks the gateway event loop or the cache lock
@@ -4112,8 +4011,6 @@ class TurnRunner:
                 ephemeral_system_prompt=combined_ephemeral or None,
                 prefill_messages=self._runner._prefill_messages or None,
                 reasoning_config=reasoning_config,
-                service_tier=self._runner._service_tier,
-                request_overrides=turn_route.get("request_overrides"),
                 session_id=ctx.session_id,
                 platform=platform_key,
                 user_id=ctx.source.user_id,
@@ -4125,8 +4022,6 @@ class TurnRunner:
                 thread_id=ctx.source.thread_id,
                 gateway_session_key=ctx.session_key,
                 session_db=getattr(self._runner._session_db, "_db", self._runner._session_db),
-                # Reload from disk — do not reuse the startup snapshot (#60955).
-                fallback_model=self._runner._refresh_fallback_model(),
                 skip_context_files=skip_context_files,
                 # Keep the persona even with minimal context: soul identity is
                 # a single small file, not part of the expensive walk.
@@ -4187,8 +4082,7 @@ class TurnRunner:
         agent.notice_clear_callback = None
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config = reasoning_config
-        agent.service_tier = self._runner._service_tier
-        agent.request_overrides = turn_route.get("request_overrides") or {}
+        agent.request_overrides = {}
         # Must-deliver notes for THIS turn ride the current user message
         # (api_content sidecar), never the system prompt: staged by
         # _handle_message_with_agent (auto-reset note, first-contact
@@ -4960,9 +4854,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         "_pending_one_turn_model_restores"
     )
     _session_reasoning_overrides = legacy_dict_property("_session_reasoning_overrides")
-    _session_service_tier_overrides = legacy_dict_property(
-        "_session_service_tier_overrides"
-    )
     _last_resolved_model = legacy_dict_property("_last_resolved_model")
     _queued_events = legacy_dict_property("_queued_events")
     _pending_turn_sidecar_notes = legacy_dict_property("_pending_turn_sidecar_notes")
@@ -5041,12 +4932,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self._prefill_messages = self._load_prefill_messages()
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
-        self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._cron_drain_timeout = self._load_cron_drain_timeout()
-        self._fallback_model = self._load_fallback_model()
 
         # Wire process registry into session store for reset protection.
         # A background process older than the configured threshold (default 24h,
@@ -5711,13 +5600,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
                 "max_tokens": override.get("max_tokens"),
-                "credential_pool": override.get("credential_pool"),
             }
             if override_runtime.get("api_key"):
-                if override_runtime.get("credential_pool") is None:
-                    override_runtime["credential_pool"] = _credential_pool_for_provider(
-                        override.get("provider")
-                    )
                 logger.debug(
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
                     resolved_session_key or "", model, override_model,
@@ -5787,22 +5671,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 resolved_session_key, model, runtime_kwargs
             )
 
-        # When the config has no model.default but a provider was resolved
-        # (e.g. a credential was added without running `son-of-anton model`),
-        # fall back to the provider's first catalog model so the API call
-        # doesn't fail with "model must be a non-empty string".
-        if not model and runtime_kwargs.get("provider"):
-            try:
-                from son_of_anton_cli.models import get_default_model_for_provider
-                model = get_default_model_for_provider(runtime_kwargs["provider"])
-                if model:
-                    logger.info(
-                        "No model configured — defaulting to %s for provider %s",
-                        model, runtime_kwargs["provider"],
-                    )
-            except Exception:
-                pass
-
         # Final safety net (#35314): if resolution still produced an empty
         # model — e.g. a transient config-cache miss during a post-interrupt
         # recovery turn returned an empty user_config — reuse the last model we
@@ -5843,22 +5711,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
+        Always uses the session's primary model/provider.
         """
-        from son_of_anton_cli.models import resolve_fast_mode_overrides
-
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
             "base_url": runtime_kwargs.get("base_url"),
             "provider": runtime_kwargs.get("provider"),
             "requested_provider": runtime_kwargs.get("requested_provider"),
             "api_mode": runtime_kwargs.get("api_mode"),
-            "command": runtime_kwargs.get("command"),
-            "args": list(runtime_kwargs.get("args") or []),
-            "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
         route = {
@@ -5870,21 +5730,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 runtime["requested_provider"],
                 runtime["base_url"],
                 runtime["api_mode"],
-                runtime["command"],
-                tuple(runtime["args"]),
             ),
         }
-
-        service_tier = getattr(self, "_service_tier", None)
-        if not service_tier:
-            route["request_overrides"] = {}
-            return route
-
-        try:
-            overrides = resolve_fast_mode_overrides(route["model"])
-        except Exception:
-            overrides = None
-        route["request_overrides"] = overrides or {}
         return route
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
@@ -5908,7 +5755,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             "provider": getattr(agent, "provider", None),
             "base_url": getattr(agent, "base_url", None),
             "api_mode": getattr(agent, "api_mode", None),
-            "fallback_active": bool(getattr(agent, "_fallback_activated", False)),
         }
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
 
@@ -6467,54 +6313,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             None if reasoning_config is None else dict(reasoning_config)
         )
 
-    def _resolve_session_service_tier(
-        self,
-        source=None,
-        session_key: Optional[str] = None,
-    ) -> Optional[str]:
-        """Resolve the effective service tier for a session.
-
-        A session-scoped /fast override wins over the config default. The
-        override dict stores "priority" or None (explicit normal), so key
-        presence — not value truthiness — decides whether it applies.
-        """
-        resolved_session_key = session_key
-        if not resolved_session_key and source is not None:
-            try:
-                resolved_session_key = self._session_key_for_source(source)
-            except Exception:
-                resolved_session_key = None
-
-        if resolved_session_key:
-            _t_state = self._peek_session_state(resolved_session_key)
-            if (
-                _t_state is not None
-                and _t_state.conversation.service_tier_override
-                is not _SERVICE_TIER_UNSET
-            ):
-                return _t_state.conversation.service_tier_override
-        return self._load_service_tier()
-
-
-    @staticmethod
-    def _load_service_tier() -> str | None:
-        """Load Priority Processing setting from config.toml.
-
-        Reads agent.service_tier from config.toml. Accepted values mirror the CLI:
-        "fast"/"priority"/"on" => "priority", while "normal"/"off" disables it.
-        Returns None when unset or unsupported.
-        """
-        cfg = _load_gateway_runtime_config()
-        raw = str(cfg_get(cfg, "agent", "service_tier", default="") or "").strip()
-
-        value = raw.lower()
-        if not value or value in {"normal", "default", "standard", "off", "none"}:
-            return None
-        if value in {"fast", "priority", "on"}:
-            return "priority"
-        logger.warning("Unknown service_tier '%s', ignoring", raw)
-        return None
-
     @staticmethod
     def _load_show_reasoning() -> bool:
         """Load show_reasoning toggle from config.toml display section."""
@@ -6619,102 +6417,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return "concise"
         return mode
 
-    @staticmethod
-    def _load_fallback_model() -> list | None:
-        """Load fallback provider chain from config.toml.
-
-        Returns the merged effective chain from ``fallback_providers`` plus any
-        legacy ``fallback_model`` entries. ``fallback_providers`` stays first
-        when both keys are present.
-        """
-        try:
-            # Canonical gateway loader (fail-open): managed overlay + ${VAR}
-            # expansion now apply to the fallback chain too.
-            cfg = _load_gateway_runtime_config()
-            fb = get_fallback_chain(cfg)
-            if fb:
-                return fb
-        except Exception:
-            pass
-        return None
-
-    def _refresh_fallback_model(self) -> list | None:
-        """Re-read fallback_providers from disk for the next agent create/reuse.
-
-        Cron already does this per job via ``get_fallback_chain``; the gateway
-        previously froze ``self._fallback_model`` at process start, so a chain
-        configured (or changed) after ``son-of-anton gateway`` was running never
-        reached messaging sessions even though the same process's cron jobs
-        fell back correctly. Fixes #60955.
-
-        A TRANSIENT read/parse failure (user mid-edit of config.toml with a
-        non-atomic write) keeps the last known-good chain instead of wiping a
-        cached agent's working fallback for that turn.  Only a successful read
-        that genuinely lacks the key clears the chain.
-        """
-        try:
-            from son_of_anton_cli.config import read_user_config_raw
-            cfg_path = _son_of_anton_home / "config.toml"
-            if not cfg_path.exists():
-                self._fallback_model = None
-                return self._fallback_model
-            # Raw primitive (raises on parse failure) is required here: the
-            # canonical fail-open loader would return {} on a torn mid-edit
-            # write and WIPE the last known-good chain. The overlay/expansion
-            # below fixes the managed-scope/${VAR} drift without losing that.
-            cfg = read_user_config_raw(cfg_path)
-            try:
-                from son_of_anton_cli.config import _expand_env_vars
-                expanded = _expand_env_vars(cfg)
-                if isinstance(expanded, dict):
-                    cfg = expanded
-            except Exception:
-                pass
-        except Exception:
-            # Transient failure — keep last known-good chain.
-            logger.debug(
-                "fallback_providers refresh: config.toml read failed; "
-                "keeping last known-good chain", exc_info=True,
-            )
-            return self._fallback_model
-        self._fallback_model = get_fallback_chain(cfg) or None
-        return self._fallback_model
-
-    @staticmethod
-    def _apply_fallback_chain_to_agent(agent: Any, chain: list | None) -> None:
-        """Keep a cached agent's fallback chain aligned with current config.
-
-        Skips rewrite while a cooldown is holding the agent on an already-
-        activated fallback provider — ``restore_primary_runtime`` owns that
-        turn-scoped lifecycle. When primary is active (or cooldown expired),
-        replace the chain so mid-uptime ``fallback_providers`` edits take
-        effect without requiring a gateway restart (#60955).
-        """
-        if agent is None:
-            return
-        new_chain = list(chain or [])
-        rate_limited_until = getattr(agent, "_rate_limited_until", 0) or 0
-        if (
-            getattr(agent, "_fallback_activated", False)
-            and rate_limited_until > time.monotonic()
-        ):
-            return
-        old_chain = list(getattr(agent, "_fallback_chain", []) or [])
-        agent._fallback_chain = new_chain
-        agent._fallback_model = new_chain[0] if new_chain else None
-        if not getattr(agent, "_fallback_activated", False):
-            agent._fallback_index = 0
-        # A config edit signals the user changed something — drop the
-        # session-scoped unavailability memo so re-configured entries
-        # (e.g. credentials added mid-uptime for a previously-failing
-        # provider) get retried instead of staying suppressed for the
-        # cached agent's lifetime.  Only on actual content change, so
-        # the per-message no-op refresh keeps the memo's rate-limiting
-        # benefit (#60955).
-        if new_chain != old_chain:
-            unavailable = getattr(agent, "_unavailable_fallback_keys", None)
-            if unavailable:
-                unavailable.clear()
 
     def _snapshot_running_agents(self) -> Dict[str, Any]:
         return {
@@ -16105,7 +15807,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 source=source, model=model
             )
             self._reasoning_config = reasoning_config
-            self._service_tier = self._resolve_session_service_tier(source=source)
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             # Enrich the prompt with image descriptions so the background
@@ -16135,8 +15836,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     reasoning_config=reasoning_config,
-                    service_tier=self._service_tier,
-                    request_overrides=turn_route.get("request_overrides"),
                     session_id=task_id,
                     platform=platform_key,
                     user_id=source.user_id,
@@ -16147,8 +15846,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     session_db=getattr(self._session_db, "_db", self._session_db),
-                    # Reload from disk — do not reuse the startup snapshot (#60955).
-                    fallback_model=self._refresh_fallback_model(),
                 )
                 try:
                     return agent.run_conversation(
@@ -18910,7 +18607,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
-                override["credential_pool"] = runtime.get("credential_pool")
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
             except Exception:
@@ -19096,18 +18792,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
-        for key in ("provider", "api_key", "base_url", "api_mode", "credential_pool"):
+        for key in ("provider", "api_key", "base_url", "api_mode"):
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
-        if (
-            runtime_kwargs.get("api_key")
-            and runtime_kwargs.get("credential_pool") is None
-            and override.get("provider")
-        ):
-            runtime_kwargs["credential_pool"] = _credential_pool_for_provider(
-                override.get("provider")
-            )
         return model, runtime_kwargs
 
     def _snapshot_session_model_override(self, session_key: str) -> dict:
@@ -19132,12 +18820,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if _rst_state is not None:
                 _rst_state.conversation.model_override = None
         self._evict_cached_agent(session_key)
-
-    def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
-        """Return True if *agent_model* matches an active /model session override."""
-        _ims_state = self._peek_session_state(session_key)
-        override = _ims_state.conversation.model_override if _ims_state else None
-        return override is not None and override.get("model") == agent_model
 
     def _release_running_agent_state(
         self,
@@ -21040,42 +20722,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     "history_offset": 0,
                     "failed": True,
                 }
-
-            # Track fallback model state: if the agent switched to a
-            # fallback model during this run, persist it so /model shows
-            # the actually-active model instead of the config default.
-            # Skip eviction when the run failed — evicting a failed agent
-            # forces MCP reinit on the next message for no benefit (the
-            # same error will recur).  This was the root cause of #7130:
-            # a bad model ID triggered fallback → eviction → recreation →
-            # MCP reinit → same 400 → loop, burning 91% CPU for hours.
-            _agent = agent_holder[0]
-            _result_for_fb = result_holder[0]
-            _run_failed = _result_for_fb.get("failed") if _result_for_fb else False
-            if _agent is not None and hasattr(_agent, 'model') and not _run_failed:
-                _cfg_model = _resolve_gateway_model()
-                # Normalize _cfg_model the same way AIAgent.__init__ does, so a
-                # vendor-prefixed config value (e.g. "deepseek/deepseek-v4-pro")
-                # matches the agent's stripped model ("deepseek-v4-pro") on
-                # native providers. Without this, _agent.model != _cfg_model is
-                # always true for vendor-prefixed config and the cached agent is
-                # evicted on every successful turn — destroying prompt caching.
-                # Aggregators (openrouter, etc.) keep the vendor/model slug, so
-                # they're left untouched.
-                try:
-                    from son_of_anton_cli.model_normalize import (
-                        _AGGREGATOR_PROVIDERS,
-                        normalize_model_for_provider,
-                    )
-                    _agent_provider = getattr(_agent, 'provider', '') or ''
-                    if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
-                        _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
-                except Exception:
-                    pass
-                if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
-                    # Fallback activated on a successful run — evict cached
-                    # agent so the next message retries the primary model.
-                    self._evict_cached_agent(session_key)
 
             # Check if we were interrupted OR have a queued follow-up.
             result = result_holder[0]

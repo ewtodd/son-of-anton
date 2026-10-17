@@ -68,9 +68,6 @@ class FailoverReason(enum.Enum):
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
 
     # Provider-specific
-    thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
-    long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
-    oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
 
     # Catch-all
@@ -375,31 +372,6 @@ _MODEL_NOT_FOUND_PATTERNS = [
 ]
 
 
-def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
-    """True when a bare model id is only known to the provider as ``vendor/id``.
-
-    Some providers answer a malformed model id with a naked 404 that names
-    nothing — NVIDIA NIM returns ``404 page not found`` for a bare
-    ``nemotron-3-ultra-550b-a55b``, indistinguishable from a bad endpoint
-    path. Consulting the curated catalogue tells the two apart: if the id
-    carries no ``/`` but the catalogue has exactly one entry ending in
-    ``/<id>``, the prefix was dropped and the failure is deterministic.
-
-    Never guesses — an id absent from the catalogue (a local NIM container,
-    a proxied model) returns False so genuine endpoint problems keep their
-    retryable ``unknown`` classification.
-    """
-    name = (model or "").strip()
-    if not name or "/" in name:
-        return False
-    try:
-        from son_of_anton_cli.model_normalize import suggest_prefixed_model_id
-
-        return bool(suggest_prefixed_model_id((provider or "").strip(), name))
-    except Exception:
-        return False
-
-
 # Malformed-message-array 400s.  Deterministic request-shape rejections that
 # describe the *transcript* being invalid, not a parameter.  The canonical
 # case: a stream dies mid-response and Son of Anton persists a content-less
@@ -540,8 +512,6 @@ _AUTH_PATTERNS = [
     "token revoked",
     "access denied",
 ]
-
-# Anthropic thinking block signature patterns
 
 # Message-string patterns that indicate a provider-side timeout even when
 # the exception type is generic (e.g. RuntimeError from a local shim that
@@ -851,70 +821,6 @@ def classify_api_error(
             should_fallback=True,
         )
 
-    # Anthropic thinking block recovery (400).  Two distinct failure modes,
-    # same recovery (strip all reasoning_details and retry without thinking
-    # blocks — see the thinking_signature handler in conversation_loop.py):
-    #   1. Signature mismatch: a thinking block is signed against the full
-    #      turn content; any upstream mutation (context compaction, session
-    #      truncation, message merging) invalidates the signature.
-    #      Pattern: "signature" + "thinking".
-    #   2. Frozen-block mutation: Anthropic rejects any change to the
-    #      thinking/redacted_thinking blocks in the *latest* assistant
-    #      message — "`thinking` or `redacted_thinking` blocks in the latest
-    #      assistant message cannot be modified. These blocks must remain as
-    #      they were in the original response."  This carries no "signature"
-    #      token, so the original pattern missed it and the turn hard-aborted
-    #      as a non-retryable client error instead of self-healing.
-    #      Pattern: "thinking" + ("cannot be modified" | "must remain as they were").
-    # Don't gate on provider — OpenRouter proxies Anthropic errors, so the
-    # provider may be "openrouter" even though the error is Anthropic-specific.
-    # The combined patterns are unique enough.
-    if (
-        status_code == 400
-        and "thinking" in error_msg
-        and (
-            "signature" in error_msg
-            or "cannot be modified" in error_msg
-            or "must remain as they were" in error_msg
-        )
-    ):
-        return _result(
-            FailoverReason.thinking_signature,
-            retryable=True,
-            should_compact=False,
-        )
-
-    # Anthropic long-context tier gate (429 "extra usage" + "long context")
-    if (
-        status_code == 429
-        and "extra usage" in error_msg
-        and "long context" in error_msg
-    ):
-        return _result(
-            FailoverReason.long_context_tier,
-            retryable=True,
-            should_compact=True,
-        )
-
-    # Anthropic OAuth subscription rejects the 1M-context beta header.
-    # Observed error body: "The long context beta is not yet available for
-    # this subscription." Returned as HTTP 400 from native Anthropic when
-    # the subscription doesn't include 1M context, even though the request
-    # carries ``anthropic-beta: context-1m-2025-08-07``. The recovery path
-    # in run_agent.py rebuilds the Anthropic client with the beta stripped
-    # and retries once. Pattern is narrow enough that it won't collide with
-    # the 429 tier-gate pattern above (different status, different phrase).
-    if (
-        status_code == 400
-        and "long context beta" in error_msg
-        and "not yet available" in error_msg
-    ):
-        return _result(
-            FailoverReason.oauth_long_context_beta_forbidden,
-            retryable=True,
-            should_compact=False,
-        )
-
     # llama.cpp's ``json-schema-to-grammar`` converter (used by its OAI
     # server to build GBNF tool-call parsers) rejects regex escape classes
     # like ``\d``/``\w``/``\s`` and most ``format`` values. MCP servers
@@ -950,35 +856,6 @@ def classify_api_error(
             FailoverReason.llama_cpp_grammar_pattern,
             retryable=True,
             should_compact=False,
-        )
-
-    # xAI Grok subscription entitlement errors.
-    #
-    # xAI returns "You have either run out of available resources or do not
-    # have an active Grok subscription" through two distinct code paths:
-    #
-    #   • HTTP 403 — status_code is set; _classify_by_status (step 2) routes
-    #     it to FailoverReason.auth correctly, and _is_entitlement_failure
-    #     then prevents the credential-refresh loop.
-    #
-    #   • SSE ``type=error`` frame — surfaced as _StreamErrorEvent with
-    #     status_code=None.  _classify_by_status is skipped entirely, and
-    #     "grok subscription" / "out of available resources" appear in none
-    #     of the message-pattern lists below.  Without this guard the error
-    #     falls through to FailoverReason.unknown (retryable=True), burning
-    #     max_retries before the agent stops — and _is_entitlement_failure
-    #     is never called because it only runs under FailoverReason.auth.
-    #
-    # Both X Premium+ and SuperGrok subscribers hit this path when their
-    # subscription tier does not cover the requested model or feature.
-    if (
-        "do not have an active grok subscription" in error_msg
-        or ("out of available resources" in error_msg and "grok" in error_msg)
-    ):
-        return _result(
-            FailoverReason.auth,
-            retryable=False,
-            should_fallback=True,
         )
 
     # A front that knows which models are loaded (maitred, before servers
@@ -1213,18 +1090,6 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
-        # A bare id that the provider's catalogue only knows in prefixed form
-        # is a malformed model id, not a routing glitch — NVIDIA NIM answers
-        # one with a naked ``404 page not found`` that names nothing, so the
-        # generic branch below burns three retries and reports what looks
-        # like an outage (#78796). Deterministic: don't retry, and let the
-        # model_not_found surface carry the real cause.
-        if _model_id_missing_known_prefix(model, provider):
-            return result_fn(
-                FailoverReason.model_not_found,
-                retryable=False,
-                should_fallback=True,
-            )
         # Generic 404 with no "model not found" signal — could be a wrong
         # endpoint path (common with local llama.cpp / Ollama / vLLM when
         # the URL is slightly misconfigured), a proxy routing glitch, or
@@ -1245,8 +1110,7 @@ def _classify_by_status(
         )
 
     if status_code == 429:
-        # Already checked long_context_tier above. Some providers (notably
-        # Z.AI / Zhipu) reuse HTTP 429 for server-wide overload — same status
+        # Some providers (notably Z.AI / Zhipu) reuse HTTP 429 for server-wide overload — same status
         # code as a true per-credential rate limit, but the credential is
         # valid and the correct recovery is "back off and retry the same key",
         # NOT "rotate the credential" (which exhausts the pool while the

@@ -38,7 +38,6 @@ from gateway.session import (
 from son_of_anton_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
 from utils import (
     atomic_json_write,
-    base_url_host_matches,
     is_truthy_value,
 )
 
@@ -1424,7 +1423,6 @@ class GatewaySlashCommandsMixin:
             list_authenticated_providers,
             list_picker_providers,
         )
-        from son_of_anton_cli.providers import get_label
 
         raw_args = event.get_command_args().strip()
         source = event.source
@@ -1646,17 +1644,11 @@ class GatewaySlashCommandsMixin:
                                     "Failed to persist model switch to DB: %s", exc
                                 )
 
-                        # Store model note + session override.  Use display
-                        # form (strips opaque Palantir prefix) for the user-
-                        # visible note; session-override map still gets the
-                        # full opaque ID, which is what the wire needs.
-                        from son_of_anton_cli.model_switch import format_model_for_display
-                        _display_cur = format_model_for_display(_cur_model)
-                        _display_new = format_model_for_display(result.new_model)
+                        # Store model note + session override.
                         if not hasattr(_self, "_pending_model_notes"):
                             _self._pending_model_notes = {}
                         _self._pending_model_notes[_session_key] = (
-                            f"[Note: model was just switched from {_display_cur} to {_display_new} "
+                            f"[Note: model was just switched from {_cur_model} to {result.new_model} "
                             f"via {result.provider_label or result.target_provider}. "
                             f"Adjust your self-identification accordingly.]"
                         )
@@ -1746,13 +1738,9 @@ class GatewaySlashCommandsMixin:
                             except Exception as e:
                                 logger.warning("Failed to persist model switch: %s", e)
 
-                        # Build confirmation text.  Use display form so opaque
-                        # Palantir IDs (ri.language-model-service..*) get
-                        # shortened to their trailing slug for the UI.
                         plabel = result.provider_label or result.target_provider
-                        lines = [t("gateway.model.switched", model=format_model_for_display(result.new_model))]
+                        lines = [t("gateway.model.switched", model=result.new_model)]
                         lines.append(t("gateway.model.provider_label", provider=plabel))
-                        mi = result.model_info
                         from son_of_anton_cli.model_switch import resolve_display_context_length_async
                         _sw_config_ctx = None
                         _sw_model_cfg = {}
@@ -1772,7 +1760,6 @@ class GatewaySlashCommandsMixin:
                             result.target_provider,
                             base_url=result.base_url or current_base_url or "",
                             api_key=result.api_key or current_api_key or "",
-                            model_info=mi,
                             custom_providers=custom_provs,
                             config_context_length=_sw_config_ctx,
                             configured_model=(
@@ -1784,10 +1771,6 @@ class GatewaySlashCommandsMixin:
                         )
                         if ctx:
                             lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
-                        if mi:
-                            if mi.max_output:
-                                lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
-                            lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
                         if result.warning_message:
                             lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
                         if persist_global:
@@ -1812,7 +1795,7 @@ class GatewaySlashCommandsMixin:
                         return None  # Picker sent — adapter handles the response
 
             # Fallback: text list (for platforms without picker or if picker failed)
-            provider_label = get_label(current_provider)
+            provider_label = current_provider
             lines = [t("gateway.model.current_label", model=current_model or "unknown", provider=provider_label), ""]
 
             try:
@@ -1944,13 +1927,10 @@ class GatewaySlashCommandsMixin:
 
             # Store a note to prepend to the next user message so the model
             # knows about the switch (avoids system messages mid-history).
-            # Display form strips opaque Palantir RID prefixes; the override
-            # map below keeps the full ID for the wire.
-            from son_of_anton_cli.model_switch import format_model_for_display
             if not hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes = {}
             self._pending_model_notes[session_key] = (
-                f"[Note: model was just switched from {format_model_for_display(current_model)} to {format_model_for_display(result.new_model)} "
+                f"[Note: model was just switched from {current_model} to {result.new_model} "
                 f"via {result.provider_label or result.target_provider}. "
                 f"{'This override applies to the next turn only. ' if one_turn else ''}"
                 f"Adjust your self-identification accordingly.]"
@@ -2059,12 +2039,9 @@ class GatewaySlashCommandsMixin:
 
             # Build confirmation message with full metadata
             provider_label = result.provider_label or result.target_provider
-            lines = [t("gateway.model.switched", model=format_model_for_display(result.new_model))]
+            lines = [t("gateway.model.switched", model=result.new_model)]
             lines.append(t("gateway.model.provider_label", provider=provider_label))
 
-            # Context: always resolve via the provider-aware chain so Copilot
-            # and Nous-enforced caps win over the raw catalog entry.
-            mi = result.model_info
             from son_of_anton_cli.model_switch import resolve_display_context_length_async
             _sw2_config_ctx = None
             _sw2_model_cfg = {}
@@ -2084,7 +2061,6 @@ class GatewaySlashCommandsMixin:
                 result.target_provider,
                 base_url=result.base_url or current_base_url or "",
                 api_key=result.api_key or current_api_key or "",
-                model_info=mi,
                 custom_providers=custom_provs,
                 config_context_length=_sw2_config_ctx,
                 configured_model=(
@@ -2096,17 +2072,6 @@ class GatewaySlashCommandsMixin:
             )
             if ctx:
                 lines.append(t("gateway.model.context_label", tokens=f"{ctx:,}"))
-            if mi:
-                if mi.max_output:
-                    lines.append(t("gateway.model.max_output_label", tokens=f"{mi.max_output:,}"))
-                lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
-
-            # Cache notice
-            cache_enabled = (
-                (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
-            )
-            if cache_enabled:
-                lines.append(t("gateway.model.prompt_caching_enabled"))
 
             if result.warning_message:
                 lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
@@ -2119,52 +2084,6 @@ class GatewaySlashCommandsMixin:
                 lines.append(t("gateway.model.session_only_hint"))
 
             return "\n".join(lines)
-
-        # Selection-guard confirmation gate (typed /model <name> path).
-        # The pickers (Discord inline keyboards, TUI, dashboard)
-        # already confirm via their own UI affordances; this covers the
-        # direct text command, which previously bypassed the guard.
-        # Runs the unified registry (cost + data-policy + future guards).
-        # Pricing lookups may hit models.dev or a /models endpoint on a
-        # cache miss, so run it off the event loop.
-        _cost_warning = None
-        try:
-            from son_of_anton_cli.model_selection_guards import combined_selection_warning
-
-            _cost_warning = await asyncio.to_thread(
-                combined_selection_warning,
-                result.new_model,
-                provider=result.target_provider,
-                base_url=result.base_url or current_base_url or "",
-                api_key=result.api_key or current_api_key or "",
-                model_info=result.model_info,
-            )
-        except Exception:
-            _cost_warning = None
-        if _cost_warning is not None:
-            async def _on_cost_confirm(choice: str) -> str:
-                if choice == "cancel":
-                    return (
-                        f"Model switch cancelled. Current model unchanged "
-                        f"({current_model or 'unknown'})."
-                    )
-                # "once" and "always" both proceed — there is no persistent
-                # opt-out for selection guards (each guarded switch should be
-                # an explicit decision).
-                return await _finish_switch()
-
-            _p = self._typed_command_prefix_for(event.source.platform)
-            return await self._request_slash_confirm(
-                event=event,
-                command="model",
-                title=_cost_warning.title,
-                message=(
-                    f"**{_cost_warning.title}**\n\n{_cost_warning.message}\n\n"
-                    f"_Text fallback: reply `{_p}approve` to switch or `{_p}cancel` to keep "
-                    "the current model._"
-                ),
-                handler=_on_cost_confirm,
-            )
 
         return await _finish_switch()
 

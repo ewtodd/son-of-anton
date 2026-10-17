@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 # Suppress startup messages for clean CLI experience
 os.environ["SON_OF_ANTON_QUIET"] = "1"  # Our own modules
 
-from son_of_anton_cli.fallback_config import get_fallback_chain
 from son_of_anton_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from son_of_anton_cli.cli_commands_mixin import CLICommandsMixin
 from agent.interrupt_compat import request_hard_interrupt
@@ -62,52 +61,6 @@ def format_duration_compact(*args, **kwargs):
         return f"{int(hours)}h {remaining_min}m" if remaining_min else f"{int(hours)}h"
     days = hours / 24
     return f"{days:.1f}d"
-
-
-# Cached reverse map of config.toml ``model_aliases:`` so the TUI can show
-# friendly names instead of full Palantir RIDs / long catalog IDs. Built
-# lazily on first call; cache is process-lifetime (config is read once at
-# session start, so further invalidation is unnecessary).
-_REVERSE_ALIAS_CACHE: dict[str, str] | None = None
-
-
-def _reverse_alias_for_display(model_name: str) -> str:
-    """Return the shortest configured alias for ``model_name``, or ``model_name``.
-
-    Looks up both ``model_aliases:`` (dict-based, full DirectAlias entries)
-    and ``model.aliases:`` (string-based, set via ``son-of-anton config set``)
-    from config.toml. Multiple aliases pointing at the same model — the
-    shortest wins, so ``opus47`` beats ``palantir-claude47``.
-    """
-    global _REVERSE_ALIAS_CACHE
-    if not model_name:
-        return model_name
-    if _REVERSE_ALIAS_CACHE is None:
-        rmap: dict[str, str] = {}
-        try:
-            from son_of_anton_cli.config import load_config
-            cfg = load_config() or {}
-            ma = cfg.get("model_aliases")
-            if isinstance(ma, dict):
-                for alias, entry in ma.items():
-                    if isinstance(entry, dict):
-                        m = str(entry.get("model", "") or "").strip()
-                        if m and (m not in rmap or len(alias) < len(rmap[m])):
-                            rmap[m] = alias
-            mdl = cfg.get("model", {}) or {}
-            if isinstance(mdl, dict):
-                simple = mdl.get("aliases")
-                if isinstance(simple, dict):
-                    for alias, val in simple.items():
-                        if isinstance(val, str) and val.strip():
-                            v = val.strip()
-                            m = v.split("/", 1)[1] if "/" in v else v
-                            if m and (m not in rmap or len(alias) < len(rmap[m])):
-                                rmap[m] = alias
-        except Exception:
-            pass
-        _REVERSE_ALIAS_CACHE = rmap
-    return _REVERSE_ALIAS_CACHE.get(model_name, model_name)
 
 
 def format_token_count_compact(*args, **kwargs):
@@ -156,7 +109,7 @@ def realign_markdown_tables(*args, **kwargs):
 # User-managed env files should override stale shell exports on restart.
 from son_of_anton_constants import get_son_of_anton_home, display_son_of_anton_home
 from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
-from utils import base_url_host_matches, base_url_hostname, fast_toml_load, strip_decorative_glyphs
+from utils import base_url_host_matches, fast_toml_load, strip_decorative_glyphs
 
 _son_of_anton_home = get_son_of_anton_home()
 _project_env = Path(__file__).parent / '.env'
@@ -328,16 +281,6 @@ def _parse_reasoning_config(effort) -> dict | None:
     return result
 
 
-def _parse_service_tier_config(raw: str) -> str | None:
-    """Parse a persisted service-tier preference into a Responses API value."""
-    value = str(raw or "").strip().lower()
-    if not value or value in {"normal", "default", "standard", "off", "none"}:
-        return None
-    if value in {"fast", "priority", "on"}:
-        return "priority"
-    logger.warning("Unknown service_tier '%s', ignoring", raw)
-    return None
-
 def load_cli_config() -> Dict[str, Any]:
     """
     Load CLI configuration from ~/.son-of-anton/config.toml over built-in defaults.
@@ -386,7 +329,6 @@ def load_cli_config() -> Dict[str, Any]:
             "system_prompt": "",
             "prefill_messages_file": "",
             "reasoning_effort": "",
-            "service_tier": "",
             # Built-in personalities live in son_of_anton_cli.personality
             # (BUILTIN_PERSONALITIES) — the single owner. Entries here are
             # user-defined additions/overrides merged on top by name.
@@ -3825,11 +3767,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # being discarded and replaced by the outer merged ``model.provider``
         # (typically ``"auto"``, which is authoritative at runtime resolution).
         _config_model, _nested_provider = _split_model_config_default(_raw_default)
-        _DEFAULT_CONFIG_MODEL = ""
         # Track whether the user passed -m / --model so resume knows not to
         # clobber an explicit override with the session's stored model.
         self._explicit_model_override = bool(model)
-        self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
+        self.model = model or _config_model or ""
         # Read max_tokens from config (env var override: SON_OF_ANTON_MAX_TOKENS)
         _env_mt = os.environ.get("SON_OF_ANTON_MAX_TOKENS")
         if _env_mt:
@@ -3842,24 +3783,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.max_tokens = _mt if isinstance(_mt, int) else None
         else:
             self.max_tokens = None
-        # Auto-detect model from local server if still on default
-        if self.model == _DEFAULT_CONFIG_MODEL:
-            _base_url = (_model_config.get("base_url") or "") if isinstance(_model_config, dict) else ""
-            if base_url_hostname(_base_url) in ("localhost", "127.0.0.1"):
-                from son_of_anton_cli.runtime_provider import _auto_detect_local_model
-                _detected = _auto_detect_local_model(_base_url)
-                if _detected:
-                    self.model = _detected
-        # Track whether model was explicitly chosen by the user or fell back
-        # to the global default.  Provider-specific normalisation may override
-        # the default silently but should warn when overriding an explicit choice.
-        # A config model that matches the global fallback is NOT considered an
-        # explicit choice — the user just never changed it.  But a config model
-        # like "gpt-5.3-codex" IS explicit and must be preserved.
-        self._model_is_default = not model and (
-            not _config_model or _config_model == _DEFAULT_CONFIG_MODEL
-        )
-
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
 
@@ -3891,12 +3814,9 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _provider_default = str((_named_custom or {}).get("model") or "").strip()
             if _provider_default:
                 self.model = _provider_default
-                self._model_is_default = False
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
-        self.acp_command: Optional[str] = None
-        self.acp_args: list[str] = []
         self.base_url = (
             base_url
             or CLI_CONFIG["model"].get("base_url", "")
@@ -4005,15 +3925,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 )
             else:
                 self.reasoning_config = _cli_reasoning
-        self.service_tier = _parse_service_tier_config(
-            CLI_CONFIG["agent"].get("service_tier", "")
-        )
         
-
-        # Fallback provider chain — tried in order when primary fails after retries.
-        # Merge new ``fallback_providers`` entries with any legacy
-        # ``fallback_model`` entries so old configs still participate.
-        self._fallback_model = get_fallback_chain(CLI_CONFIG)
 
         # Signature of the currently-initialised agent's runtime.  Used to
         # rebuild the agent when provider / model / base_url changes across
@@ -4251,17 +4163,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # _try_activate_fallback() switches provider/model.
         agent = getattr(self, "agent", None)
         model_name = (getattr(agent, "model", None) or self.model or "unknown")
-        # Friendly display: prefer reverse-alias from config.toml ``model_aliases:``
-        # before slash/length truncation. This turns long Palantir RIDs like
-        # ``ri.language-model-service..language-model.anthropic-claude-4-7-opus``
-        # into the user's chosen short name (e.g. ``opus-4.7``) in the status bar.
-        model_short = _reverse_alias_for_display(model_name)
-        if model_short == model_name:
-            model_short = model_name.split("/")[-1] if "/" in model_name else model_name
-            # Strip Palantir RID prefixes via the shared display formatter so
-            # this site and ``ModelSwitchResult`` confirmation can't drift.
-            from son_of_anton_cli.model_switch import format_model_for_display
-            model_short = format_model_for_display(model_short)
+        model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
         if len(model_short) > 26:
@@ -4584,76 +4486,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             logger.debug("Turn summary render failed", exc_info=True)
 
 
-    def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
-        """Normalize provider-specific model IDs and routing."""
-        current_model = str(self.model or "").strip()
-        if isinstance(self.model, dict):
-            _m, _ = _split_model_config_default(self.model)
-            current_model = _m
-        changed = False
-
-        try:
-            from son_of_anton_cli.model_normalize import (
-                _AGGREGATOR_PROVIDERS,
-                normalize_model_for_provider,
-            )
-
-            if resolved_provider not in _AGGREGATOR_PROVIDERS:
-                normalized_model = normalize_model_for_provider(current_model, resolved_provider)
-                if normalized_model and normalized_model != current_model:
-                    if not self._model_is_default:
-                        self._console_print(
-                            f"[yellow]⚠️  Normalized model '{current_model}' to '{normalized_model}' for {resolved_provider}."
-                        )
-                    self.model = normalized_model
-                    current_model = normalized_model
-                    changed = True
-        except Exception:
-            pass
-
-        if resolved_provider == "copilot":
-            try:
-                from son_of_anton_cli.models import normalize_copilot_model_id
-
-                canonical = normalize_copilot_model_id(current_model, api_key=self.api_key)
-                if canonical and canonical != current_model:
-                    if not self._model_is_default:
-                        self._console_print(
-                            f"[yellow]⚠️  Normalized Copilot model '{current_model}' to '{canonical}'."
-                        )
-                    self.model = canonical
-                    current_model = canonical
-                    changed = True
-
-            except Exception:
-                pass
-            return changed
-
-        from son_of_anton_cli.models import opencode_provider_family
-
-        if opencode_provider_family(resolved_provider) is not None:
-            try:
-                from son_of_anton_cli.models import normalize_opencode_model_id, opencode_model_api_mode
-
-                canonical = normalize_opencode_model_id(resolved_provider, current_model)
-                if canonical and canonical != current_model:
-                    if not self._model_is_default:
-                        self._console_print(
-                            f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; using '{canonical}' for {resolved_provider}."
-                        )
-                    self.model = canonical
-                    current_model = canonical
-                    changed = True
-
-                resolved_mode = opencode_model_api_mode(resolved_provider, current_model)
-                if resolved_mode != self.api_mode:
-                    self.api_mode = resolved_mode
-                    changed = True
-            except Exception:
-                pass
-            return changed
-
-        return changed
 
     def _on_notice(self, notice) -> None:
         """Queue an out-of-band AgentNotice for rendering at the next clean boundary.
@@ -5280,7 +5112,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 resolved = resolve_runtime_provider(requested=stored_provider)
                 if resolved.get("api_key"):
                     self.api_key = resolved["api_key"]
-                    self._credential_pool = resolved.get("credential_pool")
                 if not stored_base_url and resolved.get("base_url"):
                     self.base_url = resolved["base_url"]
                 if not stored_api_mode and resolved.get("api_mode"):
@@ -5563,20 +5394,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         ])
         self._console_print("\n".join(lines), highlight=False, markup=False)
     
-    def _fast_command_available(self) -> bool:
-        try:
-            from son_of_anton_cli.models import model_supports_fast_mode
-        except Exception:
-            return False
-        agent = getattr(self, "agent", None)
-        model = getattr(agent, "model", None) or getattr(self, "model", None)
-        return model_supports_fast_mode(model)
-
-    def _command_available(self, slash_command: str) -> bool:
-        if slash_command == "/fast":
-            return self._fast_command_available()
-        return True
-
     def show_help(self, arg: str = ""):
         """Display help. Bare /help shows categorized core commands;
         /help <query> filters commands by substring.
@@ -5615,8 +5432,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         def _emit(cmd: str, desc: str) -> bool:
             if cmd in _alias_of:
                 return False
-            if not self._command_available(cmd):
-                return False
             if query and query not in cmd.lower() and query not in desc.lower():
                 return False
             note = _alias_note.get(cmd, "")
@@ -5642,8 +5457,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     rows = buckets.get(_sub) or []
                     printed_header = False
                     for cmd, desc in rows:
-                        if not self._command_available(cmd):
-                            continue
                         if query and query not in cmd.lower() and query not in desc.lower():
                             continue
                         if not printed_header:
@@ -5654,8 +5467,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             printed_header = False
             for cmd, desc in commands.items():
-                if not self._command_available(cmd):
-                    continue
                 if query and query not in cmd.lower() and query not in desc.lower():
                     continue
                 if not printed_header:
@@ -6133,14 +5944,11 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             provider=getattr(self, "provider", None),
         )
         # /new is a full conversation boundary: session-scoped runtime
-        # overrides (/model --session, /fast, one-turn restores) do not carry
-        # forward.  Re-derive model/provider and service tier from config.toml
-        # so a session-only switch never leaks into the next session (#48055,
+        # overrides (/model --session, one-turn restores) do not carry
+        # forward.  Re-derive model/provider from config.toml so a
+        # session-only switch never leaks into the next session (#48055,
         # #23131).
         self._pending_one_turn_model_restore = None
-        self.service_tier = _parse_service_tier_config(
-            CLI_CONFIG["agent"].get("service_tier", "")
-        )
         _model_config = CLI_CONFIG.get("model", {})
         _raw_default2 = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _config_model, _ = _split_model_config_default(_raw_default2)
@@ -6637,8 +6445,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         entries: list[tuple[str, str, str]] = []  # (command, category, desc)
         for category, commands in COMMANDS_BY_CATEGORY.items():
             for cmd, desc in commands.items():
-                if not self._command_available(cmd):
-                    continue
                 entries.append((cmd, category, desc))
         return entries
 
@@ -6658,45 +6464,10 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         }
         self._invalidate(min_interval=0.0)
 
-    def _confirm_expensive_model_switch(self, result) -> bool:
-        """Ask for explicit confirmation before applying costly model switches."""
-        if not getattr(result, "success", False):
-            return True
-        try:
-            from son_of_anton_cli.model_selection_guards import combined_selection_warning
-
-            warning = combined_selection_warning(
-                result.new_model,
-                provider=result.target_provider,
-                base_url=result.base_url or self.base_url or "",
-                api_key=result.api_key or self.api_key or "",
-                model_info=result.model_info,
-            )
-        except Exception:
-            warning = None
-        if warning is None:
-            return True
-
-        choices = [
-            ("once", "Switch anyway", "Use this model for the current Son of Anton session."),
-            ("cancel", "Cancel", "Keep the current model."),
-        ]
-        raw = self._prompt_text_input_modal(
-            title=f"!!! {warning.title} !!!",
-            detail=warning.message,
-            choices=choices,
-            timeout=120,
-        )
-        choice = self._normalize_slash_confirm_choice(raw, choices)
-        return choice == "once"
-
     def _confirm_and_apply_model_switch_result(
         self, result, persist_global: bool, custom_providers=None
     ) -> None:
         try:
-            if result.success and not self._confirm_expensive_model_switch(result):
-                _cprint("  Model switch cancelled.")
-                return
             self._apply_model_switch_result(
                 result, persist_global, custom_providers=custom_providers
             )
@@ -6750,8 +6521,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if primary and hasattr(agent, "_restore_primary_runtime"):
             try:
                 agent._primary_runtime = copy.deepcopy(primary)
-                agent._fallback_activated = True
-                agent._rate_limited_until = 0
                 if agent._restore_primary_runtime():
                     return
             except Exception:
@@ -6873,23 +6642,16 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 )
                 return
 
-        from son_of_anton_cli.model_switch import format_model_for_display
-        _display_old = format_model_for_display(old_model)
-        _display_new = format_model_for_display(result.new_model)
-
         self._pending_model_switch_note = (
-            f"[Note: model was just switched from {_display_old} to {_display_new} "
+            f"[Note: model was just switched from {old_model} to {result.new_model} "
             f"via {result.provider_label or result.target_provider}. "
             f"Adjust your self-identification accordingly.]"
         )
 
         provider_label = result.provider_label or result.target_provider
-        _cprint(f"  Model switched: {_display_new}")
+        _cprint(f"  Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
 
-        # Context: always resolve via the provider-aware chain so Copilot
-        # and Nous-enforced caps win over the raw catalog entry.
-        mi = result.model_info
         try:
             from son_of_anton_cli.model_switch import resolve_display_context_length
             ctx = resolve_display_context_length(
@@ -6897,7 +6659,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 result.target_provider,
                 base_url=result.base_url or self.base_url or "",
                 api_key=result.api_key or self.api_key or "",
-                model_info=mi,
                 config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None,
                 custom_providers=getattr(self.agent, "_custom_providers", None) if self.agent else None,
             )
@@ -6905,16 +6666,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _cprint(f"    Context: {ctx:,} tokens")
         except Exception:
             pass
-        if mi:
-            if mi.max_output:
-                _cprint(f"    Max output: {mi.max_output:,} tokens")
-            _cprint(f"    Capabilities: {mi.format_capabilities()}")
-
-        cache_enabled = (
-            (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
-        )
-        if cache_enabled:
-            _cprint("    Prompt caching: enabled")
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
         if persist_global:
@@ -6957,14 +6708,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Only fall back to the live provider catalog when the curated
             # list is empty (e.g. user-defined endpoints with no curated list).
             model_list = provider_data.get("models", [])
-            if not model_list:
-                try:
-                    from son_of_anton_cli.models import provider_model_ids
-                    live = provider_model_ids(provider_data["slug"])
-                    if live:
-                        model_list = live
-                except Exception:
-                    pass
             state["stage"] = "model"
             state["provider_data"] = provider_data
             state["model_list"] = model_list
@@ -7093,7 +6836,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
             parse_model_switch_args,
             resolve_persist_behavior,
         )
-        from son_of_anton_cli.providers import get_label
 
         # Parse args from the original command
         parts = cmd_original.split(None, 1)  # split off '/model'
@@ -7169,7 +6911,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # No args at all: open prompt_toolkit-native picker modal
         if not model_input and not explicit_provider:
             model_display = self.model or "unknown"
-            provider_display = get_label(self.provider) if self.provider else "unknown"
+            provider_display = self.provider or "unknown"
 
             try:
                 if ctx is None:
@@ -7252,14 +6994,7 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _confirm_and_apply_cli_model_switch(
         self, result, persist_global: bool, one_turn: bool, custom_provs=None
     ) -> None:
-        """Confirm an expensive model switch and apply it to CLI state.
-
-        Runs on a worker thread when the TUI is active (see
-        _handle_model_switch) so the confirmation modal can render.
-        """
-        if not self._confirm_expensive_model_switch(result):
-            _cprint("  Model switch cancelled.")
-            return
+        """Apply a model switch to CLI state."""
 
         # Apply to CLI state.
         # Update requested_provider so _ensure_runtime_credentials() doesn't
@@ -7317,12 +7052,8 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Store a note to prepend to the next user message so the model
         # knows a switch occurred (avoids injecting system messages mid-history
         # which breaks providers and prompt caching).
-        from son_of_anton_cli.model_switch import format_model_for_display
-        _display_old = format_model_for_display(old_model)
-        _display_new = format_model_for_display(result.new_model)
-
         self._pending_model_switch_note = (
-            f"[Note: model was just switched from {_display_old} to {_display_new} "
+            f"[Note: model was just switched from {old_model} to {result.new_model} "
             f"via {result.provider_label or result.target_provider}. "
             f"{'This override applies to the next turn only. ' if one_turn else ''}"
             f"Adjust your self-identification accordingly.]"
@@ -7334,35 +7065,20 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Display confirmation with full metadata
         provider_label = result.provider_label or result.target_provider
-        _cprint(f"  Model switched: {_display_new}")
+        _cprint(f"  Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
 
-        # Context: always resolve via the provider-aware chain so Copilot
-        # and Nous-enforced caps win over the raw catalog entry.
-        mi = result.model_info
         from son_of_anton_cli.model_switch import resolve_display_context_length
         ctx = resolve_display_context_length(
             result.new_model,
             result.target_provider,
             base_url=result.base_url or self.base_url or "",
             api_key=result.api_key or self.api_key or "",
-            model_info=mi,
             config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None,
             custom_providers=getattr(self.agent, "_custom_providers", None) if self.agent else None,
         )
         if ctx:
             _cprint(f"    Context: {ctx:,} tokens")
-        if mi:
-            if mi.max_output:
-                _cprint(f"    Max output: {mi.max_output:,} tokens")
-            _cprint(f"    Capabilities: {mi.format_capabilities()}")
-
-        # Cache notice
-        cache_enabled = (
-            (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
-        )
-        if cache_enabled:
-            _cprint("    Prompt caching: enabled")
 
         # Warning from validation
         if result.warning_message:
@@ -10022,7 +9738,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not self._init_agent(
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
-            request_overrides=turn_route.get("request_overrides"),
         ):
             return None
         agent = self.agent
@@ -11080,7 +10795,6 @@ def main(
                     if cli._init_agent(
                         model_override=turn_route["model"],
                         runtime_override=turn_route["runtime"],
-                        request_overrides=turn_route.get("request_overrides"),
                     ):
                         cli.agent.quiet_mode = True
                         cli.agent.suppress_status_output = True

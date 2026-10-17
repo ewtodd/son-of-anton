@@ -29,7 +29,6 @@ from typing import Any, Optional
 from son_of_anton_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from son_of_anton_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
-    FailoverReason,
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
 )
 from agent.errors import EmptyStreamError
@@ -45,24 +44,12 @@ from agent.message_sanitization import (
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool import is_persistent_env
-from utils import base_url_host_matches, env_float, env_int
+from utils import env_float, env_int
 
 logger = logging.getLogger(__name__)
 _PROVIDER_STREAM_ERROR_FINISH_REASONS = {"error", "error_finish"}
 _PROVIDER_STREAM_SSE_FIELDS = {"event", "data", "id", "retry"}
 _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
-
-# When the fallback chain is fully exhausted on a non-rate-limit failure
-# (e.g. every provider returns a non-retryable client error like HTTP 400),
-# arm a short cooldown so the NEXT turn's restore_primary_runtime stays gated
-# and does not reset _fallback_index=0 to replay the entire chain again.
-# Without this, a client/gateway that re-submits immediately would re-marshal
-# the full (potentially 80k-token) context once per provider every turn and
-# can drive a constrained host into memory/swap exhaustion.  Rate-limit /
-# billing reasons keep their own 60s cooldown (set above); this is the
-# narrower non-rate-limit case.  See issue #24996.
-_FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
-
 
 def _context_thread_target(callback):
     """Bind a no-argument thread target to the caller's ContextVars."""
@@ -507,24 +494,6 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
         return sum(_chars(value) for value in api_payload.values()) // 4
 
     return _chars(api_payload) // 4
-
-
-def _prompt_cache_scope_for_agent(agent) -> "str | None":
-    """Rotation-stable logical cache scope for *agent*, or None.
-
-    Guarded-import wrapper over the never-raising
-    ``agent.prompt_cache_scope.resolve_prompt_cache_scope_safe`` — the
-    transports treat a None/empty value as "fall back to the physical
-    session_id", so any resolution failure degrades to pre-#79017 behavior
-    instead of blocking the request build.
-    """
-    try:
-        from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
-
-        return resolve_prompt_cache_scope_safe(agent)
-    except Exception:
-        logger.debug("prompt-cache scope resolution failed", exc_info=True)
-        return None
 
 
 def _env_float(name: str, default: float) -> float:
@@ -1314,118 +1283,16 @@ def _probe_endpoint_reasoning_decl(agent) -> None:
 
 
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
-    """Build the keyword arguments dict for the active API mode."""
+    """Build the chat.completions.create() keyword arguments for one request."""
     if tools_for_api is None:
         tools_for_api = agent.tools
-
-    # Rotation-stable logical cache scope, shared by every OpenAI-wire branch
-    # below (codex + both chat_completions paths). Memoized on the agent —
-    # cheap after the first call.
-    _cache_scope_id = _prompt_cache_scope_for_agent(agent)
-
-
-    # ── chat_completions (default) ─────────────────────────────────────
-    _ct = agent._get_transport()
-
-    # Provider detection flags
-    _is_gh = (
-        base_url_host_matches(agent._base_url_lower, "models.github.ai")
-        or base_url_host_matches(agent._base_url_lower, "githubcopilot.com")
-    )
-    _is_nvidia = base_url_host_matches(agent._base_url_lower, "integrate.api.nvidia.com")
-    _is_kimi = (
-        base_url_host_matches(agent.base_url, "api.kimi.com")
-        or base_url_host_matches(agent.base_url, "moonshot.ai")
-        or base_url_host_matches(agent.base_url, "moonshot.cn")
-    )
-    _is_tokenhub = base_url_host_matches(agent._base_url_lower, "tokenhub.tencentmaas.com")
-    _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"
-
-    # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
-    # sentinel (temperature omitted entirely), a numeric override, or None.
-    try:
-        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
-        _ft = _fixed_temperature_for_model(agent.model, agent.base_url)
-        _omit_temp = _ft is OMIT_TEMPERATURE
-        _fixed_temp = _ft if not _omit_temp else None
-    except Exception:
-        _omit_temp = False
-        _fixed_temp = None
-
-    # Anthropic-compatible max-output fallback (last resort only — applied in
-    # build_kwargs *after* ephemeral/user/profile max_tokens, never overriding
-    # an explicit value).  Model-gated, not URL-gated: any chat-completions
-    # proxy serving a Claude/MiniMax/Qwen3 model needs max_tokens, because the
-    # Anthropic Messages API treats it as mandatory and proxies that omit it
-    # (AWS Bedrock, NVIDIA, LiteLLM, vLLM, corporate gateways) default as low
-    # as 4096 output tokens — easily exhausted by thinking + large tool calls
-    # like write_file/patch.  OpenRouter/Nous were the only routes covered
-    # before; gating on _ANTHROPIC_OUTPUT_LIMITS membership covers them all.
-    _ant_max = None
-    try:
-        from agent.model_metadata import (
-            _get_anthropic_max_output,
-            _ANTHROPIC_OUTPUT_LIMITS,
-        )
-        _model_norm = (agent.model or "").lower().replace(".", "-")
-        if any(key in _model_norm for key in _ANTHROPIC_OUTPUT_LIMITS):
-            _ant_max = _get_anthropic_max_output(agent.model)
-    except Exception:
-        pass
-
     _probe_endpoint_reasoning_decl(agent)
-
-    # ── Provider profile path (registered providers) ───────────────────
-    # Profiles handle per-provider quirks via hooks. When a profile is
-    # found, delegate fully; otherwise fall through to the legacy flag path.
-    try:
-        from providers import get_provider_profile
-        _profile = get_provider_profile(agent.provider)
-    except Exception:
-        _profile = None
-
-    if _profile:
-        _ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
-        if _ephemeral_out is not None:
-            agent._ephemeral_max_output_tokens = None
-
-        # Strip image parts for non-vision models that have provider profiles
-        # (e.g. DeepSeek, Kimi). The legacy path below already does this, but
-        # registered providers with profiles were bypassing the strip.
-        api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
-
-        return _ct.build_kwargs(
-            model=agent.model,
-            messages=api_messages,
-            tools=tools_for_api,
-            base_url=agent.base_url,
-            timeout=agent._resolved_api_call_timeout(),
-            max_tokens=agent.max_tokens,
-            ephemeral_max_output_tokens=_ephemeral_out,
-            max_tokens_param_fn=agent._max_tokens_param,
-            reasoning_config=agent.reasoning_config,
-            request_overrides=agent.request_overrides,
-            session_id=getattr(agent, "session_id", None),
-            cache_scope_id=_cache_scope_id,
-            provider_profile=_profile,
-            ollama_num_ctx=agent._ollama_num_ctx,
-            anthropic_max_output=_ant_max,
-            supports_reasoning=agent._supports_reasoning_extra_body(),
-        )
-
-    # ── Legacy flag path ────────────────────────────────────────────
-    # Reached only when get_provider_profile() returns None — i.e. a
-    # completely unknown provider not in providers/ registry.
     _ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
     if _ephemeral_out is not None:
         agent._ephemeral_max_output_tokens = None
-
-    # Strip image parts for non-vision models (no-op when vision-capable).
-    _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
-
-    return _ct.build_kwargs(
+    return agent._get_transport().build_kwargs(
         model=agent.model,
-        messages=_msgs_for_chat,
+        messages=agent._prepare_messages_for_non_vision_model(api_messages),
         tools=tools_for_api,
         base_url=agent.base_url,
         timeout=agent._resolved_api_call_timeout(),
@@ -1434,23 +1301,6 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         max_tokens_param_fn=agent._max_tokens_param,
         reasoning_config=agent.reasoning_config,
         request_overrides=agent.request_overrides,
-        session_id=getattr(agent, "session_id", None),
-        cache_scope_id=_cache_scope_id,
-        model_lower=(agent.model or "").lower(),
-        is_github_models=_is_gh,
-        is_nvidia_nim=_is_nvidia,
-        is_kimi=_is_kimi,
-        is_tokenhub=_is_tokenhub,
-        is_lmstudio=_is_lmstudio,
-        is_custom_provider=agent.provider == "custom",
-        ollama_num_ctx=agent._ollama_num_ctx,
-        fixed_temperature=_fixed_temp,
-        omit_temperature=_omit_temp,
-        supports_reasoning=agent._supports_reasoning_extra_body(),
-        github_reasoning_extra=agent._github_models_reasoning_extra_body() if _is_gh else None,
-        lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
-        anthropic_max_output=_ant_max,
-        provider_name=agent.provider,
     )
 
 
@@ -1678,410 +1528,6 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     return msg
 
 
-def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
-    """Point the cached system prompt's ``Model:``/``Provider:`` lines at
-    the active runtime after a provider switch.
-
-    The system prompt is session-stable and replayed verbatim for prefix-cache
-    warmth, but after a failover the new backend's cache is cold anyway —
-    while a stale identity line makes the agent misreport which model it is
-    when asked.  Rewrite the lines in place WITHOUT persisting to the session
-    DB: the stored row keeps the primary's labels, so when the primary is
-    restored the prompt is byte-identical to the stored copy again and its
-    prefix cache still matches.
-
-    Only the LAST occurrence of each line is touched — the identity lines
-    live in the volatile tail of the prompt, and earlier matches could be
-    user content (memory snapshots, context files).
-    """
-    sp = getattr(agent, "_cached_system_prompt", None)
-    if not isinstance(sp, str) or not sp:
-        return
-    for label, value in (("Model", model), ("Provider", provider)):
-        if not value:
-            continue
-        matches = list(re.finditer(rf"(?m)^{label}: .*$", sp))
-        if matches:
-            last = matches[-1]
-            sp = f"{sp[:last.start()]}{label}: {value}{sp[last.end():]}"
-    agent._cached_system_prompt = sp
-
-
-def _fallback_entry_key(fb: dict) -> tuple[str, str, str]:
-    return (
-        str(fb.get("provider") or "").strip().lower(),
-        str(fb.get("model") or "").strip(),
-        str(fb.get("base_url") or "").strip().rstrip("/"),
-    )
-
-
-def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str]:
-    """Return a skip reason for fallback entries known to be unusable locally.
-
-    The Nous Portal provider was removed; no fallback entry is known to be
-    unusable without the network anymore.
-    """
-    return None
-
-
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
-    """Switch to the next fallback model/provider in the chain.
-
-    Called when the current model is failing after retries.  Swaps the
-    OpenAI client, model slug, and provider in-place so the retry loop
-    can continue with the new backend.  Advances through the chain on
-    each call; returns False when exhausted.
-
-    Uses the centralized provider router (resolve_provider_client) for
-    auth resolution and client construction — no duplicated provider→key
-    mappings.
-    """
-    if reason in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}:
-        # Only start cooldown when leaving the primary provider.  If we're
-        # already on a fallback and chain-switching, the primary wasn't the
-        # source of the 429 so the cooldown should not be reset/extended.
-        fallback_already_active = bool(getattr(agent, "_fallback_activated", False))
-        current_provider = (getattr(agent, "provider", "") or "").strip().lower()
-        primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
-        if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
-            # Exponential backoff: keep upstream's 60s first-hit cooldown and
-            # escalate on CONSECUTIVE rate-limits: 60s → 2m → 4m → 8m → ... →
-            # 4h cap. The first 429 must NOT bench the primary for half an
-            # hour — fast primary restore is the common case; escalation only
-            # punishes providers that keep 429ing.
-            # Counter is reset by restore_primary_runtime on successful restore.
-            backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
-            agent._rate_limit_backoff_count = backoff_count + 1
-            backoff_seconds = min(60 * (2 ** backoff_count), 14400)
-            agent._rate_limited_until = time.monotonic() + backoff_seconds
-            logging.info(
-                "Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d)",
-                backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1,
-            )
-    if agent._fallback_index >= len(agent._fallback_chain):
-        # Chain exhausted.  If we actually walked a non-empty chain and the
-        # failure was NOT a rate-limit/billing event (those already armed
-        # their own 60s cooldown above), arm a short cooldown so the next
-        # turn's restore_primary_runtime stays gated instead of resetting
-        # _fallback_index=0 and re-marshaling the whole context across every
-        # provider again.  Guards the cross-turn replay storm in #24996.
-        if (
-            len(agent._fallback_chain) > 0
-            and reason not in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}
-        ):
-            _existing_cooldown = getattr(agent, "_rate_limited_until", 0) or 0
-            agent._rate_limited_until = max(
-                _existing_cooldown,
-                time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S,
-            )
-        return False
-    fb = agent._fallback_chain[agent._fallback_index]
-    agent._fallback_index += 1
-    fb_key = _fallback_entry_key(fb)
-    unavailable = getattr(agent, "_unavailable_fallback_keys", None)
-    if unavailable is None:
-        unavailable = set()
-        agent._unavailable_fallback_keys = unavailable
-    if fb_key in unavailable:
-        logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
-        return agent._try_activate_fallback(reason)
-    fb_provider = (fb.get("provider") or "").strip().lower()
-    fb_model = (fb.get("model") or "").strip()
-    if not fb_provider or not fb_model:
-        return agent._try_activate_fallback(reason)  # skip invalid, try next
-
-    local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
-    if local_skip_reason:
-        unavailable.add(fb_key)
-        logger.warning(
-            "Fallback skip: %s/%s is not locally usable (%s); suppressing for this session",
-            fb_provider,
-            fb_model,
-            local_skip_reason,
-        )
-        return agent._try_activate_fallback(reason)
-
-    # Skip entries that resolve to the same backend that just failed —
-    # falling back to it loops the failure. Identity semantics (which axes
-    # distinguish two backends, shim aliases, first-class credential
-    # surfaces, multi-endpoint pools) are owned by agent.backend_identity —
-    # see #22548, #70893, #62984. Do not re-implement comparisons here.
-    from agent.backend_identity import BackendIdentity, should_skip_candidate
-
-    current_ident = BackendIdentity.build(
-        provider=getattr(agent, "provider", ""),
-        model=getattr(agent, "model", ""),
-        base_url=str(getattr(agent, "base_url", "") or ""),
-    )
-    fb_ident = BackendIdentity.build(
-        provider=fb_provider,
-        model=fb_model,
-        base_url=(fb.get("base_url") or ""),
-    )
-    if should_skip_candidate(fb_ident, current_ident):
-        logger.warning(
-            "Fallback skip: chain entry %s/%s resolves to the same backend "
-            "as the current one (%s)",
-            fb_provider, fb_model, current_ident.base_url or current_ident.provider,
-        )
-        return agent._try_activate_fallback(reason)
-
-    # Use centralized router for client construction.
-    try:
-        from agent.auxiliary_client import resolve_provider_client
-        # Pass base_url and api_key from fallback config so custom
-        # endpoints (e.g. Ollama Cloud) resolve correctly instead of
-        # falling through to OpenRouter defaults.
-        from son_of_anton_cli.fallback_config import resolve_entry_api_key
-
-        fb_base_url_hint = (fb.get("base_url") or "").strip() or None
-        fb_api_key_hint = resolve_entry_api_key(fb)
-        # Determine api_mode from the ORIGINAL base_url (before URL transformation).
-        # resolve_provider_client() calls _to_openai_base_url() which can rewrite
-        # a dual-surface /anthropic base to /v1, losing the Anthropic wire signal
-        # from the client's post-rewrite base_url. Pre-compute here so detection
-        # sees the URL the user actually configured. (#79787)
-        #
-        # An explicit ``api_mode`` on the fallback entry always wins — including
-        # an explicit "chat_completions" — and suppresses all re-detection below.
-        fb_api_mode_explicit = bool(str(fb.get("api_mode") or "").strip())
-        fb_api_mode = "chat_completions"
-        if fb_api_mode_explicit:
-            fb_api_mode = str(fb.get("api_mode")).strip()
-        
-        # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
-        # when no explicit key is in the fallback config. Host match
-        # (not substring) — see GHSA-76xc-57q6-vm5m.
-        if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
-            from agent.secret_scope import get_secret
-
-            fb_api_key_hint = get_secret("OLLAMA_API_KEY") or None
-        fb_client, _resolved_fb_model = resolve_provider_client(
-            fb_provider, model=fb_model,
-            explicit_base_url=fb_base_url_hint,
-            explicit_api_key=fb_api_key_hint,
-            api_mode=fb_api_mode)
-        if fb_client is None:
-            logger.warning(
-                "Fallback to %s failed: provider not configured",
-                fb_provider)
-            unavailable.add(fb_key)
-            return agent._try_activate_fallback(reason)  # try next in chain
-        try:
-            from son_of_anton_cli.model_normalize import normalize_model_for_provider
-
-            fb_model = normalize_model_for_provider(fb_model, fb_provider)
-        except Exception as _norm_err:
-            logger.warning(
-                "Could not normalize fallback model %r for provider %r: %s",
-                fb_model, fb_provider, _norm_err,
-            )
-
-        # Re-determine api_mode from provider / resolved base URL / model when
-        # the pre-computed pass above landed on the default and the user did
-        # not pin api_mode explicitly. An explicit fb.api_mode (even
-        # "chat_completions") must never be overridden here.
-        fb_base_url = str(fb_client.base_url)
-
-        old_model = agent.model
-        old_provider = agent.provider
-
-        # Clear the per-config context_length override so the fallback
-        # model's actual context window is resolved instead of inheriting
-        # the stale value from the previous model.  See #22387.
-        agent._config_context_length = None
-        agent.model = fb_model
-        agent.provider = fb_provider
-        agent.requested_provider = fb_provider
-        agent.base_url = fb_base_url
-        agent.api_mode = fb_api_mode
-        # Per-provider reasoning_content echo override (see _reasoning_echo_opt_in).
-        # Read from the fallback entry so the flag travels with the active
-        # provider; restore_primary_runtime will revert it from the snapshot.
-        # Unset (None) → the route default (on for local / private-network
-        # endpoints only); an explicit true also pads (see
-        # _needs_thinking_reasoning_pad).
-        _fb_echo = fb.get("reasoning_echo")
-        agent._reasoning_echo_flag = _fb_echo if isinstance(_fb_echo, bool) else None
-        if hasattr(agent, "_transport_cache"):
-            agent._transport_cache.clear()
-        agent._fallback_activated = True
-
-        # Rebind the credential pool to the fallback provider when the provider
-        # changes.  Keeping the primary pool attached would make downstream
-        # recovery (rate_limit / billing / auth) mutate the wrong credential
-        # set and can overwrite the fallback's base_url back to the primary
-        # endpoint.  See #33163.
-        #
-        # When the fallback shares the pool's provider (e.g. both openrouter
-        # entries with different routing) the pool is preserved.  When the
-        # providers differ, load the fallback provider's own pool if one exists
-        # so provider-specific rotation continues to work after the switch.
-        _existing_pool = getattr(agent, "_credential_pool", None)
-        if _existing_pool is not None:
-            _pool_provider = (getattr(_existing_pool, "provider", "") or "").strip().lower()
-            if _pool_provider and _pool_provider != fb_provider:
-                logger.info(
-                    "Fallback to %s/%s: clearing primary credential pool "
-                    "(pool_provider=%s) to prevent cross-provider contamination",
-                    fb_provider, fb_model, _pool_provider,
-                )
-                agent._credential_pool = None
-                agent._credential_pool_entry_id = None
-        if getattr(agent, "_credential_pool", None) is None:
-            try:
-                from agent.credential_pool import load_pool
-
-                fallback_pool = load_pool(fb_provider)
-                if fallback_pool and fallback_pool.has_credentials():
-                    agent._credential_pool = fallback_pool
-                    logger.info(
-                        "Fallback to %s/%s: attached fallback credential pool",
-                        fb_provider, fb_model,
-                    )
-            except Exception as exc:
-                logger.debug(
-                    "Fallback to %s/%s: could not attach credential pool: %s",
-                    fb_provider, fb_model, exc,
-                )
-
-        # Honor per-provider / per-model request_timeout_seconds for the
-        # fallback target (same knob the primary client uses).  None = use
-        # SDK default.
-        _fb_timeout = get_provider_request_timeout(fb_provider, fb_model)
-
-        # Swap OpenAI client and config in-place
-        agent.api_key = fb_client.api_key
-        agent.client = fb_client
-        # Preserve provider-specific headers that
-        # resolve_provider_client() may have baked into
-        # fb_client via the default_headers kwarg.  The OpenAI
-        # SDK stores these in _custom_headers.  Without this,
-        # subsequent request-client rebuilds (via
-        # _create_request_openai_client) drop the headers,
-        # causing 403s from providers like Kimi Coding that
-        # require a User-Agent sentinel.
-        fb_headers = getattr(fb_client, "_custom_headers", None)
-        if not fb_headers:
-            fb_headers = getattr(fb_client, "default_headers", None)
-        agent._client_kwargs = {
-            "api_key": fb_client.api_key,
-            "base_url": fb_base_url,
-            **({"default_headers": dict(fb_headers)} if fb_headers else {}),
-        }
-        if _fb_timeout is not None:
-            agent._client_kwargs["timeout"] = _fb_timeout
-            # Rebuild the shared OpenAI client so the configured
-            # timeout takes effect on the very next fallback request,
-            # not only after a later credential-rotation rebuild.
-            agent._replace_primary_openai_client(reason="fallback_timeout_apply")
-
-        from agent.agent_runtime_helpers import sync_credential_pool_entry_id
-        sync_credential_pool_entry_id(agent)
-
-        # Re-evaluate prompt caching for the new provider/model
-        agent._use_prompt_caching, agent._use_native_cache_layout = (
-            agent._anthropic_prompt_cache_policy(
-                provider=fb_provider,
-                base_url=fb_base_url,
-                api_mode=fb_api_mode,
-                model=fb_model,
-            )
-        )
-
-        # LM Studio: preload before probing the fallback's context length.
-        agent._ensure_lmstudio_runtime_loaded()
-
-        # Update context compactor limits for the fallback model.
-        # Without this, compaction decisions use the primary model's
-        # context window (e.g. 200K) instead of the fallback's (e.g. 32K),
-        # causing oversized sessions to overflow the fallback.
-        # Also pass _config_context_length so the explicit config override
-        # (model.context_length in config.toml) is respected — without this,
-        # the fallback activation drops to 128K even when config says 204800.
-        if hasattr(agent, 'context_compactor') and agent.context_compactor:
-            from agent.model_metadata import get_model_context_length
-            # ``agent.api_key`` may be callable (Entra ID); the
-            # context-length resolver expects a string for live
-            # probes. Foundry typically resolves via config/static
-            # catalogs anyway, so coerce defensively.
-            _fb_ctx_api_key = agent.api_key if isinstance(agent.api_key, str) else ""
-            fb_context_length = get_model_context_length(
-                agent.model, base_url=agent.base_url,
-                api_key=_fb_ctx_api_key, provider=agent.provider,
-                config_context_length=getattr(agent, "_config_context_length", None),
-                custom_providers=getattr(agent, "_custom_providers", None),
-            )
-            agent.context_compactor.update_model(
-                model=agent.model,
-                context_length=fb_context_length,
-                base_url=agent.base_url,
-                api_key=getattr(agent, "api_key", ""),  # callable preserved → call_llm
-                provider=agent.provider,
-                api_mode=agent.api_mode,
-            )
-
-        # Re-resolve reasoning_config for the new fallback model (Closes #21256).
-        # Shared chokepoint: per-model override > global reasoning_effort
-        # (TOML boolean False = disabled). Wrapped in try/except because a
-        # config load failure must not kill the swap.
-        try:
-            from son_of_anton_cli.config import load_config
-            from son_of_anton_constants import resolve_reasoning_config
-
-            agent.reasoning_config = resolve_reasoning_config(
-                load_config() or {},
-                agent.model,
-                base_url=agent.base_url,
-                provider=agent.provider,
-                custom_providers=getattr(agent, "_custom_providers", None),
-            )
-            logger.info(
-                "Fallback %s: reasoning_config resolved: %s",
-                agent.model, agent.reasoning_config,
-            )
-        except Exception as _reasoning_err:
-            logger.debug(
-                "Failed to resolve reasoning_config for fallback %s; keeping current: %s",
-                agent.model, _reasoning_err,
-            )
-            # Keep whatever reasoning_config was active — don't break the fallback swap.
-
-        # Keep the prompt's self-identity in sync with the model actually
-        # answering, so "what model are you?" doesn't report the primary.
-        rewrite_prompt_model_identity(agent, fb_model, fb_provider)
-
-        agent._buffer_status(
-            f"🔄 Primary model failed — switching to fallback: "
-            f"{fb_model} via {fb_provider}"
-        )
-        # The buffered line above is dropped on successful recovery, but a
-        # provider/model switch is a durable state change operators must see
-        # even when the fallback succeeds.  Record a one-shot notice that the
-        # success path surfaces exactly once via _emit_pending_fallback_notice
-        # (see run_agent.py); it is discarded on terminal failure since the
-        # buffered line is flushed instead.  See fallback-observability fix.
-        agent._pending_fallback_notice = (
-            f"🔄 Switched to fallback model: {old_model} via {old_provider} "
-            f"→ {fb_model} via {fb_provider}"
-        )
-        logger.info(
-            "Fallback activated: %s → %s (%s)",
-            old_model, fb_model, fb_provider,
-        )
-        # Reset the stale-call circuit breaker (#58962): the streak measured
-        # the OLD provider's unresponsiveness.  Carrying it over would
-        # short-circuit the freshly activated fallback before it gets a
-        # single stream attempt.
-        _reset_stale_streak(agent)
-        return True
-    except Exception as e:
-        if fb_provider == "nous":
-            unavailable.add(fb_key)
-        logger.error("Failed to activate fallback %s: %s", fb_model, e)
-        return agent._try_activate_fallback(reason)  # try next in chain
-
-
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     agent._safe_print(
@@ -2184,115 +1630,21 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                     api_msg.pop(internal_key, None)
 
-        summary_extra_body = {}
-        try:
-            from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE as _OMIT_TEMP
-        except Exception:
-            _fixed_temperature_for_model = None
-            _OMIT_TEMP = None
-        _raw_summary_temp = (
-            _fixed_temperature_for_model(agent.model, agent.base_url)
-            if _fixed_temperature_for_model is not None
-            else None
-        )
-        _omit_summary_temperature = _raw_summary_temp is _OMIT_TEMP
-        _summary_temperature = None if _omit_summary_temperature else _raw_summary_temp
-        # LM Studio uses top-level `reasoning_effort` (not extra_body.reasoning).
-        # Mirror ChatCompletionsTransport.build_kwargs() so the summary path
-        # — which calls chat.completions.create() directly without going
-        # through the transport — sends the same shape the transport does.
-        _is_lmstudio_summary = (
-            (agent.provider or "").strip().lower() == "lmstudio"
-            and agent._supports_reasoning_extra_body()
-        )
-        _lm_reasoning_effort: str | None = (
-            agent._resolve_lmstudio_summary_reasoning_effort()
-            if _is_lmstudio_summary else None
-        )
-        if not _is_lmstudio_summary and agent._supports_reasoning_extra_body():
-            if agent.reasoning_config is not None:
-                summary_extra_body["reasoning"] = agent.reasoning_config
-            else:
-                summary_extra_body["reasoning"] = {
-                    "enabled": True,
-                    "effort": "medium"
-                }
+        from agent.reasoning_effort import custom_reasoning_extras
+
         summary_kwargs = {
             "model": agent.model,
             "messages": api_messages,
         }
-        if _summary_temperature is not None:
-            summary_kwargs["temperature"] = _summary_temperature
         if agent.max_tokens is not None:
             summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
-        if _lm_reasoning_effort is not None:
-            summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
-
-        # Merge the profile's canonical body and reasoning dialect even
-        # when routing is unset: profiles may always emit required
-        # metadata such as Portal tags, and the custom profile's reasoning
-        # control is a top-level reasoning_effort rather than the nested
-        # extra_body.reasoning set above. The summary call bypasses the
-        # transport, so mirror its profile hooks here or a custom route
-        # runs the wrap-up request without the session's reasoning config.
-        profile_extra_body = {}
-        profile_reasoning_extra = {}
-        profile_top_level = {}
-        profile_handles_reasoning = False
-        try:
-            from providers import get_provider_profile
-            from providers.base import ProviderProfile
-
-            provider_profile = get_provider_profile(agent.provider)
-            if provider_profile is not None:
-                profile_extra_body = provider_profile.build_extra_body(
-                    session_id=getattr(agent, "session_id", None),
-                    model=agent.model,
-                    base_url=agent.base_url,
-                    reasoning_config=agent.reasoning_config,
-                ) or {}
-                profile_reasoning_extra, profile_top_level = (
-                    provider_profile.build_api_kwargs_extras(
-                        reasoning_config=agent.reasoning_config,
-                        supports_reasoning=agent.reasoning_config is not None,
-                        model=agent.model,
-                        base_url=agent.base_url,
-                    )
-                )
-                profile_reasoning_extra = profile_reasoning_extra or {}
-                profile_top_level = profile_top_level or {}
-                from agent.auxiliary_client import (
-                    _contains_profile_reasoning_fields,
-                )
-
-                profile_handles_reasoning = (
-                    type(provider_profile).build_api_kwargs_extras
-                    is not ProviderProfile.build_api_kwargs_extras
-                    or _contains_profile_reasoning_fields(profile_extra_body)
-                    or _contains_profile_reasoning_fields(profile_reasoning_extra)
-                    or _contains_profile_reasoning_fields(profile_top_level)
-                )
-        except Exception:
-            pass
-
-        summary_kwargs.update(profile_top_level)
-        if profile_handles_reasoning:
-            # The profile owns the reasoning wire shape; the generic
-            # nested form set above must not ride along.
-            summary_extra_body.pop("reasoning", None)
-        if profile_extra_body:
-            summary_extra_body.update(profile_extra_body)
-        summary_extra_body.update(profile_reasoning_extra)
-
+        summary_extra_body, summary_top_level = custom_reasoning_extras(
+            agent.reasoning_config, model=agent.model, base_url=agent.base_url
+        )
+        summary_kwargs.update(summary_top_level)
         if summary_extra_body:
             summary_kwargs["extra_body"] = summary_extra_body
 
-        # The anthropic_messages branch that used to sit between these two
-        # was removed with the api_mode (801d46d5), leaving this else
-        # dangling on `if summary_extra_body`: a non-empty extra_body
-        # skipped the call entirely and the summary failed with an
-        # UnboundLocalError on final_response. The OpenAI-compatible call
-        # runs on every non-codex turn.
         summary_client = agent._ensure_primary_openai_client(
             reason="iteration_limit_summary"
         )
@@ -2316,21 +1668,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             else:
                 final_response = "I reached the iteration limit and couldn't generate a summary."
         else:
-            # Retry summary generation
-            summary_kwargs = {
-                "model": agent.model,
-                "messages": api_messages,
-            }
-            if _summary_temperature is not None:
-                summary_kwargs["temperature"] = _summary_temperature
-            if agent.max_tokens is not None:
-                summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
-            if _lm_reasoning_effort is not None:
-                summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
-            summary_kwargs.update(profile_top_level)
-            if summary_extra_body:
-                summary_kwargs["extra_body"] = summary_extra_body
-
+            # Retry summary generation with the same request
             summary_client = agent._ensure_primary_openai_client(
                 reason="iteration_limit_summary_retry"
             )
@@ -2840,8 +2178,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     "call_role": (
                         "delegated"
                         if getattr(agent, "is_subagent", False)
-                        else "fallback"
-                        if int(getattr(agent, "_fallback_index", 0) or 0) > 0
                         else "primary"
                     ),
                 },
@@ -3902,14 +3238,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _reset_stale_streak(agent)
     return result["response"]
 
-# ── Provider fallback ──────────────────────────────────────────────────
-
 
 __all__ = [
     "interruptible_api_call",
     "build_api_kwargs",
     "build_assistant_message",
-    "try_activate_fallback",
     "handle_max_iterations",
     "cleanup_task_resources",
     "interruptible_streaming_api_call",

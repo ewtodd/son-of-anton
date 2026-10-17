@@ -10,10 +10,8 @@ Methods covered:
 * ``sanitize_tool_call_arguments`` — repair corrupted JSON in tool_calls
 * ``repair_message_sequence`` — enforce alternation invariants
 * ``strip_think_blocks`` — remove inline reasoning from stored content
-* ``recover_with_credential_pool`` — rotate pool entries on 429
 * ``try_recover_primary_transport`` — re-create OpenAI client after rate-limit
 * ``drop_thinking_only_and_merge_users`` — Anthropic-style cleanup
-* ``restore_primary_runtime`` — un-do fallback activation
 * ``extract_reasoning`` — pull reasoning fields out of API responses
 * ``dump_api_request_debug`` — write request body for post-mortem
 * ``anthropic_prompt_cache_policy`` — compute cache_control breakpoints
@@ -37,8 +35,6 @@ from agent.message_sanitization import _FULL_ARGS_LOG_BOUND
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
-from agent.credential_pool import STATUS_EXHAUSTED, credential_pool_matches_provider
-from agent.error_classifier import FailoverReason
 from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, atomic_json_write
 
@@ -862,300 +858,6 @@ def strip_think_blocks(agent, content: str) -> str:
     return content
 
 
-def sync_credential_pool_entry_id(agent) -> None:
-    """Rebind ``agent._credential_pool_entry_id`` from the current pool + key.
-
-    OAuth refreshes can replace the runtime token before a failed request is
-    recovered, so the mutable API-key value alone cannot reliably attribute
-    the failure to its source entry.  This resolves the stable pool-entry ID
-    for the agent's current ``api_key`` and clears it when no pool is bound.
-    """
-    pool = getattr(agent, "_credential_pool", None)
-    try:
-        agent._credential_pool_entry_id = (
-            pool.entry_id_for_api_key(getattr(agent, "api_key", None))
-            if pool is not None
-            else None
-        )
-    except Exception:
-        agent._credential_pool_entry_id = None
-
-
-def recover_with_credential_pool(
-    agent,
-    *,
-    status_code: Optional[int],
-    has_retried_429: bool,
-    classified_reason: Optional[FailoverReason] = None,
-    error_context: Optional[Dict[str, Any]] = None,
-    billing_unverified: bool = False,
-) -> tuple[bool, bool]:
-    """Attempt credential recovery via pool rotation.
-
-    Returns (recovered, has_retried_429).
-    On rate limits: first occurrence retries same credential (sets flag True).
-                    second consecutive failure rotates to next credential.
-    On billing exhaustion: immediately rotates.
-    On auth failures: attempts token refresh before rotating.
-
-    `classified_reason` lets the recovery path honor the structured error
-    classifier instead of relying only on raw HTTP codes. This matters for
-    providers that surface billing/rate-limit/auth conditions under a
-    different status code, such as Anthropic returning HTTP 400 for
-    "out of extra usage".
-
-    `billing_unverified` marks a billing verdict that rests on an ambiguous
-    body (``ClassifiedError.billing_unverified``, #82154): the pool persists
-    it as ``billing_unverified`` so the exhausted entry gets a short cooldown
-    instead of the one-hour billing bench — the same 400 can be a
-    content-filter rejection that leaves the credential healthy.
-    """
-    pool = agent._credential_pool
-    if pool is None:
-        return False, has_retried_429
-
-    # Defensive guard: if a fallback provider is active and its provider name
-    # doesn't match the pool's provider, the pool belongs to the PRIMARY
-    # provider.  Mutating it based on fallback errors would corrupt the
-    # primary's credential state (see #33088) and, via _swap_credential,
-    # overwrite the agent's base_url back to the primary's endpoint — every
-    # subsequent request then goes to the wrong host and 404s (see #33163).
-    # The pool should only act when the agent is still on the same provider
-    # that seeded the pool.
-    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
-    pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
-    # Guard: skip credential pool recovery when the pool is scoped to a
-    # different provider than the agent.  Only guard when the pool has a
-    # known provider — an empty pool provider means "unscoped" (applies to
-    # any provider).  An empty agent provider is treated as a mismatch
-    # because swapping the pool's credentials would set base_url/api_key
-    # without fixing the empty provider field, leaving the agent in a
-    # corrupted state (provider="" model="").
-    if pool_provider and current_provider != pool_provider:
-        # Custom endpoints use two naming conventions for the SAME provider:
-        # the agent carries the generic ``custom`` label while the pool is
-        # keyed ``custom:<name>`` (see CUSTOM_POOL_PREFIX). A literal string
-        # compare treats them as a mismatch and skips recovery for every
-        # custom-provider user — 401s/429s then burn the full retry cycle
-        # with no rotation or refresh. Accept the pair as matching only when
-        # the agent's CURRENT base_url actually resolves to this pool key,
-        # so a fallback provider (or a different custom endpoint) still
-        # triggers the guard.
-        _custom_match = False
-        if current_provider == "custom" and pool_provider.startswith("custom:"):
-            try:
-                from agent.credential_pool import get_custom_provider_pool_key
-                _agent_base = (getattr(agent, "base_url", "") or "").strip()
-                _custom_match = bool(_agent_base) and (
-                    (get_custom_provider_pool_key(_agent_base) or "").strip().lower()
-                    == pool_provider
-                )
-            except Exception:
-                _custom_match = False
-        if not _custom_match:
-            _ra().logger.warning(
-                "Credential pool provider mismatch: pool=%s, agent=%s — "
-                "skipping pool mutation to avoid cross-provider contamination",
-                pool_provider, current_provider,
-            )
-            return False, has_retried_429
-
-    # Attribute the failure to the API key the agent actually dispatched the
-    # request with, not to pool.current(). The current() pointer is shared,
-    # mutable state — round-robin select() advances it on every call, and
-    # concurrent turns or a second process (gateway/dashboard) reloading the
-    # pool reset it to None — so by the time recovery runs it routinely points
-    # at a DIFFERENT, healthy entry. Marking that entry exhausted copies this
-    # request's error/reset time onto it and can take the whole pool offline
-    # from a single rate-limited key (#43747). ``_swap_credential`` keeps
-    # ``agent.api_key`` in sync with the entry in use, so it identifies the
-    # failing entry exactly; fall back to current()'s key only when the agent
-    # carries no key at all.
-    _api_key_hint = getattr(agent, "api_key", None) or None
-    _raw_credential_id = getattr(agent, "_credential_pool_entry_id", None)
-    _credential_id = (
-        _raw_credential_id
-        if isinstance(_raw_credential_id, str) and _raw_credential_id
-        else None
-    )
-    if not _api_key_hint:
-        _cur = pool.current()
-        if _cur:
-            _api_key_hint = getattr(_cur, "runtime_api_key", None)
-            if not _credential_id:
-                _current_id = getattr(_cur, "id", None)
-                if isinstance(_current_id, str) and _current_id:
-                    _credential_id = _current_id
-
-    def _rotate_failed_credential(rotate_status: int):
-        kwargs = {
-            "status_code": rotate_status,
-            "error_context": error_context,
-            "api_key_hint": _api_key_hint,
-        }
-        if _credential_id:
-            kwargs["credential_id"] = _credential_id
-        # Hand the pool the classified semantics, not just the status. A
-        # billing 403 (OpenRouter "key limit exceeded", xAI spending limit)
-        # and an edge-throttle 403 are the same number but need opposite
-        # cooldowns — the pool can only tell them apart if we say which.
-        # ``effective_reason`` is resolved below; this closure runs after.
-        if effective_reason is not None:
-            _failure_reason = effective_reason.value
-            if effective_reason == FailoverReason.billing and billing_unverified:
-                # Ambiguous billing body (#82154): persist the ambiguity so
-                # the cooldown is sized as transient, not a 1-hour bench.
-                from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
-                _failure_reason = FAILURE_REASON_BILLING_UNVERIFIED
-            kwargs["failure_reason"] = _failure_reason
-        return pool.mark_exhausted_and_rotate(**kwargs)
-
-    effective_reason = classified_reason
-    if effective_reason is None:
-        if status_code == 402:
-            effective_reason = FailoverReason.billing
-        elif status_code == 429:
-            effective_reason = FailoverReason.rate_limit
-        elif status_code in {401, 403}:
-            effective_reason = FailoverReason.auth
-
-    if effective_reason == FailoverReason.upstream_rate_limit:
-        # An upstream provider (e.g. DeepSeek behind OpenRouter) is
-        # rate-limiting the aggregator's traffic — the user's credential is
-        # healthy. Do NOT rotate or mark exhausted; let the caller's fallback
-        # path switch to a different model entirely.
-        upstream = (error_context or {}).get("upstream_provider") if error_context else None
-        if upstream:
-            _ra().logger.info(
-                "Upstream provider %s rate-limited via aggregator — skipping "
-                "credential rotation, deferring to fallback chain",
-                upstream,
-            )
-        else:
-            _ra().logger.info(
-                "Upstream aggregator 429 (provider unknown) — skipping "
-                "credential rotation, deferring to fallback chain"
-            )
-        return False, has_retried_429
-
-    if effective_reason == FailoverReason.billing:
-        rotate_status = status_code if status_code is not None else 402
-        # Runtime credentials can be resolved by a separate pool instance,
-        # leaving this recovery pool without ``current_id``. Match the key
-        # that actually failed instead of quarantining a different account.
-        next_entry = _rotate_failed_credential(rotate_status)
-        if next_entry is not None:
-            _ra().logger.info(
-                "Credential %s (billing) — rotated to pool entry %s",
-                rotate_status,
-                getattr(next_entry, "id", "?"),
-            )
-            agent._swap_credential(next_entry)
-            return True, False
-        return False, has_retried_429
-
-    if effective_reason == FailoverReason.rate_limit:
-        # If current credential is already marked exhausted, skip retry and
-        # rotate immediately. This prevents the "cancel-between-429s" trap
-        # where has_retried_429 (a local var) gets reset on each new prompt,
-        # causing the pool to retry the same exhausted credential forever.
-        # Prefer the entry matching the failing key over the shared current()
-        # pointer, for the same attribution reason as above.
-        current_entry = None
-        if _credential_id:
-            current_entry = next(
-                (e for e in pool.entries() if e.id == _credential_id),
-                None,
-            )
-        if _api_key_hint:
-            current_entry = current_entry or next(
-                (e for e in pool.entries() if e.runtime_api_key == _api_key_hint),
-                None,
-            )
-        if current_entry is None:
-            current_entry = pool.current()
-        current_last_status = getattr(current_entry, "last_status", None) if current_entry else None
-        if current_last_status == STATUS_EXHAUSTED:
-            _ra().logger.info(
-                "Credential already exhausted (last_status=%s) — rotating immediately instead of retrying",
-                current_last_status,
-            )
-            rotate_status = status_code if status_code is not None else 429
-            next_entry = _rotate_failed_credential(rotate_status)
-            if next_entry is not None:
-                _ra().logger.info(
-                    "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
-                    rotate_status,
-                    getattr(next_entry, "id", "?"),
-                )
-                agent._swap_credential(next_entry)
-                return True, False
-            return False, True
-
-        usage_limit_reached = False
-        if error_context:
-            context_reason = str(error_context.get("reason") or "").lower()
-            context_message = str(error_context.get("message") or "").lower()
-            usage_limit_reached = (
-                "usage_limit_reached" in context_reason
-                or "gousagelimit" in context_reason
-                or "usage limit reached" in context_message
-                or "usage limit has been reached" in context_message
-            )
-        if not has_retried_429 and not usage_limit_reached:
-            return False, True
-        rotate_status = status_code if status_code is not None else 429
-        next_entry = _rotate_failed_credential(rotate_status)
-        if next_entry is not None:
-            _ra().logger.info(
-                "Credential %s (rate limit) — rotated to pool entry %s",
-                rotate_status,
-                getattr(next_entry, "id", "?"),
-            )
-            agent._swap_credential(next_entry)
-            return True, False
-        return False, True
-
-    if effective_reason == FailoverReason.auth:
-        # Subscription/entitlement 403s look like auth failures on the wire
-        # but there is no token to refresh — the account simply lacks the
-        # entitlement.  Without this guard the agent loop spins re-issuing
-        # the same 403 until the user Ctrl+C's.
-        is_entitlement = agent._is_entitlement_failure(error_context, status_code)
-        _auth_haystack = " ".join(
-            str(error_context.get(k) or "").lower()
-            for k in ("message", "reason", "code", "error")
-            if isinstance(error_context, dict)
-        )
-        if (
-            not is_entitlement
-            and status_code == 403
-            and "oauth authentication is currently not allowed for this organization" in _auth_haystack
-        ):
-            is_entitlement = True
-        if is_entitlement:
-            _ra().logger.info(
-                "Credential %s — entitlement-shaped 403 from %s; "
-                "not a transient auth failure.",
-                status_code if status_code is not None else "auth",
-                agent.provider or "provider",
-            )
-            return False, has_retried_429
-        # Auth failure — rotate to the next pool entry.
-        rotate_status = status_code if status_code is not None else 401
-        next_entry = _rotate_failed_credential(rotate_status)
-        if next_entry is not None:
-            _ra().logger.info(
-                "Credential %s (auth) — rotated to pool entry %s",
-                rotate_status,
-                getattr(next_entry, "id", "?"),
-            )
-            agent._swap_credential(next_entry)
-            return True, False
-
-    return False, has_retried_429
-
-
 def try_recover_primary_transport(
     agent, api_error: Exception, *, retry_count: int, max_retries: int,
 ) -> bool:
@@ -1163,17 +865,8 @@ def try_recover_primary_transport(
 
     After ``max_retries`` exhaust, rebuild the primary client (clearing
     stale connection pools) and give it one more attempt before falling
-    back.  This is most useful for direct endpoints (custom, Z.AI,
-    Anthropic, OpenAI, local models) where a TCP-level hiccup does not
-    mean the provider is down.
-
-    Skipped for proxy/aggregator providers (OpenRouter, Nous) which
-    already manage connection pools and retries server-side — if our
-    retries through them are exhausted, one more rebuilt client won't help.
+    back: a TCP-level hiccup does not mean the endpoint is down.
     """
-    if agent._fallback_activated:
-        return False
-
     # Only for transient transport errors
     error_type = type(api_error).__name__
     if error_type not in _TRANSIENT_TRANSPORT_ERRORS:
@@ -1323,96 +1016,39 @@ def drop_thinking_only_and_merge_users(
     return merged
 
 
-def restore_primary_runtime(agent) -> bool:
-    """Restore the primary runtime at the start of a new turn.
+def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
+    """Point the cached system prompt's ``Model:``/``Provider:`` lines at
+    the active runtime, without persisting (the stored row keeps its labels).
 
-    In long-lived CLI sessions a single AIAgent instance spans multiple
-    turns.  Without restoration, one transient failure pins the session
-    to the fallback provider for every subsequent turn.  Calling this at
-    the top of ``run_conversation()`` makes fallback turn-scoped.
-
-    The gateway caches agents across messages (``_agent_cache`` in
-    ``gateway/run.py``), so this restoration IS needed there too.
+    Only the LAST occurrence of each line is touched — the identity lines
+    live in the volatile tail of the prompt.
     """
-    if not agent._fallback_activated:
-        # Reset the chain index even when no fallback was activated this
-        # turn.  Without this, a turn where _try_activate_fallback() was
-        # called but returned False (chain exhausted or provider not
-        # configured) leaves _fallback_index >= len(_fallback_chain) while
-        # _fallback_activated stays False.  The next turn skips this block
-        # entirely, stranding the index and silently blocking all future
-        # fallback attempts for the session.  Fixes #20465.
-        agent._fallback_index = 0
-        return False
+    sp = getattr(agent, "_cached_system_prompt", None)
+    if not isinstance(sp, str) or not sp:
+        return
+    for label, value in (("Model", model), ("Provider", provider)):
+        if not value:
+            continue
+        matches = list(re.finditer(rf"(?m)^{label}: .*$", sp))
+        if matches:
+            last = matches[-1]
+            sp = f"{sp[:last.start()]}{label}: {value}{sp[last.end():]}"
+    agent._cached_system_prompt = sp
 
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
-        return False  # primary still in rate-limit cooldown, stay on fallback
 
-    # ── Reset-aware gate ──
-    # The 60s ``_rate_limited_until`` cooldown covers transient rate limits,
-    # but subscription-style providers (Claude Pro/Max 5-hour windows, ChatGPT
-    # weekly limits) report reset times hours or days away.  The credential
-    # pool already stores those timestamps (``last_error_reset_at``); until
-    # the earliest one elapses, every restore attempt is a *guaranteed*
-    # failure that costs two prompt-cache invalidations per turn (switch to
-    # primary, fail, switch back to fallback) and re-marshals the full
-    # context each way.  Skip the restore while the pool says nobody can
-    # serve, and come back the moment the reset time passes.
-    #
-    # Fail-open by design: any error (unreadable auth store, legacy pool
-    # adapter without ``next_available_at``) falls through to the existing
-    # every-turn retry.  A pool with no reset info returns ``None`` and also
-    # falls through — this gate only ever *adds* skips for provably
-    # limited windows, so recovery can never be later than it is today.
-    #
-    # When the attached pool belongs to the fallback provider (cross-provider
-    # fallback rebinds it), the primary pool is loaded here and handed to the
-    # pool-rebind block below via ``prefetched_primary_pool`` so the load
-    # happens at most once per restore.
-    prefetched_primary_pool = None
-    try:
-        primary_provider = str(
-            (agent._primary_runtime or {}).get("provider") or ""
-        ).strip().lower()
-        pool = getattr(agent, "_credential_pool", None)
-        if not credential_pool_matches_provider(
-            pool,
-            primary_provider,
-            base_url=str((agent._primary_runtime or {}).get("base_url") or ""),
-        ):
-            from agent.credential_pool import load_pool
+def restore_primary_runtime(agent) -> bool:
+    """Re-apply ``agent._primary_runtime`` (the CLI's ``/model --once`` restore).
 
-            prefetched_primary_pool = (
-                load_pool(primary_provider) if primary_provider else None
-            )
-            pool = prefetched_primary_pool
-        next_at = getattr(pool, "next_available_at", lambda: None)()
-        if next_at is not None and next_at > time.time():
-            if not getattr(agent, "_restore_wait_logged", False):
-                agent._restore_wait_logged = True
-                logger.info(
-                    "Primary %s rate-limited until %s; staying on fallback "
-                    "%s/%s until the reset elapses",
-                    primary_provider or "?",
-                    datetime.fromtimestamp(next_at).isoformat(timespec="seconds"),
-                    agent.provider,
-                    agent.model,
-                )
-            return False
-    except Exception:
-        logger.debug(
-            "Reset-aware restore gate failed; falling back to per-turn retry",
-            exc_info=True,
-        )
-    agent._restore_wait_logged = False
-
+    Restores the runtime fields, rebuilds the client and context engine, and
+    rewrites the prompt's identity lines back so it is byte-identical to the
+    stored copy again (prefix cache match).
+    """
     rt = agent._primary_runtime
     try:
-        # ── Core runtime state ──
         agent.model = rt["model"]
         agent.provider = rt["provider"]
         agent.requested_provider = rt.get("requested_provider", agent.provider)
-        agent.base_url = rt["base_url"]           # setter updates _base_url_lower
+        agent.base_url = rt["base_url"]
         agent.api_mode = rt["api_mode"]
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -1420,26 +1056,14 @@ def restore_primary_runtime(agent) -> bool:
         agent._reasoning_echo_flag = rt.get("reasoning_echo_flag")
         agent._client_kwargs = dict(rt["client_kwargs"])
         agent._use_prompt_caching = rt["use_prompt_caching"]
-        # Default to native layout when the restored snapshot predates the
-        # native-vs-proxy split (older sessions saved before this PR).
         agent._use_native_cache_layout = rt.get("use_native_cache_layout", False)
-        # If the operator has disabled caching via config (cache_ttl is
-        # falsy → _cache_disabled flag is set), the disable must survive
-        # runtime snapshot restoration (#33555).
         if getattr(agent, "_cache_disabled", False):
             agent._use_prompt_caching = False
             agent._use_native_cache_layout = False
-
-        # ── Rebuild client for the primary provider ──
         agent.client = agent._create_openai_client(
-            dict(rt["client_kwargs"]),
-            reason="restore_primary",
-            shared=True,
+            dict(rt["client_kwargs"]), reason="restore_primary", shared=True,
         )
-
-        # ── Restore context engine state ──
-        cc = agent.context_compactor
-        cc.update_model(
+        agent.context_compactor.update_model(
             model=rt["compactor_model"],
             context_length=rt["compactor_context_length"],
             base_url=rt["compactor_base_url"],
@@ -1447,142 +1071,20 @@ def restore_primary_runtime(agent) -> bool:
             provider=rt["compactor_provider"],
             api_mode=rt.get("compactor_api_mode", ""),
         )
-
-        # ── Rebind and re-select the primary credential pool ──
-        # A cross-provider fallback attaches the fallback provider's pool. The
-        # runtime fields above restore the primary, but leaving that pool in
-        # place makes the next primary 401/429 hit the provider-mismatch guard
-        # and disables credential rotation. Reload the primary pool first; if
-        # auth storage is temporarily unreadable, clear the mismatched pool.
-        primary_provider = str(rt.get("provider") or "").strip().lower()
-        pool = getattr(agent, "_credential_pool", None)
-        pool_provider = str(getattr(pool, "provider", "") or "").strip().lower()
-        pool_matches_primary = pool_provider == primary_provider
-        if (
-            primary_provider == "custom"
-            and pool_provider.startswith("custom:")
-        ):
-            try:
-                from agent.credential_pool import get_custom_provider_pool_key
-
-                primary_key = (
-                    get_custom_provider_pool_key(str(rt.get("base_url") or "")) or ""
-                ).strip().lower()
-                pool_matches_primary = bool(primary_key) and primary_key == pool_provider
-            except Exception:
-                pool_matches_primary = False
-        if pool is not None and pool_provider and not pool_matches_primary:
-            agent._credential_pool = None
-            agent._credential_pool_entry_id = None
-            try:
-                if prefetched_primary_pool is not None:
-                    # Reuse the pool the reset-aware gate already loaded for
-                    # this restore — avoids a second disk read of auth.json.
-                    agent._credential_pool = prefetched_primary_pool
-                else:
-                    from agent.credential_pool import load_pool
-
-                    agent._credential_pool = load_pool(primary_provider)
-            except Exception as exc:
-                logger.warning(
-                    "Restore could not reload primary credential pool for %s: %s",
-                    primary_provider,
-                    exc,
-                )
-
-        # The snapshot's api_key was captured at construction time.  Across
-        # turns the pool may have rotated (token revocation, billing/rate-limit
-        # exhaustion, cooldown), leaving the snapshot key stale.  Restoring it
-        # blindly re-fails on the first request and burns through the remaining
-        # pool entries before cross-provider fallback even gets a chance.  Ask
-        # the pool for its current best entry and swap the live credential in.
-        # When the pool is absent, empty, or the entry has no usable key, we
-        # keep the snapshot key (the existing behavior).  Fixes #25205.
-        agent._credential_pool_entry_id = None
-        pool = getattr(agent, "_credential_pool", None)
-        if pool is not None and pool.has_available():
-            entry = pool.select()
-            if entry is not None:
-                entry_provider = str(getattr(entry, "provider", "") or "").strip().lower()
-                entry_matches_primary = entry_provider == primary_provider
-                # Custom endpoints all carry the generic ``custom`` provider on
-                # the agent while the pool entry is keyed ``custom:<name>`` (see
-                # CUSTOM_POOL_PREFIX). Resolve the primary's base_url to its
-                # ``custom:<name>`` key via the canonical helper and compare
-                # against the entry's key — this mirrors the sibling guard in
-                # ``recover_with_credential_pool`` (see above) and correctly
-                # disambiguates multiple custom providers that share one gateway
-                # base_url. Fixes #56885.
-                from agent.credential_pool import CUSTOM_POOL_PREFIX
-                if (
-                    primary_provider == "custom"
-                    and entry_provider.startswith(CUSTOM_POOL_PREFIX)
-                ):
-                    entry_matches_primary = False
-                    try:
-                        from agent.credential_pool import get_custom_provider_pool_key
-                        primary_base_url = str(rt.get("base_url") or "").strip()
-                        primary_key = (
-                            get_custom_provider_pool_key(primary_base_url) or ""
-                        ).strip().lower()
-                        entry_matches_primary = bool(primary_key) and primary_key == entry_provider
-                    except Exception:
-                        entry_matches_primary = False
-
-                entry_key = (
-                    getattr(entry, "runtime_api_key", None)
-                    or getattr(entry, "access_token", "")
-                )
-                if entry_key and entry_matches_primary:
-                    # ``_swap_credential`` rebuilds the OpenAI/Anthropic client,
-                    # reapplies base-url-scoped headers, and carries the
-                    # accumulated base_url / OAuth-detection fixes (#33163).
-                    agent._swap_credential(entry)
-                    logger.info(
-                        "Restore re-selected pool entry %s (%s)",
-                        getattr(entry, "id", "?"),
-                        getattr(entry, "label", "?"),
-                    )
-                elif entry_key:
-                    logger.info(
-                        "Restore skipped pool entry %s (%s): provider %s does not match primary provider %s",
-                        getattr(entry, "id", "?"),
-                        getattr(entry, "label", "?"),
-                        entry_provider or "?",
-                        primary_provider or "?",
-                    )
-
-        # ── Restore reasoning_config if it was saved ──
-        # switch_model saves reasoning_config in _primary_runtime. If the
-        # snapshot predates that (older sessions), keep the current value.
         saved_reasoning = rt.get("reasoning_config")
         if saved_reasoning is not None:
             agent.reasoning_config = dict(saved_reasoning)
-
-        # ── Reset fallback chain for the new turn ──
-        agent._fallback_activated = False
-        agent._fallback_index = 0
-        agent._rate_limit_backoff_count = 0  # reset exponential backoff counter
-
-        # Reset the stale-call circuit breaker (#58962): the streak measured
-        # the FALLBACK provider we're leaving; the restored primary deserves
-        # a fresh stream attempt before the breaker can trip again.
+        agent._rate_limit_backoff_count = 0
         from agent.chat_completion_helpers import _reset_stale_streak
+
         _reset_stale_streak(agent)
-
-        # Undo the fallback's identity rewrite so the prompt is
-        # byte-identical to the stored copy again (prefix cache match).
-        from agent.chat_completion_helpers import rewrite_prompt_model_identity
         rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
-
-        logger.info(
-            "Primary runtime restored for new turn: %s (%s)",
-            agent.model, agent.provider,
-        )
+        logger.info("Primary runtime restored: %s (%s)", agent.model, agent.provider)
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)
         return False
+
 
 # Which error types indicate a transient transport failure worth
 # one more attempt with a rebuilt client / connection pool.
@@ -2264,43 +1766,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # restore, request-scoped); auxiliary_client builds its own clients and keeps
     # SDK retries because it is NOT wrapped by the conversation loop.
     client_kwargs.setdefault("max_retries", 0)
-    # Defense-in-depth: guarantee Copilot requests carry the integration
-    # headers regardless of which build path we came through. The primary
-    # header wiring lives in `_apply_client_headers_for_base_url`, but two
-    # rebuild paths (`primary_recovery`, `restore_primary` in this module)
-    # reconstruct the client purely from a `_primary_runtime` snapshot and do
-    # NOT re-run that wiring. If the snapshot's client_kwargs ever lacks
-    # `default_headers` (older snapshot, header-less resolver result), the
-    # client goes out WITHOUT `Copilot-Integration-Id: vscode-chat`; the
-    # Copilot server then routes it to the "copilot-language-server" integrator
-    # whose model allowlist omits enterprise-only models (claude-opus-4.8) →
-    # HTTP 400 model_not_available_for_integrator on every turn. This chokepoint
-    # is the single place every primary OpenAI client passes through, so filling
-    # missing Copilot headers here closes the whole class. We only ADD missing
-    # keys — never override headers a caller deliberately set.
-    try:
-        if base_url_host_matches(str(client_kwargs.get("base_url", "")), "githubcopilot.com"):
-            from son_of_anton_cli.models import copilot_default_headers
-            existing = dict(client_kwargs.get("default_headers") or {})
-            existing_lower = {k.lower() for k in existing}
-            for hk, hv in copilot_default_headers().items():
-                if hk.lower() not in existing_lower:
-                    existing[hk] = hv
-            client_kwargs["default_headers"] = existing
-    except Exception:
-        _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
-
-    # OpenCode Free: the tier is served ANONYMOUSLY — any bearer the relay
-    # doesn't recognize (including placeholders) is a 401. Route every
-    # opencode-free client through the shared keyless header policy: an
-    # empty Authorization default_header overrides the SDK's
-    # "Bearer <api_key>" so no credential ever reaches the wire.
-    if agent.provider == "opencode-free":
-        from son_of_anton_cli.models import opencode_zen_free_headers
-
-        _existing = dict(client_kwargs.get("default_headers") or {})
-        _existing.update(opencode_zen_free_headers())
-        client_kwargs["default_headers"] = _existing
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
     client = _ra().OpenAI(**client_kwargs)
@@ -2327,29 +1792,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     change persists across turns (unlike fallback which is
     turn-scoped).
     """
-    from son_of_anton_cli.providers import determine_api_mode
-
-    # ── Determine api_mode if not provided ──
-    # Pass model so dual-wire providers (Nous Portal anthropic/* → Messages)
-    # resolve correctly; without it determine_api_mode falls back to the
-    # openai_chat overlay default.
-    if not api_mode:
-        api_mode = determine_api_mode(new_provider, base_url, model=new_model)
-
-    # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing
-    # /v1 into the anthropic_messages client, which would cause the SDK to
-    # hit /v1/v1/messages.  `model_switch.switch_model()` already strips
-    # this, but we guard here so any direct callers (future code paths,
-    # tests) can't reintroduce the double-/v1 404 bug.
-    from son_of_anton_cli.models import opencode_provider_family
-
-    if (
-        api_mode == "anthropic_messages"
-        and opencode_provider_family(new_provider) is not None
-        and isinstance(base_url, str)
-        and base_url
-    ):
-        base_url = re.sub(r"/v1/?$", "", base_url)
+    api_mode = api_mode or "chat_completions"
 
     old_model = agent.model
     old_provider = agent.provider
@@ -2385,13 +1828,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
     # live dict doesn't poison the rollback target.
     _snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
-    # Snapshot the credential pool reference so a failed client rebuild can
-    # restore the original pool (issue #52727: pool reload is part of this
-    # switch and must be reversible on rollback).
-    _snapshot["_credential_pool"] = getattr(agent, "_credential_pool", _MISSING)
-    _snapshot["_credential_pool_entry_id"] = getattr(
-        agent, "_credential_pool_entry_id", _MISSING
-    )
 
     def _restore_snapshot() -> None:
         for _name, _value in _snapshot.items():
@@ -2447,30 +1883,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         if api_key:
             agent.api_key = api_key
 
-        # ── Reload credential pool for the new provider (issue #52727) ──
-        # Without this, ``recover_with_credential_pool`` sees a
-        # ``pool.provider != agent.provider`` mismatch and short-circuits,
-        # leaving the new provider with no rotation/recovery on 401/429 and
-        # burning the original pool's entries. Only reload when the provider
-        # actually changed (or the pool was missing) — re-selecting the same
-        # provider must not churn the pool reference. A reload failure is
-        # logged + swallowed: the switch itself must still complete.
-        old_norm = (old_provider or "").strip().lower()
-        new_norm = (new_provider or "").strip().lower()
-        if old_norm != new_norm or getattr(agent, "_credential_pool", None) is None:
-            # A pool bound to the old provider is worse than no pool: the
-            # recovery guard rejects it and every later 401/429 skips rotation.
-            agent._credential_pool = None
-            agent._credential_pool_entry_id = None
-            try:
-                from agent.credential_pool import load_pool
-                agent._credential_pool = load_pool(new_provider)
-            except Exception as _pool_exc:  # noqa: BLE001
-                logger.warning(
-                    "switch_model: credential pool reload failed for %s (%s); "
-                    "continuing without pool rotation this turn",
-                    new_provider, _pool_exc,
-                )
         # ── Build new client ──
         effective_key = api_key or agent.api_key
         effective_base = base_url or agent.base_url
@@ -2478,24 +1890,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "api_key": effective_key,
             "base_url": effective_base,
         }
-        try:
-            from son_of_anton_cli.config import (
-                apply_custom_provider_tls_to_client_kwargs,
-                get_compatible_custom_providers,
-                load_config_readonly,
-            )
-
-            # Read custom_providers from live config (not the init-time
-            # snapshot on ``agent._custom_providers``) so ssl_ca_cert /
-            # ssl_verify edits are honored when switching mid-session,
-            # matching the context-length reload below (#15779).
-            apply_custom_provider_tls_to_client_kwargs(
-                agent._client_kwargs,
-                str(effective_base or ""),
-                get_compatible_custom_providers(load_config_readonly()),
-            )
-        except Exception:
-            logger.debug("custom-provider TLS resolution skipped on switch_model", exc_info=True)
         _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
         if _sm_timeout is not None:
             agent._client_kwargs["timeout"] = _sm_timeout
@@ -2509,8 +1903,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             reason="switch_model",
             shared=True,
         )
-
-        sync_credential_pool_entry_id(agent)
     except Exception:
         # Rollback every mutated field to the pre-swap snapshot so the agent
         # is left consistent (old model + old provider + old client) and the
@@ -2539,19 +1931,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     except Exception:
         _destination_context_intent = None
     agent._config_context_length = _destination_context_intent
-    _runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
-        _destination_context_intent
-    )
-    if agent._lmstudio_load_was_unverified(_runtime_context_length):
-        logger.warning(
-            "LM Studio model activation was rejected or completed without a "
-            "verifiable active context length during model switch; continuing "
-            "with configured context"
-        )
-    _effective_context_length = agent._effective_lmstudio_context_length(
-        _destination_context_intent,
-        _runtime_context_length,
-    )
+    _effective_context_length = _destination_context_intent
 
     # ── Re-evaluate prompt caching ──
     # Refresh the custom-provider snapshot from the config just loaded above
@@ -2659,28 +2039,6 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "compactor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
         "compactor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
     }
-    # ── Reset fallback state ──
-    agent._fallback_activated = False
-    agent._fallback_index = 0
-
-    # When the user deliberately swaps primary providers (e.g. openrouter
-    # → anthropic), drop any fallback entries that target the OLD primary
-    # or the NEW one.  The chain was seeded from config at agent init for
-    # the original provider — without pruning, a failed turn on the new
-    # primary silently re-activates the provider the user just rejected,
-    # which is exactly what was reported during TUI v2 blitz testing
-    # ("switched to anthropic, tui keeps trying openrouter").
-    old_norm = (old_provider or "").strip().lower()
-    new_norm = (new_provider or "").strip().lower()
-    fallback_chain = list(getattr(agent, "_fallback_chain", []) or [])
-    if old_norm and new_norm and old_norm != new_norm:
-        fallback_chain = [
-            entry for entry in fallback_chain
-            if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
-        ]
-    agent._fallback_chain = fallback_chain
-    agent._fallback_model = fallback_chain[0] if fallback_chain else None
-
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",
         old_model, old_provider, new_model, new_provider,
@@ -3667,89 +3025,6 @@ def cleanup_dead_connections(agent) -> bool:
     return False
 
 
-def extract_api_error_context(error: Exception) -> Dict[str, Any]:
-    """Extract structured rate-limit details from provider errors."""
-    context: Dict[str, Any] = {}
-
-    body = getattr(error, "body", None)
-    payload = None
-    if isinstance(body, dict):
-        payload = body.get("error") if isinstance(body.get("error"), dict) else body
-    if isinstance(payload, dict):
-        reason = payload.get("code") or payload.get("type") or payload.get("error")
-        if isinstance(reason, str) and reason.strip():
-            context["reason"] = reason.strip()
-        message = payload.get("message") or payload.get("error_description")
-        if not message and isinstance(payload.get("error"), str):
-            # xAI uses a top-level string ``error`` beside a structured
-            # ``code`` (for example personal-team-blocked:spending-limit).
-            message = payload.get("error")
-        if isinstance(message, str) and message.strip():
-            context["message"] = message.strip()
-        for key in ("resets_at", "reset_at"):
-            value = payload.get(key)
-            if value not in {None, ""}:
-                context["reset_at"] = value
-                break
-        retry_after = payload.get("retry_after")
-        if retry_after not in {None, ""} and "reset_at" not in context:
-            try:
-                context["reset_at"] = time.time() + float(retry_after)
-            except (TypeError, ValueError):
-                pass
-
-    response = getattr(error, "response", None)
-    headers = getattr(response, "headers", None)
-    if headers:
-        retry_after = headers.get("retry-after") or headers.get("Retry-After")
-        if retry_after and "reset_at" not in context:
-            try:
-                context["reset_at"] = time.time() + float(retry_after)
-            except (TypeError, ValueError):
-                pass
-        ratelimit_reset = headers.get("x-ratelimit-reset")
-        if ratelimit_reset and "reset_at" not in context:
-            context["reset_at"] = ratelimit_reset
-
-    if "message" not in context:
-        raw_message = str(error).strip()
-        if raw_message:
-            context["message"] = raw_message[:500]
-
-    if "reset_at" not in context:
-        message = context.get("message") or ""
-        if isinstance(message, str):
-            delay_match = re.search(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", message, re.IGNORECASE)
-            if delay_match:
-                value = float(delay_match.group(1))
-                seconds = value / 1000.0 if delay_match.group(2).lower() == "ms" else value
-                context["reset_at"] = time.time() + seconds
-            else:
-                resets_in_match = re.search(
-                    r"resets?\s+in\s+"
-                    r"(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b\s*)?"
-                    r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
-                    r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?",
-                    message,
-                    re.IGNORECASE,
-                )
-                if resets_in_match and any(resets_in_match.groups()):
-                    hours = float(resets_in_match.group(1) or 0)
-                    minutes = float(resets_in_match.group(2) or 0)
-                    seconds = float(resets_in_match.group(3) or 0)
-                    context["reset_at"] = time.time() + (hours * 3600) + (minutes * 60) + seconds
-                else:
-                    sec_match = re.search(
-                        r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
-                        message,
-                        re.IGNORECASE,
-                    )
-                    if sec_match:
-                        context["reset_at"] = time.time() + float(sec_match.group(1))
-
-    return context
-
-
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
     """Append any pending /steer text to the last tool result in this turn.
 
@@ -3882,7 +3157,6 @@ __all__ = [
     "sanitize_tool_call_arguments",
     "repair_message_sequence",
     "strip_think_blocks",
-    "recover_with_credential_pool",
     "try_recover_primary_transport",
     "drop_thinking_only_and_merge_users",
     "restore_primary_runtime",
@@ -3899,7 +3173,6 @@ __all__ = [
     "sanitize_api_messages",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",
-    "extract_api_error_context",
     "apply_pending_steer_to_tool_results",
     "_iter_pool_sockets",
     "force_close_tcp_sockets",

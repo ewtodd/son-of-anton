@@ -1,10 +1,7 @@
 """Contracts for the max-iterations wrap-up summary.
 
 The wrap-up hand-builds its request instead of going through the transport,
-so it must apply the same profile reasoning dialect as every other call, and
-the OpenAI-compatible request must actually be sent when extra_body is
-non-empty (the anthropic_messages removal left an else dangling on that
-condition and skipped the call).
+so it must apply the same reasoning dialect as every other call.
 """
 
 from __future__ import annotations
@@ -56,7 +53,6 @@ class _SummaryAgent:
         self._cached_system_prompt = "system"
         self.ephemeral_system_prompt = ""
         self.prefill_messages = []
-        self.extra_body_supported = False
         self.created: list[dict] = []
 
     def _safe_print(self, *_args, **_kwargs):
@@ -73,9 +69,6 @@ class _SummaryAgent:
 
     def _drop_thinking_only_and_merge_users(self, messages):
         return messages
-
-    def _supports_reasoning_extra_body(self):
-        return self.extra_body_supported
 
     def _ensure_primary_openai_client(self, reason=""):
         return _StubClient(self)
@@ -112,19 +105,3 @@ def test_custom_route_summary_gets_the_session_reasoning_effort() -> None:
     assert agent.created[0]["reasoning_effort"] == "medium"
     assert "reasoning" not in (agent.created[0].get("extra_body") or {})
 
-
-def test_nonempty_extra_body_still_sends_the_request() -> None:
-    # Regression guard: the removed anthropic_messages branch left the
-    # OpenAI-compatible call in an else on `if summary_extra_body`, so an
-    # OpenRouter-style nested reasoning block skipped it entirely.
-    agent = _SummaryAgent(
-        "openrouter", {"enabled": True, "effort": "low"}
-    )
-    agent.extra_body_supported = True
-    result = handle_max_iterations(agent, _user_turn(), 3)
-    assert result == "wrap-up"
-    assert len(agent.created) == 1
-    assert agent.created[0]["extra_body"]["reasoning"] == {
-        "enabled": True,
-        "effort": "low",
-    }

@@ -291,8 +291,7 @@ import agent.prompt_builder
 import gateway.platforms.signal
 import autophysicist.run
 import autophysicist.runner
-import providers
-assert providers.get_provider_profile('custom') is not None, 'bundled provider profile (custom) missing'
+import agent.auxiliary_client
 print('imports ok')
 " || (echo "FAIL: core modules do not import from the sealed venv"; exit 1)
           echo "PASS: core modules import from the sealed venv"

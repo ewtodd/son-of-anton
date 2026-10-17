@@ -266,116 +266,16 @@ def _relative_time(ts) -> str:
 
 
 def _has_any_provider_configured() -> bool:
-    """True when config.toml (or the environment) names an endpoint to talk to."""
-    from son_of_anton_cli.config import load_config
+    """True when an inference endpoint is declared (model section or custom_providers)."""
+    from son_of_anton_cli.config import get_compatible_custom_providers, load_config
 
-    if os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_KEY"):
-        return True
     cfg = load_config()
     model_cfg = cfg.get("model")
     if isinstance(model_cfg, dict) and any(
-        str(model_cfg.get(key) or "").strip() for key in ("provider", "base_url", "api_key")
+        str(model_cfg.get(k) or "").strip() for k in ("provider", "base_url", "api_key")
     ):
         return True
-    return bool(cfg.get("custom_providers"))
-
-
-def _confirm_startup_expensive_model_override(args) -> None:
-    """Guard startup -m/--provider overrides before the first API call."""
-    explicit_model = (getattr(args, "model", None) or "").strip()
-    explicit_provider = (getattr(args, "provider", None) or "").strip()
-    if not explicit_model and not explicit_provider:
-        return
-
-    try:
-        from son_of_anton_cli.config import load_config
-        from son_of_anton_cli.model_selection_guards import (
-            combined_message,
-            selection_warnings,
-        )
-    except Exception as exc:
-        logger.warning("startup model cost guard unavailable: %s", exc)
-        return
-
-    try:
-        config = load_config()
-    except Exception as exc:
-        logger.warning("startup model cost guard could not load config: %s", exc)
-        config = {}
-    if not isinstance(config, dict):
-        config = {}
-    model_cfg = config.get("model") or {}
-    if not isinstance(model_cfg, dict):
-        model_cfg = {}
-    security_cfg = config.get("security") or {}
-    if not isinstance(security_cfg, dict):
-        security_cfg = {}
-
-    model = explicit_model or (model_cfg.get("default") or "").strip()
-    if not model:
-        return
-    provider = (explicit_provider or model_cfg.get("provider") or "").strip()
-    try:
-        # Unified registry: cost guard + id-keyed guards (e.g. the
-        # data-training-tier warning) all fire at startup too.
-        warnings = selection_warnings(
-            model,
-            provider=provider,
-            base_url=(model_cfg.get("base_url") or ""),
-            api_key=(model_cfg.get("api_key") or ""),
-        )
-    except Exception as exc:
-        logger.warning("startup model cost guard failed for %s/%s: %s", provider, model, exc)
-        return
-    if not warnings:
-        return
-
-    # Cost and provider-routing confirmation is intentionally independent of
-    # --yolo: that flag approves local command/tool risk, not paid aggregator
-    # spend or a surprising provider route.
-    is_interactive = sys.stdin.isatty()
-    allow_unattended_data_training = (
-        security_cfg.get("allow_data_training_tiers_noninteractive") is True
-    )
-    if not is_interactive and allow_unattended_data_training:
-        acknowledged = [
-            warning for warning in warnings if warning.kind == "data_policy"
-        ]
-        if acknowledged:
-            sys.stderr.write(combined_message(acknowledged) + "\n")
-            sys.stderr.write(
-                "Proceeding in non-interactive mode because "
-                "security.allow_data_training_tiers_noninteractive is true.\n"
-            )
-            warnings = [
-                warning for warning in warnings if warning.kind != "data_policy"
-            ]
-            if not warnings:
-                return
-
-    message = combined_message(warnings)
-    if not is_interactive:
-        sys.stderr.write(message + "\n")
-        if any(warning.kind == "data_policy" for warning in warnings):
-            sys.stderr.write(
-                "To acknowledge data-training tiers for unattended runs, set "
-                "security.allow_data_training_tiers_noninteractive to true "
-                "in config.toml.\n"
-            )
-        sys.stderr.write(
-            "Refusing this startup model override in non-interactive mode. "
-            "Run interactively and confirm if you intend to use it.\n"
-        )
-        raise SystemExit(1)
-
-    sys.stderr.write(message + "\n")
-    try:
-        reply = input("Use this model for this invocation? [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        reply = ""
-    if reply not in {"y", "yes"}:
-        sys.stderr.write("Model override cancelled.\n")
-        raise SystemExit(1)
+    return bool(get_compatible_custom_providers(cfg))
 
 
 def _session_status_tag(status: Optional[str]) -> str:
@@ -1154,8 +1054,6 @@ def cmd_chat(args):
     if getattr(args, "source", None):
         os.environ["SON_OF_ANTON_SESSION_SOURCE"] = args.source
 
-    _confirm_startup_expensive_model_override(args)
-
     # Import and run the CLI
     from cli import main as cli_main
 
@@ -1220,30 +1118,6 @@ def cmd_gateway(args):
 
     gateway_command(args)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Auxiliary model configuration
-#
-# Son of Anton uses lightweight "auxiliary" models for side tasks (vision analysis,
-# context compaction, web extraction, session search, etc.). Each task has
-# its own provider+model pair in config.toml under `auxiliary.<task>`.
-#
-# The UI lives behind "Configure auxiliary models..." at the bottom of the
-# `son-of-anton model` provider picker. It does NOT re-run credential setup — it
-# only routes already-authenticated providers to specific aux tasks. Users
-# configure new providers through the normal `son-of-anton model` flow first.
-# ─────────────────────────────────────────────────────────────────────────────
-
-# (task_key, display_name, short_description)
-_AUX_TASKS: list[tuple[str, str, str]] = [
-    ("vision", "Vision", "image/screenshot analysis"),
-    ("compaction", "Compaction", "context summarization"),
-    ("web_extract", "Web extract", "web page summarization"),
-    ("approval", "Approval", "smart command approval"),
-    ("mcp", "MCP", "MCP tool reasoning"),
-    ("title_generation", "Title generation", "session titles"),
-    ("memory_query_rewrite", "Memory query rewrite", "memory retrieval queries"),
-]
 
 # The main.py decomposition moved the sessions/update command implementations
 # into their own modules, but main.py still re-exports their surface so
@@ -1696,7 +1570,6 @@ def _try_fast_chat_launch() -> bool:
     _prepare_agent_startup(args)
 
     if getattr(args, "oneshot", None):
-        _confirm_startup_expensive_model_override(args)
         _run_and_exit_oneshot(
             args.oneshot,
             model=getattr(args, "model", None),
@@ -2591,7 +2464,6 @@ def main():
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.
     if getattr(args, "oneshot", None):
-        _confirm_startup_expensive_model_override(args)
         _run_and_exit_oneshot(
             args.oneshot,
             model=getattr(args, "model", None),

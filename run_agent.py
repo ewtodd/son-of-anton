@@ -123,7 +123,6 @@ from tools.interrupt import set_interrupt as _set_interrupt
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import is_trivial_prompt
-from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.message_content import flatten_message_text
 from agent.session_activity import ActivityProvenance
@@ -238,37 +237,6 @@ _DB_PERSISTED_MARKER = "_db_persisted"
 # =========================================================================
 
 
-# =========================================================================
-# Extracted as a module-level helper so both __init__ and
-# _apply_client_headers_for_base_url can share it.
-# =========================================================================
-
-
-def _pool_may_recover_from_rate_limit(pool) -> bool:
-    """Decide whether to wait for credential-pool rotation instead of falling back.
-
-    The existing pool-rotation path requires the pool to (1) exist and (2) have
-    at least one entry not currently in exhaustion cooldown.  But rotation is
-    only meaningful when the pool has more than one entry.
-
-    With a single-credential pool (common for Vertex service accounts and any
-    "one personal key" configuration), the primary entry just 429'd and there
-    is nothing to rotate to.  Waiting for the pool cooldown to expire means
-    retrying against the same exhausted quota — the daily-quota 429 will recur
-    immediately, and the retry budget is burned.
-
-    In that case we must fall back to the configured ``fallback_model``
-    instead.  Returns True only when rotation has somewhere to go.
-
-    See issues #11314 and #13636.
-    """
-    if pool is None:
-        return False
-    if not pool.has_available():
-        return False
-    return len(pool.entries()) > 1
-
-
 def _safe_session_filename_component(session_id: str) -> str:
     """Return a stable, path-safe filename component for a session ID.
 
@@ -323,10 +291,6 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,
-        acp_command: str = None,
-        acp_args: list[str] | None = None,
-        command: str = None,
-        args: list[str] | None = None,
         model: str = "",
         max_iterations: int = sys.maxsize,  # Default: unlimited tool-calling iterations (shared with subagents)
         tool_delay: float = None,  # Deprecated: accepted for compatibility, ignored
@@ -357,7 +321,6 @@ class AIAgent:
         event_callback: Optional[Callable[[str, dict], None]] = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
-        service_tier: str = None,
         request_overrides: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
@@ -376,8 +339,6 @@ class AIAgent:
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
         run_budget_seconds: Optional[float] = None,
-        fallback_model: Dict[str, Any] = None,
-        credential_pool=None,
         pass_session_id: bool = False,
         requested_provider: str = None,
     ):
@@ -397,10 +358,6 @@ class AIAgent:
             provider=provider,
             requested_provider=requested_provider,
             api_mode=api_mode,
-            acp_command=acp_command,
-            acp_args=acp_args,
-            command=command,
-            args=args,
             model=model,
             max_iterations=max_iterations,
             enabled_toolsets=enabled_toolsets,
@@ -430,7 +387,6 @@ class AIAgent:
             event_callback=event_callback,
             max_tokens=max_tokens,
             reasoning_config=reasoning_config,
-            service_tier=service_tier,
             request_overrides=request_overrides,
             prefill_messages=prefill_messages,
             platform=platform,
@@ -449,8 +405,6 @@ class AIAgent:
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
             run_budget_seconds=run_budget_seconds,
-            fallback_model=fallback_model,
-            credential_pool=credential_pool,
             pass_session_id=pass_session_id,
         )
 
@@ -693,67 +647,6 @@ class AIAgent:
                 engine.bind_session_state(getattr(self, "_session_db", None), target_session_id)
             except Exception as exc:
                 logger.debug("context engine bind_session_state during reset: %s", exc)
-
-    @staticmethod
-    def _effective_lmstudio_context_length(
-        config_context_length: Optional[int],
-        runtime_context_length: Any,
-    ) -> Optional[int]:
-        """Return a safe context budget from explicit intent and verified runtime."""
-        explicit = (
-            config_context_length
-            if isinstance(config_context_length, int)
-            and not isinstance(config_context_length, bool)
-            and config_context_length > 0
-            else None
-        )
-        runtime_value = getattr(runtime_context_length, "context_length", runtime_context_length)
-        runtime = (
-            runtime_value
-            if isinstance(runtime_value, int)
-            and not isinstance(runtime_value, bool)
-            and runtime_value > 0
-            else None
-        )
-        if bool(getattr(runtime_context_length, "rejected", False)) or (
-            bool(getattr(runtime_context_length, "load_attempted", False))
-            and runtime is None
-        ):
-            return None
-        if runtime is not None and explicit is not None:
-            return min(runtime, explicit)
-        return runtime if runtime is not None else explicit
-
-    @staticmethod
-    def _lmstudio_load_was_unverified(load_result: Any) -> bool:
-        """Return true when a management load was rejected or unverifiable."""
-        return bool(getattr(load_result, "rejected", False)) or (
-            bool(getattr(load_result, "load_attempted", False))
-            and getattr(load_result, "context_length", None) is None
-        )
-
-    def _ensure_lmstudio_runtime_loaded(
-        self,
-        config_context_length: Optional[int] = None,
-    ) -> Any:
-        """Preload LM Studio unless configured to rely on JIT loading."""
-        if (self.provider or "").strip().lower() != "lmstudio":
-            return None
-        if (getattr(self, "lmstudio_load_mode", "explicit") or "explicit").strip().lower() == "jit":
-            logger.debug("LM Studio explicit preload skipped: lmstudio_load_mode=jit")
-            return None
-
-        from son_of_anton_cli.models import ensure_lmstudio_model_loaded
-
-        if config_context_length is None:
-            config_context_length = getattr(self, "_config_context_length", None)
-        return ensure_lmstudio_model_loaded(
-            self.model,
-            self.base_url,
-            getattr(self, "api_key", ""),
-            config_context_length,
-            return_load_result=True,
-        )
 
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
@@ -1029,29 +922,6 @@ class AIAgent:
         except Exception:
             pass
 
-    def _emit_pending_fallback_notice(self) -> None:
-        """Surface the one-shot fallback-switch notice on successful recovery.
-
-        A provider/model switch is a durable state change operators must see,
-        unlike transient retry chatter that ``_clear_status_buffer`` drops.
-        ``try_activate_fallback`` records the switch in
-        ``self._pending_fallback_notice``; this emits it exactly once via
-        ``_emit_status`` and then clears it, so a successful fallback still
-        produces one visible notice.  On terminal failure the buffered switch
-        line is flushed instead (and this notice discarded) — see
-        ``_flush_status_buffer`` — so the user always sees the switch once.
-        """
-        try:
-            notice = getattr(self, "_pending_fallback_notice", None)
-            if notice:
-                # Clear before emitting so a (swallowed) callback error can't
-                # leave the notice set for a stale re-emit on a later turn.
-                self._pending_fallback_notice = None
-                self._emit_status(notice)
-        except Exception:
-            # Never break the conversation loop on a notice hiccup.
-            pass
-
     def _flush_status_buffer(self) -> None:
         """Emit buffered retry messages — call on terminal failure.
 
@@ -1059,10 +929,6 @@ class AIAgent:
         was tried before the turn gave up.
         """
         try:
-            # The buffered trace already carries the fallback switch line, so
-            # drop any one-shot fallback notice to avoid a stale duplicate
-            # leaking into a later successful turn.
-            self._pending_fallback_notice = None
             buf = getattr(self, "_retry_status_buffer", None)
             if not buf:
                 return
@@ -2104,131 +1970,6 @@ class AIAgent:
         _save_trajectory_to_file(trajectory, self.model, completed)
 
     @staticmethod
-    def _is_entitlement_failure(
-        error_context: Optional[Dict[str, Any]],
-        status_code: Optional[int],
-    ) -> bool:
-        """Detect subscription/entitlement 403s that masquerade as auth failures.
-
-        Returned True only when the body text matches a known entitlement
-        shape AND the status is 401/403.  Refreshing an OAuth token cannot
-        fix an unsubscribed account, so callers should surface the error
-        instead of looping the credential pool.
-
-        Current matches:
-          * xAI OAuth: "do not have an active Grok subscription" /
-            "out of available resources" / "does not have permission" + "grok"
-
-        Disambiguator for xAI (#29344): the same ``code`` text ("The caller
-        does not have permission to execute the specified operation") is
-        returned for BOTH an unsubscribed account AND a stale OAuth access
-        token.  xAI ships an explicit signal in the ``error`` field that
-        tells the two apart: a ``[WKE=unauthenticated:...]`` suffix (and/or
-        the ``OAuth2 access token could not be validated`` phrasing) means
-        the credentials failed validation — that's recoverable by refreshing
-        the token, NOT by surfacing an entitlement message.  When either
-        signal is present we return False eagerly so the credential-pool
-        refresh path runs, letting long-running TUI sessions recover from
-        stale tokens without an exit/reopen cycle.
-
-        Extend here for new providers as we discover them (Anthropic's
-        Claude Max OAuth entitlement errors look distinct enough today that
-        the existing 1M-context-beta branch handles them; revisit if other
-        subscription tiers start producing the same loop signature).
-        """
-        if status_code not in {401, 403, None}:
-            return False
-        if not isinstance(error_context, dict):
-            return False
-        # Build a single lowercase haystack covering every field shape the
-        # body might land in.  ``_extract_api_error_context`` normalises to
-        # ``message``/``reason``, but callers (and the test suite) may also
-        # hand us the raw body with ``code``/``error`` keys; cover both so
-        # the WKE disambiguator below fires regardless of entry point.
-        message = str(error_context.get("message") or "").lower()
-        reason = str(error_context.get("reason") or "").lower()
-        code = str(error_context.get("code") or "").lower()
-        err = str(error_context.get("error") or "").lower()
-        haystack = f"{message} {reason} {code} {err}"
-        if not haystack.strip():
-            return False
-        # xAI's authoritative disambiguator for "stale token" vs
-        # "unsubscribed account".  Both conditions share the same
-        # permission-denied ``code`` text; only one carries this suffix.
-        # Bail out before the entitlement keyword checks so a stale OAuth
-        # token routes through the credential-refresh path instead of the
-        # surface-error-as-entitlement path.  See #29344 for the long-
-        # running TUI failure mode this closes.
-        if "[wke=unauthenticated:" in haystack:
-            return False
-        if "oauth2 access token could not be validated" in haystack:
-            return False
-        if "do not have an active grok subscription" in haystack:
-            return True
-        if "out of available resources" in haystack and "grok" in haystack:
-            return True
-        if "does not have permission" in haystack and "grok" in haystack:
-            return True
-        return False
-
-    @staticmethod
-    def _decorate_xai_entitlement_error(detail: str) -> str:
-        """Append a neutral hint when xAI's OAuth surface returns the
-        permission-denied 403.
-
-        xAI's ``/v1/responses`` endpoint replies to several distinct failure
-        modes with the SAME body::
-
-            {"code": "The caller does not have permission to execute the
-             specified operation", "error": "You have either run out of
-             available resources or do not have an active Grok subscription.
-             Manage subscriptions at https://grok.com/?_s=usage or subscribe
-             at https://grok.com/supergrok"}
-
-        That body covers several real causes we cannot distinguish without
-        more info from xAI.  The most common (and least obvious) one is
-        that **X Premium+ does NOT include API access** — only standalone
-        SuperGrok subscribers can use Son of Anton against xai-oauth.  Lots of
-        users see Grok in their X app, assume it works here too, and hit
-        this 403 with no idea why.  Lead the hint with that.
-
-        Other possible causes:
-          * No Grok subscription at all
-          * SuperGrok tier doesn't include the requested model (e.g.
-            grok-4.3 may need a higher tier)
-          * Monthly quota exhausted (the ``?_s=usage`` URL hints at this)
-
-        Surface the raw xAI text verbatim and point at
-        https://grok.com/?_s=usage where the user can see WHICH applies.
-
-        Matched once per detail string — won't double-decorate if the
-        upstream already concatenated the same text.
-        """
-        if not detail:
-            return detail
-        lower = detail.lower()
-        is_entitlement = (
-            "do not have an active grok subscription" in lower
-            or ("out of available resources" in lower and "grok" in lower)
-            or ("does not have permission" in lower and "grok" in lower)
-        )
-        if not is_entitlement:
-            return detail
-        hint = (
-            " — xAI rejected this OAuth account. NOTE: X Premium+ does NOT "
-            "include xAI API access — only standalone SuperGrok subscribers "
-            "can use this provider. Other possible causes: no Grok "
-            "subscription, your tier doesn't include this model, or your "
-            "quota is exhausted. Check https://grok.com/?_s=usage to see "
-            "which, or run `/model` to switch providers."
-        )
-        # Idempotency: detect prior decoration by a substring unique to the
-        # hint (not present in xAI's own body text).
-        if "X Premium+ does NOT include" in detail:
-            return detail
-        return f"{detail}{hint}"
-
-    @staticmethod
     def _coerce_api_error_detail(value: Any) -> str:
         """Return a display-safe string for structured provider error fields."""
         if isinstance(value, str):
@@ -2324,7 +2065,7 @@ class AIAgent:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
                 msg = AIAgent._coerce_api_error_detail(msg)
-                return AIAgent._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
+                return f"{prefix}{msg[:300]}"
 
         # SDK may leave body empty while httpx still has the payload (#36109).
         # Redact before returning: the raw provider/proxy error body is
@@ -2355,7 +2096,7 @@ class AIAgent:
         # Fallback: truncate the raw string but give more room than 200 chars
         status_code = getattr(error, "status_code", None)
         prefix = f"HTTP {status_code}: " if status_code else ""
-        return AIAgent._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
+        return f"{prefix}{raw[:500]}"
 
     def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
         # Azure Foundry Entra ID bearer providers are callables — never
@@ -2393,12 +2134,6 @@ class AIAgent:
             cleaned = cleaned[:150] + "..."
             
         return cleaned
-
-    @staticmethod
-    def _extract_api_error_context(error: Exception) -> Dict[str, Any]:
-        """Forwarder — see ``agent.agent_runtime_helpers.extract_api_error_context``."""
-        from agent.agent_runtime_helpers import extract_api_error_context
-        return extract_api_error_context(error)
 
     def _usage_summary_for_api_request_hook(self, response: Any) -> Optional[Dict[str, Any]]:
         """Token buckets for ``post_api_request`` plugins (no raw ``response`` object)."""
@@ -4821,63 +4556,23 @@ class AIAgent:
         """
         if self.api_mode != "chat_completions":
             return False
-        if getattr(self, "_fallback_activated", False):
-            return False
-        try:
-            from agent.credential_pool import get_env_prefer_dotenv
-            from son_of_anton_cli.auth import PROVIDER_REGISTRY
-        except ImportError:
-            return False
+        # Named custom provider (#67935): identity lives in config, the
+        # credential in the env var its ``key_env`` names, so only key edits
+        # are ever adopted.
+        from son_of_anton_cli.config import get_env_value_prefer_dotenv
+        from son_of_anton_cli.runtime_provider import _get_named_custom_provider
 
-        pconfig = PROVIDER_REGISTRY.get(self.provider)
-        if (
-            pconfig
-            and getattr(pconfig, "auth_type", "") == "api_key"
-            and getattr(pconfig, "api_key_env_vars", ())
-        ):
-            api_key = ""
-            for env_var in pconfig.api_key_env_vars:
-                api_key = get_env_prefer_dotenv(env_var).strip()
-                if api_key:
-                    break
-            if not api_key:
-                return False
-
-            env_url = ""
-            if pconfig.base_url_env_var:
-                env_url = get_env_prefer_dotenv(pconfig.base_url_env_var).strip().rstrip("/")
-            default_base = (pconfig.inference_base_url or "").strip().rstrip("/")
-            base_url = env_url or default_base
-        elif self.provider == "custom":
-            # Named custom provider (#67935): identity lives in config
-            # (``providers.<name>`` / ``custom_providers``), the credential in
-            # the env var it names via ``key_env``. Re-resolve through the
-            # same config lookup the runtime resolver uses; entries without
-            # ``key_env`` (inline ``api_key``, pool-backed) have no
-            # env-sourced credential to watch.
-            try:
-                from son_of_anton_cli.runtime_provider import _get_named_custom_provider
-            except ImportError:
-                return False
-            custom_provider = _get_named_custom_provider(
-                getattr(self, "requested_provider", "") or ""
-            )
-            if not custom_provider:
-                return False
-            key_env = str(custom_provider.get("key_env") or "").strip()
-            if not key_env:
-                return False
-            api_key = get_env_prefer_dotenv(key_env).strip()
-            if not api_key:
-                return False
-            # Custom providers pin their endpoint in config, not env — the
-            # config base_url is both the resolved and the "default" base, so
-            # only key edits are ever adopted here.
-            default_base = str(custom_provider.get("base_url") or "").strip().rstrip("/")
-            base_url = default_base
-        else:
+        custom_provider = _get_named_custom_provider(
+            getattr(self, "requested_provider", "") or ""
+        )
+        if not custom_provider:
             return False
-
+        key_env = str(custom_provider.get("key_env") or "").strip()
+        api_key = (get_env_value_prefer_dotenv(key_env) or "").strip() if key_env else ""
+        if not api_key:
+            return False
+        default_base = str(custom_provider.get("base_url") or "").strip().rstrip("/")
+        base_url = default_base
         if not base_url:
             return False
 
@@ -4892,17 +4587,6 @@ class AIAgent:
             adopt = current_base == default_base and not (
                 base_url == current_base and api_key == self.api_key
             )
-            # #79156: if the session already holds a pool-rotated key, do
-            # not treat that divergence as a boot-time env adoption. First
-            # look would otherwise stomp the rotated key with the env value
-            # while leaving ``_credential_pool_entry_id`` on the fallback.
-            if (
-                adopt
-                and api_key != self.api_key
-                and getattr(self, "_credential_pool", None) is not None
-                and getattr(self, "_credential_pool_entry_id", None)
-            ):
-                adopt = False
         else:
             # Env unchanged → no-op; any drift from self.* is rotation/
             # failover or config precedence — leave it alone. An edit is
@@ -4946,19 +4630,6 @@ class AIAgent:
             self._client_kwargs.update(prior_client_kwargs)
             return False
 
-        # Rebind the pool entry id to the key we just adopted. Leaving a
-        # stale id after a key rewrite makes mark_exhausted_and_rotate
-        # quarantine the wrong credential on the next 429 (#79156).
-        try:
-            from agent.agent_runtime_helpers import sync_credential_pool_entry_id
-
-            sync_credential_pool_entry_id(self)
-        except Exception:
-            logger.debug(
-                "sync_credential_pool_entry_id after env refresh failed",
-                exc_info=True,
-            )
-
         self._env_creds_seen = resolved
         logger.info(
             "Applied updated .env credentials for %s: endpoint %s",
@@ -4968,91 +4639,11 @@ class AIAgent:
         return True
 
 
-    def _apply_client_headers_for_base_url(
-        self,
-        base_url: str,
-        *,
-        apply_user_headers: bool = True,
-    ) -> None:
-        # No vendor-host headers: this fork speaks generic OpenAI-compatible
-        # only. A provider profile may still declare its own default_headers.
-        _ph_headers = None
-        try:
-            from providers import get_provider_profile as _gpf2
-            _ph2 = _gpf2(self.provider)
-            if _ph2 and _ph2.default_headers:
-                _ph_headers = dict(_ph2.default_headers)
-        except Exception:
-            pass
-        if _ph_headers:
-            self._client_kwargs["default_headers"] = _ph_headers
-        else:
-            self._client_kwargs.pop("default_headers", None)
+    def _apply_client_headers_for_base_url(self, base_url: str = "", **_unused) -> None:
+        """Set the client's identifying headers (the endpoint's gateway attributes by User-Agent)."""
+        from agent.transports.chat_completions import user_agent
 
-        # User-configured overrides win over URL/profile defaults for the same
-        # route. A credential swap to another endpoint must not inherit them.
-        if apply_user_headers:
-            self._apply_user_default_headers()
-
-        # Per-provider extra HTTP headers (providers.<name>.extra_headers /
-        # custom_providers[].extra_headers) — applied last so the most
-        # specific config level survives credential swaps and rebuilds too.
-        # SECURITY: values may carry credentials — never log them.
-        try:
-            from son_of_anton_cli.config import (
-                apply_custom_provider_extra_headers_to_client_kwargs,
-            )
-
-            apply_custom_provider_extra_headers_to_client_kwargs(
-                self._client_kwargs, base_url,
-            )
-        except Exception:
-            logger.debug("custom-provider extra_headers skipped", exc_info=True)
-
-    def _apply_user_default_headers(self) -> None:
-        """Merge user-configured request headers onto the OpenAI client.
-
-        Reads ``model.default_headers`` from config.toml and merges it onto
-        ``self._client_kwargs["default_headers"]``, with user values taking
-        precedence over provider- and SDK-supplied defaults.
-
-        This exists for ``custom`` OpenAI-compatible endpoints sitting behind
-        a gateway/WAF that rejects the OpenAI Python SDK's identifying headers
-        (``User-Agent: OpenAI/Python ...``, ``X-Stainless-*``). Setting e.g.
-        ``model.default_headers: {User-Agent: curl/8.7.1}`` lets the request
-        reach such an upstream instead of failing with an opaque 4xx/502 even
-        though the same body works under ``curl``. (#40033)
-
-        Delegates the config read + merge to
-        ``agent.auxiliary_client._apply_user_default_headers`` so the main and
-        auxiliary clients can never drift on precedence or value handling.
-
-        No-op for Anthropic/Bedrock modes, which don't use the OpenAI client,
-        and when no overrides are configured.
-        """
-        from agent.auxiliary_client import (
-            _apply_user_default_headers as _merge_user_headers,
-        )
-        merged = _merge_user_headers(self._client_kwargs.get("default_headers"))
-        if merged:
-            self._client_kwargs["default_headers"] = merged
-
-    def _swap_credential(self, entry) -> None:
-        runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-        runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
-        self._credential_pool_entry_id = getattr(entry, "id", None)
-        from son_of_anton_cli.route_identity import normalize_route_base_url
-
-        route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(
-            runtime_base
-        )
-
-        self.api_key = runtime_key
-        self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
-        self._client_kwargs["api_key"] = self.api_key
-        self._client_kwargs["base_url"] = self.base_url
-        self._reapply_route_client_config(route_changed=route_changed)
-        self._replace_primary_openai_client(reason="credential_rotation")
+        self._client_kwargs["default_headers"] = {"User-Agent": user_agent()}
 
     def _reapply_route_client_config(self, *, route_changed: bool) -> None:
         """Recompute route-derived client kwargs for the current ``self.base_url``.
@@ -5064,43 +4655,10 @@ class AIAgent:
         credential-pool rotation and the per-turn env refresh so the two
         paths cannot drift.
         """
-        self._client_kwargs.pop("ssl_verify", None)
-        self._client_kwargs.pop("ssl_ca_cert", None)
-        try:
-            from son_of_anton_cli.config import (
-                apply_custom_provider_tls_to_client_kwargs,
-                get_compatible_custom_providers,
-                load_config_readonly,
-            )
-
-            apply_custom_provider_tls_to_client_kwargs(
-                self._client_kwargs,
-                str(self.base_url or ""),
-                get_compatible_custom_providers(load_config_readonly()),
-            )
-        except Exception:
-            logger.debug(
-                "custom-provider TLS resolution skipped on credential rotation",
-                exc_info=True,
-            )
         self._apply_client_headers_for_base_url(
             self.base_url,
             apply_user_headers=not route_changed,
         )
-
-    def _recover_with_credential_pool(
-        self,
-        *,
-        status_code: Optional[int],
-        has_retried_429: bool,
-        classified_reason: Optional[FailoverReason] = None,
-        error_context: Optional[Dict[str, Any]] = None,
-        billing_unverified: bool = False,
-    ) -> tuple[bool, bool]:
-        """Forwarder — see ``agent.agent_runtime_helpers.recover_with_credential_pool``."""
-        from agent.agent_runtime_helpers import recover_with_credential_pool
-        return recover_with_credential_pool(self, status_code=status_code, has_retried_429=has_retried_429, classified_reason=classified_reason, error_context=error_context, billing_unverified=billing_unverified)
-
 
     def _interruptible_api_call(self, api_kwargs: dict):
         """Forwarder — see ``agent.chat_completion_helpers.interruptible_api_call``."""
@@ -5421,23 +4979,6 @@ class AIAgent:
         from agent.chat_completion_helpers import interruptible_streaming_api_call
         return interruptible_streaming_api_call(self, api_kwargs, on_first_delta=on_first_delta)
 
-    def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
-        """Forwarder — see ``agent.chat_completion_helpers.try_activate_fallback``."""
-        from agent.chat_completion_helpers import try_activate_fallback
-        return try_activate_fallback(self, reason)
-
-    def _has_pending_fallback(self) -> bool:
-        """Whether a fallback provider is actually available to switch to.
-
-        Used to gate user-facing "trying fallback..." status so we don't
-        announce a fallback that will never be attempted (the user has no
-        fallback chain configured).  Mirrors the early-return guard in
-        ``try_activate_fallback`` (#35314, #17446).
-        """
-        chain = getattr(self, "_fallback_chain", None) or []
-        index = getattr(self, "_fallback_index", 0)
-        return index < len(chain)
-
     # ── Per-turn primary restoration ─────────────────────────────────────
 
     def _restore_primary_runtime(self) -> bool:
@@ -5524,23 +5065,6 @@ class AIAgent:
             return _lookup_supports_vision(provider, model, cfg) is True
         except Exception:
             return False
-
-    def _provider_supports_vision_tool_messages(self) -> bool:
-        """Return True if the active provider accepts list-type tool content.
-
-        Some providers (e.g. Xiaomi MiMo) support multimodal user messages
-        but reject list-type tool message content with 400 errors.  This
-        checks the provider profile's ``supports_vision_tool_messages`` field.
-        """
-        try:
-            from providers import get_provider_profile
-            provider = (getattr(self, "provider", "") or "").strip()
-            profile = get_provider_profile(provider)
-            if profile is not None:
-                return getattr(profile, "supports_vision_tool_messages", True)
-        except Exception:
-            pass
-        return True  # default: assume compatible
 
     def _get_transport(self, api_mode: str = None):
         """Return the cached transport for the given (or current) api_mode.
@@ -5704,17 +5228,9 @@ class AIAgent:
             return content
 
         if self._model_supports_vision():
-            # Vision-capable on paper — but if the provider rejects list-type
-            # tool content (e.g. Xiaomi MiMo's 400 "text is not set"), or if
-            # we've already learned this lesson in-session, short-circuit to
+            # Vision-capable on paper — but if we've already learned in-session
+            # that the endpoint rejects list-type tool content, short-circuit to
             # a text summary so we don't burn a round-trip relearning it.
-            if not self._provider_supports_vision_tool_messages():
-                logger.debug(
-                    "Tool %s: provider %s does not accept list-type tool "
-                    "content — sending text summary",
-                    tool_name, getattr(self, "provider", ""),
-                )
-                return _multimodal_text_summary(result)
             key = (
                 (getattr(self, "provider", "") or "").strip().lower(),
                 (getattr(self, "model", "") or "").strip(),
@@ -5842,139 +5358,6 @@ class AIAgent:
         """Forwarder — see ``agent.chat_completion_helpers.build_api_kwargs``."""
         from agent.chat_completion_helpers import build_api_kwargs
         return build_api_kwargs(self, api_messages, tools_for_api=tools_for_api)
-
-    def _supports_reasoning_extra_body(self) -> bool:
-        """Return True when reasoning extra_body is safe to send for this route/model.
-
-        OpenRouter forwards unknown extra_body fields to upstream providers.
-        Some providers/routes reject `reasoning` with 400s, so gate it to
-        known reasoning-capable model families and direct Nous Portal.
-        """
-        if base_url_host_matches(self._base_url_lower, "nousresearch.com"):
-            return True
-        if base_url_host_matches(self._base_url_lower, "ai-gateway.vercel.sh"):
-            return True
-        if (self.provider or "").strip().lower() == "lmstudio":
-            opts = self._lmstudio_reasoning_options_cached()
-            # "off-only" (or absent) means no real reasoning capability.
-            return any(opt and opt != "off" for opt in opts)
-        # Ollama Cloud (and any Ollama-compatible server): the native
-        # /api/show capabilities list is authoritative — emit reasoning_effort
-        # only for models that declare the "thinking" capability. deepseek-v4
-        # has it; gemma3 / qwen3-coder don't. Cached per (model, base_url).
-        if base_url_host_matches(self._base_url_lower, "ollama.com"):
-            return self._ollama_supports_thinking_cached()
-        return False
-
-    def _lmstudio_reasoning_options_cached(self) -> list[str]:
-        """Probe LM Studio's published reasoning ``allowed_options`` once per
-        (model, base_url). The list (e.g. ``["off","on"]`` or
-        ``["off","minimal","low"]``) is needed both for the supports-reasoning
-        gate and for clamping the emitted ``reasoning_effort`` so toggle-style
-        models don't 400 on ``high``. Cache is keyed on (model, base_url) so
-        ``/model`` swaps and base-URL changes don't reuse a stale list.
-        Non-empty results are cached permanently (model capabilities don't
-        change). Empty results (transient probe failure OR genuinely
-        non-reasoning model) are cached with a 60-second TTL to avoid an
-        HTTP round-trip on every turn while still retrying reasonably soon.
-        """
-        import time as _time
-
-        cache = getattr(self, "_lm_reasoning_opts_cache", None)
-        if cache is None:
-            cache = self._lm_reasoning_opts_cache = {}
-        key = (self.model, self.base_url)
-        cached = cache.get(key)
-        if cached is not None:
-            opts, ts = cached
-            # Non-empty → permanent. Empty → 60s TTL.
-            if opts or (_time.monotonic() - ts) < 60:
-                return opts
-        try:
-            from son_of_anton_cli.models import lmstudio_model_reasoning_options
-            opts = lmstudio_model_reasoning_options(
-                self.model, self.base_url, getattr(self, "api_key", ""),
-            )
-        except Exception:
-            opts = []
-        cache[key] = (opts, _time.monotonic())
-        return opts
-
-    def _ollama_supports_thinking_cached(self) -> bool:
-        """Probe Ollama's ``/api/show`` capabilities once per (model, base_url).
-
-        Returns True only when the model declares the ``thinking`` capability.
-        Caching mirrors the LM Studio probe: a True/False result is permanent
-        (capabilities don't change), while a probe failure (None) is cached
-        with a 60-second TTL so a transient outage doesn't suppress reasoning
-        for the rest of the session but also doesn't round-trip every turn.
-        """
-        import time as _time
-
-        cache = getattr(self, "_ollama_thinking_cache", None)
-        if cache is None:
-            cache = self._ollama_thinking_cache = {}
-        key = (self.model, self.base_url)
-        cached = cache.get(key)
-        if cached is not None:
-            supported, ts = cached
-            # Definitive True/False → permanent. Unknown (None) → 60s TTL.
-            if supported is not None or (_time.monotonic() - ts) < 60:
-                return bool(supported)
-        try:
-            from son_of_anton_cli.models import ollama_model_supports_thinking
-            supported = ollama_model_supports_thinking(
-                self.model, self.base_url, getattr(self, "api_key", "")
-            )
-        except Exception:
-            supported = None
-        cache[key] = (supported, _time.monotonic())
-        return bool(supported)
-
-    def _resolve_lmstudio_summary_reasoning_effort(self) -> Optional[str]:
-        """Resolve a safe top-level ``reasoning_effort`` for LM Studio.
-
-        The iteration-limit summary path calls ``chat.completions.create()``
-        directly, bypassing the transport. Share the helper so the two paths
-        can't drift on effort resolution and clamping.
-        """
-        from agent.lmstudio_reasoning import resolve_lmstudio_effort
-        return resolve_lmstudio_effort(
-            self.reasoning_config,
-            self._lmstudio_reasoning_options_cached(),
-        )
-
-    def _github_models_reasoning_extra_body(self) -> dict | None:
-        """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
-        try:
-            from son_of_anton_cli.models import github_model_reasoning_efforts
-        except Exception:
-            return None
-
-        supported_efforts = github_model_reasoning_efforts(self.model)
-        if not supported_efforts:
-            return None
-
-        if self.reasoning_config and isinstance(self.reasoning_config, dict):
-            if self.reasoning_config.get("enabled") is False:
-                return None
-            requested_effort = str(
-                self.reasoning_config.get("effort", "medium")
-            ).strip().lower()
-        else:
-            requested_effort = "medium"
-
-        if requested_effort == "xhigh" and "xhigh" not in supported_efforts and "high" in supported_efforts:
-            requested_effort = "high"
-        elif requested_effort not in supported_efforts:
-            if requested_effort == "minimal" and "low" in supported_efforts:
-                requested_effort = "low"
-            elif "medium" in supported_efforts:
-                requested_effort = "medium"
-            else:
-                requested_effort = supported_efforts[0]
-
-        return {"effort": requested_effort}
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Forwarder — see ``agent.chat_completion_helpers.build_assistant_message``."""
@@ -6163,32 +5546,12 @@ class AIAgent:
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict, model: "str | None" = None) -> dict:
-        """Strip legacy Responses API fields from tool_calls for strict providers.
-
-        Providers like Mistral, Fireworks, and other strict OpenAI-compatible APIs
-        validate the Chat Completions schema and reject unknown fields (call_id,
-        response_item_id) with 400 or 422 errors. These fields can survive in
-        pre-existing session rows; this method only modifies the outgoing API
-        copy.
-
-        ``extra_content`` (Gemini thought_signature) is also stripped — strict
-        providers reject it with "Extra inputs are not permitted" — UNLESS the
-        outgoing ``model`` is itself Gemini-family, in which case it must be
-        replayed (Gemini 3 thinking models 400 without it). Defaults to
-        stripping when no model is supplied.
-
-        Creates new tool_call dicts rather than mutating in-place, so the
-        internal message list is left untouched.
-
-        Fields stripped: call_id, response_item_id, extra_content (model-gated)
-        """
+        """Strip legacy fields (call_id, response_item_id, extra_content) from
+        tool_calls on the outgoing API copy; strict endpoints reject them."""
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
             return api_msg
-        from agent.transports.chat_completions import _model_consumes_thought_signature
-        _STRIP_KEYS = {"call_id", "response_item_id"}
-        if not _model_consumes_thought_signature(model):
-            _STRIP_KEYS = _STRIP_KEYS | {"extra_content"}
+        _STRIP_KEYS = {"call_id", "response_item_id", "extra_content"}
         api_msg["tool_calls"] = [
             {k: v for k, v in tc.items() if k not in _STRIP_KEYS}
             if isinstance(tc, dict) else tc

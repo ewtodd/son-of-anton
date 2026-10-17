@@ -36,11 +36,7 @@ from agent.context_compactor import ContextCompactor
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
 from agent.session_activity import ActivityProvenance
-from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH,
-    is_local_endpoint,
-    query_ollama_num_ctx,
-)
+from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
@@ -110,63 +106,6 @@ def _normalize_route_base_url(base_url: Any) -> str:
     return normalize_route_base_url(base_url)
 
 
-def _provider_default_routes(provider: str) -> set[str]:
-    """Return known exact default routes for a canonical provider id."""
-    routes: set[str] = set()
-    try:
-        from son_of_anton_cli.providers import SON_OF_ANTON_OVERLAYS, get_provider
-
-        overlay = SON_OF_ANTON_OVERLAYS.get(provider)
-        provider_def = get_provider(provider, allow_network=False)
-        for value in (
-            getattr(overlay, "base_url_override", ""),
-            getattr(provider_def, "base_url", ""),
-        ):
-            route = _normalize_route_base_url(value)
-            if route:
-                routes.add(route)
-    except Exception:
-        pass
-
-    try:
-        from providers import get_provider_profile
-
-        profile = get_provider_profile(provider)
-        route = _normalize_route_base_url(
-            getattr(profile, "base_url", "")
-        )
-        if route:
-            routes.add(route)
-    except Exception:
-        pass
-
-    try:
-        from son_of_anton_cli.auth import PROVIDER_REGISTRY
-        from son_of_anton_cli.models import normalize_provider as normalize_model_provider
-        from son_of_anton_cli.providers import normalize_provider as normalize_registry_provider
-
-        for provider_id, config in PROVIDER_REGISTRY.items():
-            canonical_id = normalize_registry_provider(
-                normalize_model_provider(provider_id)
-            )
-            if canonical_id != provider:
-                continue
-            route = _normalize_route_base_url(
-                getattr(config, "inference_base_url", "")
-            )
-            if route:
-                routes.add(route)
-    except Exception:
-        pass
-
-    if provider == "gemini":
-        routes.update(
-            f"{route.rstrip('/')}/openai"
-            for route in list(routes)
-        )
-    return routes
-
-
 def _context_route_mismatch(
     configured_base_url: Any,
     active_base_url: Any,
@@ -184,46 +123,9 @@ def _context_route_mismatch(
         active_route = _normalize_route_base_url(active_base_url)
     if configured_route:
         return configured_route != active_route
-
-    configured_provider = str(configured_provider or "").strip()
-    active_provider = str(active_provider or "").strip()
-    if not configured_provider:
-        return False
-    try:
-        from son_of_anton_cli.models import normalize_provider as normalize_model_provider
-
-        configured_provider = normalize_model_provider(configured_provider)
-        active_provider = normalize_model_provider(active_provider)
-    except Exception:
-        configured_provider = configured_provider.lower()
-        active_provider = active_provider.lower()
-    try:
-        from son_of_anton_cli.providers import normalize_provider as normalize_registry_provider
-
-        configured_provider = normalize_registry_provider(configured_provider)
-        active_provider = normalize_registry_provider(active_provider)
-    except Exception:
-        pass
-
-    if active_route:
-        configured_routes = _provider_default_routes(configured_provider)
-        if configured_routes:
-            return active_route not in configured_routes
-        # Named/custom providers have no catalog default routes. An empty
-        # configured URL with a matching provider identity is still the same
-        # route — agent_init fills base_url from custom_providers before this
-        # check, but gateway display/hygiene paths historically compared the
-        # raw empty model.base_url and falsely dropped model.context_length,
-        # falling through to family defaults (e.g. qwen → 131072) on Discord
-        # session-reset banners while /status still showed the config pin.
-        if active_provider and configured_provider == active_provider:
-            return False
-        return True
-    return bool(
-        configured_provider
-        and active_provider
-        and configured_provider != active_provider
-    )
+    configured_provider = str(configured_provider or "").strip().lower()
+    active_provider = str(active_provider or "").strip().lower()
+    return bool(configured_provider and active_provider and configured_provider != active_provider)
 
 
 def _normalize_custom_provider_name(value: Any) -> str:
@@ -237,20 +139,6 @@ def _custom_provider_runtime_ids(value: Any) -> set[str]:
     if not normalized:
         return set()
     return {normalized, f"custom:{normalized}"}
-
-
-def _resolve_compaction_threshold(
-    global_threshold: float,
-    model_cthresh: Optional[float],
-) -> float:
-    """Combine the user's global compaction threshold with a per-model override.
-
-    Per-model overrides (e.g. Arcee Trinity) apply unconditionally; with no
-    override the user's global threshold wins.
-    """
-    if model_cthresh is None:
-        return global_threshold
-    return model_cthresh
 
 
 def _normalized_custom_base_url(value: Any) -> str:
@@ -371,10 +259,6 @@ def init_agent(
     api_key: str = None,
     provider: str = None,
     api_mode: str = None,
-    acp_command: str = None,
-    acp_args: list[str] | None = None,
-    command: str = None,
-    args: list[str] | None = None,
     model: str = "",
     max_iterations: int = sys.maxsize,  # Default: unlimited tool-calling iterations (shared with subagents)
     enabled_toolsets: List[str] = None,
@@ -404,7 +288,6 @@ def init_agent(
     event_callback: Optional[Callable[[str, dict], None]] = None,
     max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None,
-    service_tier: str = None,
     request_overrides: Dict[str, Any] = None,
     prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None,
@@ -423,8 +306,6 @@ def init_agent(
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
     run_budget_seconds: Optional[float] = None,
-    fallback_model: Dict[str, Any] = None,
-    credential_pool=None,
     pass_session_id: bool = False,
     requested_provider: str = None,
 ):
@@ -513,29 +394,8 @@ def init_agent(
         if isinstance(requested_provider, str) and requested_provider.strip()
         else agent.provider
     )
-    agent._credential_pool = credential_pool
-    agent.acp_command = acp_command or command
-    agent.acp_args = list(acp_args or args or [])
     # The wire is always OpenAI-compatible chat completions.
     agent.api_mode = "chat_completions"
-
-    # Credential-pool validation runs AFTER provider auto-detection so
-    # a pool scoped to e.g. "anthropic" is not rejected when the agent
-    # was constructed with provider=None and an anthropic.com URL.
-    # Regression from #63048 which placed this check before the
-    # URL-based auto-detection block above (fixed #63425).
-    if credential_pool is not None:
-        try:
-            from agent.credential_pool import credential_pool_matches_provider
-
-            if not credential_pool_matches_provider(
-                credential_pool,
-                agent.provider,
-                base_url=agent.base_url,
-            ):
-                agent._credential_pool = None
-        except Exception:
-            agent._credential_pool = None
 
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.
@@ -543,17 +403,6 @@ def init_agent(
         agent._get_transport()
     except Exception:
         pass  # Non-fatal — transport may not exist for all modes yet
-
-    try:
-        from son_of_anton_cli.model_normalize import (
-            _AGGREGATOR_PROVIDERS,
-            normalize_model_for_provider,
-        )
-
-        if agent.provider not in _AGGREGATOR_PROVIDERS:
-            agent.model = normalize_model_for_provider(agent.model, agent.provider)
-    except Exception:
-        pass
 
     agent.tool_progress_callback = tool_progress_callback
     agent.tool_start_callback = tool_start_callback
@@ -639,7 +488,6 @@ def init_agent(
     # Read once at init; switch_model / try_activate_fallback / restore
     # keep it in sync with the active provider.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
-    agent.service_tier = service_tier
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
@@ -843,32 +691,13 @@ def init_agent(
             client_kwargs = {"api_key": api_key, "base_url": base_url}
         if _provider_timeout is not None:
             client_kwargs["timeout"] = _provider_timeout
-        if agent.provider == "copilot-acp":
-            client_kwargs["command"] = agent.acp_command
-            client_kwargs["args"] = agent.acp_args
         # OpenCode Zen free tier (*-free slugs, e.g. x-preview-f-free /
         # "Ox Alpha"): the Zen relay serves these ANONYMOUSLY and 401s any
         # unrecognized bearer — including our keyless placeholder. Send an
         # empty Authorization header to override the SDK's "Bearer <key>".
-        try:
-            from son_of_anton_cli.models import (
-                OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER,
-                opencode_zen_free_headers,
-            )
-            if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-                client_kwargs["default_headers"] = opencode_zen_free_headers()
-        except Exception:
-            pass
-        if "default_headers" not in client_kwargs:
-            # Provider profiles may declare their own attribution headers.
-            # No vendor-host special cases: generic OpenAI-compatible only.
-            try:
-                from providers import get_provider_profile as _gpf
-                _ph = _gpf(agent.provider)
-                if _ph and _ph.default_headers:
-                    client_kwargs["default_headers"] = dict(_ph.default_headers)
-            except Exception:
-                pass
+        from agent.transports.chat_completions import user_agent
+
+        client_kwargs["default_headers"] = {"User-Agent": user_agent()}
     else:
         # No explicit creds — use the centralized provider router
         from agent.auxiliary_client import resolve_provider_client
@@ -881,92 +710,15 @@ def init_agent(
             }
             if _provider_timeout is not None:
                 client_kwargs["timeout"] = _provider_timeout
-            # Preserve provider-specific headers the router set.  The
-            # OpenAI SDK stores caller-provided default_headers in
-            # _custom_headers; older/mocked clients may expose
-            # _default_headers instead.
-            _routed_headers = getattr(_routed_client, "_custom_headers", None)
-            if not _routed_headers:
-                _routed_headers = getattr(_routed_client, "default_headers", None)
-            if not _routed_headers:
-                _routed_headers = getattr(_routed_client, "_default_headers", None)
-            if _routed_headers:
-                client_kwargs["default_headers"] = dict(_routed_headers)
+            from agent.transports.chat_completions import user_agent
+
+            client_kwargs["default_headers"] = {"User-Agent": user_agent()}
         else:
-            # When the user explicitly chose a non-OpenRouter provider
-            # but no credentials were found, fail fast with a clear
-            # message instead of silently routing through OpenRouter.
-            _explicit = (agent.provider or "").strip().lower()
-            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
-                # Look up the actual env var name from the provider
-                # config — some providers use non-standard names
-                # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
-                _env_hint = f"{_explicit.upper()}_API_KEY"
-                try:
-                    from son_of_anton_cli.auth import PROVIDER_REGISTRY
-                    _pcfg = PROVIDER_REGISTRY.get(_explicit)
-                    if _pcfg and _pcfg.api_key_env_vars:
-                        _env_hint = _pcfg.api_key_env_vars[0]
-                except Exception:
-                    pass
-                # --- Init-time fallback (#17929) ---
-                _fb_entries = []
-                if isinstance(fallback_model, list):
-                    _fb_entries = [
-                        f for f in fallback_model
-                        if isinstance(f, dict) and f.get("provider") and f.get("model")
-                    ]
-                elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-                    _fb_entries = [fallback_model]
-                _fb_resolved = False
-                for _fb in _fb_entries:
-                    try:
-                        from son_of_anton_cli.fallback_config import resolve_entry_api_key
-                        _fb_explicit_key = resolve_entry_api_key(_fb)
-                        _fb_client, _fb_model = resolve_provider_client(
-                            _fb["provider"], model=_fb["model"],
-                            explicit_base_url=_fb.get("base_url"),
-                            explicit_api_key=_fb_explicit_key,
-                        )
-                    except Exception as _fb_exc:
-                        logger.debug(
-                            "Init-time fallback entry %s failed: %s",
-                            _fb.get("provider"), _fb_exc,
-                        )
-                        continue
-                    if _fb_client is not None:
-                        agent.provider = _fb["provider"]
-                        agent.model = _fb_model or _fb["model"]
-                        agent._fallback_activated = True
-                        client_kwargs = {
-                            "api_key": _fb_client.api_key,
-                            "base_url": str(_fb_client.base_url),
-                        }
-                        if _provider_timeout is not None:
-                            client_kwargs["timeout"] = _provider_timeout
-                        _fb_headers = getattr(_fb_client, "_custom_headers", None)
-                        if not _fb_headers:
-                            _fb_headers = getattr(_fb_client, "default_headers", None)
-                        if not _fb_headers:
-                            _fb_headers = getattr(_fb_client, "_default_headers", None)
-                        if _fb_headers:
-                            client_kwargs["default_headers"] = dict(_fb_headers)
-                        _fb_resolved = True
-                        break
-                if not _fb_resolved:
-                    raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.toml but no API key "
-                        f"was found. Set the {_env_hint} environment "
-                        f"variable, or switch to a different provider with `son-of-anton model`."
-                    )
-            if not getattr(agent, "_fallback_activated", False):
-                # No provider configured — reject with a clear message.
-                raise RuntimeError(
-                    "No LLM provider configured. Declare one under model in "
-                    "config.toml (the Nix module's settings), or run "
-                    "`son-of-anton model`."
-                )
-    
+            raise RuntimeError(
+                "No LLM provider configured. Declare the endpoint under "
+                "custom_providers in config.toml (the Nix module's settings)."
+            )
+
     agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
     # Enable fine-grained tool streaming for Claude on OpenRouter.
@@ -986,42 +738,6 @@ def init_agent(
             else:
                 headers["x-anthropic-beta"] = _FINE_GRAINED
             client_kwargs["default_headers"] = headers
-
-    # User-configured request headers (model.default_headers in
-    # config.toml) override provider/SDK defaults. Lets custom
-    # OpenAI-compatible endpoints behind a gateway/WAF that rejects the
-    # OpenAI SDK's identifying headers swap in a plain User-Agent. (#40033)
-    # client_kwargs is the same dict object as agent._client_kwargs, so
-    # this mutation is reflected in the client built just below.
-    agent._apply_user_default_headers()
-
-    try:
-        from son_of_anton_cli.config import (
-            apply_custom_provider_extra_headers_to_client_kwargs,
-            apply_custom_provider_tls_to_client_kwargs,
-            get_compatible_custom_providers,
-            load_config,
-        )
-
-        _cp_config = load_config()
-        _cp_entries = get_compatible_custom_providers(_cp_config)
-        _cp_base_url = str(client_kwargs.get("base_url") or agent.base_url or "")
-        apply_custom_provider_tls_to_client_kwargs(
-            client_kwargs,
-            _cp_base_url,
-            _cp_entries,
-        )
-        # Per-provider extra HTTP headers (providers.<name>.extra_headers /
-        # custom_providers[].extra_headers) — proxies, gateways, custom
-        # auth. Applied last so the most specific config level wins.
-        # SECURITY: values may carry credentials — never log them.
-        apply_custom_provider_extra_headers_to_client_kwargs(
-            client_kwargs,
-            _cp_base_url,
-            _cp_entries,
-        )
-    except Exception:
-        logger.debug("custom-provider TLS resolution skipped", exc_info=True)
 
     agent.api_key = client_kwargs.get("api_key", "")
     agent.base_url = client_kwargs.get("base_url", agent.base_url)
@@ -1046,34 +762,7 @@ def init_agent(
     # OAuth refreshes can replace the runtime token before a failed request is
     # recovered, so the mutable API-key value alone cannot reliably attribute
     # the failure to its source entry.
-    from agent.agent_runtime_helpers import sync_credential_pool_entry_id
-    sync_credential_pool_entry_id(agent)
     
-    # Provider fallback chain — ordered list of backup providers tried
-    # when the primary is exhausted (rate-limit, overload, connection
-    # failure).  Supports both legacy single-dict ``fallback_model`` and
-    # new list ``fallback_providers`` format.
-    if isinstance(fallback_model, list):
-        agent._fallback_chain = [
-            f for f in fallback_model
-            if isinstance(f, dict) and f.get("provider") and f.get("model")
-        ]
-    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-        agent._fallback_chain = [fallback_model]
-    else:
-        agent._fallback_chain = []
-    agent._fallback_index = 0
-    agent._fallback_activated = getattr(agent, "_fallback_activated", False)
-    # Legacy attribute kept for backward compat (tests, external callers)
-    agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
-    if agent._fallback_chain and not agent.quiet_mode:
-        if len(agent._fallback_chain) == 1:
-            fb = agent._fallback_chain[0]
-            print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
-        else:
-            print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
-                  " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
-
     # A multiplexed gateway may enter a different SON_OF_ANTON_HOME after
     # ``model_tools`` was first imported. Ensure that profile's keyed plugin
     # manager has discovered its registrations before taking the tool snapshot.
@@ -1264,26 +953,6 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
-
-    # LM Studio can either be explicitly preloaded through LM Studio's
-    # management API (the historical Son of Anton behavior) or left to LM Studio's
-    # just-in-time / Auto-Evict chat-completions path.  Keep the default
-    # explicit for backward compatibility; users with LM Studio Auto-Evict can
-    # opt into JIT via ``model.lmstudio_load_mode: jit``.
-    agent.lmstudio_load_mode = "explicit"
-    try:
-        _model_section = _agent_cfg.get("model", {})
-        if isinstance(_model_section, dict):
-            _load_mode = str(_model_section.get("lmstudio_load_mode", "explicit") or "explicit").strip().lower()
-            if _load_mode in {"explicit", "jit"}:
-                agent.lmstudio_load_mode = _load_mode
-            else:
-                logger.warning(
-                    "Invalid model.lmstudio_load_mode=%r; expected 'explicit' or 'jit'. Using explicit.",
-                    _model_section.get("lmstudio_load_mode"),
-                )
-    except Exception:
-        agent.lmstudio_load_mode = "explicit"
 
     try:
         _mcp_section = _agent_cfg.get("mcp", {})
@@ -1544,17 +1213,6 @@ def init_agent(
     if not isinstance(_compaction_cfg, dict):
         _compaction_cfg = {}
     compaction_threshold = float(_compaction_cfg.get("threshold", 0.50))
-    # Per-model compaction-threshold override (e.g. Arcee Trinity).
-    try:
-        from agent.auxiliary_client import (
-            _compaction_threshold_for_model as _cthresh_fn,
-        )
-        compaction_threshold = _resolve_compaction_threshold(
-            compaction_threshold,
-            _cthresh_fn(agent.model, agent.provider),
-        )
-    except Exception:
-        pass
     compaction_enabled = str(_compaction_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compaction_target_ratio = float(_compaction_cfg.get("target_ratio", 0.20))
     compaction_protect_last = int(_compaction_cfg.get("protect_last_n", 20))
@@ -1835,18 +1493,6 @@ def init_agent(
         _configured_default_model = str(_default or "").strip()
         _configured_default_runtime_model = _configured_default_model
         _active_runtime_model = agent.model
-        if _configured_default_model:
-            try:
-                from son_of_anton_cli.model_normalize import normalize_model_for_provider
-
-                _configured_default_runtime_model = normalize_model_for_provider(
-                    _configured_default_model, agent.provider
-                )
-                _active_runtime_model = normalize_model_for_provider(
-                    agent.model, agent.provider
-                )
-            except Exception:
-                pass
         _configured_provider = str(_model_cfg.get("provider") or "").strip()
         _configured_base_url = _normalize_route_base_url(
             _model_cfg.get("base_url")
@@ -1858,23 +1504,6 @@ def init_agent(
         _runtime_first_provider_ids = {"auto"}
         if _configured_provider_norm in _runtime_first_provider_ids:
             _custom_provider_candidate = False
-        elif (
-            _custom_provider_candidate
-            and _configured_provider_norm != "custom"
-            and not _configured_provider_norm.startswith("custom:")
-        ):
-            try:
-                from son_of_anton_cli.auth import resolve_provider as resolve_auth_provider
-
-                _resolved_auth_provider = resolve_auth_provider(
-                    _configured_provider_norm
-                )
-                _custom_provider_candidate = (
-                    str(_resolved_auth_provider or "").strip().lower()
-                    != _configured_provider_norm
-                )
-            except Exception:
-                pass
         if not _configured_base_url and _custom_provider_candidate:
             _configured_custom_provider = _normalize_custom_provider_name(
                 _configured_provider
@@ -2030,19 +1659,7 @@ def init_agent(
     # Persist for reuse on switch_model / fallback activation. Must come
     # AFTER the custom_providers branch so per-model overrides aren't lost.
     agent._config_context_length = _config_context_length
-
-    _lmstudio_runtime_context_length = agent._ensure_lmstudio_runtime_loaded(
-        _config_context_length
-    )
-    if agent._lmstudio_load_was_unverified(_lmstudio_runtime_context_length):
-        _ra().logger.warning(
-            "LM Studio model activation was rejected or completed without a "
-            "verifiable active context length; falling back to configured context"
-        )
-    _effective_context_length = agent._effective_lmstudio_context_length(
-        _config_context_length,
-        _lmstudio_runtime_context_length,
-    )
+    _effective_context_length = _config_context_length
 
 
 
@@ -2187,13 +1804,7 @@ def init_agent(
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
     _ctx = getattr(agent.context_compactor, "context_length", 0)
-    _allow_lmstudio_explicit_below_floor = (
-        str(getattr(agent, "provider", "") or "").strip().lower() == "lmstudio"
-        and isinstance(agent._config_context_length, int)
-        and not isinstance(agent._config_context_length, bool)
-        and agent._config_context_length > 0
-    )
-    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and not _allow_lmstudio_explicit_below_floor:
+    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
@@ -2290,55 +1901,6 @@ def init_agent(
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
     
-    # ── Ollama num_ctx injection ──
-    # Ollama defaults to 2048 context regardless of the model's capabilities.
-    # When running against an Ollama server, detect the model's max context
-    # and pass num_ctx on every chat request so the full window is used.
-    # User override: set model.ollama_num_ctx in config.toml to cap VRAM use.
-    # If model.context_length is set, it caps num_ctx so the user's VRAM
-    # budget is respected even when GGUF metadata advertises a larger window.
-    agent._ollama_num_ctx: int | None = None
-    _ollama_num_ctx_override = None
-    if isinstance(_model_cfg, dict):
-        _ollama_num_ctx_override = _model_cfg.get("ollama_num_ctx")
-    if _ollama_num_ctx_override is not None:
-        try:
-            agent._ollama_num_ctx = int(_ollama_num_ctx_override)
-        except (TypeError, ValueError):
-            _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
-    if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
-        try:
-            # ``agent.api_key`` may be a callable (Entra token provider).
-            # Ollama detection makes a manual HTTP request and expects a
-            # string — Azure Foundry isn't a local endpoint so this branch
-            # never fires for Entra, but guard defensively.
-            _key_for_ollama = agent.api_key if isinstance(agent.api_key, str) else ""
-            _detected = query_ollama_num_ctx(agent.model, agent.base_url, api_key=_key_for_ollama or "")
-            if _detected and _detected > 0:
-                agent._ollama_num_ctx = _detected
-        except Exception as exc:
-            _ra().logger.debug("Ollama num_ctx detection failed: %s", exc)
-    # Cap auto-detected ollama_num_ctx to the user's explicit context_length.
-    # Without this, GGUF metadata can advertise 256K+ which Ollama honours
-    # by allocating that much VRAM — blowing up small GPUs even though the
-    # user explicitly set a smaller context_length in config.toml.
-    if (
-        agent._ollama_num_ctx
-        and _config_context_length
-        and _ollama_num_ctx_override is None  # don't override explicit ollama_num_ctx
-        and agent._ollama_num_ctx > _config_context_length
-    ):
-        _ra().logger.info(
-            "Ollama num_ctx capped: %d -> %d (model.context_length override)",
-            agent._ollama_num_ctx, _config_context_length,
-        )
-        agent._ollama_num_ctx = _config_context_length
-    if agent._ollama_num_ctx and not agent.quiet_mode:
-        _ra().logger.info(
-            "Ollama num_ctx: will request %d tokens (model max from /api/show)",
-            agent._ollama_num_ctx,
-        )
-
     if not agent.quiet_mode:
         if compaction_enabled:
             # Report the active engine's own threshold — for a plugin engine

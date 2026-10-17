@@ -1,719 +1,127 @@
-"""Shared runtime provider resolution for CLI, gateway, cron, and helpers."""
+"""Runtime resolution of the custom OpenAI-compatible endpoint.
+
+``custom`` is the only provider: an endpoint declared under
+``custom_providers.<name>`` (``base_url``, ``key_env`` or ``api_key``) in
+config.toml. CLI, gateway, cron, delegation and the auxiliary client all
+resolve it here.
+"""
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, Optional
+
+from agent.secret_scope import get_secret as _get_secret
+from son_of_anton_cli.config import get_compatible_custom_providers, load_config
 
 logger = logging.getLogger(__name__)
 
-from son_of_anton_cli import auth as auth_mod
-from agent.credential_pool import (
-    CredentialPool,
-    PooledCredential,
-    credential_pool_matches_provider,
-    get_custom_provider_pool_key,
-    load_pool,
-)
-from agent.secret_scope import get_secret as _get_secret
-from son_of_anton_cli.auth import (
-    AuthError,
-    PROVIDER_REGISTRY,
-    format_auth_error,
-    resolve_provider,
-    resolve_api_key_provider_credentials,
-    has_usable_secret,
-)
-from son_of_anton_cli.config import (
-    get_compatible_custom_providers,
-    load_config,
-    normalize_extra_headers,
-)
-from son_of_anton_cli.providers import custom_provider_aliases, custom_provider_slug
-from utils import base_url_host_matches, base_url_hostname
+_PLACEHOLDER_SECRET_VALUES = {
+    "*", "**", "***", "changeme", "your_api_key", "your_api_key_here",
+    "your-api-key", "placeholder", "example", "dummy", "null", "none",
+}
 
 
-def _getenv(name: str, default: str = "") -> str:
-    """Profile-scoped replacement for ``os.getenv`` on credential/provider reads.
+class AuthError(RuntimeError):
+    """The endpoint's credentials or configuration are missing."""
 
-    Routes through the secret scope (Workstream A): identical to ``os.getenv``
-    when multiplexing is off, scope-aware (and fail-closed on an unscoped read)
-    when on. Genuinely-global vars are handled inside ``get_secret`` and still
-    read ``os.environ``. Keeps the ``(name, default) -> str`` contract every
-    call site here already relies on.
-    """
-    val = _get_secret(name, default)
-    return val if val is not None else default
+    def __init__(self, message: str, *, provider: str = "", code: Optional[str] = None):
+        super().__init__(message)
+        self.provider = provider
+        self.code = code
 
 
-def _normalize_custom_provider_name(value: str) -> str:
-    return value.strip().lower().replace(" ", "-")
-
-
-def _loopback_hostname(host: str) -> bool:
-    h = (host or "").lower().rstrip(".")
-    return h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
-
-
-def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider: str) -> bool:
-    """Decide whether ``model.base_url`` may back bare ``custom`` runtime resolution.
-
-    GitHub #14676: the model picker can select Custom while ``model.provider`` still reflects a
-    previous provider. Reject non-loopback URLs unless the TOML provider is already ``custom``
-    (or one of the local-server aliases that resolve to ``custom`` — ollama, vllm, llamacpp, …),
-    so a stale OpenRouter/Z.ai base_url cannot hijack local ``custom`` sessions.
-    """
-    cfg_provider_norm = (cfg_provider or "").strip().lower()
-    bu = (cfg_base_url or "").strip()
-    if not bu:
+def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
+    """True when a configured secret looks usable, not empty/placeholder."""
+    if not isinstance(value, str):
         return False
-    if cfg_provider_norm == "custom":
-        return True
-    # GitHub #27132: provider aliases that resolve to "custom" at runtime
-    # (ollama, vllm, llamacpp, …) should be trusted the same way "custom"
-    # is, otherwise a legit LAN/WireGuard ollama endpoint silently falls
-    # through to OpenRouter.
-    try:
-        from son_of_anton_cli.auth import resolve_provider as _resolve_provider
-
-        if _resolve_provider(cfg_provider_norm) == "custom":
-            return True
-    except Exception:
-        pass
-    if base_url_host_matches(bu, "openrouter.ai"):
-        return False
-    return _loopback_hostname(base_url_hostname(bu))
+    cleaned = value.strip()
+    return len(cleaned) >= min_length and cleaned.lower() not in _PLACEHOLDER_SECRET_VALUES
 
 
-def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
-    """Auto-detect api_mode from the resolved base URL.
-
-    No endpoint mandates a wire protocol other than the default: every
-    provider speaks standard OpenAI chat completions.  (Anthropic's
-    native Messages route is selected by the provider overlay /
-    ``_base_url_looks_like_anthropic_messages``, not host sniffing here.)
-    """
-    return None
+def format_runtime_provider_error(error: Exception) -> str:
+    return str(error)
 
 
-def _fallback_api_mode(provider: str, base_url: str, model: str = "") -> str:
-    """Resolve api_mode when no explicit/persisted mode applies.
-
-    Resolution: URL detection first, then the transport the provider
-    overlay itself declares via ``providers.determine_api_mode``, and only
-    then the ``chat_completions`` default for genuinely unknown
-    providers/endpoints. The provider declaration is consulted so a
-    non-default transport can never be silently dropped when its hostname
-    isn't recognized.
-    """
-    detected = _detect_api_mode_for_url(base_url)
-    if detected:
-        return detected
-    from son_of_anton_cli.providers import determine_api_mode
-
-    return determine_api_mode(provider, base_url, model) or "chat_completions"
-
-
-def _resolve_plain_custom_api_mode(model_cfg: Dict[str, Any], base_url: str) -> str:
-    """Resolve api_mode for legacy/plain ``provider: custom`` endpoints.
-
-    Custom endpoints stay on chat completions unless the endpoint itself is
-    host-detected (e.g. an Anthropic-suffixed route).
-    """
-    configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-    detected_mode = _detect_api_mode_for_url(base_url)
-    return configured_mode or detected_mode or "chat_completions"
-
-
-def _host_derived_api_key(base_url: str) -> str:
-    """Look up `<VENDOR>_API_KEY` in the env, derived from the base URL host.
-
-    Examples:
-        https://api.deepseek.com/v1   → DEEPSEEK_API_KEY
-        https://api.groq.com/openai/v1 → GROQ_API_KEY
-        https://api.mistral.ai/v1     → MISTRAL_API_KEY
-        https://generativelanguage.googleapis.com/v1beta/openai/ → GOOGLEAPIS_API_KEY
-
-    Returns the env value (stripped) or "". Never returns env vars whose names
-    are already explicitly checked elsewhere — those are handled by their own
-    host-gated paths (OPENAI/OPENROUTER/OLLAMA).
-
-    The vendor label is the *registrable* portion of the hostname: strip
-    ``api.`` / ``www.`` prefixes, then take the second-to-last label
-    (``api.deepseek.com`` → ``deepseek``). Falls back to "" for hostnames
-    that don't yield a usable vendor label (IPs, loopback, single-label
-    hosts).
-    """
-    hostname = base_url_hostname(base_url)
-    if not hostname:
-        return ""
-    # Reject IPv4 / IPv6 / loopback — no meaningful vendor label.
-    if any(ch.isdigit() for ch in hostname.split(".")[-1]):
-        # Last label starts with a digit → likely IP. (TLDs are never numeric.)
-        return ""
-    if hostname in ("localhost",) or ":" in hostname:
-        return ""
-    labels = [lbl for lbl in hostname.split(".") if lbl]
-    # Strip common API/CDN prefixes.
-    while labels and labels[0] in ("api", "www"):
-        labels.pop(0)
-    if len(labels) < 2:
-        return ""
-    # Take the *registrable* label (second-to-last). For typical provider
-    # hosts this is what users intuitively call "the vendor":
-    #   deepseek.com               → labels[-2] = "deepseek"  ✓
-    #   api.groq.com → groq.com    → labels[-2] = "groq"      ✓
-    #   api.mistral.ai             → labels[-2] = "mistral"   ✓
-    # Crucially, lookalike hosts pick the ATTACKER's label, not the spoofed
-    # vendor:
-    #   api.deepseek.com.attacker.test → labels[-2] = "attacker"
-    # so DEEPSEEK_API_KEY stays put and the chain falls through to
-    # no-key-required. This mirrors how `base_url_host_matches` resists the
-    # same lookalike attack for explicit hosts.
-    vendor = labels[-2]
-    # Sanitize to env var charset: A-Z, 0-9, underscore.
-    sanitized = "".join(ch if ch.isalnum() else "_" for ch in vendor).upper()
-    if not sanitized or not sanitized[0].isalpha():
-        return ""
-    # Don't re-derive env vars already handled by explicit host-gated paths.
-    if sanitized in ("OPENAI", "OLLAMA"):
-        return ""
-    env_name = f"{sanitized}_API_KEY"
-    return (_getenv(env_name, "") or "").strip()
-
-
-def _auto_detect_local_model(base_url: str) -> str:
-    """Query a local server for its model name when only one model is loaded."""
-    if not base_url:
-        return ""
-    try:
-        import requests
-        url = base_url.rstrip("/")
-        if not url.endswith("/v1"):
-            url += "/v1"
-        resp = requests.get(url + "/models", timeout=(2, 3))
-        if resp.ok:
-            models = resp.json().get("data", [])
-            if len(models) == 1:
-                model_id = models[0].get("id", "")
-                if model_id:
-                    return model_id
-    except Exception as exc:
-        # Log instead of silently swallowing — aids debugging when
-        # local model auto-detection fails unexpectedly.
-        logger.debug("Auto-detect model from %s failed: %s", base_url, exc)
-    return ""
+def _getenv(name: str) -> str:
+    return (_get_secret(name, "") or "").strip() if name else ""
 
 
 def _get_model_config() -> Dict[str, Any]:
-    config = load_config()
-    model_cfg = config.get("model")
+    """The ``model`` config section, with ``model.model`` accepted for ``default``."""
+    model_cfg = load_config().get("model")
     if isinstance(model_cfg, dict):
         cfg = dict(model_cfg)
-        # Accept "model" as alias for "default" (users intuitively write model.model)
         if not cfg.get("default") and cfg.get("model"):
             cfg["default"] = cfg["model"]
-        # Handle model.default being a dict {provider: ..., model: ...} rather than a string
-        _default = cfg.get("default")
-        if isinstance(_default, dict):
-            from son_of_anton_cli.config import split_model_config_default
-            cfg_model, cfg_provider = split_model_config_default(_default)
-            cfg_provider = cfg_provider or str(model_cfg.get("provider") or "")
-            cfg["default"] = cfg_model
-            if cfg_provider and not cfg.get("provider"):
-                cfg["provider"] = cfg_provider
-            _default = cfg_model
-        default = (str(_default or "")).strip()
-        base_url = (cfg.get("base_url") or "").strip()
-        is_local = base_url_hostname(base_url) in ("localhost", "127.0.0.1")
-        is_fallback = not default
-        if is_local and is_fallback and base_url:
-            detected = _auto_detect_local_model(base_url)
-            if detected:
-                cfg["default"] = detected
         return cfg
     if isinstance(model_cfg, str) and model_cfg.strip():
         return {"default": model_cfg.strip()}
     return {}
 
 
-def _provider_supports_explicit_api_mode(provider: Optional[str], configured_provider: Optional[str] = None) -> bool:
-    """Check whether a persisted api_mode should be honored for a given provider.
-
-    Prevents stale api_mode from a previous provider leaking into a
-    different one after a model/provider switch.  Only applies the
-    persisted mode when the config's provider matches the runtime
-    provider (or when no configured provider is recorded).
-    """
-    normalized_provider = (provider or "").strip().lower()
-    normalized_configured = (configured_provider or "").strip().lower()
-    if not normalized_configured:
-        return True
-    if normalized_provider == "custom":
-        return normalized_configured == "custom" or normalized_configured.startswith("custom:")
-    return normalized_configured == normalized_provider
-
-
-_VALID_API_MODES = {
-    "chat_completions",
-}
-
-
-def _parse_api_mode(raw: Any) -> Optional[str]:
-    """Validate an api_mode value from config. Returns None if invalid.
-
-    Legacy/alias spellings (``openai``, ``anthropic``, ``responses``, …) are
-    canonicalized via the shared alias map before validation, so configs
-    written against older releases keep selecting the transport they named
-    instead of silently falling through to hostname-based detection.
-    """
-    if isinstance(raw, str):
-        from son_of_anton_cli.config import _canonical_api_mode
-
-        normalized = _canonical_api_mode(raw).lower()
-        if normalized in _VALID_API_MODES:
-            return normalized
-    return None
-
-
-def _resolve_runtime_from_pool_entry(
-    *,
-    provider: str,
-    entry: PooledCredential,
-    requested_provider: str,
-    model_cfg: Optional[Dict[str, Any]] = None,
-    pool: Optional[CredentialPool] = None,
-    target_model: Optional[str] = None,
-) -> Dict[str, Any]:
-    model_cfg = model_cfg or _get_model_config()
-    # When the caller is resolving for a specific target model (e.g. a /model
-    # mid-session switch), prefer that over the persisted model.default. This
-    # prevents api_mode being computed from a stale config default that no
-    # longer matches the model actually being used — the bug that caused
-    # opencode-zen /v1 to be stripped for chat_completions requests when
-    # config.default was still a Claude model.
-    effective_model = (target_model or model_cfg.get("default") or "")
-    base_url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").rstrip("/")
-    api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-    configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-    # Honour model.base_url from config.toml when the configured provider
-    # matches this provider — same pattern as the Anthropic branch above.
-    # Only override when the pool entry has no explicit base_url (i.e. it
-    # fell back to the hardcoded default).  Env var overrides win (#6039).
-    pconfig = PROVIDER_REGISTRY.get(provider)
-    pool_url_is_default = pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
-    if configured_provider == provider and pool_url_is_default:
-        cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
-        if cfg_base_url:
-            base_url = cfg_base_url
-    configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-    from son_of_anton_cli.models import opencode_provider_family
-    if opencode_provider_family(provider) is not None:
-        # Re-derive api_mode from the effective model rather than the
-        # persisted api_mode: the opencode providers serve both
-        # anthropic_messages and chat_completions models, so the previous
-        # session's mode must not leak across /model switches.
-        # Refs #16878.
-        from son_of_anton_cli.models import opencode_model_api_mode
-        api_mode = opencode_model_api_mode(provider, effective_model)
-    elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-        api_mode = configured_mode
-    else:
-        # URL detection (Anthropic /anthropic suffix, Kimi /coding), then the
-        # provider's own declared transport.
-        api_mode = _fallback_api_mode(provider, base_url, effective_model)
-
-    # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
-    # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize
-    # symmetrically: strip /v1 for anthropic_messages, re-append it for
-    # chat_completions (heals a stripped URL persisted to
-    # model.base_url by an earlier switch into an anthropic-routed model).
-    from son_of_anton_cli.models import opencode_provider_family
-    if opencode_provider_family(provider) is not None:
-        from son_of_anton_cli.models import normalize_opencode_base_url
-
-        base_url = normalize_opencode_base_url(provider, api_mode, base_url)
-
-    return {
-        "provider": provider,
-        "api_mode": api_mode,
-        "base_url": base_url,
-        "api_key": api_key,
-        "source": getattr(entry, "source", "pool"),
-        "credential_pool": pool,
-        "requested_provider": requested_provider,
-    }
-
-
 def resolve_requested_provider(requested: Optional[str] = None) -> str:
-    """Resolve provider request from explicit arg, config, then env."""
+    """The provider asked for: explicit argument, then ``model.provider``, else ``auto``."""
     if requested and requested.strip():
         return requested.strip().lower()
-
-    model_cfg = _get_model_config()
-    cfg_provider = model_cfg.get("provider")
+    cfg_provider = _get_model_config().get("provider")
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
-
-    # Prefer the persisted config selection over any stale shell/.env
-    # provider override so chat uses the endpoint the user last saved.
-    env_provider = _getenv("SON_OF_ANTON_INFERENCE_PROVIDER", "").strip().lower()
-    if env_provider:
-        return env_provider
-
     return "auto"
 
 
-def _try_resolve_from_custom_pool(
-    base_url: str,
-    provider_label: str,
-    api_mode_override: Optional[str] = None,
-    provider_name: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    """Check if a credential pool exists for a custom endpoint and return a runtime dict if so."""
-    pool_key = get_custom_provider_pool_key(base_url, provider_name=provider_name)
-    if not pool_key:
-        return None
+def _entry_slug(entry: Dict[str, Any]) -> str:
+    identity = str(entry.get("provider_key") or entry.get("name") or "").strip().lower().replace(" ", "-")
+    return identity if identity.startswith("custom:") else f"custom:{identity}"
+
+
+def _entry_aliases(entry: Dict[str, Any]) -> set:
+    aliases: set = set()
+    for value in (entry.get("name"), entry.get("provider_key")):
+        raw = str(value or "").strip().lower()
+        if raw:
+            normalized = raw.replace(" ", "-")
+            aliases.update({raw, normalized, f"custom:{normalized}"})
+    return aliases
+
+
+def _custom_entries() -> list:
     try:
-        pool = load_pool(pool_key)
-        if not pool.has_credentials():
-            return None
-        entry = pool.select()
-        if entry is None:
-            return None
-        pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-        if not pool_api_key:
-            return None
-        if not has_usable_secret(pool_api_key) and _loopback_hostname(base_url_hostname(base_url)):
-            # Legacy configs commonly used short/placeholder keys ('123',
-            # 'm', ...) for local no-auth services like Ollama -- fine for
-            # the endpoint itself, but has_usable_secret's 4-char floor
-            # (added after these configs were written) now rejects them
-            # here with no migration path. Every OTHER resolution path in
-            # this file already substitutes "no-key-required" for a
-            # loopback endpoint with no usable secret (the config-based
-            # custom_providers fallback a few hundred lines below, and the
-            # "actual" provider's local-offline exemption further down) --
-            # this pool path was the one gap (issue #86864).
-            pool_api_key = "no-key-required"
-        return {
-            "provider": provider_label,
-            "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
-            "base_url": base_url,
-            "api_key": pool_api_key,
-            "source": f"pool:{pool_key}",
-            "credential_pool": pool,
-        }
+        return [e for e in get_compatible_custom_providers(load_config()) if isinstance(e, dict)]
     except Exception:
-        return None
-
-
-def _lift_max_output_tokens(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
-    """Propagate a per-provider output cap onto the resolved runtime dict.
-
-    Accepts ``max_output_tokens`` or ``max_tokens`` on a ``custom_providers``
-    entry so a provider block can pin its own output limit. Gateway and CLI
-    map this onto ``AIAgent.max_tokens`` only when the top-level
-    ``model.max_tokens`` isn't set, so the documented global key still wins.
-    """
-    for _k in ("max_output_tokens", "max_tokens"):
-        _v = entry.get(_k)
-        if isinstance(_v, int) and _v > 0:
-            result["max_output_tokens"] = _v
-            return
-
-
-def _lift_extra_headers(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
-    """Copy a validated ``extra_headers`` dict from a provider entry.
-
-    SECURITY: header values routinely carry credentials (Cloudflare Access
-    service tokens, proxy auth, custom bearer schemes). Never log them.
-    """
-    extra_headers = normalize_extra_headers(entry.get("extra_headers"))
-    if extra_headers:
-        result["extra_headers"] = extra_headers
+        return []
 
 
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
-    requested_norm = _normalize_custom_provider_name(requested_provider or "")
-    if not requested_norm:
+    """The ``custom_providers`` entry *requested_provider* names (``custom``,
+    ``custom:<name>`` or ``<name>``), with its key resolved; None when none."""
+    requested = (requested_provider or "").strip().lower().replace(" ", "-")
+    if not requested or requested == "auto":
         return None
-
-    # Bare "custom" is normally an incomplete spec — the canonical form is
-    # "custom:<name>" — and is otherwise owned by the model.base_url "bare
-    # custom" trust path. BUT a user may literally name a ``providers:`` (or
-    # legacy ``custom_providers:``) entry "custom" (e.g. ``providers.custom``
-    # pointing at cliproxy). We used to return None here *before* scanning
-    # config, so such an entry was never matched and resolution fell through
-    # to a global default the user never configured — the cause of cron jobs
-    # with ``provider: "custom"`` failing with ``auth_unavailable``.
-    # Fall through to the config scan instead; if no entry is literally named
-    # "custom" it still returns None at the end, preserving the trust path.
-
-    # Raw names should only map to custom providers when they are not already
-    # valid built-in providers or aliases. Explicit menu keys like
-    # ``custom:local`` always target the saved custom provider. Bare "custom"
-    # is exempt from the shadow check — it is not a built-in to defer to.
-    if requested_norm == "auto":
-        return None
-    if requested_norm != "custom" and not requested_norm.startswith("custom:"):
-        try:
-            canonical = auth_mod.resolve_provider(requested_norm)
-        except AuthError:
-            pass
-        else:
-            # A user-declared ``custom_providers`` entry whose name matches
-            # only an *alias* (``kimi`` → built-in ``kimi-coding``) is the
-            # user's intended target — alias rewriting would otherwise hijack
-            # the request.  We only defer to the built-in when the raw name is
-            # the canonical provider itself (``nous``, ``openrouter``, …) so
-            # accidentally shadowing a canonical provider still resolves to
-            # the built-in. See tests/son_of_anton_cli/test_runtime_provider_resolution.py
-            # ``test_named_custom_provider_does_not_shadow_builtin_provider``.
-            if (canonical or "").strip().lower() == requested_norm:
-                return None
-
-    config = load_config()
-    
-    # First check providers: dict (new-style user-defined providers)
-    providers = config.get("providers")
-    if isinstance(providers, dict):
-        from son_of_anton_cli.config import is_provider_enabled
-        for ep_name, entry in providers.items():
-            if not isinstance(entry, dict):
-                continue
-            # Skip providers the user explicitly disabled via
-            # ``providers.<name>.enabled: false``. They remain in config
-            # so re-enabling is a one-line edit, but the resolver pretends
-            # they're not configured.
-            if not is_provider_enabled(entry):
-                continue
-            # Resolve the API key from the env var name stored in key_env
-            key_env = str(
-                entry.get("key_env") or entry.get("api_key_env") or ""
-            ).strip()
-            resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
-            # Fall back to inline api_key when key_env is absent or unresolvable
-            if not resolved_api_key:
-                resolved_api_key = str(entry.get("api_key", "") or "").strip()
-
-            display_name = entry.get("name", "")
-            if requested_norm in custom_provider_aliases(
-                str(display_name or ep_name),
-                str(ep_name),
-            ):
-                # Found match by provider key
-                base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
-                if base_url:
-                    result = {
-                        "name": entry.get("name", ep_name),
-                        "base_url": base_url.strip(),
-                        "api_key": resolved_api_key,
-                        "model": entry.get("default_model", ""),
-                    }
-                    extra_body = entry.get("extra_body")
-                    if isinstance(extra_body, dict):
-                        result["extra_body"] = dict(extra_body)
-                    _lift_extra_headers(entry, result)
-                    # Command that PRINTS a credential, for gateways issuing
-                    # short-lived bearers instead of static keys. Propagated
-                    # raw; wrapped in a per-request token provider at
-                    # resolution.
-                    key_cmd = str(entry.get("key_cmd", "") or "").strip()
-                    if key_cmd:
-                        result["key_cmd"] = key_cmd
-                    # The v11→v12 migration writes the API mode under the new
-                    # ``transport`` field, but hand-edited configs may still
-                    # use the legacy ``api_mode`` spelling.  Accept both —
-                    # the runtime normaliser ``_normalize_custom_provider_entry``
-                    # already does, so without this lift every migrated config
-                    # silently downgrades an anthropic_messages provider to
-                    # chat_completions in the resolved runtime.
-                    api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
-                    if api_mode:
-                        result["api_mode"] = api_mode
-                    _lift_max_output_tokens(entry, result)
-                    return result
-
-    # Fall back to custom_providers (list or keyed-dict form — both are
-    # normalized by get_compatible_custom_providers).
-    custom_providers = get_compatible_custom_providers(config)
-    if not custom_providers:
-        return None
-
-    for entry in custom_providers:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
+    for entry in _custom_entries():
         base_url = entry.get("base_url")
-        if not isinstance(name, str) or not isinstance(base_url, str):
+        if not isinstance(base_url, str) or not base_url.strip() or requested not in _entry_aliases(entry):
             continue
-        provider_key = str(entry.get("provider_key", "") or "").strip()
-        if requested_norm not in custom_provider_aliases(name, provider_key):
-            continue
-        result = {
-            "name": name.strip(),
-            "base_url": base_url.strip(),
-            "api_key": str(entry.get("api_key", "") or "").strip(),
-        }
-        key_env = str(entry.get("key_env", "") or "").strip()
+        result = {"name": str(entry.get("name") or "").strip(), "base_url": base_url.strip()}
+        api_key = str(entry.get("api_key", "") or "").strip()
+        key_env = str(entry.get("key_env", "") or entry.get("api_key_env", "") or "").strip()
         if key_env:
             result["key_env"] = key_env
-        if provider_key:
-            result["provider_key"] = provider_key
-        extra_body = entry.get("extra_body")
-        if isinstance(extra_body, dict):
-            result["extra_body"] = dict(extra_body)
-        _lift_extra_headers(entry, result)
-        api_mode = _parse_api_mode(entry.get("api_mode"))
-        if api_mode:
-            result["api_mode"] = api_mode
-        model_name = str(entry.get("model", "") or "").strip()
-        if model_name:
-            result["model"] = model_name
-        _lift_max_output_tokens(entry, result)
+            api_key = api_key or _getenv(key_env)
+        result["api_key"] = api_key
+        if entry.get("provider_key"):
+            result["provider_key"] = entry["provider_key"]
+        if entry.get("model"):
+            result["model"] = str(entry["model"]).strip()
         return result
-
     return None
 
 
 def has_named_custom_provider(requested_provider: str) -> bool:
-    """Return True when config defines a custom provider matching the request.
-
-    Thin public wrapper around :func:`_get_named_custom_provider` so other
-    modules (e.g. the cronjob tool) can decide whether a provider name will
-    actually resolve to a configured ``providers:`` / ``custom_providers:``
-    entry — without reaching into a private helper or duplicating the scan.
-    """
     try:
         return _get_named_custom_provider(requested_provider) is not None
     except Exception:
         return False
-
-
-def find_custom_provider_identity(base_url: str) -> Optional[str]:
-    """Map an endpoint URL back to its canonical ``custom:<name>`` menu key.
-
-    Returns the ``custom:<normalized-name>`` slug of the first ``providers:``
-    / ``custom_providers:`` entry whose base_url matches, or ``None`` when no
-    entry owns the URL.
-
-    Session persistence stores the agent's *resolved* provider, and for every
-    named custom endpoint that is the literal string ``"custom"`` — the entry
-    name is lost, and the api_key is deliberately never persisted. The
-    endpoint URL is the one durable fact that survives the round-trip, so
-    this reverse lookup lets persist/rebuild paths recover the entry identity
-    (and with it key_env/api_key/api_mode resolution via
-    :func:`_get_named_custom_provider`) instead of failing with
-    ``auth_unavailable`` or silently rebuilding with placeholder credentials.
-    """
-    target = _normalize_base_url_for_match(base_url)
-    if not target:
-        return None
-    try:
-        config = load_config()
-    except Exception:
-        return None
-
-    providers = config.get("providers")
-    if isinstance(providers, dict):
-        for ep_name, entry in providers.items():
-            if not isinstance(entry, dict):
-                continue
-            entry_url = (
-                entry.get("api") or entry.get("url") or entry.get("base_url") or ""
-            )
-            if _normalize_base_url_for_match(entry_url) == target:
-                return custom_provider_slug(str(ep_name), str(ep_name))
-
-    try:
-        custom_providers = get_compatible_custom_providers(config)
-    except Exception:
-        custom_providers = None
-    for entry in custom_providers or []:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        if not isinstance(name, str) or not name.strip():
-            continue
-        if _normalize_base_url_for_match(entry.get("base_url")) == target:
-            return custom_provider_slug(
-                name,
-                str(entry.get("provider_key", "") or ""),
-            )
-
-    return None
-
-
-def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
-    """Map a model id back to the ``custom:<name>`` entry that serves it.
-
-    Returns the ``custom:<normalized-name>`` slug of the first ``providers:``
-    / ``custom_providers:`` entry whose ``model`` / ``default_model`` matches,
-    or whose ``models`` catalog (dict or list shape) contains the id.
-    ``None`` when no entry serves the model.
-
-    Companion to :func:`find_custom_provider_identity` (URL reverse-lookup)
-    for the persistence paths where no base_url survived the round-trip: the
-    session row always stores the model name, and a custom endpoint's model
-    ids (e.g. an in-house SFT checkpoint) virtually never collide with
-    catalog models on built-in providers, so the model is the last durable
-    fact that can recover the entry identity.
-    """
-    target = str(model or "").strip().lower()
-    if not target:
-        return None
-    try:
-        config = load_config()
-    except Exception:
-        return None
-
-    def _entry_serves_model(entry: Dict[str, Any]) -> bool:
-        for key in ("model", "default_model"):
-            value = entry.get(key)
-            if isinstance(value, str) and value.strip().lower() == target:
-                return True
-        models = entry.get("models")
-        if isinstance(models, dict):
-            return any(
-                str(mid).strip().lower() == target for mid in models.keys()
-            )
-        if isinstance(models, list):
-            for item in models:
-                if isinstance(item, str) and item.strip().lower() == target:
-                    return True
-                if isinstance(item, dict):
-                    mid = item.get("id") or item.get("name")
-                    if isinstance(mid, str) and mid.strip().lower() == target:
-                        return True
-        return False
-
-    providers = config.get("providers")
-    if isinstance(providers, dict):
-        for ep_name, entry in providers.items():
-            if not isinstance(entry, dict):
-                continue
-            if _entry_serves_model(entry):
-                return custom_provider_slug(str(ep_name), str(ep_name))
-
-    try:
-        custom_providers = get_compatible_custom_providers(config)
-    except Exception:
-        custom_providers = None
-    for entry in custom_providers or []:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        if not isinstance(name, str) or not name.strip():
-            continue
-        if _entry_serves_model(entry):
-            return custom_provider_slug(
-                name,
-                str(entry.get("provider_key", "") or ""),
-            )
-
-    return None
 
 
 def canonical_custom_identity(
@@ -722,443 +130,22 @@ def canonical_custom_identity(
     config_provider: Optional[str] = None,
     model: Optional[str] = None,
 ) -> Optional[str]:
-    """Recover a routable ``custom:<name>`` identity for a bare custom provider.
-
-    The bare string ``"custom"`` is the *resolved billing class* shared by
-    every named ``providers:`` / ``custom_providers:`` entry — it is NOT a
-    routable provider identity (``resolve_runtime_provider("custom")`` falls
-    through to the OpenRouter default URL with no api_key, which surfaces to
-    the user as "No LLM provider configured").
-
-    Any code path that persists or restores a session's provider override
-    must run the resolved provider through this helper so a bare ``"custom"``
-    is upgraded back to its durable ``custom:<name>`` menu key. Three
-    recovery sources, in priority order:
-
-    1. ``base_url`` — reverse-lookup the entry that owns the endpoint URL
-       (the one fact that always survives the persistence round-trip when a
-       URL was recorded).
-    2. ``model`` — reverse-lookup the entry that serves the session's model
-       (``model``/``default_model``/``models`` catalog). The session row
-       always stores the model name, so when no base_url survived (the
-       recurring Desktop/TUI regression vector) the model is the last
-       session-scoped fact that can recover the entry — and unlike the
-       config fallback below it stays correct after the user points their
-       global default at a different provider.
-    3. ``config_provider`` — the active ``config.model.provider`` (or its
-       ``provider``/``SON_OF_ANTON_INFERENCE_PROVIDER`` equivalent). When neither
-       a base_url nor a model recovered the entry, the configured provider
-       is the only durable identity left, so fall back to it when it names
-       a real entry.
-
-    Returns ``custom:<name>`` when a routable identity is recovered, else
-    ``None`` (caller keeps whatever it had — bare ``"custom"`` only as a last
-    resort, e.g. a genuine ad-hoc endpoint with no config entry).
-    """
-    # 1. Reverse-lookup by endpoint URL.
-    if base_url:
-        identity = find_custom_provider_identity(base_url)
-        if identity:
-            return identity
-
-    # 2. Reverse-lookup by the session's model name.
-    if model:
-        identity = find_custom_provider_identity_by_model(model)
-        if identity:
-            return identity
-
-    # 3. Fall back to the configured provider when it names a real entry.
-    candidate = str(config_provider or "").strip()
-    if not candidate:
-        try:
-            candidate = str(_get_model_config().get("provider") or "").strip()
-        except Exception:
-            candidate = ""
-    if not candidate:
-        candidate = os.environ.get("SON_OF_ANTON_INFERENCE_PROVIDER", "").strip()
-
-    candidate_norm = _normalize_custom_provider_name(candidate)
-    # A bare/non-routable candidate cannot heal a bare custom override.
-    if not candidate_norm or candidate_norm in {"custom", "auto"}:
-        return None
-    # Only return it when it actually resolves to a configured custom entry,
-    # so we never invent a `custom:<x>` that resolution can't honor.
-    try:
-        entry = _get_named_custom_provider(candidate)
-        if entry is not None:
-            # ``candidate`` matched, but it may be the entry's DISPLAY NAME —
-            # ``_get_named_custom_provider`` accepts either spelling. For a
-            # keyed ``providers:`` entry the display name is not the durable
-            # identity, so re-resolve through the endpoint the matched entry
-            # owns and return the same config-key slug every other path
-            # returns (7b5a18817). Without this, a display name that differs
-            # from its key heals to ``custom:<display-name>`` and stops
-            # matching the persisted identity.
-            identity = find_custom_provider_identity(str(entry.get("base_url") or ""))
-            if identity:
-                return identity
-            if candidate_norm.startswith("custom:"):
-                return candidate_norm
-            return f"custom:{candidate_norm}"
-    except Exception:
-        pass
-    return None
-
-
-def _normalize_base_url_for_match(value) -> str:
-    return str(value or "").strip().rstrip("/").lower()
-
-
-def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[str, Any]:
-    extra_body = custom_provider.get("extra_body")
-    if not isinstance(extra_body, dict) or not extra_body:
-        return {}
-    return {"extra_body": dict(extra_body)}
-
-
-def _resolve_named_custom_runtime(
-    *,
-    requested_provider: str,
-    explicit_api_key: Optional[str] = None,
-    explicit_base_url: Optional[str] = None,
-    target_model: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    # Bare `provider="custom"` with an explicit base_url (e.g. propagated
-    # from a `model_aliases:` direct-alias resolution) — build a runtime
-    # directly so the alias's base_url actually takes effect.
-    #
-    # GitHub #27132: provider aliases that resolve to "custom" at runtime
-    # (ollama, vllm, llamacpp, …) are treated identically here, so a TOML
-    # `provider: ollama` with a LAN/WireGuard `base_url` doesn't silently
-    # fall through to OpenRouter.
-    requested_norm = (requested_provider or "").strip().lower()
-    if requested_norm and requested_norm != "custom":
-        try:
-            from son_of_anton_cli.auth import resolve_provider as _resolve_provider
-
-            if _resolve_provider(requested_norm) == "custom":
-                requested_norm = "custom"
-        except Exception:
-            pass
-    if requested_norm == "custom" and explicit_base_url:
-        base_url = explicit_base_url.strip().rstrip("/")
-        # Check credential pool first — mirrors the named-custom-provider path
-        # so bare `provider: custom` with a configured custom_providers entry
-        # also gets its api_key from the pool instead of env var fallbacks.
-        pool_result = _try_resolve_from_custom_pool(base_url, "custom", None)
-        if pool_result:
-            pool_result["source"] = "direct-alias"
-            return pool_result
-        _da_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
-        api_key_candidates = [
-            (explicit_api_key or "").strip(),
-            (_getenv("OPENAI_API_KEY", "").strip()     if _da_is_openai_url else ""),
-            # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host so users
-            # who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the
-            # intuitive match without configuring `custom_providers` first.
-            _host_derived_api_key(base_url),
-        ]
-        api_key = next(
-            (c for c in api_key_candidates if has_usable_secret(c)),
-            "",
-        ) or "no-key-required"
-        return {
-            "provider": "custom",
-            "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
-            "base_url": base_url,
-            "api_key": api_key,
-            "source": "direct-alias",
-            "requested_provider": requested_provider,
-        }
-
-    custom_provider = _get_named_custom_provider(requested_provider)
-    if not custom_provider:
-        return None
-
-    base_url = (
-        (explicit_base_url or "").strip()
-        or custom_provider.get("base_url", "")
-    ).rstrip("/")
-    if not base_url:
-        return None
-
-    # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
-    if pool_result:
-        # Propagate the model name even when using pooled credentials —
-        # the pool doesn't know about the custom_providers model field.
-        model_name = custom_provider.get("model")
-        if model_name:
-            pool_result["model"] = model_name
-        if isinstance(custom_provider.get("max_output_tokens"), int):
-            pool_result["max_output_tokens"] = custom_provider["max_output_tokens"]
-        request_overrides = _custom_provider_request_overrides(custom_provider)
-        if request_overrides:
-            pool_result["request_overrides"] = {
-                **dict(pool_result.get("request_overrides") or {}),
-                **request_overrides,
-            }
-        # Propagate extra_headers so custom-provider auth headers (e.g.
-        # Cloudflare Access service tokens) still apply with pooled
-        # credentials. NEVER log the values.
-        if custom_provider.get("extra_headers"):
-            pool_result["extra_headers"] = dict(custom_provider["extra_headers"])
-        return pool_result
-
-    _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
-    api_key_candidates = [
-        (explicit_api_key or "").strip(),
-        str(custom_provider.get("api_key", "") or "").strip(),
-        _getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
-        # Gate provider env keys on their authoritative hosts — sending
-        # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).
-        (_getenv("OPENAI_API_KEY", "").strip()     if _cp_is_openai_url  else ""),
-        # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host as a final
-        # fallback when key_env wasn't set explicitly.
-        _host_derived_api_key(base_url),
-    ]
-    api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
-
-    # A ``key_cmd`` credential is minted per request rather than resolved once:
-    # gateways that issue short-lived bearers would otherwise go stale
-    # mid-session and 401. Both wire clients already accept a callable api_key
-    # (the Entra ID contract) and invoke it per request. An explicit --api-key
-    # still wins — it is the one-off recovery escape hatch.
-    key_cmd = str(custom_provider.get("key_cmd", "") or "").strip()
-    if key_cmd and not has_usable_secret((explicit_api_key or "").strip()):
-        from agent.command_token_source import build_command_token_provider
-
-        token_provider = build_command_token_provider(
-            key_cmd,
-            str(custom_provider.get("name", requested_provider) or "custom"),
-        )
-        if token_provider is not None:
-            api_key = token_provider
-
-    result = {
-        "provider": "custom",
-        "api_mode": custom_provider.get("api_mode")
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
-        "base_url": base_url,
-        "api_key": api_key or "no-key-required",
-        "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
-    }
-    # Propagate the model name so callers can override self.model when the
-    # provider name differs from the actual model string the API expects.
-    if custom_provider.get("model"):
-        result["model"] = custom_provider["model"]
-    if isinstance(custom_provider.get("max_output_tokens"), int):
-        result["max_output_tokens"] = custom_provider["max_output_tokens"]
-    # Per-provider extra HTTP headers (proxies, gateways, custom auth).
-    # Values may carry credentials — NEVER log them.
-    if custom_provider.get("extra_headers"):
-        result["extra_headers"] = dict(custom_provider["extra_headers"])
-    request_overrides = _custom_provider_request_overrides(custom_provider)
-    if request_overrides:
-        result["request_overrides"] = request_overrides
-
-    # Custom providers in the OpenCode family (name extends opencode-go/zen,
-    # or base_url hosted on opencode.ai) serve models behind different API
-    # surfaces per model — a static api_mode 503s for /v1/responses-only
-    # models like grok-4.5 (#85589). Re-derive api_mode from the effective
-    # model and normalize the /v1 suffix, exactly like the built-in
-    # opencode-zen/go paths do.
-    from son_of_anton_cli.models import opencode_provider_family
-
-    _oc_family = opencode_provider_family(requested_provider)
-    if _oc_family is None:
-        try:
-            from utils import base_url_hostname
-
-            if base_url_hostname(base_url).lower() == "opencode.ai":
-                _oc_family = (
-                    "opencode-go" if "/zen/go" in base_url.lower() else "opencode-zen"
-                )
-        except Exception:
-            _oc_family = None
-    if _oc_family is not None and not custom_provider.get("api_mode"):
-        from son_of_anton_cli.models import (
-            normalize_opencode_base_url,
-            opencode_model_api_mode,
-        )
-
-        _effective_model = str(
-            target_model
-            or custom_provider.get("model")
-            or _get_model_config().get("default")
-            or ""
-        ).strip()
-        if _effective_model:
-            result["api_mode"] = opencode_model_api_mode(_oc_family, _effective_model)
-        result["base_url"] = normalize_opencode_base_url(
-            _oc_family, result["api_mode"], result["base_url"]
-        )
-    return result
-
-
-def _resolve_custom_endpoint_runtime(
-    *,
-    requested_provider: str,
-    explicit_api_key: Optional[str] = None,
-    explicit_base_url: Optional[str] = None,
-) -> Dict[str, Any]:
-    model_cfg = _get_model_config()
-    cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
-    cfg_provider = model_cfg.get("provider") if isinstance(model_cfg.get("provider"), str) else ""
-    cfg_api_key = ""
-    for k in ("api_key", "api"):
-        v = model_cfg.get(k)
-        if isinstance(v, str) and v.strip():
-            cfg_api_key = v.strip()
-            break
-    requested_norm = (requested_provider or "").strip().lower()
-    cfg_provider = cfg_provider.strip().lower()
-    # GitHub #27132: provider aliases that resolve to "custom" (ollama,
-    # vllm, llamacpp, …) follow the same base_url trust + routing rules
-    # as a bare `provider: custom`. Normalising here keeps every check
-    # below — `requested_norm == "custom"`, the trust check, the pool
-    # gate up the stack — alias-aware without duplicating the alias map.
-    if requested_norm and requested_norm != "custom":
-        try:
-            from son_of_anton_cli.auth import resolve_provider as _resolve_provider
-
-            if _resolve_provider(requested_norm) == "custom":
-                requested_norm = "custom"
-        except Exception:
-            pass
-
-    env_custom_base_url = _getenv("CUSTOM_BASE_URL", "").strip()
-
-    # Use config base_url when available and the provider context matches.
-    # OPENAI_BASE_URL env var is no longer consulted — config.toml is
-    # the single source of truth for endpoint URLs.
-    use_config_base_url = False
-    if cfg_base_url.strip() and not explicit_base_url:
-        if requested_norm == "auto":
-            if not cfg_provider or cfg_provider == "auto":
-                use_config_base_url = True
-        elif requested_norm == "custom" and _config_base_url_trustworthy_for_bare_custom(
-            cfg_base_url, cfg_provider
-        ):
-            use_config_base_url = True
-
-    base_url = (
-        (explicit_base_url or "").strip()
-        or env_custom_base_url
-        or (cfg_base_url.strip() if use_config_base_url else "")
-    ).rstrip("/")
-
-    # Choose API key based on the resolved endpoint host.
-    # When hitting a custom endpoint, prefer the config's api_key and
-    # host-gated env-var keys so the right credential reaches the right
-    # provider (issues #28660, GHSA-76xc-57q6-vm5m).
-    _is_ollama_url    = base_url_host_matches(base_url, "ollama.com")
-    _is_openai_url    = base_url_host_matches(base_url, "openai.com")
-    _is_openai_azure  = base_url_host_matches(base_url, "openai.azure.com")
-    api_key_candidates = [
-        explicit_api_key,
-        (cfg_api_key if use_config_base_url else ""),
-        (_getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
-        (_getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),
-        # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host so users
-        # who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the
-        # intuitive match. Helper returns "" for IPs/loopback and for env
-        # vars already handled above.
-        _host_derived_api_key(base_url),
-    ]
-    api_key = next(
-        (str(candidate or "").strip() for candidate in api_key_candidates if has_usable_secret(candidate)),
-        "",
-    )
-
-    source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
-
-    # "custom" is the standard OpenAI-compatible endpoint provider.
-    effective_provider = "custom"
-
-    # For custom endpoints, check if a credential pool exists
-    if effective_provider == "custom" and base_url:
-        # Pass requested_provider so pool lookup prefers name match over base_url,
-        # fixing credential mix-ups when multiple custom providers share a base_url.
-        pool_result = _try_resolve_from_custom_pool(
-            base_url, effective_provider, _parse_api_mode(model_cfg.get("api_mode")),
-            provider_name=requested_provider if requested_norm != "custom" else None,
-        )
-        if pool_result:
-            return pool_result
-
-    if effective_provider == "custom" and not api_key:
-        api_key = "no-key-required"
-
-    return {
-        "provider": effective_provider,
-        "api_mode": _resolve_plain_custom_api_mode(model_cfg, base_url)
-        if effective_provider == "custom"
-        else _parse_api_mode(model_cfg.get("api_mode"))
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
-        "base_url": base_url,
-        "api_key": api_key,
-        "source": source,
-    }
-
-
-
-
-def _resolve_explicit_runtime(
-    *,
-    provider: str,
-    requested_provider: str,
-    model_cfg: Dict[str, Any],
-    explicit_api_key: Optional[str] = None,
-    explicit_base_url: Optional[str] = None,
-    target_model: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    explicit_api_key = str(explicit_api_key or "").strip()
-    explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
-    if not explicit_api_key and not explicit_base_url:
-        return None
-
-    # Azure Foundry: user-configured endpoint with selectable API mode
-
-    pconfig = PROVIDER_REGISTRY.get(provider)
-    if pconfig and pconfig.auth_type == "api_key":
-        env_url = ""
-        if pconfig.base_url_env_var:
-            env_url = _getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
-
-        base_url = explicit_base_url
-        if not base_url:
-            base_url = env_url or pconfig.inference_base_url
-
-        api_key = explicit_api_key
-        if not api_key:
-            creds = resolve_api_key_provider_credentials(provider)
-            api_key = creds.get("api_key", "")
-            if not base_url:
-                base_url = creds.get("base_url", "").rstrip("/")
-
-        api_mode = "chat_completions"
-        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-        configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-        if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-            api_mode = configured_mode
-        else:
-            # URL detection first, then the provider's declared transport.
-            api_mode = _fallback_api_mode(
-                provider, base_url, target_model or model_cfg.get("default", "")
-            )
-
-        return {
-            "provider": provider,
-            "api_mode": api_mode,
-            "base_url": base_url.rstrip("/"),
-            "api_key": api_key,
-            "source": "explicit",
-            "requested_provider": requested_provider,
-        }
-
+    """The durable ``custom:<name>`` identity for a bare ``custom`` session
+    provider: the entry owning *base_url*, else the one serving *model*."""
+    entries = _custom_entries()
+    target = str(base_url or "").strip().rstrip("/").lower()
+    if target:
+        for entry in entries:
+            if str(entry.get("base_url") or "").strip().rstrip("/").lower() == target:
+                return _entry_slug(entry)
+    wanted = str(model or "").strip().lower()
+    if wanted:
+        for entry in entries:
+            models = entry.get("models")
+            served = {str(m).strip().lower() for m in models} if isinstance(models, (dict, list)) else set()
+            served.update(str(entry.get(k) or "").strip().lower() for k in ("model", "default_model"))
+            if wanted in served:
+                return _entry_slug(entry)
     return None
 
 
@@ -1169,245 +156,42 @@ def resolve_runtime_provider(
     explicit_base_url: Optional[str] = None,
     target_model: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Resolve runtime provider credentials for agent execution.
+    """Resolve the endpoint and credential for agent execution.
 
-    target_model: Optional override for model_cfg.get("default") when
-    computing provider-specific api_mode (e.g. OpenCode Zen/Go where different
-    models route through different API surfaces). Callers performing an
-    explicit mid-session model switch should pass the new model here so
-    api_mode is derived from the model they are switching TO, not the stale
-    persisted default. Other callers can leave it None to preserve existing
-    behavior (api_mode derived from config).
+    An explicit base_url wins; otherwise the named ``custom_providers`` entry
+    (for ``auto``, the first entry), else ``model.base_url``.
     """
     requested_provider = resolve_requested_provider(requested)
-
-    # Honour ``providers.<name>.enabled: false`` for BOTH user-defined
-    # custom providers and the built-in ones (openai / anthropic /
-    # openrouter / gemini / ...). The earlier ``_get_named_custom_provider``
-    # gate only covers custom blocks — built-in resolution paths
-    # (``resolve_provider`` + pool / explicit / generic runtime) walk
-    # their own short-circuits and would otherwise return stale config
-    # for a provider the user explicitly turned off.
-    #
-    # Fail fast with a typed error so the fallback chain can advance to
-    # the next provider instead of using a disabled one.
-    from son_of_anton_cli.config import is_provider_enabled, load_config
-    _full_cfg = load_config()
-    _provs_cfg = _full_cfg.get("providers") if isinstance(_full_cfg, dict) else None
-    if isinstance(_provs_cfg, dict):
-        _block = _provs_cfg.get(requested_provider)
-        if isinstance(_block, dict) and not is_provider_enabled(_block):
-            raise ValueError(
-                f"provider {requested_provider!r} is disabled in config "
-                f"(providers.{requested_provider}.enabled: false)"
-            )
-
-    # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
-    # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
-    # return provider="custom" with chat_completions api_mode and no valid key).
-    # Instead, use the Azure key directly with anthropic_messages api_mode.
-    _eff_base = (explicit_base_url or "").strip()
-    # Azure Foundry: user-configured endpoint with selectable API mode
-    # (OpenAI-style chat_completions or Anthropic-style anthropic_messages).
-    # Resolve before the custom-runtime / pool / generic paths so Azure
-    # config is always picked up from model.base_url + model.api_mode,
-    # regardless of whether the caller passed explicit_* args.
-
-    custom_runtime = _resolve_named_custom_runtime(
-        requested_provider=requested_provider,
-        explicit_api_key=explicit_api_key,
-        explicit_base_url=explicit_base_url,
-        target_model=target_model,
-    )
-    if custom_runtime:
-        custom_runtime["requested_provider"] = requested_provider
-        return custom_runtime
-
-    # If provider is "auto" (or unset) but config.toml has an explicit base_url
-    # pointing at a custom/local endpoint (e.g. Ollama at localhost:11434),
-    # route through the OpenAI-compatible resolver instead of letting
-    # resolve_provider() pick up an ANTHROPIC_API_KEY or OPENAI_API_KEY from
-    # the environment and send the request to a cloud API. Fixes #3846.
-    if not explicit_base_url and not explicit_api_key:
-        model_cfg = _get_model_config()
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-        cfg_base_url = str(model_cfg.get("base_url") or "").strip()
-        if cfg_base_url and cfg_provider in ("auto", ""):
-            # Check that base_url isn't one of the well-known cloud API roots
-            # (Anthropic, OpenAI). If it's something else (Ollama,
-            # LM Studio, vLLM, …) we honour it directly. The full detection
-            # logic lives in _resolve_custom_endpoint_runtime; we just skip the
-            # resolve_provider() call so env-var credentials don't shadow it.
-            # Match on HOST, not substring, so a look-alike base_url
-            # (e.g. http://api.anthropic.com.attacker.test/v1, or one whose
-            # path merely contains "openai.com") cannot evade the bypass and
-            # leak a cloud credential. Mirrors the host-gating used for
-            # API-key selection in _resolve_custom_endpoint_runtime.
-            _known_cloud_hosts = (
-                "anthropic.com",
-                "openai.com",
-            )
-            if not any(
-                base_url_host_matches(cfg_base_url, host)
-                for host in _known_cloud_hosts
-            ):
-                runtime = _resolve_custom_endpoint_runtime(
-                    requested_provider=requested_provider,
-                    explicit_api_key=explicit_api_key,
-                    explicit_base_url=explicit_base_url,
-                )
-                runtime["requested_provider"] = requested_provider
-                return runtime
-
-    provider = resolve_provider(
-        requested_provider,
-        explicit_api_key=explicit_api_key,
-        explicit_base_url=explicit_base_url,
-    )
+    entry = _get_named_custom_provider(requested_provider)
+    if entry is None and requested_provider in ("auto", "custom"):
+        entries = _custom_entries()
+        if entries:
+            entry = _get_named_custom_provider(_entry_slug(entries[0]))
     model_cfg = _get_model_config()
-
-    # OpenCode Zen free tier (*-free slugs, e.g. x-preview-f-free /
-    # "Ox Alpha"): served ANONYMOUSLY on the Zen relay ONLY. Any bearer the
-    # relay doesn't recognize is a 401 — and the Go relay doesn't serve the
-    # free tier at all ("Model x is not supported"), so a valid OpenCode GO
-    # subscription key still fails. Route free slugs through the keyless Zen
-    # runtime BEFORE the credential-pool / explicit / api_key paths so they
-    # work with any OpenCode credential state, including none.
-    from son_of_anton_cli.models import (
-        opencode_provider_family as _oc_family_fn,
-        opencode_zen_free_runtime as _oc_free_runtime_fn,
-    )
-    if _oc_family_fn(provider) is not None:
-        _oc_model = str(
-            target_model or model_cfg.get("default") or model_cfg.get("model") or ""
-        ).strip()
-        _free_runtime = _oc_free_runtime_fn(provider, _oc_model)
-        if _free_runtime is not None:
-            _free_runtime["requested_provider"] = requested_provider
-            return _free_runtime
-
-    explicit_runtime = _resolve_explicit_runtime(
-        provider=provider,
-        requested_provider=requested_provider,
-        model_cfg=model_cfg,
-        explicit_api_key=explicit_api_key,
-        explicit_base_url=explicit_base_url,
-        target_model=target_model,
-    )
-    if explicit_runtime:
-        return explicit_runtime
-
-    should_use_pool = True
-
-    try:
-        pool = load_pool(provider) if should_use_pool else None
-    except Exception:
-        pool = None
-    if pool and pool.has_credentials():
-        entry = pool.select()
-        pool_api_key = ""
-        if entry is not None:
-            pool_api_key = (
-                getattr(entry, "runtime_api_key", None)
-                or getattr(entry, "access_token", "")
-            )
-        if (
-            entry is not None
-            and pool_api_key
-            and credential_pool_matches_provider(
-                pool,
-                provider,
-                base_url=(
-                    getattr(entry, "runtime_base_url", None)
-                    or getattr(entry, "base_url", None)
-                    or ""
-                ),
-            )
-        ):
-            return _resolve_runtime_from_pool_entry(
-                provider=provider,
-                entry=entry,
-                requested_provider=requested_provider,
-                model_cfg=model_cfg,
-                pool=pool,
-                target_model=target_model,
-            )
-
-    # API-key providers
-    pconfig = PROVIDER_REGISTRY.get(provider)
-    if pconfig and pconfig.auth_type == "api_key":
-        creds = resolve_api_key_provider_credentials(provider)
-        # An explicitly selected API-key provider is authoritative. Returning
-        # a runtime with an empty key defers failure until the first request and
-        # can make a later fallback look like a silent provider switch. Fail at
-        # resolution so callers surface the missing credential (or consult only
-        # an explicitly configured fallback chain).
-        if not has_usable_secret(creds.get("api_key")):
-            env_names = ", ".join(pconfig.api_key_env_vars)
-            hint = f" Set {env_names}." if env_names else ""
-            raise AuthError(
-                f"No usable credentials found for provider '{provider}'.{hint}",
-                provider=provider,
-                code="missing_api_key",
-            )
-        # Honour model.base_url from config.toml when the configured provider
-        # matches this provider.  Without this, a configured custom endpoint
-        # still falls back to the provider's hardcoded default (#6039).
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-        cfg_base_url = ""
-        if cfg_provider == provider:
-            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-        base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
-        api_mode = "chat_completions"
-        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
-        # Only honor persisted api_mode when it belongs to the same provider family.
-        configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-        from son_of_anton_cli.models import opencode_provider_family
-        if opencode_provider_family(provider) is not None:
-            # opencode-zen/go must always re-derive api_mode from the
-            # target model (not the stale persisted api_mode), because
-            # the same provider serves both anthropic_messages
-            # (e.g. minimax-m2.7) and chat_completions (e.g.
-            # deepseek-v4-flash) and switching models via /model would
-            # otherwise carry the previous mode forward, stripping /v1
-            # from base_url for chat_completions models and 404'ing.
-            # Refs #16878.
-            from son_of_anton_cli.models import opencode_model_api_mode
-            _effective = target_model or model_cfg.get("default", "")
-            api_mode = opencode_model_api_mode(provider, _effective)
-        elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-            api_mode = configured_mode
-        else:
-            # URL detection first (e.g. https://api.minimax.io/anthropic),
-            # then the provider's declared transport.
-            api_mode = _fallback_api_mode(
-                provider, base_url, target_model or model_cfg.get("default", "")
-            )
-        # Normalize the /v1 suffix for OpenCode by API mode (see comment above).
-        from son_of_anton_cli.models import opencode_provider_family
-        if opencode_provider_family(provider) is not None:
-            from son_of_anton_cli.models import normalize_opencode_base_url
-            base_url = normalize_opencode_base_url(provider, api_mode, base_url)
-        api_key = creds.get("api_key", "")
-        return {
-            "provider": provider,
-            "api_mode": api_mode,
-            "base_url": base_url,
-            "api_key": api_key,
-            "source": creds.get("source", "env"),
-            "requested_provider": requested_provider,
-        }
-
-    runtime = _resolve_custom_endpoint_runtime(
-        requested_provider=requested_provider,
-        explicit_api_key=explicit_api_key,
-        explicit_base_url=explicit_base_url,
-    )
-    runtime["requested_provider"] = requested_provider
-    return runtime
-
-
-def format_runtime_provider_error(error: Exception) -> str:
-    if isinstance(error, AuthError):
-        return format_auth_error(error)
-    return str(error)
+    explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
+    explicit_api_key = str(explicit_api_key or "").strip()
+    if explicit_base_url:
+        base_url, api_key, source = explicit_base_url, explicit_api_key, "explicit"
+    elif entry is not None:
+        base_url = entry["base_url"].rstrip("/")
+        api_key = explicit_api_key or entry.get("api_key", "")
+        source = f"custom_provider:{entry.get('name') or requested_provider}"
+    else:
+        base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        api_key = explicit_api_key or str(model_cfg.get("api_key") or "").strip()
+        source = "explicit" if explicit_api_key else "env/config"
+    if not base_url:
+        raise AuthError(
+            "No LLM endpoint configured. Declare it under custom_providers in "
+            "config.toml (the Nix module's settings).",
+            provider=requested_provider,
+            code="missing_endpoint",
+        )
+    return {
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "base_url": base_url,
+        "api_key": api_key if has_usable_secret(api_key) else "no-key-required",
+        "source": source,
+        "requested_provider": requested_provider,
+    }

@@ -431,10 +431,8 @@ def _validate_cron_base_url(
     try:
         from son_of_anton_cli.runtime_provider import (
             has_named_custom_provider,
-            resolve_requested_provider,
             _get_named_custom_provider,
         )
-        from son_of_anton_cli.auth import PROVIDER_REGISTRY
         from utils import base_url_host_matches, base_url_hostname
     except Exception:
         # Can't resolve provider metadata -> fail closed.
@@ -462,18 +460,7 @@ def _validate_cron_base_url(
             f"custom provider's stored credential may only be sent to its own "
             f"configured endpoint ({cfg_host or 'unknown'})."
         )
-    try:
-        resolved = resolve_requested_provider(prov)
-    except Exception:
-        resolved = prov
-    pconfig = PROVIDER_REGISTRY.get(resolved) if isinstance(resolved, str) else None
-    known_host = base_url_hostname(getattr(pconfig, "inference_base_url", "") if pconfig else "")
-    if known_host and base_url_host_matches(bu, known_host):
-        return None
-    # Fail closed: any non-custom provider we cannot host-match to its own
-    # endpoint is refused. This covers named providers with a stored credential
-    # AND aliases/unknown names we can't resolve to a known host (e.g. "openai",
-    # "google"), which would otherwise pair a stored key with the override URL.
+    # Fail closed: any other provider name is refused.
     return (
         f"base_url {bu!r} is not allowed for provider {prov!r}. A named "
         f"provider's stored credential may only be sent to its own endpoint; "
