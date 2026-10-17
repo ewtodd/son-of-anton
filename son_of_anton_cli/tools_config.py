@@ -50,7 +50,6 @@ CONFIGURABLE_TOOLSETS = [
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
-    ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("todo",            "📋 Task Planning",             "todo"),
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
@@ -63,7 +62,7 @@ CONFIGURABLE_TOOLSETS = [
 # Toolsets that are OFF by default for new installs.
 # They're still in _SON_OF_ANTON_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"video"}
+_DEFAULT_OFF_TOOLSETS: set = set()
 
 
 

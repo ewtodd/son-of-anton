@@ -858,7 +858,6 @@ DEFAULT_CONFIG = {
             "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
             "extra_body": {},      # OpenAI-compatible provider-specific request fields
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-            "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
         "compaction": {
             "provider": "auto",
