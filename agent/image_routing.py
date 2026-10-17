@@ -3,36 +3,21 @@
 Two modes:
 
   native  — attach images as OpenAI-style ``image_url`` content parts on the
-            user turn. The chat-completions transport already translates
-            these into the vendor-specific multimodal formats.
+            user turn.
 
   text    — run ``vision_analyze`` on each image up-front and prepend the
             description to the user's text. The model never sees the pixels;
-            it only sees a lossy text summary. This is the pre-existing
-            behaviour and still the right choice for non-vision models.
+            it only sees a lossy text summary. The right choice for non-vision
+            models.
 
 The decision is made once per message turn by :func:`decide_image_input_mode`.
 It reads ``agent.image_input_mode`` from config.toml (``auto`` | ``native``
-| ``text``, default ``auto``) and the active model's capability metadata.
+| ``text``, default ``auto``); in ``auto`` mode images attach natively only
+when config.toml declares the active model ``supports_vision``, and go through
+the text pipeline otherwise.
 
-In ``auto`` mode:
-  - If the active model reports ``supports_vision=True`` (via config
-    override or models.dev metadata), we attach natively — vision-capable
-    main models should always see the original pixels, even when an
-    auxiliary vision backend is configured. That auxiliary backend then
-    acts as a *fallback* for sessions whose main model can't take images.
-  - Otherwise, if the user has explicitly configured ``auxiliary.vision``
-    (provider/model/base_url not ``auto``/empty), we route through the
-    text pipeline so the auxiliary vision backend can describe the image
-    for the text-only main model.
-  - Otherwise (non-vision model, no explicit override), we fall back to
-    text via the default vision_analyze flow.
-
-This keeps ``vision_analyze`` surfaced as a tool in every session — agent
-flows that chain it (browser screenshots, deeper inspection of
-URL-referenced images, style-gating loops) keep working. The routing only
-affects *how user-attached images on the current turn* are presented to the
-main model.
+``vision_analyze`` stays a tool in every session; the routing only affects
+*how user-attached images on the current turn* are presented to the main model.
 """
 
 from __future__ import annotations
@@ -40,8 +25,6 @@ from __future__ import annotations
 import base64
 import logging
 import mimetypes
-import os
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -51,110 +34,14 @@ logger = logging.getLogger(__name__)
 _VALID_MODES = frozenset({"auto", "native", "text"})
 
 
-# Image extensions used by extract_image_refs(). Kept tight on purpose — we
-# only auto-attach things the model can actually see. Documents/archives are
-# excluded because the gateway's broader extract_local_files() also routes
-# them differently (send_document), and we don't want to attach a PDF as a
-# vision part.
-_IMAGE_EXTS = (
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".heic",
-)
-_IMAGE_EXT_PATTERN = "|".join(e.lstrip(".") for e in _IMAGE_EXTS)
-
-# Absolute / home-relative local image path. Matches the same shape gateway's
-# extract_local_files() uses: anchors to ``~/`` or ``/``, ignores matches inside
-# URLs (the ``(?<![/:\w.])`` lookbehind), and case-insensitive on the extension.
-_LOCAL_IMAGE_PATH_RE = re.compile(
-    r"(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:" + _IMAGE_EXT_PATTERN + r")\b",
-    re.IGNORECASE,
-)
-
-# http(s) URL ending in an image extension (optionally followed by a
-# query string). Case-insensitive on the extension. Strict ``http(s)://``
-# scheme so we don't accidentally grab ``file://`` URLs or other shapes.
-_IMAGE_URL_RE = re.compile(
-    r"https?://[^\s<>\"']+?\.(?:" + _IMAGE_EXT_PATTERN + r")(?:\?[^\s<>\"']*)?",
-    re.IGNORECASE,
-)
-
-
-def extract_image_refs(text: str) -> Tuple[List[str], List[str]]:
-    """Scan free-form text for image references the model should see.
-
-    Returns ``(local_paths, urls)``:
-
-      * ``local_paths`` — absolute (``/``) or home-relative (``~/``) paths
-        whose suffix is an image extension AND whose expanded form exists
-        on disk as a file. Order-preserving, deduplicated.
-      * ``urls`` — ``http(s)://…`` URLs whose path ends in an image
-        extension (a ``?query`` is allowed after the extension).
-        Order-preserving, deduplicated.
-
-    Matches inside fenced code blocks (``` ``` ```) and inline backticks
-    (`` `…` ``) are skipped so that snippets pasted into a task body for
-    reference aren't mistaken for live attachments. This mirrors the
-    behaviour of ``gateway.platforms.base.BaseAdapter.extract_local_files``.
-
-    Local paths are validated against the filesystem; URLs are not
-    (the provider fetches them at request time).
-    """
-    if not isinstance(text, str) or not text:
-        return [], []
-
-    # Build spans covered by fenced code blocks and inline code so we can
-    # ignore references the author embedded purely as example text.
-    code_spans: list[tuple[int, int]] = []
-    for m in re.finditer(r"```[^\n]*\n.*?```", text, re.DOTALL):
-        code_spans.append((m.start(), m.end()))
-    for m in re.finditer(r"`[^`\n]+`", text):
-        code_spans.append((m.start(), m.end()))
-
-    def _in_code(pos: int) -> bool:
-        return any(s <= pos < e for s, e in code_spans)
-
-    local_paths: list[str] = []
-    seen_paths: set[str] = set()
-    for match in _LOCAL_IMAGE_PATH_RE.finditer(text):
-        if _in_code(match.start()):
-            continue
-        raw = match.group(0)
-        expanded = os.path.expanduser(raw)
-        try:
-            if not os.path.isfile(expanded):
-                continue
-        except OSError:
-            # ENAMETOOLONG / EINVAL on pathological inputs — skip rather than crash.
-            continue
-        if expanded in seen_paths:
-            continue
-        seen_paths.add(expanded)
-        local_paths.append(expanded)
-
-    urls: list[str] = []
-    seen_urls: set[str] = set()
-    for match in _IMAGE_URL_RE.finditer(text):
-        if _in_code(match.start()):
-            continue
-        url = match.group(0)
-        # Strip trailing punctuation that's almost certainly prose, not part
-        # of the URL (e.g. "see https://x.com/a.png." or "/a.png)").
-        url = url.rstrip(".,;:!?)]>")
-        if url in seen_urls:
-            continue
-        seen_urls.add(url)
-        urls.append(url)
-
-    return local_paths, urls
-
-
 # Strict TOML/JSON boolean coercion for capability overrides.
 #
 # ``bool("false")`` is True in Python because non-empty strings are truthy, so
 # a user writing ``supports_vision: "false"`` (quoted — a common TOML mistake)
 # would silently enable native vision routing on a model that can't actually
 # handle it. Accept only the values TOML 1.1 / 1.2 treat as booleans, plus
-# real ``bool`` and integer 0/1. Anything else returns None so the caller
-# falls through to models.dev rather than honouring garbage.
+# real ``bool`` and integer 0/1. Anything else returns None (no override)
+# rather than honouring garbage.
 _TRUE_TOKENS = frozenset({"true", "yes", "on", "1"})
 _FALSE_TOKENS = frozenset({"false", "no", "off", "0"})
 
@@ -193,14 +80,12 @@ def _supports_vision_override(
          and/or the user-declared name under ``model.provider``; all are
          tried. For ``custom:<name>`` syntax, the stripped ``<name>`` is also
          tried as a provider key.)
-      2b. ``custom_providers`` (legacy list form) ``.models.<model>``
 
-    Under (2) and (2b), the per-model capability key may be written as
-    either ``supports_vision`` or the shorter ``vision`` alias; both work.
+    Under (2), the per-model capability key may be written as either
+    ``supports_vision`` or the shorter ``vision`` alias; both work.
 
-    Returns None when no override is set, so the caller falls through to
-    models.dev. Returns False explicitly only when the user wrote a
-    recognised boolean false token.
+    Returns None when no override is set. Returns False explicitly only when
+    the user wrote a recognised boolean false token.
     """
     if not isinstance(cfg, dict):
         return None
@@ -243,107 +128,7 @@ def _supports_vision_override(
         if coerced is not None:
             return coerced
 
-    # 2b. Legacy list-style custom_providers. Entries are dicts with a
-    # "name" key and a nested "models" dict. Match by provider name (which
-    # may appear as the raw name or "custom:<name>" at runtime).
-    custom_providers = cfg.get("custom_providers")
-    if isinstance(custom_providers, list):
-        # Candidate priority matters when the CLI-selected provider differs
-        # from model.provider. Walk identities first, then config entries, so
-        # list order cannot let the persisted default shadow the live route.
-        for candidate in dict.fromkeys(provider_candidates):
-            candidate_name = candidate.strip().lower()
-            for entry_raw in custom_providers:
-                if not isinstance(entry_raw, dict):
-                    continue
-                entry_name = str(entry_raw.get("name") or "").strip().lower()
-                if entry_name != candidate_name:
-                    continue
-                models_raw = entry_raw.get("models")
-                models_cfg = models_raw if isinstance(models_raw, dict) else {}
-                per_model_raw = models_cfg.get(model)
-                per_model = per_model_raw if isinstance(per_model_raw, dict) else {}
-                coerced = _coerce_capability_bool(
-                    per_model.get("supports_vision", per_model.get("vision"))
-                )
-                if coerced is not None:
-                    return coerced
-
     return None
-
-
-def _resolve_inference_base_url(
-    cfg: Optional[Dict[str, Any]],
-    provider: str,
-) -> str:
-    """Best-effort base URL for the active inference provider."""
-    try:
-        from agent.auxiliary_client import _runtime_main_value
-
-        runtime = str(_runtime_main_value("base_url") or "").strip()
-        runtime_provider = str(_runtime_main_value("provider") or "").strip().lower()
-        requested_provider = str(provider or "").strip().lower()
-        if runtime and (not requested_provider or requested_provider == runtime_provider):
-            return runtime
-    except Exception:
-        pass
-
-    if not isinstance(cfg, dict):
-        return ""
-
-    model_cfg_raw = cfg.get("model")
-    model_cfg: Dict[str, Any] = model_cfg_raw if isinstance(model_cfg_raw, dict) else {}
-    base_url = str(model_cfg.get("base_url") or "").strip()
-    if base_url:
-        return base_url
-
-    config_provider = str(model_cfg.get("provider") or "").strip()
-    candidate_names: set[str] = set()
-    for p in filter(None, (provider, config_provider)):
-        candidate_names.add(p)
-        if p.lower().startswith("custom:"):
-            candidate_names.add(p.split(":", 1)[1])
-        else:
-            candidate_names.add(f"custom:{p}")
-
-    providers_cfg = cfg.get("providers")
-    if isinstance(providers_cfg, dict):
-        for name in candidate_names:
-            entry = providers_cfg.get(name)
-            if isinstance(entry, dict):
-                bu = str(entry.get("base_url") or "").strip()
-                if bu:
-                    return bu
-
-    custom_providers = cfg.get("custom_providers")
-    if isinstance(custom_providers, list):
-        lowered = {n.lower() for n in candidate_names}
-        for entry_raw in custom_providers:
-            if not isinstance(entry_raw, dict):
-                continue
-            entry_name = str(entry_raw.get("name") or "").strip()
-            if entry_name not in candidate_names and entry_name.lower() not in lowered:
-                continue
-            bu = str(entry_raw.get("base_url") or "").strip()
-            if bu:
-                return bu
-
-    return ""
-
-
-def _should_probe_ollama_vision(provider: str, base_url: str) -> bool:
-    """True when the active provider likely fronts a local Ollama server."""
-    p = (provider or "").strip().lower()
-    if p == "ollama":
-        return True
-    if not base_url:
-        return False
-    try:
-        from agent.model_metadata import detect_local_server_type
-
-        return detect_local_server_type(base_url) == "ollama"
-    except Exception:
-        return False
 
 
 def _coerce_mode(raw: Any) -> str:
@@ -356,33 +141,6 @@ def _coerce_mode(raw: Any) -> str:
     return "auto"
 
 
-def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
-    """True when the user configured a specific auxiliary vision backend.
-
-    An explicit override means the user has a dedicated vision backend
-    available; it's used as a *fallback* when the main model can't take
-    images natively. In ``auto`` mode, native vision on a vision-capable
-    main model still wins over this fallback — see issue #29135.
-    """
-    if not isinstance(cfg, dict):
-        return False
-    aux = cfg.get("auxiliary") or {}
-    if not isinstance(aux, dict):
-        return False
-    vision = aux.get("vision") or {}
-    if not isinstance(vision, dict):
-        return False
-
-    provider = str(vision.get("provider") or "").strip().lower()
-    model = str(vision.get("model") or "").strip()
-    base_url = str(vision.get("base_url") or "").strip()
-
-    # "auto" / "" / blank = not explicit
-    if provider in {"", "auto"} and not model and not base_url:
-        return False
-    return True
-
-
 def _lookup_supports_vision(
     provider: str,
     model: str,
@@ -390,12 +148,7 @@ def _lookup_supports_vision(
     *,
     requested_provider: str = "",
 ) -> Optional[bool]:
-    """Return True/False if we can resolve caps, None if unknown.
-
-    Consults the user's ``supports_vision`` override in config.toml first
-    (so custom/local models declared as vision-capable don't fall through to
-    text routing in ``auto`` mode), then falls back to models.dev.
-    """
+    """Return the user's ``supports_vision`` override from config.toml, None if unset."""
     # Named custom providers are canonicalized to ``provider="custom"`` by
     # runtime resolution.  The original CLI/config name is carried in the
     # context-local main runtime so capability lookup can still select the
@@ -418,34 +171,12 @@ def _lookup_supports_vision(
         except Exception:
             pass
 
-    override = _supports_vision_override(
+    return _supports_vision_override(
         cfg,
         provider,
         model,
         requested_provider=requested_provider,
     )
-    if override is not None:
-        return override
-    if not provider or not model:
-        return None
-    base_url = _resolve_inference_base_url(cfg, provider)
-    if not base_url and (provider or "").strip().lower() == "ollama":
-        base_url = "http://localhost:11434/v1"
-    if _should_probe_ollama_vision(provider, base_url):
-        try:
-            from agent.model_metadata import query_ollama_supports_vision
-
-            ollama_vision = query_ollama_supports_vision(model, base_url)
-            if ollama_vision is not None:
-                return ollama_vision
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug(
-                "image_routing: ollama vision probe failed for %s:%s — %s",
-                provider,
-                model,
-                exc,
-            )
-    return None
 
 
 def decide_image_input_mode(
@@ -458,7 +189,7 @@ def decide_image_input_mode(
     """Return ``"native"`` or ``"text"`` for the given turn.
 
     Args:
-      provider: active inference provider ID (e.g. ``"anthropic"``, ``"openrouter"``).
+      provider: active inference provider ID (e.g. ``"custom"``).
       model:    active model slug as it would be sent to the provider.
       cfg:      loaded config.toml dict, or None. When None, behaves as auto.
       requested_provider: provider identity before runtime canonicalization.
@@ -474,26 +205,14 @@ def decide_image_input_mode(
     if mode_cfg == "text":
         return "text"
 
-    # auto: prefer native vision when the main model supports it. An
-    # explicit auxiliary.vision config acts as a *fallback* for text-only
-    # main models — it should not preempt native vision on a model that
-    # can natively inspect the pixels (issue #29135).
-    if requested_provider:
-        supports = _lookup_supports_vision(
-            provider,
-            model,
-            cfg,
-            requested_provider=requested_provider,
-        )
-    else:
-        # Keep the long-standing three-argument call contract for callers and
-        # tests that replace the capability lookup hook.
-        supports = _lookup_supports_vision(provider, model, cfg)
-    if supports is True:
-        return "native"
-    if _explicit_aux_vision_override(cfg):
-        return "text"
-    return "text"
+    # auto: native vision when the main model supports it, text otherwise.
+    supports = _lookup_supports_vision(
+        provider,
+        model,
+        cfg,
+        requested_provider=requested_provider,
+    )
+    return "native" if supports is True else "text"
 
 
 # Image size handling is REACTIVE rather than proactive: we attempt native
@@ -800,5 +519,4 @@ def build_native_content_parts(
 __all__ = [
     "decide_image_input_mode",
     "build_native_content_parts",
-    "extract_image_refs",
 ]

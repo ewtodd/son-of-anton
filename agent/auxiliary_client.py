@@ -24,7 +24,7 @@ import threading
 import time
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlparse, urlunparse
+from urllib.parse import urlparse
 
 from agent.reasoning_effort import custom_reasoning_extras
 from utils import base_url_hostname, normalize_proxy_env_vars
@@ -81,10 +81,6 @@ def _create_openai_client(*, api_key: str, base_url: str, async_mode: bool = Fal
     from agent.transports.chat_completions import user_agent
 
     kwargs: Dict[str, Any] = {"default_headers": {"User-Agent": user_agent()}, "max_retries": 0}
-    parsed = urlparse(base_url)
-    if parsed.query:
-        base_url = urlunparse(parsed._replace(query=""))
-        kwargs["default_query"] = {k: v[0] for k, v in parse_qs(parsed.query).items()}
     try:
         from agent.process_bootstrap import build_keepalive_http_client
         from agent.ssl_verify import resolve_httpx_verify
@@ -661,7 +657,7 @@ def _route(
             model = _read_main_model() or runtime.get("model") or None
     if explicit_base_url:
         base = explicit_base_url.strip().rstrip("/")
-        key = (explicit_api_key or "").strip() or _scoped_key_env("OPENAI_API_KEY")
+        key = (explicit_api_key or "").strip()
         if not key:
             # The main key only goes to the main endpoint's host.
             main_base = _runtime_main_value("base_url") or _read_model_section("base_url")
@@ -722,10 +718,7 @@ def resolve_provider_client(
     async_mode: bool = False,
     explicit_base_url: str = None,
     explicit_api_key: str = None,
-    api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
-    is_vision: bool = False,
-    task: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Return ``(client, model)`` for the route, or ``(None, None)``."""
     _validate_proxy_env_urls()
@@ -745,7 +738,7 @@ def get_text_auxiliary_client(
     provider, model, base_url, api_key, _mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
         provider, model=model, explicit_base_url=base_url, explicit_api_key=api_key,
-        main_runtime=main_runtime, task=task or None,
+        main_runtime=main_runtime,
     )
 
 
@@ -782,7 +775,7 @@ def resolve_vision_provider_client(
     client, final_model = resolve_provider_client(
         requested, resolved_model, async_mode,
         explicit_base_url=resolved_base_url, explicit_api_key=resolved_api_key,
-        main_runtime=main_runtime, is_vision=True,
+        main_runtime=main_runtime,
     )
     return ("custom" if resolved_base_url else requested), client, final_model
 
@@ -1166,7 +1159,7 @@ def call_llm(
     else:
         client, final_model = resolve_provider_client(
             resolved_provider, resolved_model, explicit_base_url=resolved_base_url,
-            explicit_api_key=resolved_api_key, main_runtime=main_runtime, task=task,
+            explicit_api_key=resolved_api_key, main_runtime=main_runtime,
         )
     if client is None:
         raise RuntimeError(
@@ -1264,7 +1257,7 @@ def extract_content_or_reasoning(response) -> str:
     """Content from an LLM response, falling back to its reasoning fields.
 
     Inline think blocks are stripped from content; when nothing remains,
-    ``reasoning`` / ``reasoning_content`` / ``reasoning_details`` are used.
+    ``reasoning`` / ``reasoning_content`` are used.
     """
     msg = response.choices[0].message
     content = (msg.content or "").strip()
@@ -1281,13 +1274,6 @@ def extract_content_or_reasoning(response) -> str:
         val = getattr(msg, field, None)
         if val and isinstance(val, str) and val.strip() and val not in parts:
             parts.append(val.strip())
-    details = getattr(msg, "reasoning_details", None)
-    if details and isinstance(details, list):
-        for detail in details:
-            if isinstance(detail, dict):
-                summary = detail.get("summary") or detail.get("content") or detail.get("text")
-                if summary and summary not in parts:
-                    parts.append(summary.strip() if isinstance(summary, str) else str(summary))
     return "\n\n".join(parts)
 
 
@@ -1325,7 +1311,7 @@ async def async_call_llm(
     else:
         client, final_model = resolve_provider_client(
             resolved_provider, resolved_model, True, explicit_base_url=resolved_base_url,
-            explicit_api_key=resolved_api_key, main_runtime=main_runtime, task=task,
+            explicit_api_key=resolved_api_key, main_runtime=main_runtime,
         )
     if client is None:
         raise RuntimeError(

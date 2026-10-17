@@ -39,6 +39,5 @@ def test_generate_title_rejects_loop_output(monkeypatch) -> None:
     class _Resp:
         choices = [_Choice()]
 
-    monkeypatch.setattr(tg, "_auto_title_enabled", lambda: True)
     monkeypatch.setattr(tg, "call_llm", lambda **kw: _Resp())
     assert tg.generate_title("what's your working dir") is None
