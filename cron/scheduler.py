@@ -14,6 +14,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import errno
+import fcntl
 import json
 import logging
 import os
@@ -26,19 +27,8 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-
-# fcntl is Unix-only; Nix platforms always have it.
-try:
-    import fcntl
-except ImportError:
-    fcntl = None
 from pathlib import Path
 from typing import Any, List, Optional, Protocol
-
-# Add parent directory to path for imports BEFORE repo-level imports.
-# Without this, standalone invocations (e.g. after `son-of-anton update` reloads
-# the module) fail with ModuleNotFoundError for son_of_anton_time et al.
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from son_of_anton_constants import get_son_of_anton_home
 from son_of_anton_cli.config import (
@@ -111,6 +101,9 @@ def _set_cron_session_title(session_db, session_id, base_title):
         return deduped
 
 
+_FAILURE_NUDGE_THRESHOLD = 3
+
+
 def _failure_streak_nudge(job: dict) -> str:
     """Return a review nudge when a recurring job keeps failing, else "".
 
@@ -125,25 +118,14 @@ def _failure_streak_nudge(job: dict) -> str:
     failure message is delivered BEFORE ``mark_job_run`` records this run, the
     prospective streak for the current failure is stored+1.
 
-    Threshold config: ``cron.failure_nudge_threshold`` (default 3, ``0``
-    disables the nudge). One-shot jobs never nudge — they don't recur.
+    Nudges from the third consecutive failure. One-shot jobs never nudge —
+    they don't recur.
     """
     schedule_kind = (job.get("schedule") or {}).get("kind")
     if schedule_kind not in {"cron", "interval"}:
         return ""
-    try:
-        cfg = load_config() or {}
-        threshold = int(
-            ((cfg.get("cron") or {}) if isinstance(cfg, dict) else {}).get(
-                "failure_nudge_threshold", 3
-            )
-        )
-    except Exception:
-        threshold = 3
-    if threshold <= 0:
-        return ""
     streak = int(job.get("failure_streak") or 0) + 1  # +1 = this run
-    if streak < threshold:
+    if streak < _FAILURE_NUDGE_THRESHOLD:
         return ""
     job_ref = job.get("name") or job.get("id") or "this job"
     return (
@@ -497,7 +479,6 @@ from cron.jobs import (
     heartbeat_run_claim,
     mark_job_run,
     save_job_output,
-    use_cron_store,
 )
 from cron.executions import create_execution, finish_execution, mark_execution_running
 
@@ -540,9 +521,8 @@ def _is_cron_silence_response(text: str) -> bool:
 # thread is never blocked by long-running jobs (e.g. the fixer running 15+ min).
 # ---------------------------------------------------------------------------
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
-_parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
-_running_fire_owners: dict[str, dict[object, tuple[Optional[str], Path]]] = {}
+_running_fire_owners: dict[str, dict[object, Optional[str]]] = {}
 _running_lock = threading.Lock()
 
 # Wall-clock (time.time()) instant each in-flight job id was claimed by
@@ -566,14 +546,6 @@ _running_futures: dict = {}
 # future marker — it is ``_FUTURE_PENDING`` until the real future lands.
 _FUTURE_PENDING = object()
 
-# Countable signal for unified-health: how many stale claims this process has
-# force-released, and the most recent ones.  Exposed via
-# ``get_inflight_guard_stats()`` and mirrored to a JSONL under the cron dir so
-# an out-of-process probe can catch a wedge in-cycle.
-_forced_release_count: int = 0
-_forced_releases: list = []
-_FORCED_RELEASE_HISTORY = 20
-
 # Floor for the stale allowance, in minutes.  Effective allowance per job is
 # max(2 * interval, this) so a slow-but-healthy hourly job is never clipped.
 _INFLIGHT_MIN_ALLOWANCE_MINUTES = 30.0
@@ -594,31 +566,10 @@ _interrupted_job_ids: set = set()
 
 
 class _CancelEventLike(Protocol):
-    """Structural type for cancellation sources (``threading.Event`` and
-    ``_CombinedCancelEvent`` both satisfy it)."""
+    """Structural type for cancellation sources (``threading.Event``)."""
 
     def is_set(self) -> bool: ...
     def set(self) -> None: ...
-
-
-class _CombinedCancelEvent:
-    """Duck-typed ``threading.Event`` that ORs several cancellation sources.
-
-    ``run_one_job`` already derives a ``lost_ownership`` event from the
-    fire-claim heartbeat; transports
-    shutdown) contribute their own per-task event. The worker only ever
-    calls ``is_set()`` / ``set()``, so a tiny wrapper beats a pump thread.
-    """
-
-    def __init__(self, *events: Optional["_CancelEventLike"]) -> None:
-        self._events = [event for event in events if event is not None]
-
-    def is_set(self) -> bool:
-        return any(event.is_set() for event in self._events)
-
-    def set(self) -> None:
-        for event in self._events:
-            event.set()
 
 
 def get_running_job_ids() -> "frozenset[str]":
@@ -678,77 +629,6 @@ def release_running_job(job_id: str) -> None:
         _running_futures.pop(job_id, None)
 
 
-# Cache for cron expression interval computation (expression → minutes).
-# A cron expression's cadence never changes, so computing it once per expr
-# avoids repeated croniter evaluation on every 60s tick.
-_cron_interval_cache: dict = {}
-
-
-def _cron_interval_minutes(expr: str) -> Optional[float]:
-    """Approximate the natural interval of a cron expression, in minutes.
-
-    The persisted job store keeps ``schedule`` as an already-parsed dict
-    (``{"kind": "cron", "expr": "0 9 * * 1"}``), so the stale allowance for
-    a cron job cannot be derived from a schedule *string* — it must come
-    from the expression itself.  We measure the gap between the next two
-    fire times with croniter; that is the job's cadence, and the sweep's
-    allowance becomes ``max(2 * cadence, floor)`` exactly like interval
-    jobs.  Falls back to ``None`` (→ floor allowance) if croniter is
-    missing or the expression cannot be evaluated.
-    """
-    if expr in _cron_interval_cache:
-        return _cron_interval_cache[expr]
-    result = None
-    try:
-        from cron.jobs import _ensure_croniter
-
-        if _ensure_croniter():
-            from cron.jobs import croniter as _croniter
-            from datetime import datetime
-
-            base = datetime.now()
-            it = _croniter(expr, base)
-            first = it.get_next(datetime)
-            second = it.get_next(datetime)
-            gap = (second - first).total_seconds() / 60.0
-            result = gap if gap > 0 else None
-    except Exception:
-        pass
-    _cron_interval_cache[expr] = result
-    return result
-
-
-def _job_interval_minutes(job: dict) -> Optional[float]:
-    """Best-effort interval length for a job, in minutes (None if unknown).
-
-    Reads the PERSISTED schedule shape first: the job store keeps
-    ``schedule`` as an already-parsed dict (``{"kind": "interval",
-    "minutes": N}`` or ``{"kind": "cron", "expr": "..."}``), NOT the string
-    form that ``parse_schedule`` consumes.  The string path is kept only as
-    a defensive fallback for programmatic callers that still build string
-    schedules (and for tests that exercise that shape).
-
-    ``kind == "once"`` (one-shot) has no recurring interval — returns None,
-    so the sweep uses the documented floor allowance.
-    """
-    try:
-        schedule = job.get("schedule")
-        if isinstance(schedule, str) and schedule.strip():
-            from cron.jobs import parse_schedule
-
-            schedule = parse_schedule(schedule) or {}
-        if isinstance(schedule, dict):
-            kind = schedule.get("kind")
-            if kind == "interval":
-                minutes = schedule.get("minutes")
-                return float(minutes) if minutes else None
-            if kind == "cron":
-                return _cron_interval_minutes(str(schedule.get("expr") or ""))
-    except Exception:
-        pass
-    return None
-
-
 def _record_forced_release(job_id: str, name: str, age_seconds: float, allowance_seconds: float) -> None:
     """Persist a countable signal for one forced release (best-effort)."""
     entry = {
@@ -758,11 +638,8 @@ def _record_forced_release(job_id: str, name: str, age_seconds: float, allowance
         "allowance_seconds": round(allowance_seconds, 1),
         "at": _son_of_anton_now().isoformat(),
     }
-    with _running_lock:
-        _forced_releases.append(entry)
-        del _forced_releases[:-_FORCED_RELEASE_HISTORY]
     try:
-        path = _get_son_of_anton_home() / "cron" / "inflight_forced_releases.jsonl"
+        path = get_son_of_anton_home() / "cron" / "inflight_forced_releases.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
@@ -780,15 +657,14 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     finished without discarding the id.
 
     Every release logs a WARNING with the countable ``event=forced_release``
-    signal, bumps a probe-visible counter (``get_inflight_guard_stats()``),
-    mirrors a JSONL row under the cron dir, and writes ``last_error`` on the
+    signal, mirrors a JSONL row under the cron dir, and writes ``last_error`` on the
     job so the wedge surfaces on the job row instead of being invisible
     until a downstream liveness key goes dead hours later.  A forced release
     never consumes a finite-repeat job's budget (see below).
 
     Returns the list of released job ids.
     """
-    global _forced_release_count
+    from cron.jobs import _schedule_cadence_seconds
 
     by_id = {j.get("id"): j for j in (due_jobs or []) if isinstance(j, dict)}
     floor_seconds = _INFLIGHT_MIN_ALLOWANCE_MINUTES * 60.0
@@ -849,9 +725,13 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
         except (ValueError, TypeError, OSError):
             return False
 
-    # Precompute job intervals OUTSIDE _running_lock so croniter evaluation
-    # does not block try_register/release_running_job for other jobs.
-    _intervals = {jid: _job_interval_minutes(j) for jid, j in by_id.items()}
+    # Precompute job cadences OUTSIDE _running_lock so croniter evaluation
+    # does not block try_register/release_running_job for other jobs. One-shots
+    # have no cadence and use the floor allowance.
+    _cadences = {
+        jid: _schedule_cadence_seconds(j.get("schedule"))
+        for jid, j in by_id.items()
+    }
 
     with _running_lock:
         for job_id in list(_running_job_ids):
@@ -862,10 +742,10 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
                 _running_since[job_id] = now
                 continue
             age = now - started
-            interval_minutes = _intervals.get(job_id)
+            cadence_seconds = _cadences.get(job_id)
             allowance = floor_seconds
-            if interval_minutes:
-                allowance = max(allowance, 2.0 * interval_minutes * 60.0)
+            if cadence_seconds:
+                allowance = max(allowance, 2.0 * cadence_seconds)
             fut = _running_futures.get(job_id)
             if fut is _FUTURE_PENDING:
                 # The claim is past its allowance and the owning future still
@@ -905,7 +785,6 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
             _running_job_ids.discard(job_id)
             _running_since.pop(job_id, None)
             _running_futures.pop(job_id, None)
-            _forced_release_count += 1
             stale.append((job_id, age, allowance, fut, reason))
 
     for job_id, age, allowance, fut, _reason in stale:
@@ -970,11 +849,7 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
     return [s[0] for s in stale]
 
 
-def mark_running_jobs_interrupted(
-    reason: str,
-    *,
-    only_owners: Optional[set] = None,
-) -> list:
+def mark_running_jobs_interrupted(reason: str) -> list:
     """Best-effort: mark every currently in-flight cron job interrupted.
 
     Called by the gateway shutdown path immediately after it force-kills
@@ -994,12 +869,7 @@ def mark_running_jobs_interrupted(
     kill is treated as interrupted, matching the coarser precedent already
     set by ``GatewayRunner._interrupt_running_agents``, which interrupts
     every entry in ``_running_agents`` on a drain timeout without
-    per-agent correlation either.
-
-    ``only_owners``: optional set of ``(job_id, fire_owner)`` pairs. When
-    given (dashboard drain), ONLY those exact executions are
-    marked — unrelated runs sharing the process (e.g. the desktop ticker's
-    own jobs) are left untouched. Interruption flags are recorded per
+    per-agent correlation either. Interruption flags are recorded per
     execution token, so a later run of the same job ID never consumes a
     stale flag that targeted its dead predecessor.
 
@@ -1007,27 +877,21 @@ def mark_running_jobs_interrupted(
     """
     with _running_lock:
         active_fires = [
-            (token, job_id, owner, profile_home)
+            (token, job_id, owner)
             for job_id, executions in _running_fire_owners.items()
-            for token, (owner, profile_home) in executions.items()
+            for token, owner in executions.items()
         ]
-        if only_owners is not None:
-            active_fires = [
-                fire for fire in active_fires
-                if (fire[1], fire[2]) in only_owners
-            ]
-        registered_ids = {job_id for _t, job_id, _o, _p in active_fires}
-        if only_owners is None:
-            active_fires.extend(
-                (None, job_id, None, _get_son_of_anton_home())
-                for job_id in _running_job_ids - registered_ids
-            )
+        registered_ids = {job_id for _t, job_id, _o in active_fires}
+        active_fires.extend(
+            (None, job_id, None)
+            for job_id in _running_job_ids - registered_ids
+        )
         _interrupted_job_ids.update(
             token if token is not None else job_id
-            for token, job_id, _owner, _profile_home in active_fires
+            for token, job_id, _owner in active_fires
         )
     marked = []
-    for _token, job_id, fire_owner, profile_home in active_fires:
+    for _token, job_id, fire_owner in active_fires:
         if not fire_owner:
             logger.warning(
                 "Job '%s' interrupted before its durable fire owner was registered; "
@@ -1042,14 +906,13 @@ def mark_running_jobs_interrupted(
             marked.append(job_id)
             continue
         try:
-            with use_cron_store(profile_home):
-                if mark_job_run(
-                    job_id,
-                    False,
-                    reason,
-                    expected_fire_owner=fire_owner,
-                ):
-                    marked.append(job_id)
+            if mark_job_run(
+                job_id,
+                False,
+                reason,
+                expected_fire_owner=fire_owner,
+            ):
+                marked.append(job_id)
         except Exception as e:
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
     return marked
@@ -1225,17 +1088,13 @@ def _cwd_lock_timeout_seconds() -> float:
     )
 
 
-def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
-    """Return (or create) the persistent parallel pool."""
-    global _parallel_pool, _parallel_pool_max_workers
-    if _parallel_pool is None or _parallel_pool_max_workers != max_workers:
-        if _parallel_pool is not None:
-            _parallel_pool.shutdown(wait=False, cancel_futures=False)
+def _get_parallel_pool() -> concurrent.futures.ThreadPoolExecutor:
+    """Return (or create) the persistent parallel pool (default worker cap)."""
+    global _parallel_pool
+    if _parallel_pool is None:
         _parallel_pool = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers,
             thread_name_prefix="cron-parallel",
         )
-        _parallel_pool_max_workers = max_workers
     return _parallel_pool
 
 
@@ -1258,11 +1117,10 @@ def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
 
 def _shutdown_parallel_pool() -> None:
     """Shut down the persistent pools on process exit."""
-    global _parallel_pool, _parallel_pool_max_workers, _sequential_pool
+    global _parallel_pool, _sequential_pool
     if _parallel_pool is not None:
         _parallel_pool.shutdown(wait=True, cancel_futures=False)
         _parallel_pool = None
-        _parallel_pool_max_workers = None
     if _sequential_pool is not None:
         _sequential_pool.shutdown(wait=True, cancel_futures=False)
         _sequential_pool = None
@@ -1270,9 +1128,8 @@ def _shutdown_parallel_pool() -> None:
 
 atexit.register(_shutdown_parallel_pool)
 # Per-fire usage audit log for cron token spend instrumentation.
-# Resolves through _get_son_of_anton_home() so profile-scoped paths work correctly.
 def _usage_audit_path() -> Path:
-    return _get_son_of_anton_home() / "cron" / "usage_audit.jsonl"
+    return get_son_of_anton_home() / "cron" / "usage_audit.jsonl"
 
 
 def _utcnow_iso_ms() -> str:
@@ -1330,26 +1187,9 @@ def _interpreter_shutting_down(exc: Optional[BaseException] = None) -> bool:
     return False
 
 
-# Backward-compatible module override used by tests and emergency monkeypatches.
-_son_of_anton_home: Path | None = None
-
-
-def _get_son_of_anton_home() -> Path:
-    """Resolve Son of Anton home dynamically while preserving test monkeypatch hooks.
-
-    Cron is per-profile by design (#4707): the in-process ticker runs inside a
-    profile-scoped gateway, so resolving the active SON_OF_ANTON_HOME at call time
-    means a profile's jobs are stored AND executed under that profile's home
-    (its .env, config.toml, scripts). Do not freeze this at import or
-    anchor it at the shared default root — either re-breaks profile isolation.
-    """
-    return _son_of_anton_home or get_son_of_anton_home()
-
-
 def _get_lock_paths() -> tuple[Path, Path]:
-    """Resolve cron lock paths at call time so profile/env changes are honored."""
-    son_of_anton_home = _get_son_of_anton_home()
-    lock_dir = son_of_anton_home / "cron"
+    """Resolve cron lock paths at call time so SON_OF_ANTON_HOME changes are honored."""
+    lock_dir = get_son_of_anton_home() / "cron"
     return lock_dir, lock_dir / ".tick.lock"
 
 
@@ -1360,14 +1200,10 @@ def _get_lock_paths() -> tuple[Path, Path]:
 def _is_lock_contention_errno(err: OSError) -> bool:
     """Return True when *err* from the lock syscall means the lock is held.
 
-    POSIX: ``flock(LOCK_EX|LOCK_NB)`` reports EWOULDBLOCK/EAGAIN when
-    another process holds the lock (EACCES on some NFS implementations).
+    ``flock(LOCK_EX|LOCK_NB)`` reports EWOULDBLOCK/EAGAIN when another
+    process holds the lock (EACCES on some NFS implementations).
     """
-    if err.errno is None:
-        return False
-    if fcntl is not None:
-        return err.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES)
-    return False
+    return err.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES)
 
 
 def _is_fd_exhaustion_text(text: str) -> bool:
@@ -1437,24 +1273,6 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     if platform and chat_id:
         return origin
     return None
-
-
-def _cron_mirror_delivery_enabled(job: dict) -> bool:
-    """Whether a cron delivery should also be mirrored into the target chat's
-    gateway session transcript.
-
-    Default OFF — preserves the historical isolation guarantee (cron deliveries
-    live only in the cron job's own session, never the target chat's history).
-    A job opts in with ``attach_to_session`` (set via the ``cronjob`` tool).
-
-    When enabled, the cron's final output is appended to the target session as
-    an assistant turn via the existing ``gateway.mirror.mirror_to_session`` —
-    the same primitive ``send_message`` uses — so the next user reply in that
-    chat sees the brief in context (no "what is Task #2?" amnesia). This is
-    alternation- and cache-safe: the append lands at a turn boundary between
-    user turns, never mid-loop, and never mutates the cached system prompt.
-    """
-    return job.get("attach_to_session") is True
 
 
 def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
@@ -1563,18 +1381,16 @@ def _maybe_mirror_cron_delivery(
 def _cron_job_origin_log_suffix(job: dict) -> str:
     """Return safe provenance details for security warnings about a cron job.
 
-    The scheduler normally has no live HTTP request object when it detects a
-    bad stored ``context_from`` reference. Including the job's saved origin
-    makes future probe logs actionable without exposing secrets: platform/chat
-    metadata for gateway-created jobs, and optional source-IP fields for API
-    surfaces that persist them in origin metadata.
+    Including the job's saved origin (platform/chat metadata for
+    gateway-created jobs) makes a bad stored ``context_from`` reference
+    traceable without exposing secrets.
     """
     origin = job.get("origin")
     if not isinstance(origin, dict):
         return ""
 
     fields = []
-    for key in ("platform", "chat_id", "thread_id", "source_ip", "remote", "forwarded_for"):
+    for key in ("platform", "chat_id", "thread_id"):
         value = origin.get(key)
         if value is None:
             continue
@@ -1656,14 +1472,6 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
     return None
 
 
-def _iter_home_target_platforms():
-    """Iterate platform names that expose a home channel.
-
-    Used by the ``deliver=origin`` fallback when the job has no origin.
-    """
-    yield from _HOME_TARGET_ENV_VARS
-
-
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
     """Resolve one concrete auto-delivery target for a cron job."""
 
@@ -1681,7 +1489,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             }
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
-        for platform_name in _iter_home_target_platforms():
+        for platform_name in _HOME_TARGET_ENV_VARS:
             chat_id = _get_home_target_chat_id(platform_name)
             if chat_id:
                 logger.info(
@@ -1782,8 +1590,8 @@ _ROUTING_TOKENS = frozenset({"all"})
 def _expand_routing_tokens(part: str) -> List[str]:
     """Expand a routing-intent token to concrete platform names.
 
-    ``all`` expands to every platform in ``_iter_home_target_platforms()``
-    that has a configured home chat_id right now.  Unknown / non-token
+    ``all`` expands to every platform in ``_HOME_TARGET_ENV_VARS`` that has a
+    configured home chat_id right now.  Unknown / non-token
     values pass through unchanged as a single-element list, so the caller
     can treat every token uniformly.
     """
@@ -1791,7 +1599,7 @@ def _expand_routing_tokens(part: str) -> List[str]:
     if token not in _ROUTING_TOKENS:
         return [part]
     expanded: List[str] = []
-    for platform_name in _iter_home_target_platforms():
+    for platform_name in _HOME_TARGET_ENV_VARS:
         if _get_home_target_chat_id(platform_name):
             expanded.append(platform_name)
     return expanded
@@ -1960,9 +1768,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
     When ``adapters`` and ``loop`` are provided (gateway is running), tries to
-    use the live adapter first — this supports E2EE rooms where
-    the standalone HTTP path cannot encrypt.  Falls back to standalone send if
-    the adapter path fails or is unavailable.
+    use the live adapter first.  Falls back to standalone send if the adapter
+    path fails or is unavailable.
 
     Returns None on success, or an error string on failure.
     """
@@ -2040,14 +1847,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         else []
     )
 
-    # Resolve the delivery-mirror gate ONCE (default off). When on, each
+    # The delivery mirror is opt-in per job (``attach_to_session``): each
     # successful delivery is also appended to the target chat's gateway session
     # transcript so a user reply in that chat sees the cron output in context.
     # Mirror the CLEAN, unwrapped output (not the cron header/footer).
-    try:
-        mirror_enabled = _cron_mirror_delivery_enabled(job)
-    except Exception:
-        mirror_enabled = False
+    mirror_enabled = job.get("attach_to_session") is True
     _, mirror_text = BasePlatformAdapter.extract_media(content)
     mirror_text = (mirror_text or "").strip()
 
@@ -2064,21 +1868,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
-
-        # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = _resolve_origin(job) or {}
-        origin_thread = origin.get("thread_id")
-        if origin_thread and not thread_id:
-            logger.warning(
-                "Job '%s': origin has thread_id=%s but delivery target lost it "
-                "(deliver=%s, target=%s)",
-                job["id"], origin_thread, job.get("deliver", "local"), target,
-            )
-        elif thread_id:
-            logger.debug(
-                "Job '%s': delivering to %s:%s thread_id=%s",
-                job["id"], platform_name, chat_id, thread_id,
-            )
 
         # Mirror is scoped to the ORIGIN conversation only. A fan-out / broadcast
         # / home-channel-fallback target is never mirrored (it is not the
@@ -2127,23 +1917,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         target_errors = []
 
         if live_adapter_ready:
-            # Route threaded cron deliveries via ``thread_id`` in
-            # ``route_metadata`` so the anchorless cron send bypasses the
-            # DeliveryRouter's private-chat reply-anchor requirement. Compute
-            # the routed metadata ONCE so both the text send (via
-            # DeliveryRouter) and the media send agree.
             from gateway.delivery import (
                 DeliveryRouter,
                 DeliveryTarget,
             )
 
-            # Forum-style thread target: route via message_thread_id (#52060).
-            # Put thread_id in *route_metadata* (not just the DeliveryTarget)
-            # deliberately — the DeliveryRouter's private-chat topic detection
-            # (gateway/delivery.py) demands a reply anchor when thread_id is
-            # absent from metadata; cron deliveries have no inbound reply
-            # anchor, so the metadata key bypasses that check and lets the
-            # adapter route via a plain message_thread_id.
             route_thread_id = str(thread_id) if thread_id is not None else None
             route_metadata = {"job_id": job["id"]}
             if route_thread_id:
@@ -2151,13 +1929,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             media_metadata = {"thread_id": thread_id} if thread_id else None
 
             try:
-                # Send cleaned text (MEDIA tags stripped) — not the raw content.
-                # Route through the gateway's DeliveryRouter so the live send
-                # gets the same platform-specific routing as live messages —
-                # in particular the platform's topic routing.  The
-                # standalone cron path lacked this, so DM-topic cron deliveries
-                # landed in the General topic or were rejected by Bot API 10.0
-                # (#22773).
+                # Send cleaned text (MEDIA tags stripped) — not the raw content —
+                # through the gateway's DeliveryRouter so the live send gets the
+                # same platform-specific routing as live messages.
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
                 timed_out = False
@@ -2171,11 +1945,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         thread_id=route_thread_id,
                         is_explicit=True,
                     )
-                    # Pass thread routing via the target (not a bare metadata
-                    # "thread_id"): the router only applies its DM-topic
-                    # detection when "thread_id"/"message_thread_id" are absent
-                    # from metadata, deriving the routing from target.thread_id
-                    # or the explicit direct_messages_topic_id above.
                     future = safe_schedule_threadsafe(
                         router._deliver_to_platform(
                             route_target,
@@ -2257,10 +2026,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             # is NOT counted as delivered (#47056).
                             if isinstance(send_result, dict):
                                 send_success = bool(send_result.get("success", False))
-                                send_raw_response = send_result.get("raw_response")
                             else:
                                 send_success = _confirm_adapter_delivery(send_result)
-                                send_raw_response = getattr(send_result, "raw_response", None)
 
                             if not send_success:
                                 if isinstance(send_result, dict):
@@ -2282,28 +2049,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 )
                                 target_errors.append(msg)
                                 adapter_ok = False  # fall through to standalone path
-                            elif (
-                                send_raw_response
-                                and thread_id
-                                and send_raw_response.get("thread_fallback")
-                            ):
-                                requested_thread_id = send_raw_response.get("requested_thread_id") or thread_id
-                                msg = (
-                                    f"configured thread_id {requested_thread_id} for "
-                                    f"{platform_name}:{chat_id} was not found; delivered without thread_id"
-                                )
-                                logger.warning("Job '%s': %s", job["id"], msg)
-                                delivery_errors.append(msg)
 
                 # Send extracted media files as native attachments via the live
-                # adapter, using the same DM-topic-aware routing as the text send
-                # (#22773 — media previously used a bare thread_id and landed in
-                # the General lane for private DM topics).  Skip on an in-flight
-                # confirmation timeout: the gateway loop is contended, so each
-                # media send would also block its 30s budget, and the text
-                # payload is already assumed delivered (#38922).  Record the
-                # skipped attachments so the drop is visible rather than silently
-                # lost.
+                # adapter.  Skip on an in-flight confirmation timeout: the
+                # gateway loop is contended, so each media send would also block
+                # its budget, and the text payload is already assumed delivered
+                # (#38922).  Record the skipped attachments so the drop is
+                # visible rather than silently lost.
                 if adapter_ok and not timed_out and media_files:
                     _media_errors = _send_media_via_adapter(
                         runtime_adapter,
@@ -2359,7 +2111,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.extend(target_errors)
                 continue
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, media_files=media_files)
             try:
                 result = asyncio.run(coro)
             except RuntimeError as run_err:
@@ -2377,7 +2129,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     target_errors.append(msg)
                     delivery_errors.extend(target_errors)
                     continue
-                # The thread-pool fallback can itself raise (SMTP ConnectionError,
+                # The thread-pool fallback can itself raise (ConnectionError,
                 # future.result timeout, etc.). An exception raised inside this
                 # `except RuntimeError` block is NOT caught by the sibling
                 # `except Exception` below — it would escape _deliver_result()
@@ -2388,7 +2140,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 try:
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, media_files=media_files))
                         result = future.result(timeout=30)
                     finally:
                         pool.shutdown(wait=False)
@@ -2572,7 +2324,7 @@ def _run_job_script(
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    scripts_dir = _get_son_of_anton_home() / "scripts"
+    scripts_dir = get_son_of_anton_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
@@ -2624,9 +2376,9 @@ def _run_job_script(
     # choice explicit here keeps the allowed surface small and auditable.
     suffix = path.suffix.lower()
     if suffix in {".sh", ".bash"}:
-        # Resolve bash dynamically: on Linux/macOS bash lives on PATH (or at
-        # /bin/bash). shutil.which returning None is a broken host — surface
-        # a clear error rather than a confusing FileNotFoundError traceback.
+        # Resolve bash from PATH (or /bin/bash). shutil.which returning None
+        # is a broken host — surface a clear error rather than a confusing
+        # FileNotFoundError traceback.
         _bash = shutil.which("bash") or (
             "/bin/bash" if os.path.isfile("/bin/bash") else None
         )
@@ -3112,101 +2864,6 @@ DRIFT_SKIP_MARKER = "[drift_skip]"
 DRIFT_SKIP_SILENT_MARKER = "[drift_skip:silent]"
 
 
-def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
-    """True when primary provider resolution failed for a transient network reason.
-
-    Agent crons resolve OAuth credentials (token refresh / discovery) before the
-    agent loop starts. A short DNS outage (Cloudflare WARP / macOS resolver blip)
-    surfaces as httpx/httpcore ConnectError or raw OSError errno 8 ("nodename nor
-    servname provided") and must be eligible for ``fallback_providers`` the same
-    way AuthError already is — otherwise a healthy XAI_API_KEY / Anthropic rung
-    never gets tried and the whole job dies before the first model call.
-    """
-    # Walk the cause chain; scheduler wraps raw transport errors.
-    seen: set[int] = set()
-    cur: Optional[BaseException] = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        name = type(cur).__name__
-        module = type(cur).__module__ or ""
-        msg = str(cur).lower()
-        # Explicit transport classes from httpx/httpcore/aiohttp.
-        if name in {
-            "ConnectError",
-            "ConnectTimeout",
-            "ReadTimeout",
-            "WriteTimeout",
-            "PoolTimeout",
-            "NetworkError",
-            "TimeoutException",
-            "ClientConnectorError",
-            "ClientConnectorDNSError",
-            "ServerTimeoutError",
-            "ClientOSError",
-        }:
-            return True
-        if "httpx" in module or "httpcore" in module or "aiohttp" in module:
-            if any(
-                needle in msg
-                for needle in (
-                    "nodename nor servname",
-                    "name or service not known",
-                    "temporary failure in name resolution",
-                    "failed to resolve",
-                    "connection refused",
-                    "network is unreachable",
-                    "timed out",
-                    "timeout",
-                )
-            ):
-                return True
-        if isinstance(cur, OSError):
-            # Platform-safe classification (the raw-literal set {8, 7, 11, ...}
-            # from the first revision mixed macOS getaddrinfo constants with
-            # errno values and does not hold on Linux — see PR review).
-            # socket.gaierror carries getaddrinfo codes (EAI_*), plain OSError
-            # carries errno; compare each against its own constant namespace.
-            import errno as _errno
-            import socket as _socket
-
-            if isinstance(cur, _socket.gaierror):
-                _eai_transient = {
-                    getattr(_socket, _n)
-                    for _n in ("EAI_NONAME", "EAI_AGAIN", "EAI_FAIL", "EAI_NODATA")
-                    if hasattr(_socket, _n)
-                }
-                if cur.errno in _eai_transient:
-                    return True
-            else:
-                err_no = getattr(cur, "errno", None)
-                if err_no in {
-                    _errno.ECONNREFUSED,
-                    _errno.ECONNRESET,
-                    _errno.EHOSTUNREACH,
-                    _errno.ENETUNREACH,
-                    _errno.ENETDOWN,
-                    _errno.ETIMEDOUT,
-                    _errno.EAGAIN,
-                }:
-                    return True
-            if any(
-                needle in msg
-                for needle in (
-                    "nodename nor servname",
-                    "name or service not known",
-                    "temporary failure in name resolution",
-                    "network is unreachable",
-                )
-            ):
-                return True
-        # Bare RuntimeError/Exception that already carries the DNS text
-        # (format_runtime_provider_error sometimes surfaces the raw message).
-        if "nodename nor servname" in msg or "name or service not known" in msg:
-            return True
-        cur = cur.__cause__ or cur.__context__
-    return False
-
-
 def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     """READ-ONLY probe: would provider resolution fail for lack of a key?
 
@@ -3498,7 +3155,7 @@ def run_job(
         try:
             from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
 
-            load_son_of_anton_dotenv(son_of_anton_home=_get_son_of_anton_home())
+            load_son_of_anton_dotenv(son_of_anton_home=get_son_of_anton_home())
         except Exception:
             logger.debug(
                 "Job '%s': no_agent .env reload failed", job_id, exc_info=True
@@ -3904,7 +3561,7 @@ def run_job(
         # load_son_of_anton_dotenv (not a bare load_dotenv): it also handles
         # the utf-8/latin-1 encoding fallback internally.
         from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
-        load_son_of_anton_dotenv(son_of_anton_home=_get_son_of_anton_home())
+        load_son_of_anton_dotenv(son_of_anton_home=get_son_of_anton_home())
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
@@ -3936,7 +3593,7 @@ def run_job(
         _model_cfg = {}
         try:
             from son_of_anton_cli.config import read_user_config_raw
-            _cfg_path = str(_get_son_of_anton_home() / "config.toml")
+            _cfg_path = str(get_son_of_anton_home() / "config.toml")
             if os.path.exists(_cfg_path):
                 _cfg = _expand_env_vars(read_user_config_raw(Path(_cfg_path)))
                 # Coerce null/missing to {} so a falsy default never
@@ -3956,8 +3613,6 @@ def run_job(
                         # the user's explicit "cron runs on this" setting.
                         model = _cron_default_model
                     else:
-                        # Shared with Desktop's post-save impact summary so both
-                        # paths compare snapshots against the same global model.
                         _, _global_model = resolve_cron_model_drift_defaults(_cfg)
                         if _global_model:
                             model = _global_model
@@ -4266,8 +3921,7 @@ def run_job(
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
         # but a hung API call or stuck tool with no activity for the configured
-        # duration is caught and killed.  Default 600s (10 min inactivity);
-        # override via SON_OF_ANTON_CRON_TIMEOUT env var.  0 = unlimited.
+        # duration (600s) is caught and killed.
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
@@ -4325,46 +3979,27 @@ def run_job(
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
         try:
-            if _cron_inactivity_limit is None:
-                # Unlimited — no inactivity watchdog, but a one-shot still
-                # needs its run_claim heartbeat, so poll instead of blocking.
-                if _is_oneshot or cancel_event is not None:
-                    result = None
-                    while True:
-                        done, _ = concurrent.futures.wait(
-                            {_cron_future}, timeout=_POLL_INTERVAL,
-                        )
-                        if done:
-                            _abort_if_fire_claim_lost()
-                            result = _cron_future.result()
-                            break
-                        _abort_if_fire_claim_lost()
-                        _heartbeat_run_claim_if_due()
-                else:
-                    result = _cron_future.result()
-            else:
-                result = None
-                while True:
-                    done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
-                    )
-                    if done:
-                        _abort_if_fire_claim_lost()
-                        result = _cron_future.result()
-                        break
+            result = None
+            while True:
+                done, _ = concurrent.futures.wait(
+                    {_cron_future}, timeout=_POLL_INTERVAL,
+                )
+                if done:
                     _abort_if_fire_claim_lost()
-                    _heartbeat_run_claim_if_due()
-                    # Agent still running — check inactivity.
-                    _idle_secs = 0.0
-                    if hasattr(agent, "get_activity_summary"):
-                        try:
-                            _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    if _idle_secs >= _cron_inactivity_limit:
-                        _inactivity_timeout = True
-                        break
+                    result = _cron_future.result()
+                    break
+                _abort_if_fire_claim_lost()
+                _heartbeat_run_claim_if_due()
+                # Agent still running — check inactivity.
+                _idle_secs = 0.0
+                try:
+                    _act = agent.get_activity_summary()
+                    _idle_secs = _act.get("seconds_since_activity", 0.0)
+                except Exception:
+                    pass
+                if _idle_secs >= _cron_inactivity_limit:
+                    _inactivity_timeout = True
+                    break
         except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
@@ -4374,11 +4009,10 @@ def run_job(
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.
             _activity = {}
-            if hasattr(agent, "get_activity_summary"):
-                try:
-                    _activity = agent.get_activity_summary()
-                except Exception:
-                    pass
+            try:
+                _activity = agent.get_activity_summary()
+            except Exception:
+                pass
             _last_desc = _activity.get("last_activity_desc", "unknown")
             _secs_ago = _activity.get("seconds_since_activity", 0)
             _cur_tool = _activity.get("current_tool")
@@ -4452,24 +4086,14 @@ def run_job(
             # disk / unknown), so render every variant — matching only the
             # one-argument render would let cause-refined explainer text slip
             # through and be delivered as a cron warning.
+            from son_of_anton_state import PERSISTENCE_ERROR_CAUSES as _causes
+
             _explainer_variants = []
-            try:
-                from son_of_anton_state import PERSISTENCE_ERROR_CAUSES as _causes
-            except Exception:
-                _causes = ("locked", "disk", "unknown")
             for _cause in (None, *_causes):
                 try:
                     _variant = AIAgent._format_turn_completion_explanation(
                         turn_exit_reason, _cause
                     )
-                except TypeError:
-                    # Older single-argument formatter (or a test double).
-                    try:
-                        _variant = AIAgent._format_turn_completion_explanation(
-                            turn_exit_reason
-                        )
-                    except Exception:
-                        _variant = ""
                 except Exception:
                     _variant = ""
                 if _variant:
@@ -4659,8 +4283,8 @@ def run_job(
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
-        # Release subprocesses, terminal sandboxes, browser daemons, and the
-        # main OpenAI/httpx client held by this ephemeral cron agent. Without
+        # Release subprocesses, terminal sandboxes, and the main
+        # OpenAI/httpx client held by this ephemeral cron agent. Without
         # this, a gateway that ticks cron every N minutes leaks fds per job
         # until it hits EMFILE (#10200 / "too many open files").
         #
@@ -4817,7 +4441,6 @@ def run_one_job(
     loop=None,
     verbose: bool = False,
     extra_prompt: Optional[str] = None,
-    cancel_event: Optional[_CancelEventLike] = None,
 ) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
@@ -4831,21 +4454,13 @@ def run_one_job(
 
     Returns True if the job was processed (even if the job itself failed —
     failure is recorded via ``mark_job_run``), False only if processing raised.
-
-    ``cancel_event``: optional transport-level cancellation source (dashboard
-    dashboard drain, shutdown). It is OR-combined with the internal
-    fire-claim heartbeat's lost-ownership event, so either trigger stops the
-    run cooperatively — agent interruption AND script process-tree kill —
-    through the single fenced completion path.
     """
     claim = job.get("fire_claim")
     fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     execution_token = object()
-    profile_home = _get_son_of_anton_home().resolve()
     with _running_lock:
         _running_fire_owners.setdefault(job["id"], {})[execution_token] = (
-            fire_owner or None,
-            profile_home,
+            fire_owner or None
         )
     try:
         return _run_with_fire_claim_heartbeat(
@@ -4856,11 +4471,7 @@ def run_one_job(
                 loop=loop,
                 verbose=verbose,
                 extra_prompt=extra_prompt,
-                fire_claim_lost=(
-                    _CombinedCancelEvent(lost_ownership, cancel_event)
-                    if cancel_event is not None
-                    else lost_ownership
-                ),
+                fire_claim_lost=lost_ownership,
                 execution_token=execution_token,
             ),
         )
@@ -4951,19 +4562,12 @@ def _run_one_job_body(
         # interpreter-shutdown guard in _deliver_result.
         _deferred_agents: list = []
         try:
-            if fire_claim_lost is None:
-                success, output, final_response, error = run_job(
-                    job,
-                    defer_agent_teardown=_deferred_agents,
-                    extra_prompt=extra_prompt,
-                )
-            else:
-                success, output, final_response, error = run_job(
-                    job,
-                    defer_agent_teardown=_deferred_agents,
-                    extra_prompt=extra_prompt,
-                    cancel_event=fire_claim_lost,
-                )
+            success, output, final_response, error = run_job(
+                job,
+                defer_agent_teardown=_deferred_agents,
+                extra_prompt=extra_prompt,
+                cancel_event=fire_claim_lost,
+            )
         except BaseException:
             # run_job's finally still hands back the agent when it raises; tear
             # it down here so a failed run never leaks its async resources
@@ -4978,8 +4582,8 @@ def _run_one_job_body(
             for _deferred_agent in _deferred_agents:
                 _teardown_cron_agent(_deferred_agent, job["id"])
             # Distinguish a real ownership loss (TTL expiry / replacement
-            # claim) from a transport-level cancel (dashboard drain): in the
-            # latter case WE still own the claim, and silently discarding
+            # claim) from a cancel while WE still own the claim: then
+            # silently discarding
             # would leave fire_claim lingering until TTL and last_status
             # stale. Probe ownership once; if still ours, record the
             # interruption through the owner-fenced terminal write.
@@ -5232,7 +4836,6 @@ def _run_one_job_body(
         # a stale worker must not record over a replacement claim owner.
         _err_text = str(e) or type(e).__name__
         logger.error("Error processing job %s: %s", job['id'], _err_text)
-        delivery_outcome = "suppressed"
         # Owner fencing: a stale worker whose fire claim was taken over (or a
         # transport-cancelled worker) must not send a failure alert on top of
         # the replacement run's own delivery — fall through silently and let
@@ -5243,10 +4846,6 @@ def _run_one_job_body(
             and not isinstance(e, _FireClaimLostDuringSideEffect)
             and not _fire_claim_ownership_lost()
         ):
-            normalized_deliver = _normalize_deliver_value(
-                job.get("deliver", "local")
-            )
-            unresolved_origin = False
             try:
                 delivery_attempted = True
                 delivery_error = _deliver_result(
@@ -5260,14 +4859,6 @@ def _run_one_job_body(
                 logger.error(
                     "Delivery failed for job %s: %s", job["id"], delivery_exc
                 )
-            if not delivery_error and normalized_deliver == "origin":
-                unresolved_origin = not _resolve_delivery_targets(job)
-            if delivery_error:
-                delivery_outcome = "failed"
-            elif unresolved_origin:
-                delivery_outcome = "not_configured"
-            elif normalized_deliver != "local":
-                delivery_outcome = "delivered"
         try:
             if not _consume_interrupted_flag(job["id"], execution_token):
                 mark_kwargs = {}
@@ -5287,7 +4878,6 @@ def _run_one_job_body(
                 execution_id,
                 success=False,
                 error=_err_text,
-                delivery_outcome=delivery_outcome,
             )
         except Exception as record_err:
             logger.error(
@@ -5334,7 +4924,6 @@ def tick(
     lock_dir, lock_file = _get_lock_paths()
     lock_dir.mkdir(parents=True, exist_ok=True)
 
-    # POSIX file locking via fcntl.
     # Only genuine lock contention (another ticker holds the lock) skips the
     # tick silently.  A real OSError — most importantly EMFILE/ENFILE from fd
     # exhaustion — must NOT be swallowed as "another instance holds the
@@ -5343,8 +4932,7 @@ def tick(
     lock_fd = None
     try:
         lock_fd = open(lock_file, "w", encoding="utf-8")
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
         if lock_fd is not None and _is_lock_contention_errno(exc):
             logger.debug("Tick skipped — another instance holds the lock")
@@ -5380,12 +4968,9 @@ def tick(
         # the ESTOP sentinel exists. Never touches in-flight runs — due jobs
         # simply wait for the next tick after `son-of-anton resume`. Logged once per
         # engagement (not every tick) by check_paused.
-        try:
-            from agent.estop import check_paused as _estop_check_paused
-            if _estop_check_paused("cron", logger):
-                return 0
-        except ImportError:
-            pass
+        from agent.estop import check_paused as _estop_check_paused
+        if _estop_check_paused("cron", logger):
+            return 0
 
         if can_dispatch is not None and not can_dispatch():
             logger.debug("Cron dispatch paused while gateway drains existing work")
@@ -5478,9 +5063,6 @@ def tick(
         # at-most-once — mark_job_run re-anchors at completion regardless).
         advance_next_runs([job["id"] for job in due_jobs])
 
-        # Parallel workers are unbounded (limited only by thread count).
-        _max_workers: Optional[int] = None
-
         if verbose:
             logger.info("Running %d job(s) in parallel", len(due_jobs))
 
@@ -5499,10 +5081,8 @@ def tick(
                     error="Fire claim lost; execution was not started.",
                 )
                 return True
-            # Production CAS returns the exact persisted record with its unique
-            # owner. Bool fallback keeps older test doubles/API overrides
-            # compatible; real callers using return_job=True never take it.
-            claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
+            # The CAS returns the exact persisted record with its unique owner.
+            claimed_job = dict(claimed)
             claimed_job["execution_id"] = job["execution_id"]
             return run_one_job(
                 claimed_job,
@@ -5656,7 +5236,7 @@ def tick(
         # after completion finds the job due again naturally.  No catch-up
         # queue needed.
         if parallel_jobs:
-            pool = _get_parallel_pool(_max_workers)
+            pool = _get_parallel_pool()
             for job in parallel_jobs:
                 fut = _submit_with_guard(job, pool)
                 if fut is None:
@@ -5714,13 +5294,8 @@ def tick(
 
         return sum(_results)
     finally:
-        if fcntl:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except (OSError, IOError):
+            pass
         lock_fd.close()
-
-
-if __name__ == "__main__":
-    tick(verbose=True)

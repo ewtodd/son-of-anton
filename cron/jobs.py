@@ -7,8 +7,8 @@ Output is saved to ~/.son-of-anton/cron/output/{job_id}/{timestamp}.md
 
 import contextlib
 import copy
-from contextvars import ContextVar
 from dataclasses import dataclass
+import fcntl
 import json
 import logging
 import shutil
@@ -19,14 +19,6 @@ import os
 import re
 import uuid
 
-# Cross-process advisory file locking for jobs.json critical sections.
-# fcntl may be absent on exotic platforms, in which case _jobs_lock()
-# degrades to in-process locking only (the old behaviour) rather than
-# failing.
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - fcntl is always present on supported platforms
-    fcntl = None
 from datetime import datetime, timedelta
 from pathlib import Path
 from son_of_anton_constants import get_son_of_anton_home
@@ -38,54 +30,26 @@ from son_of_anton_time import now as _son_of_anton_now
 from utils import atomic_replace, atomic_write_text
 
 # ``croniter`` compiles ~15 ms of regexes at import and only matters for
-# 5-field cron expressions. Resolve lazily; ``HAS_CRONITER`` stays a module
-# attribute (tests monkeypatch it, and a monkeypatched value wins because
-# ``_ensure_croniter`` only probes while it's still None).
+# 5-field cron expressions, so it is imported on first use.
 croniter = None
-HAS_CRONITER: Optional[bool] = None
 
 
-def _ensure_croniter() -> bool:
-    """Import croniter on first use; honor a pre-set HAS_CRONITER override."""
-    global croniter, HAS_CRONITER
-    if HAS_CRONITER is None:
-        try:
-            from croniter import croniter as _croniter
-            croniter = _croniter
-            HAS_CRONITER = True
-        except ImportError:
-            HAS_CRONITER = False
-    return bool(HAS_CRONITER)
+def _ensure_croniter() -> None:
+    """Import croniter on first use."""
+    global croniter
+    if croniter is None:
+        from croniter import croniter as _croniter
+        croniter = _croniter
 
 # =============================================================================
 # Configuration
 # =============================================================================
 
-# Cron is per-profile by design (issue #4707). Each profile owns its own cron
-# store under its own SON_OF_ANTON_HOME, and a profile-scoped gateway runs that
-# profile's jobs under that same SON_OF_ANTON_HOME — so a job authored in profile
-# `coder` lives in `~/.son-of-anton/profiles/coder/cron/jobs.json` and executes with
-# `coder`'s `.env` and `config.toml`. We deliberately anchor on
-# `get_son_of_anton_home()` (the active profile home), NOT `get_default_son_of_anton_root()`
-# (the shared root). Anchoring at the root would funnel every profile's jobs
-# into one shared `jobs.json` and run them under whatever SON_OF_ANTON_HOME the
-# ticker process happens to have — leaking config/credentials across
-# profiles (the security boundary #4707 was filed for). Do NOT change this to
-# the default root: that re-breaks per-profile isolation. See also the dynamic
-# `_get_son_of_anton_home()` / `_get_lock_paths()` resolution in cron/scheduler.py.
+# Resolved at import; _current_cron_store() re-resolves when SON_OF_ANTON_HOME
+# changes later (tests re-point it after import).
 SON_OF_ANTON_DIR = get_son_of_anton_home().resolve()
-# These constants remain the default-profile fallback and a compatibility
-# surface for existing callers/tests. Cross-profile callers must scope paths
-# with use_cron_store() instead of mutating them process-wide.
 CRON_DIR = SON_OF_ANTON_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
-# Heartbeat file the in-process ticker touches on every loop iteration. The
-# gateway process and the (separate) ``son-of-anton cron status`` process share it
-# so status can tell whether the ticker THREAD is alive, not just whether the
-# gateway PROCESS exists — a ticker that dies silently inside a live gateway
-# would otherwise report healthy (#32612, #32895).
-# Last tick that completed WITHOUT raising. Distinguishing this from the plain
-# heartbeat lets status detect a ticker that is alive but failing every tick.
 # Default ticker loop interval (seconds). The single source of truth shared by
 # the in-process ticker (cron/scheduler_provider.py) and the staleness
 # threshold in `son-of-anton cron status` (son_of_anton_cli/cron.py), so the two never
@@ -119,40 +83,18 @@ class _CronStorePaths:
     output_dir: Path
 
 
-_cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
-    "cron_store_override",
-    default=None,
-)
-
-
-# Import-time snapshot of the compatibility constants, so deliberate
-# re-pointing of the module surface (monkeypatched CRON_DIR/JOBS_FILE/
-# OUTPUT_DIR — the documented escape hatch existing tests/embedders use)
-# is distinguishable from the constants merely being stale.
+# Import-time snapshot of the module constants, so deliberately re-pointed
+# CRON_DIR/JOBS_FILE/OUTPUT_DIR are distinguishable from merely stale ones.
 _IMPORT_STORE = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
 
 
 def _current_cron_store() -> _CronStorePaths:
-    """Return paths pinned to this execution context's profile.
+    """Return the cron store paths for the active SON_OF_ANTON_HOME.
 
-    Precedence, most explicit first:
-
-    1. an active use_cron_store() override (ContextVar);
-    2. deliberately re-pointed module constants — if CRON_DIR/JOBS_FILE/
-       OUTPUT_DIR no longer match their import-time values, someone chose
-       the documented process-wide compatibility surface; honor it;
-    3. the ACTIVE profile home, resolved fresh via get_son_of_anton_home()
-       (context-local override, then the SON_OF_ANTON_HOME env var) — so a test
-       or embedder that re-points SON_OF_ANTON_HOME after this module was
-       imported reads/writes ITS OWN store, not whatever jobs.json the
-       import happened to freeze (the filed incident: fixtures that patched
-       the env too late silently rewrote the user's real jobs file);
-    4. the import-time constants (home unchanged since import — the common
-       path, returned unchanged).
+    Re-pointed module constants win; otherwise the home is resolved fresh so
+    a SON_OF_ANTON_HOME set after import (test fixtures) gets its own store
+    instead of rewriting the jobs.json the import froze.
     """
-    override = _cron_store_override.get()
-    if override is not None:
-        return override
     live_constants = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
     if live_constants != _IMPORT_STORE:
         return live_constants
@@ -163,57 +105,16 @@ def _current_cron_store() -> _CronStorePaths:
     return _CronStorePaths(cron_dir, cron_dir / "jobs.json", cron_dir / "output")
 
 
-@contextlib.contextmanager
-def use_cron_store(home: Union[str, Path]):
-    """Route cron storage to ``home`` without mutating process globals."""
-    cron_dir = Path(home).expanduser().resolve() / "cron"
-    token = _cron_store_override.set(
-        _CronStorePaths(
-            cron_dir=cron_dir,
-            jobs_file=cron_dir / "jobs.json",
-            output_dir=cron_dir / "output",
-        )
-    )
-    try:
-        yield
-    finally:
-        _cron_store_override.reset(token)
-
-
 def get_cron_output_dir() -> Path:
     """Return the output directory for the active cron store context."""
     return _current_cron_store().output_dir
 
 
-# Fallback stale-recovery window for a one-shot's running-claim (#59229) when
-# the cron inactivity timeout is disabled (SON_OF_ANTON_CRON_TIMEOUT=0 → unlimited),
-# in which case no finite run bound exists to derive from. Also acts as the
-# floor for the derived value so a very short configured timeout can't make the
-# claim expire mid-run.
+# Stale-recovery window for a one-shot's running-claim (#59229): three times
+# the scheduler's 600s inactivity limit. A healthy run clears its claim via
+# mark_job_run() long before this (and heartbeats it while alive); the TTL
+# only recovers a claim left by a tick that DIED mid-run.
 ONESHOT_RUN_CLAIM_TTL_SECONDS = 1800
-
-# The derived TTL is the cron inactivity timeout times this headroom multiplier.
-# A healthy run clears its claim via mark_job_run() long before the TTL; the
-# TTL only recovers a claim left by a tick that DIED mid-run. SON_OF_ANTON_CRON_TIMEOUT
-# is an *inactivity* limit, not a wall-clock cap — a job that keeps producing
-# output legitimately runs past it — so the multiplier gives comfortable
-# headroom over any healthy run before we treat a claim as stale.
-_ONESHOT_RUN_CLAIM_TTL_HEADROOM = 3
-
-_DEFAULT_CRON_INACTIVITY_TIMEOUT = 600.0
-
-
-def _oneshot_run_claim_ttl_seconds() -> float:
-    """Resolve the one-shot running-claim stale-recovery TTL.
-
-    Derived from the cron inactivity timeout the scheduler enforces on each run
-    so the safety valve tracks how long a run is actually allowed to go quiet,
-    never below ``ONESHOT_RUN_CLAIM_TTL_SECONDS``.
-    """
-    return max(
-        _DEFAULT_CRON_INACTIVITY_TIMEOUT * _ONESHOT_RUN_CLAIM_TTL_HEADROOM,
-        float(ONESHOT_RUN_CLAIM_TTL_SECONDS),
-    )
 
 
 def _job_running_in_this_process(job_id: str) -> bool:
@@ -260,8 +161,7 @@ def _jobs_lock():
 
     The flock is blocking, but every critical section that uses it is short
     (field updates only — no agent execution), so contention resolves in
-    milliseconds. If fcntl is unavailable the manager still provides
-    in-process locking, matching the historical behaviour.
+    milliseconds.
 
     Nested calls in the same thread reuse the held lock so legacy callers that
     invoke save_jobs() inside a broader mutation section don't deadlock or try
@@ -290,43 +190,42 @@ def _jobs_lock():
                 ensure_dirs()
                 lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8")
                 lock_fd.seek(0)
-                if fcntl is not None:
-                    # Bounded acquisition (#60703): a plain blocking
-                    # fcntl.flock(LOCK_EX) here has NO timeout, and it is
-                    # taken while holding the process-wide _jobs_file_lock
-                    # RLock above.  If another process wedges while holding
-                    # .jobs.lock (e.g. an old gateway draining through a
-                    # restart), a single blocked acquirer freezes EVERY cron
-                    # function in this process — including the ticker's
-                    # get_due_jobs() — silently and forever: the heartbeat
-                    # file stops updating and all jobs stop firing with no
-                    # error logged.  Poll LOCK_NB against a deadline instead;
-                    # on timeout, log loudly and fall through to the same
-                    # in-process-only degraded mode used when locking is
-                    # unavailable.  A briefly-torn cross-process write is
-                    # strictly better than a permanently dead scheduler.
-                    _deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
-                    while True:
-                        try:
-                            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # Bounded acquisition (#60703): a plain blocking
+                # fcntl.flock(LOCK_EX) here has NO timeout, and it is
+                # taken while holding the process-wide _jobs_file_lock
+                # RLock above.  If another process wedges while holding
+                # .jobs.lock (e.g. an old gateway draining through a
+                # restart), a single blocked acquirer freezes EVERY cron
+                # function in this process — including the ticker's
+                # get_due_jobs() — silently and forever: the heartbeat
+                # file stops updating and all jobs stop firing with no
+                # error logged.  Poll LOCK_NB against a deadline instead;
+                # on timeout, log loudly and fall through to the same
+                # in-process-only degraded mode used when locking is
+                # unavailable.  A briefly-torn cross-process write is
+                # strictly better than a permanently dead scheduler.
+                _deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
+                while True:
+                    try:
+                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except (OSError, IOError):
+                        if time.monotonic() >= _deadline:
+                            logger.error(
+                                "Timed out after %.0fs waiting for the cron "
+                                "jobs lock (%s) — another process is holding "
+                                "it. Proceeding with in-process locking only "
+                                "so the scheduler stays alive (#60703).",
+                                _JOBS_LOCK_TIMEOUT_SECONDS,
+                                _jobs_lock_file(),
+                            )
+                            try:
+                                lock_fd.close()
+                            except OSError:
+                                pass
+                            lock_fd = None
                             break
-                        except (OSError, IOError):
-                            if time.monotonic() >= _deadline:
-                                logger.error(
-                                    "Timed out after %.0fs waiting for the cron "
-                                    "jobs lock (%s) — another process is holding "
-                                    "it. Proceeding with in-process locking only "
-                                    "so the scheduler stays alive (#60703).",
-                                    _JOBS_LOCK_TIMEOUT_SECONDS,
-                                    _jobs_lock_file(),
-                                )
-                                try:
-                                    lock_fd.close()
-                                except OSError:
-                                    pass
-                                lock_fd = None
-                                break
-                            time.sleep(0.1)
+                        time.sleep(0.1)
             except (OSError, IOError) as e:
                 # Never let a locking failure take down cron writes — fall back to
                 # in-process-only protection (still held via _jobs_file_lock).
@@ -337,8 +236,7 @@ def _jobs_lock():
             finally:
                 if lock_fd is not None:
                     try:
-                        if fcntl is not None:
-                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
                     except (OSError, IOError):
                         pass
                     finally:
@@ -353,7 +251,7 @@ def _fire_job_lock(job_id: str):
     """Serialize one job's owner mutations and external side effects.
 
     Unlike the global jobs lock, this lock may be held across network delivery.
-    It is scoped to one profile + job, so unrelated cron jobs keep progressing.
+    It is scoped to one cron store + job, so unrelated cron jobs keep progressing.
     Fencing fails closed when cross-process locking is unavailable.
     """
     cron_dir = _current_cron_store().cron_dir
@@ -370,23 +268,20 @@ def _fire_job_lock(job_id: str):
         try:
             lock_fd = open(lock_path, "a+", encoding="utf-8")
             lock_fd.seek(0)
-            if fcntl is not None:
-                deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
-                while True:
-                    try:
-                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        acquired = True
+            deadline = time.monotonic() + _JOBS_LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except (OSError, IOError):
+                    if time.monotonic() >= deadline:
+                        logger.error(
+                            "Timed out waiting for fire fence %s; failing closed",
+                            lock_path,
+                        )
                         break
-                    except (OSError, IOError):
-                        if time.monotonic() >= deadline:
-                            logger.error(
-                                "Timed out waiting for fire fence %s; failing closed",
-                                lock_path,
-                            )
-                            break
-                        time.sleep(0.1)
-            else:  # pragma: no cover - fcntl is always present on supported platforms
-                logger.error("No cross-process lock backend for cron fire fence")
+                    time.sleep(0.1)
         except (OSError, IOError) as exc:
             logger.error("Cron fire fence unavailable for %s: %s", job_id, exc)
 
@@ -395,7 +290,7 @@ def _fire_job_lock(job_id: str):
         finally:
             if lock_fd is not None:
                 try:
-                    if acquired and fcntl is not None:
+                    if acquired:
                         fcntl.flock(lock_fd, fcntl.LOCK_UN)
                 except (OSError, IOError):
                     pass
@@ -561,7 +456,7 @@ def _secure_dir(path: Path):
     """Set directory to owner-only access (0700)."""
     try:
         os.chmod(path, 0o700)
-    except (OSError, NotImplementedError):
+    except OSError:
         pass  # filesystems where chmod is not supported
 
 
@@ -570,12 +465,12 @@ def _secure_file(path: Path):
     try:
         if path.exists():
             os.chmod(path, 0o600)
-    except (OSError, NotImplementedError):
+    except OSError:
         pass
 
 
 def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> None:
-    """Restore a rewritten file's previous owner (POSIX, privileged writer only).
+    """Restore a rewritten file's previous owner (privileged writer only).
 
     The atomic-write pattern (mkstemp + replace) makes the rewritten file owned
     by the *writer's* euid. When a root shell runs a state-writing cron CLI
@@ -592,15 +487,11 @@ def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> No
     """
     if before is None:
         return
-    geteuid = getattr(os, "geteuid", None)
-    getegid = getattr(os, "getegid", None)
-    if geteuid is None or getegid is None:
-        return
     try:
-        euid = geteuid()
+        euid = os.geteuid()
         if euid != 0:
             return  # unprivileged writer — nothing to (or we could) restore
-        if (before.st_uid, before.st_gid) == (euid, getegid()):
+        if (before.st_uid, before.st_gid) == (euid, os.getegid()):
             return  # already ours before the rewrite — nothing changed
         os.chown(path, before.st_uid, before.st_gid)
     except OSError as e:
@@ -684,12 +575,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     if len(parts) >= 5 and all(
         re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]
     ):
-        if not _ensure_croniter():
-            from son_of_anton_constants import missing_dependency_message
-
-            raise ValueError(
-                f"Cron expressions require croniter. {missing_dependency_message('croniter')}"
-            )
+        _ensure_croniter()
         # Validate cron expression
         try:
             croniter(schedule)
@@ -897,7 +783,7 @@ def _job_is_stale_error_recurring(
         return False
     cadence_seconds = _schedule_cadence_seconds(schedule)
     if cadence_seconds is None:
-        # Unknown cadence (croniter unavailable / malformed expr): fall back to
+        # Unknown cadence (malformed expr): fall back to
         # the grace window so a badly-parked job is still recovered, but never
         # re-arm anything younger than the 2h grace cap.
         cadence_seconds = _compute_grace_seconds(schedule)
@@ -908,14 +794,12 @@ def _schedule_cadence_seconds(schedule: Dict[str, Any]) -> Optional[float]:
     """Approximate the natural period of a schedule, in seconds, or None.
 
     Interval jobs use ``minutes * 60``.  Cron jobs measure the gap between the
-    next two fire times with croniter (falling back to None when croniter is
-    missing or the expr is malformed).  Cron results are cached per expr —
-    this runs inside ``_jobs_lock`` on every tick for every stale-errored
-    job, and two croniter evaluations per call add up (the same reason
-    ``scheduler.py`` caches ``_cron_interval_minutes``).  The measured gap
-    can vary with the base time for irregular exprs; the cache trades that
-    precision for not re-evaluating croniter under the lock, which is fine
-    for a staleness *threshold*.
+    next two fire times with croniter (None when the expr is malformed).
+    Cron results are cached per expr — this runs inside ``_jobs_lock`` on
+    every tick for every stale-errored job, and from the scheduler's
+    in-flight sweep.  The measured gap can vary with the base time for
+    irregular exprs; the cache trades that precision for not re-evaluating
+    croniter, which is fine for a staleness *threshold*.
     """
     if not isinstance(schedule, dict):
         return None
@@ -927,8 +811,7 @@ def _schedule_cadence_seconds(schedule: Dict[str, Any]) -> Optional[float]:
         except (TypeError, ValueError):
             return None
     if kind == "cron":
-        if not _ensure_croniter():
-            return None
+        _ensure_croniter()
         expr = schedule.get("expr")
         if not expr:
             return None
@@ -1015,15 +898,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         expr = schedule.get("expr")
         if not expr:
             return None
-        if not _ensure_croniter():
-            from son_of_anton_constants import missing_dependency_message
-
-            logger.warning(
-                "Cannot compute next run for cron schedule %r: %s",
-                expr,
-                missing_dependency_message("croniter (a core dependency)"),
-            )
-            return None
+        _ensure_croniter()
         # Use last_run_at as the croniter base when available, consistent
         # with interval jobs.  This ensures that after a crash/restart,
         # the next run is anchored to the actual last execution time
@@ -1067,10 +942,6 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     (both fresh) — a ticker stuck failing every tick would otherwise keep the
     plain heartbeat fresh and falsely report healthy (#32612, #32895).
 
-    Resolution uses ``_current_cron_store()`` so the heartbeat is correctly
-    scoped to the active profile's store — critical under multiplex_profiles
-    where each profile needs its own liveness signal (#69377).
-
     Best-effort: a write failure must never disrupt the tick loop.
     """
     store = _current_cron_store()
@@ -1098,22 +969,13 @@ def get_ticker_heartbeat_age() -> Optional[float]:
 
     None = heartbeat file missing/unreadable (older build, never ran, or a
     torn read). Callers treat None as "cannot determine", not "dead".
-
-    Resolution uses ``_current_cron_store()`` so the heartbeat is correctly
-    scoped to the active profile — critical under multiplex_profiles where
-    ``son-of-anton cron status`` must report per-profile liveness (#69377).
     """
     store = _current_cron_store()
     return _epoch_file_age(store.cron_dir / "ticker_heartbeat")
 
 
 def get_ticker_success_age() -> Optional[float]:
-    """Seconds since the ticker last completed a tick WITHOUT raising, or None.
-
-    Resolution uses ``_current_cron_store()`` so the heartbeat is correctly
-    scoped to the active profile — critical under multiplex_profiles where
-    ``son-of-anton cron status`` must report per-profile liveness (#69377).
-    """
+    """Seconds since the ticker last completed a tick WITHOUT raising, or None."""
     store = _current_cron_store()
     return _epoch_file_age(store.cron_dir / "ticker_last_success")
 
@@ -1183,8 +1045,8 @@ def get_ticker_last_error() -> Optional[str]:
 def _parse_jobs_file(jobs_file: Path) -> Tuple[Any, bool]:
     """Tolerantly parse jobs.json; shared by load_jobs and the save-path peek.
 
-    Returns ``(data, used_strict_fallback)``. utf-8-sig absorbs a Windows
-    BOM; a strict parse failure is retried with ``strict=False`` to survive
+    Returns ``(data, used_strict_fallback)``. utf-8-sig absorbs a BOM from a
+    hand edit; a strict parse failure is retried with ``strict=False`` to survive
     bare control characters in string values. IO errors from the open and
     parse errors from the fallback propagate to the caller, which decides
     between repair (load_jobs) and bail-out (peek).
@@ -1862,7 +1724,7 @@ def create_job(
     prompt_text = _coerce_job_text(prompt)
 
     # Reject cron jobs that schedule gateway-lifecycle commands. Prevents
-    # agent-driven SIGTERM-respawn loops under launchd/systemd KeepAlive
+    # agent-driven SIGTERM-respawn loops under systemd Restart=
     # (#30719). Enforced here (not only in the CLI layer) so the agent's
     # `cronjob` model tool — which calls create_job directly — is also
     # covered, not just `son-of-anton cron create`.
@@ -2195,23 +2057,6 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     )
 
 
-def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Schedule a job to run on the next scheduler tick. Accepts a job ID or name."""
-    job = resolve_job_ref(job_id)
-    if not job:
-        return None
-    return update_job(
-        job["id"],
-        {
-            "enabled": True,
-            "state": "scheduled",
-            "paused_at": None,
-            "paused_reason": None,
-            "next_run_at": _son_of_anton_now().isoformat(),
-        },
-    )
-
-
 def remove_job(job_id: str) -> bool:
     """Remove a job by ID or name."""
     job = resolve_job_ref(job_id)
@@ -2299,19 +2144,14 @@ def _set_alert_flag(job_id: str, field: str, value: bool) -> bool:
     return False
 
 
-def _set_preflight_alerted(job_id: str, value: bool) -> bool:
-    """Set/clear the preflight alert-dedup marker; return the PRIOR value."""
-    return _set_alert_flag(job_id, "preflight_alerted", value)
-
-
 def mark_preflight_alerted(job_id: str) -> bool:
     """Mark the job as preflight-alerted; return True if it already was."""
-    return _set_preflight_alerted(job_id, True)
+    return _set_alert_flag(job_id, "preflight_alerted", True)
 
 
 def clear_preflight_alerted(job_id: str) -> None:
     """Clear the preflight alert-dedup marker (config validates again)."""
-    _set_preflight_alerted(job_id, False)
+    _set_alert_flag(job_id, "preflight_alerted", False)
 
 
 def mark_drift_alerted(job_id: str) -> bool:
@@ -2806,11 +2646,6 @@ def _claim_job_for_fire_locked(
 COMPLETED_ONESHOT_RETENTION_DAYS = 7
 
 
-def _completed_oneshot_retention_days() -> float:
-    """The completed one-shot retention window (days)."""
-    return float(COMPLETED_ONESHOT_RETENTION_DAYS)
-
-
 def _sweep_completed_oneshots(
     raw_jobs: List[Dict[str, Any]],
     now: datetime,
@@ -2828,9 +2663,7 @@ def _sweep_completed_oneshots(
     record without a parseable ``last_run_at`` is kept (never guess a record
     into deletion).
     """
-    retention_days = _completed_oneshot_retention_days()
-    if retention_days <= 0:
-        return False
+    retention_days = COMPLETED_ONESHOT_RETENTION_DAYS
     cutoff = now - timedelta(days=retention_days)
     removed = False
     for rj in list(raw_jobs):
@@ -2857,7 +2690,7 @@ def _sweep_completed_oneshots(
                 removed_ids.add(str(rid))
             logger.info(
                 "Job '%s': pruning completed one-shot record "
-                "(finished %s, retention %.1f days)",
+                "(finished %s, retention %d days)",
                 rj.get("name", rj.get("id", "?")),
                 last_run,
                 retention_days,
@@ -2935,7 +2768,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     # helpers and the ``for rj in raw_jobs: if rj["id"] == job["id"]``
     # persistence loops — indexes job["id"] eagerly, so a single malformed
     # record raised KeyError mid-tick, aborting the whole scan before
-    # save_jobs() ran. That froze the entire profile's scheduler in a
+    # save_jobs() ran. That froze the entire scheduler in a
     # per-minute fast-forward loop (healthy jobs recomputed in memory, then
     # discarded when the exception unwound). Recover the id from the drifted
     # "job_id" key when present, else synthesize one, and persist.
@@ -2944,85 +2777,31 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             rj["id"] = rj.pop("job_id", None) or uuid.uuid4().hex[:12]
             needs_save = True
 
-    jobs = copy.deepcopy(raw_jobs)
-    due = []
-
-    # Normalize malformed "schedule" records (direct jobs.json edit, old writers,
-    # corruption, etc.). "schedule" must be a dict; a null/string/etc. value
-    # makes `schedule.get("kind")` or direct `schedule["kind"]` / ["expr"] /
-    # ["minutes"] later raise and abort the entire scan *before* save_jobs().
-    # Healthy jobs then lose their fast-forwarded next_run_at (exactly the
-    # failure mode of the id-less job bug fixed above). Repair early at the
-    # source so the rest of the tick can proceed and persist progress for
-    # siblings.
-    for j in jobs:
-        if not isinstance(j.get("schedule"), dict):
-            j["schedule"] = {}
-            needs_save = True
+    # Normalize malformed records (direct jobs.json edit, old writers,
+    # corruption). A non-dict "schedule" or a non-ISO "next_run_at" /
+    # "last_run_at" would otherwise raise later and abort the entire scan
+    # *before* save_jobs(), so healthy siblings lose their fast-forwarded
+    # next_run_at (same class of bug as the id-less records above). Bad
+    # timestamps are stripped so the "no next_run_at" recovery path recomputes
+    # a sane value and persists it.
     for rj in raw_jobs:
         if not isinstance(rj.get("schedule"), dict):
             rj["schedule"] = {}
             needs_save = True
-
-    # Normalize malformed "next_run_at" records (direct jobs.json edit,
-    # corruption, migration, or buggy writer). If present but not a valid
-    # ISO string, datetime.fromisoformat(next_run) later raises and aborts
-    # the entire scan *before* save_jobs(). Healthy siblings then lose any
-    # fast-forwarded next_run_at (same class of bug as bad "id" or "schedule").
-    # Strip the bad value so the existing "no next_run_at" recovery path
-    # recomputes a sane value and persists it for this job.
-    for j in jobs:
-        nr = j.get("next_run_at")
-        if nr is not None:
-            if not isinstance(nr, str):
-                j.pop("next_run_at", None)
-                needs_save = True
-            else:
-                try:
-                    datetime.fromisoformat(nr)
-                except Exception:
-                    j.pop("next_run_at", None)
-                    needs_save = True
-    for rj in raw_jobs:
-        nr = rj.get("next_run_at")
-        if nr is not None:
-            if not isinstance(nr, str):
-                rj.pop("next_run_at", None)
-                needs_save = True
-            else:
-                try:
-                    datetime.fromisoformat(nr)
-                except Exception:
-                    rj.pop("next_run_at", None)
-                    needs_save = True
-
-    # Same treatment for last_run_at (used as base in recovery / compute_next_run).
-    for j in jobs:
-        lr = j.get("last_run_at")
-        if lr is not None and not isinstance(lr, str):
-            j.pop("last_run_at", None)
-            needs_save = True
-        elif isinstance(lr, str):
+        for field in ("next_run_at", "last_run_at"):
+            value = rj.get(field)
+            if value is None:
+                continue
             try:
-                datetime.fromisoformat(lr)
+                if not isinstance(value, str):
+                    raise TypeError(field)
+                datetime.fromisoformat(value)
             except Exception:
-                j.pop("last_run_at", None)
-                needs_save = True
-    for rj in raw_jobs:
-        lr = rj.get("last_run_at")
-        if lr is not None and not isinstance(lr, str):
-            rj.pop("last_run_at", None)
-            needs_save = True
-        elif isinstance(lr, str):
-            try:
-                datetime.fromisoformat(lr)
-            except Exception:
-                rj.pop("last_run_at", None)
+                rj.pop(field, None)
                 needs_save = True
 
-    # Resolve the one-shot running-claim stale-recovery TTL once per scan
-    # (derived from SON_OF_ANTON_CRON_TIMEOUT). See _oneshot_run_claim_ttl_seconds.
-    _run_claim_ttl = _oneshot_run_claim_ttl_seconds()
+    jobs = copy.deepcopy(raw_jobs)
+    due = []
 
     # Retention sweep: completed one-shots are retained (so their final
     # status / delivery error stay inspectable via `cronjob list`) instead of
@@ -3089,7 +2868,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     # restart) must be treated as stale, not eternally fresh,
                     # or the one-shot is skipped forever (#60703).
                     _age = (now - claimed_at).total_seconds()
-                    if 0 <= _age < _run_claim_ttl:
+                    if 0 <= _age < ONESHOT_RUN_CLAIM_TTL_SECONDS:
                         continue  # a fresh claim is held by an in-flight run
                 except (KeyError, ValueError, TypeError):
                     pass  # malformed claim → fall through and (re)claim
@@ -3318,8 +3097,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             continue
 
                 # Durably claim a one-shot for the DURATION of its run before
-                # returning it as due, so a second scheduler process (gateway +
-                # desktop both run in-process 60s tickers on one SON_OF_ANTON_HOME)
+                # returning it as due, so a second scheduler process (another
+                # ticker or a manual `cron tick` on the same SON_OF_ANTON_HOME)
                 # cannot re-dispatch it while the first run is still in flight
                 # (#59229). A plain one-shot's due-state is not resolved until
                 # mark_job_run() completes it minutes later, so advancing
@@ -3330,8 +3109,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 # a fresh claim on its next tick and skips (handled at the top of
                 # this loop). mark_job_run() clears the claim on completion. The TTL
                 # is only a safety valve: a claiming tick that DIES mid-run leaves a
-                # stale claim that expires after the resolved run-claim TTL
-                # (_oneshot_run_claim_ttl_seconds, derived from SON_OF_ANTON_CRON_TIMEOUT),
+                # stale claim that expires after ONESHOT_RUN_CLAIM_TTL_SECONDS,
                 # so the job is re-dispatched rather than wedged forever.
                 if kind == "once":
                     claim = {"at": now.isoformat(), "by": _machine_id()}
@@ -3357,29 +3135,18 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
 
 # Per-run cron output (`cron/output/<job>/<timestamp>.md`) is written once per
-# execution. Unlike the quick-snapshot store (`son_of_anton_cli.backup`, capped at 20)
-# it had no retention, so a frequently-scheduled job on a long-running deploy
-# accumulated one file per run forever and could fill the disk (#52383). Keep the
-# most recent N files per job; a non-positive value disables pruning (opt-out).
+# execution; keep the most recent N files per job so a frequently-scheduled job
+# on a long-running deploy cannot fill the disk (#52383).
 _CRON_OUTPUT_DEFAULT_KEEP = 50
-
-
-def _cron_output_keep() -> int:
-    """The per-job output-file retention cap."""
-    return _CRON_OUTPUT_DEFAULT_KEEP
 
 
 def _prune_job_output(job_output_dir: Path, keep: int) -> int:
     """Remove the oldest ``*.md`` run-output files beyond *keep*. Returns count deleted.
 
-    Mirrors the quick-snapshot retention in ``son_of_anton_cli.backup._prune_quick_snapshots``:
-    output filenames are timestamp-based (``%Y-%m-%d_%H-%M-%S.md``) so a reverse
+    Output filenames are timestamp-based (``%Y-%m-%d_%H-%M-%S.md``) so a reverse
     lexical sort orders newest-first, and everything past *keep* is the tail to
-    drop. A non-positive *keep* disables pruning. Pruning failures are swallowed
-    so they can never break output saving.
+    drop. Pruning failures are swallowed so they can never break output saving.
     """
-    if keep <= 0:
-        return 0
     try:
         files = sorted(
             (f for f in job_output_dir.glob("*.md") if f.is_file()),
@@ -3424,6 +3191,6 @@ def save_job_output(job_id: str, output: str):
         raise
 
     # Bound per-job output growth so long-running deploys don't fill the disk (#52383).
-    _prune_job_output(job_output_dir, _cron_output_keep())
+    _prune_job_output(job_output_dir, _CRON_OUTPUT_DEFAULT_KEEP)
 
     return output_file

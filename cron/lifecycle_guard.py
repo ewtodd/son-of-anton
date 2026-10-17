@@ -41,7 +41,7 @@ import re
 import shlex
 import stat
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -110,31 +110,6 @@ _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
 
 
-# Directory names that sit directly under a `Library` path component and
-# mark a FileProvider-backed subtree: `Mobile Documents` is iCloud Drive;
-# `CloudStorage` hosts every third-party FileProvider domain (Dropbox,
-# OneDrive, Google Drive, Box, ...) on modern macOS.
-_CLOUD_PLACEHOLDER_MARKERS = frozenset({"Mobile Documents", "CloudStorage"})
-
-
-def _is_cloud_placeholder_path(path: Path) -> bool:
-    """Return True for paths inside a macOS FileProvider-backed subtree.
-
-    ``O_NONBLOCK`` does not make regular-file reads non-blocking.  Opening an
-    evicted FileProvider placeholder below ``~/Library/Mobile Documents``
-    (iCloud Drive) or ``~/Library/CloudStorage`` (Dropbox / OneDrive /
-    Google Drive and other third-party providers) can therefore wait
-    indefinitely for hydration.  The lifecycle guard runs before a terminal
-    command's timeout starts, so it must identify this boundary from path
-    metadata and fail closed without opening the file.
-    """
-    parts = path.parts
-    return any(
-        parts[index - 1] == "Library" and part in _CLOUD_PLACEHOLDER_MARKERS
-        for index, part in enumerate(parts)
-        if index
-    )
-
 # Executables whose arguments are DATA, not commands: search patterns, SQL
 # statements, log filters. None of these can execute their argument text, so
 # a lifecycle-shaped string inside their arguments (a grep pattern hunting
@@ -157,24 +132,10 @@ _PIPE_TO_INTERPRETER = re.compile(
     r"\|\s*&?\s*(?:sudo\s+)?(?:sh|bash|dash|ksh|zsh|xargs|eval|source)\b"
 )
 
-# Executable-image magic numbers: ELF, PE/COFF, Mach-O (universal + thin,
-# both endiannesses). A referenced file starting with one of these is a
-# compiled binary, never a shell script — don't read or scan it at all.
-_BINARY_MAGIC_PREFIXES = (
-    b"\x7fELF",
-    b"MZ",
-    b"\xca\xfe\xba\xbe",
-    b"\xcf\xfa\xed\xfe",
-    b"\xce\xfa\xed\xfe",
-    b"\xfe\xed\xfa\xce",
-    b"\xfe\xed\xfa\xcf",
-)
+# A referenced file starting with the ELF magic is a compiled binary, never a
+# shell script — don't read or scan it at all.
+_BINARY_MAGIC_PREFIXES = (b"\x7fELF",)
 _BINARY_SNIFF_BYTES = 4096
-
-
-
-
-_ReadRemoteScriptFn = Callable[[str], Optional[str]]
 
 
 def _iter_command_segments(command: str) -> Iterator[list[str]]:
@@ -340,7 +301,7 @@ def _expand_candidate_path(candidate: str) -> Optional[Path]:
     contain. Every OS-facing ``Path`` operation downstream (``expanduser``,
     ``os.open``, ``resolve``) raises a *different* exception for the same
     junk (``ValueError: embedded null byte``, ``RuntimeError: Could not
-    determine home directory`` when HOME is unset under launchd, OSError
+    determine home directory`` when HOME is unset, OSError
     for over-long paths). Rejecting here — once, before any OS call — is
     the whole-class fix; catching per-syscall was the whack-a-mole that
     produced #76762, #77703, #77780, and #78256.
@@ -456,25 +417,9 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
 
     This is the shared choke point for every local script read the guard
     performs (the terminal walk in ``_contains_unsafe_gateway_action`` AND
-    the cron-script scan in ``_read_script_for_scanning``), so the
-    cloud-placeholder refusal lives here: a FileProvider path must never be
-    opened — not even to discover whether the file is hydrated — because an
-    evicted placeholder's ``open()`` can hang preflight indefinitely
-    (#88052). The lexical check covers direct cloud paths; the resolved
-    check covers local launchers that are symlinks into a cloud subtree.
+    the cron-script scan in ``_read_script_for_scanning``).
     """
-    if _is_cloud_placeholder_path(path):
-        return None, True
-    try:
-        resolved = path.resolve(strict=False)
-    except (OSError, ValueError):
-        # OSError: unreadable/long paths. ValueError: embedded NUL byte
-        # from a binary's decoded contents tokenized as a path — a
-        # guarded path must never crash the guard (#76762).
-        resolved = path
-    if _is_cloud_placeholder_path(resolved):
-        return None, True
-    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    flags = os.O_RDONLY | os.O_NONBLOCK
     try:
         descriptor = os.open(path, flags)
     except (OSError, ValueError):
@@ -482,16 +427,13 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         # embedded NUL byte in *path* itself — a binary's decoded bytes
         # tokenized into a bogus script path by the recursion (#77703). A
         # guarded read must never crash the guard, so treat either as
-        # "nothing to scan" (mirrors the resolve() ValueError guard below).
+        # "nothing to scan".
         return None, False
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
-            # Directories are not scripts. Docker Desktop writes
-            # ``fpath=(~/.docker/completions …)`` into ``~/.zshrc``; the
-            # walk then treats that dir as a referenced script and used
-            # to fail-closed, blocking ``source ~/.zshrc`` (#86753).
-            # Devices/sockets stay fail-closed.
+            # Directories are not scripts (an rc file's ``fpath=(dir …)``
+            # tokenizes into one); devices/sockets stay fail-closed.
             if stat.S_ISDIR(metadata.st_mode):
                 return None, False
             return None, True
@@ -516,8 +458,8 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         return None, False
     finally:
         os.close(descriptor)
-    # A NUL byte in the first chunk means this is a binary (ELF/Mach-O/
-    # PE), not a shell script — scanning its decoded contents would
+    # A NUL byte in the first chunk means this is a binary, not a shell
+    # script — scanning its decoded contents would
     # tokenize machine code and feed junk paths into the recursion
     # (including a `ValueError: embedded null byte` from Path.resolve,
     # #76762). Treat it as "nothing to scan" rather than unsafe: a binary
@@ -529,39 +471,12 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
     return data.decode("utf-8", errors="replace"), False
 
 
-def _sanitize_remote_script_text(text: Optional[str]) -> tuple[Optional[str], bool]:
-    """Apply the local-read contract to text from a ``read_remote_script`` callback.
-
-    The recursion boundary must not trust its callbacks: any backend (SSH,
-    Modal, Daytona, or a future one) can hand back raw binary bytes decoded
-    as text, or arbitrarily large output. Mirror
-    ``_read_referenced_script``'s semantics exactly — NUL bytes mean binary
-    (nothing to scan, checked first, #77703), oversized text fails closed
-    like an oversized local file (#76762) — so remote and local reads can
-    never diverge again. The size check re-encodes to compare *bytes*
-    (matching the local read and the ``head -c`` wire bound): a >1 MiB
-    multibyte file truncated at the byte cap decodes to fewer characters
-    than bytes, and a character-count check would scan the truncated text
-    instead of failing closed. Enforced here rather than inside each
-    callback so the guarantee holds for every callback, not just the ones
-    we hardened.
-    """
-    if not text:
-        return None, False
-    if "\x00" in text:
-        return None, False
-    if len(text.encode("utf-8", errors="replace")) > _MAX_REFERENCED_SCRIPT_BYTES:
-        return None, True
-    return text, False
-
-
 def _contains_unsafe_gateway_action(
     command: str,
     *,
     cwd: Optional[str],
     depth: int,
     visited: set[Path],
-    read_remote_script: Optional[_ReadRemoteScriptFn] = None,
 ) -> bool:
     if _direct_lifecycle_scan(command):
         return True
@@ -574,19 +489,10 @@ def _contains_unsafe_gateway_action(
             cwd=cwd,
             depth=depth + 1,
             visited=visited,
-            read_remote_script=read_remote_script,
         ):
             return True
 
     for script_path in _iter_referenced_shell_scripts(command, cwd=cwd):
-        # Do not touch a FileProvider path even to discover whether the file
-        # is hydrated. The lexical check covers direct cloud paths; the
-        # resolved check below covers local launchers that are symlinks into
-        # a cloud subtree. _read_referenced_script repeats both checks as the
-        # shared choke point, so every caller stays covered even if this
-        # walk-level short-circuit is bypassed.
-        if _is_cloud_placeholder_path(script_path):
-            return True
         try:
             resolved = script_path.resolve(strict=False)
         except (OSError, ValueError):
@@ -594,24 +500,12 @@ def _contains_unsafe_gateway_action(
             # from a binary's decoded contents tokenized as a path — a
             # guarded path must never crash the guard (#76762).
             resolved = script_path
-        if _is_cloud_placeholder_path(resolved):
-            return True
         if resolved in visited:
             continue
         visited.add(resolved)
         script_text, unsafe = _read_referenced_script(script_path)
         if unsafe:
             return True
-        if script_text is None and read_remote_script is not None:
-            # Local path missing; try the remote backend if one is available.
-            # The callback's output crosses the same trust boundary as a
-            # local read — sanitize it identically before it enters the
-            # recursion (binary skip + size fail-closed).
-            script_text, unsafe = _sanitize_remote_script_text(
-                read_remote_script(str(script_path))
-            )
-            if unsafe:
-                return True
         if not script_text:
             continue
         # Relative references inside a script resolve against that script's
@@ -622,7 +516,6 @@ def _contains_unsafe_gateway_action(
             cwd=script_dir,
             depth=depth + 1,
             visited=visited,
-            read_remote_script=read_remote_script,
         ):
             return True
     return False
@@ -632,14 +525,13 @@ def contains_gateway_lifecycle_command_or_referenced_script(
     command: str,
     *,
     cwd: Optional[str] = None,
-    read_remote_script: Optional[_ReadRemoteScriptFn] = None,
 ) -> bool:
     """Detect lifecycle/submit commands, including bounded nested scripts.
 
     Total by construction: this function returns a verdict for *every*
     input and never raises. The direct scans below are pure string
-    operations; the referenced-script walk touches the filesystem, remote
-    backends, and shlex on arbitrary decoded bytes, so it is best-effort
+    operations; the referenced-script walk touches the filesystem and shlex
+    on arbitrary decoded bytes, so it is best-effort
     defense-in-depth — any unexpected failure inside it is logged and
     treated as "walk found nothing" rather than crashing the caller.
 
@@ -656,7 +548,6 @@ def contains_gateway_lifecycle_command_or_referenced_script(
             cwd=cwd,
             depth=0,
             visited=set(),
-            read_remote_script=read_remote_script,
         )
     except Exception:
         logger.warning(
@@ -705,8 +596,8 @@ def _resolve_script_path(script_path: str) -> Optional[Path]:
         return get_son_of_anton_home() / "scripts" / raw
     except (RuntimeError, OSError):
         # get_son_of_anton_home() falls back to Path.home(), which raises when
-        # neither SON_OF_ANTON_HOME nor HOME is resolvable (launchd/systemd
-        # environments) — same ingestion contract: nothing to scan.
+        # neither SON_OF_ANTON_HOME nor HOME is resolvable — same ingestion
+        # contract: nothing to scan.
         return None
 
 
@@ -746,29 +637,6 @@ def check_gateway_lifecycle(
     python_script = False
     if script:
         resolved_script = _resolve_script_path(script)
-        if resolved_script is not None:
-            try:
-                real_script = resolved_script.resolve(strict=False)
-            except (OSError, ValueError):
-                real_script = resolved_script
-            if _is_cloud_placeholder_path(resolved_script) or _is_cloud_placeholder_path(
-                real_script
-            ):
-                # Attribute the refusal correctly: the script is not known to
-                # contain a lifecycle command — it lives on a cloud-synced
-                # FileProvider path (iCloud Drive / ~/Library/CloudStorage)
-                # that the guard refuses to open because an evicted
-                # placeholder can hang preflight indefinitely (#88052).
-                # Fail closed with the real reason instead of implying a
-                # dangerous lifecycle command.
-                raise GatewayLifecycleBlocked(
-                    "Blocked: the cron script lives on a cloud-synced path "
-                    "(iCloud Drive / ~/Library/CloudStorage). Opening an "
-                    "evicted FileProvider placeholder can hang the guard's "
-                    "preflight scan indefinitely, so it is refused without "
-                    "being read. Move the script to a local, non-cloud path "
-                    "(e.g. ~/.son-of-anton/scripts/) and recreate the job."
-                )
         python_script = resolved_script is not None and resolved_script.suffix == ".py"
         script_text = _read_script_for_scanning(script)
         if script_text:
