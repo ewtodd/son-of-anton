@@ -1,7 +1,6 @@
 """Shared gateway restart constants and supervisor detection helpers."""
 
 import os
-from collections.abc import Mapping
 
 from son_of_anton_cli.config import DEFAULT_CONFIG
 
@@ -10,25 +9,17 @@ from son_of_anton_cli.config import DEFAULT_CONFIG
 GATEWAY_SERVICE_RESTART_EXIT_CODE = 75
 
 # EX_CONFIG from sysexits.h — fatal configuration error (e.g. token
-# collision, no messaging platforms).  The s6 finish script translates
-# this into exit 125 (permanent failure) so the supervisor stops
-# restarting the gateway.  See #51228.
+# collision, no messaging platforms).
 GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
-
-# Set by ``son-of-anton gateway run --external-supervisor``. Unlike systemd's
-# INVOCATION_ID and launchd's XPC_SERVICE_NAME, this survives wrappers that
-# intentionally replace the child environment (for example ``sudo env -i``).
-EXTERNAL_GATEWAY_SUPERVISOR_ENV = "SON_OF_ANTON_GATEWAY_EXTERNAL_SUPERVISOR"
 
 DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT = float(
     DEFAULT_CONFIG["agent"]["restart_drain_timeout"]
 )
 
-# In-band restart (``/restart``, SIGUSR1, self-restart from a child CLI)
-# waits for active turns to finish *before* ``stop()`` begins. Distinct
-# from ``restart_drain_timeout``, which is the force-interrupt budget
-# once ``stop()`` is running (and must stay short under systemd
-# TimeoutStopSec). See #77184.
+# In-band restart (``/restart``) waits for active turns to finish *before*
+# ``stop()`` begins. Distinct from ``restart_drain_timeout``, which is the
+# force-interrupt budget once ``stop()`` is running (and must stay short
+# under systemd TimeoutStopSec). See #77184.
 DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT = float(
     DEFAULT_CONFIG["agent"]["restart_after_turn_timeout"]
 )
@@ -52,66 +43,9 @@ DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT = float(
 CRON_DRAIN_CLEANUP_RESERVE_S = 10.0
 
 
-def is_gateway_supervisor_process(
-    environ: Mapping[str, str] | None = None,
-) -> bool:
-    """Return whether this gateway process is owned by a supervisor."""
-    env = os.environ if environ is None else environ
-    if env.get("INVOCATION_ID"):
-        return True
-    xpc_service = env.get("XPC_SERVICE_NAME", "")
-    if xpc_service and xpc_service != "0":
-        return True
-    return str(env.get(EXTERNAL_GATEWAY_SUPERVISOR_ENV, "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-
-
-def parse_restart_drain_timeout(raw: object) -> float:
-    """Parse a configured drain timeout, falling back to the shared default."""
-    try:
-        value = float(raw) if str(raw or "").strip() else DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
-    except (TypeError, ValueError):
-        return DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
-    return max(0.0, value)
-
-
-def parse_restart_after_turn_timeout(raw: object) -> float:
-    """Parse the after-turn wait cap for in-band restart, falling back to default.
-
-    ``0`` is a deliberate disable (legacy immediate drain) and must not fall
-    through to the default — unlike empty/missing input.
-    """
-    if raw is None:
-        return DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
-    if isinstance(raw, str) and not raw.strip():
-        return DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT
-    return max(0.0, value)
-
-
-def parse_cron_drain_timeout(raw: object) -> float:
-    """Parse the cron-only drain floor, falling back to the shared default.
-
-    ``0`` is a deliberate opt-out — cron work is then interrupted on the same
-    budget as chat work, the pre-#82161 behaviour — and must not fall through
-    to the default, unlike empty/missing input.
-    """
-    if raw is None:
-        return DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
-    if isinstance(raw, str) and not raw.strip():
-        return DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
-    return max(0.0, value)
+def is_gateway_supervisor_process() -> bool:
+    """Return whether this gateway process is owned by systemd."""
+    return bool(os.environ.get("INVOCATION_ID"))
 
 
 def resolve_cron_drain_budget(

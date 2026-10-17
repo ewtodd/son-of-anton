@@ -36,11 +36,6 @@ def build_gateway_parser(
     gateway_run.add_argument(
         "-q", "--quiet", action="store_true", help="Suppress all stderr log output"
     )
-    gateway_run.add_argument(
-        "--replace",
-        action="store_true",
-        help="Replace any existing gateway instance (useful for systemd)",
-    )
 
     gateway_subparsers.add_parser("status", help="Show gateway status")
 

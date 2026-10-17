@@ -1245,26 +1245,6 @@ class GatewaySlashCommandsMixin:
     async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _son_of_anton_home
-        # Defensive idempotency check: if the previous gateway process
-        # recorded this same /restart (same platform + update_id) and the new
-        # process is seeing it *again*, this is a re-delivery caused by PTB's
-        # graceful-shutdown `get_updates` ACK failing on the way out ("Error
-        # while calling `get_updates` one more time to mark all fetched
-        # updates. Suppressing error to ensure graceful shutdown. When
-        # polling for updates is restarted, updates may be received twice."
-        # in gateway.log).  Ignoring the stale redelivery prevents a
-        # self-perpetuating restart loop where every fresh gateway
-        # re-processes the same /restart command and immediately restarts
-        # again.
-        if self._is_stale_restart_redelivery(event):
-            logger.info(
-                "Ignoring redelivered /restart (platform=%s, update_id=%s) — "
-                "already processed by a previous gateway instance.",
-                event.source.platform.value if event.source and event.source.platform else "?",
-                event.platform_update_id,
-            )
-            return ""
-
         if self._restart_requested or self._draining:
             count = self._running_agent_count()
             if count:
@@ -1302,42 +1282,9 @@ class GatewaySlashCommandsMixin:
         except Exception as e:
             logger.debug("Failed to write restart notify file: %s", e)
 
-        # Record the triggering platform + update_id in a dedicated dedup
-        # marker.  Unlike .restart_notify.json (which gets unlinked once the
-        # new gateway sends the "gateway restarted" notification), this
-        # marker persists so the new gateway can still detect a delayed
-        # /restart redelivery from the platform.  Overwritten on every /restart.
-        try:
-            dedup_data = {
-                "platform": event.source.platform.value if event.source.platform else None,
-                "requested_at": time.time(),
-            }
-            if event.platform_update_id is not None:
-                dedup_data["update_id"] = event.platform_update_id
-            await asyncio.to_thread(
-                atomic_json_write,
-                _son_of_anton_home / ".restart_last_processed.json",
-                dedup_data,
-                indent=None,
-            )
-        except Exception as e:
-            logger.debug("Failed to write restart dedup marker: %s", e)
-
         active_agents = self._running_agent_count()
-        # When running under a service manager (systemd/launchd), use the
-        # service restart path: exit with code 75 so the service manager
-        # restarts us.  The detached subprocess approach (setsid + bash)
-        # doesn't work under systemd (KillMode=mixed kills the cgroup).
-        # Native supervisor markers cover direct systemd/launchd starts. The
-        # explicit marker covers wrappers such as ``sudo env -i`` that strip
-        # those markers before execing the foreground gateway.
-        from gateway.restart import is_gateway_supervisor_process
-
-        _under_service = is_gateway_supervisor_process()
-        if _under_service:
-            self.request_restart(detached=False, via_service=True)
-        else:
-            self.request_restart(detached=True, via_service=False)
+        # Exit 75 after the drain; systemd's Restart=always brings us back.
+        self.request_restart()
         if active_agents:
             return t("gateway.draining", count=active_agents)
         return EphemeralReply(t("gateway.restart.restarting"))
