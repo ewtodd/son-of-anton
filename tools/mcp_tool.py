@@ -4889,10 +4889,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     Returns:
         List of all currently registered MCP tool names.
     """
-    if not _ensure_mcp_sdk():
-        logger.debug("MCP SDK not available -- skipping explicit MCP registration")
-        return []
-
+    _ensure_mcp_sdk()
     servers = _filter_suspicious_mcp_servers(servers)
     if not servers:
         logger.debug("No explicit MCP servers provided")
@@ -5038,8 +5035,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 def discover_mcp_tools() -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
-    Called from ``model_tools`` after ``discover_builtin_tools()``. Safe to call even when
-    the ``mcp`` package is not installed (returns empty list).
+    Called from ``model_tools`` after ``discover_builtin_tools()``.
 
     Idempotent for already-connected servers. If some servers failed on a
     previous call, only the missing ones are retried.
@@ -5054,9 +5050,7 @@ def discover_mcp_tools() -> List[str]:
 
     # SDK import is deferred to HERE so a config with zero MCP servers (the
     # default) never pays the ~260ms `mcp` import on CLI startup.
-    if not _ensure_mcp_sdk():
-        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
-        return []
+    _ensure_mcp_sdk()
 
     # Cross-process discovery guard (#62771). A lock loser waits for
     # the holder, then performs its own process-local discovery. If locking is
@@ -5212,9 +5206,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         Dict mapping server name to list of (tool_name, description) tuples.
         Servers that fail to connect are omitted from the result.
     """
-    if not _ensure_mcp_sdk():
-        return {}
-
+    _ensure_mcp_sdk()
     servers_config = _load_mcp_config()
     if not servers_config:
         return {}
