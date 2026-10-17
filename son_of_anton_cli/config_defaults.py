@@ -662,16 +662,7 @@ DEFAULT_CONFIG = {
 
     "compaction": {
         "enabled": True,
-        "progress_notices": False,    # opt-in (#52995): when True, routine compaction
-                                      # progress statuses (compacting/idle/retry)
-                                      # are delivered to chat gateway
-                                      # platforms instead of being suppressed by the
-                                      # gateway noise filter. Default False keeps
-                                      # routine compaction silent-by-design on chat
-                                      # surfaces (server-side logging only). Failure
-                                      # notices and manual /compact feedback are
-                                      # always visible regardless of this setting.
-        "threshold": 0.50,            # compact when context usage exceeds this ratio.
+        "threshold": 0.50,           # compact when context usage exceeds this ratio.
                                       # Models with context windows below 512K are
                                       # floored at 0.75 (raise-only) so compaction
                                       # doesn't fire with half the window still free;

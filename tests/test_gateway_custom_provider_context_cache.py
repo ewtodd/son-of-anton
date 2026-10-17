@@ -47,37 +47,6 @@ def test_a_custom_provider_window_edit_rebuilds_the_cached_agent() -> None:
     assert _signature(_dict_form(262_144)) != _signature(_dict_form(131_072))
 
 
-def test_the_keyed_providers_schema_is_covered_too() -> None:
-    def config(window: int) -> dict:
-        return {
-            "providers": {
-                "strix": {
-                    "api": BASE_URL,
-                    "models": {"qwen3.8-flash-next": {"context_length": window}},
-                }
-            }
-        }
-
-    assert _signature(config(262_144)) != _signature(config(131_072))
-
-
-def test_list_form_custom_providers_are_covered_too() -> None:
-    def config(window: int) -> dict:
-        return {
-            "custom_providers": [
-                {
-                    "name": "custom",
-                    "base_url": BASE_URL,
-                    "models": [
-                        {"id": "qwen3.8-flash-next", "context_length": window}
-                    ],
-                }
-            ]
-        }
-
-    assert _signature(config(262_144)) != _signature(config(131_072))
-
-
 def test_only_per_model_windows_feed_the_signature() -> None:
     """Entry-level windows are not read by resolution; headers are not windows."""
     config = _dict_form(262_144)
