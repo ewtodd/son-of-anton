@@ -46,7 +46,6 @@ Examples:
     son-of-anton --resume <session_id>  Resume a specific session by ID
     son-of-anton --in ./dir             Run in a specific directory
     son-of-anton -w                     Start in isolated git worktree
-    son-of-anton model                  Select the default model
     son-of-anton config                 View configuration
     son-of-anton config edit            Edit config in $EDITOR
     son-of-anton sessions list          List past sessions

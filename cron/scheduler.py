@@ -48,7 +48,6 @@ from son_of_anton_cli.config import (
     load_config,
     resolve_cron_model_drift_defaults,
 )
-from son_of_anton_cli.fallback_config import get_fallback_chain
 from son_of_anton_time import now as _son_of_anton_now
 from agent.interrupt_compat import request_hard_interrupt
 
@@ -110,34 +109,6 @@ def _set_cron_session_title(session_db, session_id, base_title):
             raise
         session_db.set_session_title(session_id, deduped)
         return deduped
-
-
-def _fallback_chain_phrase() -> str:
-    """Wording for the fallback-chain clause of a provider-failure message.
-
-    "Fallback chain was exhausted or unavailable." used to fire
-    unconditionally on every provider failure, which implies a fallback was
-    attempted and failed. Most installs have fallback_providers: [] (no
-    chain configured at all), so that wording was actively misleading: it
-    sent the operator looking for why a fallback "failed" when none was
-    ever attempted. Distinguish the two cases explicitly.
-
-    Fails open to the original ambiguous-but-safe wording if config can't be
-    read (e.g. mid-shutdown, permissions) -- never let a lookup error crash
-    failure-message generation itself.
-    """
-    try:
-        cfg = load_config() or {}
-        chain = get_fallback_chain(cfg)
-    except Exception:
-        return "Fallback chain was exhausted or unavailable."
-    if chain:
-        return "Fallback chain was exhausted or unavailable."
-    return (
-        "No fallback chain configured — add one with `son-of-anton fallback add`, "
-        "or set a cron fleet default via `cron.model` + `cron.model_provider` "
-        "in config.toml."
-    )
 
 
 def _failure_streak_nudge(job: dict) -> str:
@@ -258,7 +229,6 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             reason = "quota limit"
         return (
             f"⚠️ Cron '{job_name}' failed: provider {reason}. "
-            f"{_fallback_chain_phrase()} "
             "Full details saved in cron output."
         )
 
@@ -305,7 +275,6 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     ):
         return (
             f"⚠️ Cron '{job_name}' failed: provider timeout. "
-            f"{_fallback_chain_phrase()} "
             "Full details saved in cron output."
         )
 
@@ -4122,12 +4091,6 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     blocking here would break that contract (and burning zero LLM calls is
     already guaranteed by the fallback resolution being config-local).
     """
-    try:
-        if get_fallback_chain(cfg):
-            return None
-    except Exception:
-        return None  # fail-open: never block on a preflight-internal error
-
     _cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
     requested = (
         job.get("provider")
@@ -4136,7 +4099,7 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     )
     model = job.get("model") or os.getenv("SON_OF_ANTON_MODEL") or ""
 
-    from son_of_anton_cli.auth import AuthError
+    from son_of_anton_cli.runtime_provider import AuthError
 
     try:
         from son_of_anton_cli.runtime_provider import resolve_runtime_provider
@@ -4957,7 +4920,7 @@ def run_job(
                 "config.toml model.default missing or empty). "
                 f"Set a per-job model via "
                 f"`son-of-anton cron edit {job_id} --model <name>` or set a "
-                "default with `son-of-anton model <name>`."
+                "model.default in config.toml."
             )
 
         # Apply IPv4 preference if configured.
@@ -5011,7 +4974,6 @@ def run_job(
             resolve_runtime_provider,
             format_runtime_provider_error,
         )
-        from son_of_anton_cli.auth import AuthError
 
         # F8 runtime backstop: never resolve a stored provider/base_url pair that
         # would ship a named provider's stored credential to an off-host endpoint
@@ -5126,66 +5088,7 @@ def run_job(
                 or primary_provider_for_drift
             )
         except Exception as resolve_exc:
-            # Primary provider resolution failed. Walk fallback_providers for:
-            #   1) AuthError (missing/expired credential)
-            #   2) Transient network/DNS failures during OAuth refresh or
-            #      discovery (e.g. macOS morning DNS blip → httpx.ConnectError
-            #      "[Errno 8] nodename nor servname provided").
-            # Previously only AuthError tried the chain; a ConnectError during
-            # xai-oauth token refresh killed agent crons even when XAI_API_KEY
-            # / Anthropic fallbacks were healthy (Daily Focus Kickoff 2026-08-11).
-            # Keeping provider+model atomic still applies — never swap only the
-            # provider while retaining a paid primary model.
-            is_auth = isinstance(resolve_exc, AuthError)
-            is_transient_net = _is_transient_provider_resolve_error(resolve_exc)
-            if not (is_auth or is_transient_net):
-                raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
-
-            primary_provider_for_drift = (
-                str(getattr(resolve_exc, "provider", "") or "").strip().lower()
-                or primary_provider_for_drift
-            )
-            reason = "auth" if is_auth else "transient network"
-            logger.warning(
-                "Job '%s': primary provider resolve failed (%s: %s), trying fallback",
-                job_id,
-                reason,
-                resolve_exc,
-            )
-            fb_list = get_fallback_chain(_cfg)
-            runtime = None
-            for entry in fb_list:
-                if not isinstance(entry, dict):
-                    continue
-                fb_provider = str(entry.get("provider") or "").strip()
-                fb_model = str(entry.get("model") or "").strip()
-                if not fb_provider or not fb_model:
-                    continue
-                try:
-                    from son_of_anton_cli.fallback_config import resolve_entry_api_key
-
-                    fb_kwargs = {
-                        "requested": fb_provider,
-                        "target_model": fb_model,
-                    }
-                    if entry.get("base_url"):
-                        fb_kwargs["explicit_base_url"] = entry["base_url"]
-                    fb_api_key = resolve_entry_api_key(entry)
-                    if fb_api_key:
-                        fb_kwargs["explicit_api_key"] = fb_api_key
-                    runtime = resolve_runtime_provider(**fb_kwargs)
-                    model = fb_model
-                    logger.info(
-                        "Job '%s': fallback resolved to %s model %s",
-                        job_id,
-                        runtime.get("provider"),
-                        fb_model,
-                    )
-                    break
-                except Exception as fb_exc:
-                    logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
-            if runtime is None:
-                raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
+            raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
         reasoning_config = _resolve_job_reasoning_config(
             job,
@@ -5291,24 +5194,6 @@ def run_job(
                     f"config is pinned or restored. See #44585."
                 )
 
-        fallback_model = get_fallback_chain(_cfg) or None
-        credential_pool = None
-        runtime_provider = str(runtime.get("provider") or "").strip().lower()
-        if runtime_provider:
-            try:
-                from agent.credential_pool import load_pool
-                pool = load_pool(runtime_provider)
-                if pool.has_credentials():
-                    credential_pool = pool
-                    logger.info(
-                        "Job '%s': loaded credential pool for provider %s with %d entries",
-                        job_id,
-                        runtime_provider,
-                        len(pool.entries()),
-                    )
-            except Exception as e:
-                logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
-
         # Initialize MCP servers so configured mcp_servers are available to
         # the agent's tool registry before AIAgent is constructed. Without
         # this, cron jobs never saw any MCP tools — only the gateway / CLI
@@ -5337,13 +5222,9 @@ def run_job(
             provider=runtime.get("provider"),
             requested_provider=runtime.get("requested_provider"),
             api_mode=runtime.get("api_mode"),
-            acp_command=runtime.get("command"),
-            acp_args=runtime.get("args"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
-            fallback_model=fallback_model,
-            credential_pool=credential_pool,
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
             disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
             quiet_mode=True,

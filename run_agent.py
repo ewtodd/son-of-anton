@@ -146,7 +146,6 @@ from tools.interrupt import set_interrupt as _set_interrupt
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import is_trivial_prompt
-from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.message_content import flatten_message_text
 from agent.session_activity import ActivityProvenance
@@ -271,37 +270,6 @@ _DB_PERSISTED_MARKER = "_db_persisted"
 # =========================================================================
 
 
-# =========================================================================
-# Extracted as a module-level helper so both __init__ and
-# _apply_client_headers_for_base_url can share it.
-# =========================================================================
-
-
-def _pool_may_recover_from_rate_limit(pool) -> bool:
-    """Decide whether to wait for credential-pool rotation instead of falling back.
-
-    The existing pool-rotation path requires the pool to (1) exist and (2) have
-    at least one entry not currently in exhaustion cooldown.  But rotation is
-    only meaningful when the pool has more than one entry.
-
-    With a single-credential pool (common for Vertex service accounts and any
-    "one personal key" configuration), the primary entry just 429'd and there
-    is nothing to rotate to.  Waiting for the pool cooldown to expire means
-    retrying against the same exhausted quota — the daily-quota 429 will recur
-    immediately, and the retry budget is burned.
-
-    In that case we must fall back to the configured ``fallback_model``
-    instead.  Returns True only when rotation has somewhere to go.
-
-    See issues #11314 and #13636.
-    """
-    if pool is None:
-        return False
-    if not pool.has_available():
-        return False
-    return len(pool.entries()) > 1
-
-
 def _safe_session_filename_component(session_id: str) -> str:
     """Return a stable, path-safe filename component for a session ID.
 
@@ -356,10 +324,6 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,
-        acp_command: str = None,
-        acp_args: list[str] | None = None,
-        command: str = None,
-        args: list[str] | None = None,
         model: str = "",
         max_iterations: int = sys.maxsize,  # Default: unlimited tool-calling iterations (shared with subagents)
         tool_delay: float = None,  # Deprecated: accepted for compatibility, ignored
@@ -391,7 +355,6 @@ class AIAgent:
         reaction_callback: Optional[Callable[[str], None]] = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
-        service_tier: str = None,
         request_overrides: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
@@ -410,8 +373,6 @@ class AIAgent:
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
         run_budget_seconds: Optional[float] = None,
-        fallback_model: Dict[str, Any] = None,
-        credential_pool=None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500,
@@ -435,10 +396,6 @@ class AIAgent:
             provider=provider,
             requested_provider=requested_provider,
             api_mode=api_mode,
-            acp_command=acp_command,
-            acp_args=acp_args,
-            command=command,
-            args=args,
             model=model,
             max_iterations=max_iterations,
             enabled_toolsets=enabled_toolsets,
@@ -469,7 +426,6 @@ class AIAgent:
             reaction_callback=reaction_callback,
             max_tokens=max_tokens,
             reasoning_config=reasoning_config,
-            service_tier=service_tier,
             request_overrides=request_overrides,
             prefill_messages=prefill_messages,
             platform=platform,
@@ -488,8 +444,6 @@ class AIAgent:
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
             run_budget_seconds=run_budget_seconds,
-            fallback_model=fallback_model,
-            credential_pool=credential_pool,
             checkpoints_enabled=checkpoints_enabled,
             checkpoint_max_snapshots=checkpoint_max_snapshots,
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
@@ -1011,29 +965,6 @@ class AIAgent:
         except Exception:
             pass
 
-    def _emit_pending_fallback_notice(self) -> None:
-        """Surface the one-shot fallback-switch notice on successful recovery.
-
-        A provider/model switch is a durable state change operators must see,
-        unlike transient retry chatter that ``_clear_status_buffer`` drops.
-        ``try_activate_fallback`` records the switch in
-        ``self._pending_fallback_notice``; this emits it exactly once via
-        ``_emit_status`` and then clears it, so a successful fallback still
-        produces one visible notice.  On terminal failure the buffered switch
-        line is flushed instead (and this notice discarded) — see
-        ``_flush_status_buffer`` — so the user always sees the switch once.
-        """
-        try:
-            notice = getattr(self, "_pending_fallback_notice", None)
-            if notice:
-                # Clear before emitting so a (swallowed) callback error can't
-                # leave the notice set for a stale re-emit on a later turn.
-                self._pending_fallback_notice = None
-                self._emit_status(notice)
-        except Exception:
-            # Never break the conversation loop on a notice hiccup.
-            pass
-
     def _flush_status_buffer(self) -> None:
         """Emit buffered retry messages — call on terminal failure.
 
@@ -1041,10 +972,6 @@ class AIAgent:
         was tried before the turn gave up.
         """
         try:
-            # The buffered trace already carries the fallback switch line, so
-            # drop any one-shot fallback notice to avoid a stale duplicate
-            # leaking into a later successful turn.
-            self._pending_fallback_notice = None
             buf = getattr(self, "_retry_status_buffer", None)
             if not buf:
                 return
@@ -2101,131 +2028,6 @@ class AIAgent:
         _save_trajectory_to_file(trajectory, self.model, completed)
 
     @staticmethod
-    def _is_entitlement_failure(
-        error_context: Optional[Dict[str, Any]],
-        status_code: Optional[int],
-    ) -> bool:
-        """Detect subscription/entitlement 403s that masquerade as auth failures.
-
-        Returned True only when the body text matches a known entitlement
-        shape AND the status is 401/403.  Refreshing an OAuth token cannot
-        fix an unsubscribed account, so callers should surface the error
-        instead of looping the credential pool.
-
-        Current matches:
-          * xAI OAuth: "do not have an active Grok subscription" /
-            "out of available resources" / "does not have permission" + "grok"
-
-        Disambiguator for xAI (#29344): the same ``code`` text ("The caller
-        does not have permission to execute the specified operation") is
-        returned for BOTH an unsubscribed account AND a stale OAuth access
-        token.  xAI ships an explicit signal in the ``error`` field that
-        tells the two apart: a ``[WKE=unauthenticated:...]`` suffix (and/or
-        the ``OAuth2 access token could not be validated`` phrasing) means
-        the credentials failed validation — that's recoverable by refreshing
-        the token, NOT by surfacing an entitlement message.  When either
-        signal is present we return False eagerly so the credential-pool
-        refresh path runs, letting long-running TUI sessions recover from
-        stale tokens without an exit/reopen cycle.
-
-        Extend here for new providers as we discover them (Anthropic's
-        Claude Max OAuth entitlement errors look distinct enough today that
-        the existing 1M-context-beta branch handles them; revisit if other
-        subscription tiers start producing the same loop signature).
-        """
-        if status_code not in {401, 403, None}:
-            return False
-        if not isinstance(error_context, dict):
-            return False
-        # Build a single lowercase haystack covering every field shape the
-        # body might land in.  ``_extract_api_error_context`` normalises to
-        # ``message``/``reason``, but callers (and the test suite) may also
-        # hand us the raw body with ``code``/``error`` keys; cover both so
-        # the WKE disambiguator below fires regardless of entry point.
-        message = str(error_context.get("message") or "").lower()
-        reason = str(error_context.get("reason") or "").lower()
-        code = str(error_context.get("code") or "").lower()
-        err = str(error_context.get("error") or "").lower()
-        haystack = f"{message} {reason} {code} {err}"
-        if not haystack.strip():
-            return False
-        # xAI's authoritative disambiguator for "stale token" vs
-        # "unsubscribed account".  Both conditions share the same
-        # permission-denied ``code`` text; only one carries this suffix.
-        # Bail out before the entitlement keyword checks so a stale OAuth
-        # token routes through the credential-refresh path instead of the
-        # surface-error-as-entitlement path.  See #29344 for the long-
-        # running TUI failure mode this closes.
-        if "[wke=unauthenticated:" in haystack:
-            return False
-        if "oauth2 access token could not be validated" in haystack:
-            return False
-        if "do not have an active grok subscription" in haystack:
-            return True
-        if "out of available resources" in haystack and "grok" in haystack:
-            return True
-        if "does not have permission" in haystack and "grok" in haystack:
-            return True
-        return False
-
-    @staticmethod
-    def _decorate_xai_entitlement_error(detail: str) -> str:
-        """Append a neutral hint when xAI's OAuth surface returns the
-        permission-denied 403.
-
-        xAI's ``/v1/responses`` endpoint replies to several distinct failure
-        modes with the SAME body::
-
-            {"code": "The caller does not have permission to execute the
-             specified operation", "error": "You have either run out of
-             available resources or do not have an active Grok subscription.
-             Manage subscriptions at https://grok.com/?_s=usage or subscribe
-             at https://grok.com/supergrok"}
-
-        That body covers several real causes we cannot distinguish without
-        more info from xAI.  The most common (and least obvious) one is
-        that **X Premium+ does NOT include API access** — only standalone
-        SuperGrok subscribers can use Son of Anton against xai-oauth.  Lots of
-        users see Grok in their X app, assume it works here too, and hit
-        this 403 with no idea why.  Lead the hint with that.
-
-        Other possible causes:
-          * No Grok subscription at all
-          * SuperGrok tier doesn't include the requested model (e.g.
-            grok-4.3 may need a higher tier)
-          * Monthly quota exhausted (the ``?_s=usage`` URL hints at this)
-
-        Surface the raw xAI text verbatim and point at
-        https://grok.com/?_s=usage where the user can see WHICH applies.
-
-        Matched once per detail string — won't double-decorate if the
-        upstream already concatenated the same text.
-        """
-        if not detail:
-            return detail
-        lower = detail.lower()
-        is_entitlement = (
-            "do not have an active grok subscription" in lower
-            or ("out of available resources" in lower and "grok" in lower)
-            or ("does not have permission" in lower and "grok" in lower)
-        )
-        if not is_entitlement:
-            return detail
-        hint = (
-            " — xAI rejected this OAuth account. NOTE: X Premium+ does NOT "
-            "include xAI API access — only standalone SuperGrok subscribers "
-            "can use this provider. Other possible causes: no Grok "
-            "subscription, your tier doesn't include this model, or your "
-            "quota is exhausted. Check https://grok.com/?_s=usage to see "
-            "which, or run `/model` to switch providers."
-        )
-        # Idempotency: detect prior decoration by a substring unique to the
-        # hint (not present in xAI's own body text).
-        if "X Premium+ does NOT include" in detail:
-            return detail
-        return f"{detail}{hint}"
-
-    @staticmethod
     def _coerce_api_error_detail(value: Any) -> str:
         """Return a display-safe string for structured provider error fields."""
         if isinstance(value, str):
@@ -2321,7 +2123,7 @@ class AIAgent:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
                 msg = AIAgent._coerce_api_error_detail(msg)
-                return AIAgent._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
+                return f"{prefix}{msg[:300]}"
 
         # SDK may leave body empty while httpx still has the payload (#36109).
         # Redact before returning: the raw provider/proxy error body is
@@ -2352,7 +2154,7 @@ class AIAgent:
         # Fallback: truncate the raw string but give more room than 200 chars
         status_code = getattr(error, "status_code", None)
         prefix = f"HTTP {status_code}: " if status_code else ""
-        return AIAgent._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
+        return f"{prefix}{raw[:500]}"
 
     def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
         # Azure Foundry Entra ID bearer providers are callables — never
@@ -2390,12 +2192,6 @@ class AIAgent:
             cleaned = cleaned[:150] + "..."
             
         return cleaned
-
-    @staticmethod
-    def _extract_api_error_context(error: Exception) -> Dict[str, Any]:
-        """Forwarder — see ``agent.agent_runtime_helpers.extract_api_error_context``."""
-        from agent.agent_runtime_helpers import extract_api_error_context
-        return extract_api_error_context(error)
 
     def _usage_summary_for_api_request_hook(self, response: Any) -> Optional[Dict[str, Any]]:
         """Token buckets for ``post_api_request`` plugins (no raw ``response`` object)."""
@@ -4859,63 +4655,23 @@ class AIAgent:
         """
         if self.api_mode != "chat_completions":
             return False
-        if getattr(self, "_fallback_activated", False):
-            return False
-        try:
-            from agent.credential_pool import get_env_prefer_dotenv
-            from son_of_anton_cli.auth import PROVIDER_REGISTRY
-        except ImportError:
-            return False
+        # Named custom provider (#67935): identity lives in config, the
+        # credential in the env var its ``key_env`` names, so only key edits
+        # are ever adopted.
+        from son_of_anton_cli.config import get_env_value_prefer_dotenv
+        from son_of_anton_cli.runtime_provider import _get_named_custom_provider
 
-        pconfig = PROVIDER_REGISTRY.get(self.provider)
-        if (
-            pconfig
-            and getattr(pconfig, "auth_type", "") == "api_key"
-            and getattr(pconfig, "api_key_env_vars", ())
-        ):
-            api_key = ""
-            for env_var in pconfig.api_key_env_vars:
-                api_key = get_env_prefer_dotenv(env_var).strip()
-                if api_key:
-                    break
-            if not api_key:
-                return False
-
-            env_url = ""
-            if pconfig.base_url_env_var:
-                env_url = get_env_prefer_dotenv(pconfig.base_url_env_var).strip().rstrip("/")
-            default_base = (pconfig.inference_base_url or "").strip().rstrip("/")
-            base_url = env_url or default_base
-        elif self.provider == "custom":
-            # Named custom provider (#67935): identity lives in config
-            # (``providers.<name>`` / ``custom_providers``), the credential in
-            # the env var it names via ``key_env``. Re-resolve through the
-            # same config lookup the runtime resolver uses; entries without
-            # ``key_env`` (inline ``api_key``, pool-backed) have no
-            # env-sourced credential to watch.
-            try:
-                from son_of_anton_cli.runtime_provider import _get_named_custom_provider
-            except ImportError:
-                return False
-            custom_provider = _get_named_custom_provider(
-                getattr(self, "requested_provider", "") or ""
-            )
-            if not custom_provider:
-                return False
-            key_env = str(custom_provider.get("key_env") or "").strip()
-            if not key_env:
-                return False
-            api_key = get_env_prefer_dotenv(key_env).strip()
-            if not api_key:
-                return False
-            # Custom providers pin their endpoint in config, not env — the
-            # config base_url is both the resolved and the "default" base, so
-            # only key edits are ever adopted here.
-            default_base = str(custom_provider.get("base_url") or "").strip().rstrip("/")
-            base_url = default_base
-        else:
+        custom_provider = _get_named_custom_provider(
+            getattr(self, "requested_provider", "") or ""
+        )
+        if not custom_provider:
             return False
-
+        key_env = str(custom_provider.get("key_env") or "").strip()
+        api_key = (get_env_value_prefer_dotenv(key_env) or "").strip() if key_env else ""
+        if not api_key:
+            return False
+        default_base = str(custom_provider.get("base_url") or "").strip().rstrip("/")
+        base_url = default_base
         if not base_url:
             return False
 
@@ -4930,17 +4686,6 @@ class AIAgent:
             adopt = current_base == default_base and not (
                 base_url == current_base and api_key == self.api_key
             )
-            # #79156: if the session already holds a pool-rotated key, do
-            # not treat that divergence as a boot-time env adoption. First
-            # look would otherwise stomp the rotated key with the env value
-            # while leaving ``_credential_pool_entry_id`` on the fallback.
-            if (
-                adopt
-                and api_key != self.api_key
-                and getattr(self, "_credential_pool", None) is not None
-                and getattr(self, "_credential_pool_entry_id", None)
-            ):
-                adopt = False
         else:
             # Env unchanged → no-op; any drift from self.* is rotation/
             # failover or config precedence — leave it alone. An edit is
@@ -4984,19 +4729,6 @@ class AIAgent:
             self._client_kwargs.update(prior_client_kwargs)
             return False
 
-        # Rebind the pool entry id to the key we just adopted. Leaving a
-        # stale id after a key rewrite makes mark_exhausted_and_rotate
-        # quarantine the wrong credential on the next 429 (#79156).
-        try:
-            from agent.agent_runtime_helpers import sync_credential_pool_entry_id
-
-            sync_credential_pool_entry_id(self)
-        except Exception:
-            logger.debug(
-                "sync_credential_pool_entry_id after env refresh failed",
-                exc_info=True,
-            )
-
         self._env_creds_seen = resolved
         logger.info(
             "Applied updated .env credentials for %s: endpoint %s",
@@ -5012,23 +4744,6 @@ class AIAgent:
 
         self._client_kwargs["default_headers"] = {"User-Agent": user_agent()}
 
-    def _swap_credential(self, entry) -> None:
-        runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-        runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
-        self._credential_pool_entry_id = getattr(entry, "id", None)
-        from son_of_anton_cli.route_identity import normalize_route_base_url
-
-        route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(
-            runtime_base
-        )
-
-        self.api_key = runtime_key
-        self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
-        self._client_kwargs["api_key"] = self.api_key
-        self._client_kwargs["base_url"] = self.base_url
-        self._reapply_route_client_config(route_changed=route_changed)
-        self._replace_primary_openai_client(reason="credential_rotation")
-
     def _reapply_route_client_config(self, *, route_changed: bool) -> None:
         """Recompute route-derived client kwargs for the current ``self.base_url``.
 
@@ -5043,20 +4758,6 @@ class AIAgent:
             self.base_url,
             apply_user_headers=not route_changed,
         )
-
-    def _recover_with_credential_pool(
-        self,
-        *,
-        status_code: Optional[int],
-        has_retried_429: bool,
-        classified_reason: Optional[FailoverReason] = None,
-        error_context: Optional[Dict[str, Any]] = None,
-        billing_unverified: bool = False,
-    ) -> tuple[bool, bool]:
-        """Forwarder — see ``agent.agent_runtime_helpers.recover_with_credential_pool``."""
-        from agent.agent_runtime_helpers import recover_with_credential_pool
-        return recover_with_credential_pool(self, status_code=status_code, has_retried_429=has_retried_429, classified_reason=classified_reason, error_context=error_context, billing_unverified=billing_unverified)
-
 
     def _interruptible_api_call(self, api_kwargs: dict):
         """Forwarder — see ``agent.chat_completion_helpers.interruptible_api_call``."""
@@ -5455,23 +5156,6 @@ class AIAgent:
         from agent.chat_completion_helpers import interruptible_streaming_api_call
         return interruptible_streaming_api_call(self, api_kwargs, on_first_delta=on_first_delta)
 
-    def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
-        """Forwarder — see ``agent.chat_completion_helpers.try_activate_fallback``."""
-        from agent.chat_completion_helpers import try_activate_fallback
-        return try_activate_fallback(self, reason)
-
-    def _has_pending_fallback(self) -> bool:
-        """Whether a fallback provider is actually available to switch to.
-
-        Used to gate user-facing "trying fallback..." status so we don't
-        announce a fallback that will never be attempted (the user has no
-        fallback chain configured).  Mirrors the early-return guard in
-        ``try_activate_fallback`` (#35314, #17446).
-        """
-        chain = getattr(self, "_fallback_chain", None) or []
-        index = getattr(self, "_fallback_index", 0)
-        return index < len(chain)
-
     # ── Per-turn primary restoration ─────────────────────────────────────
 
     def _restore_primary_runtime(self) -> bool:
@@ -5558,23 +5242,6 @@ class AIAgent:
             return _lookup_supports_vision(provider, model, cfg) is True
         except Exception:
             return False
-
-    def _provider_supports_vision_tool_messages(self) -> bool:
-        """Return True if the active provider accepts list-type tool content.
-
-        Some providers (e.g. Xiaomi MiMo) support multimodal user messages
-        but reject list-type tool message content with 400 errors.  This
-        checks the provider profile's ``supports_vision_tool_messages`` field.
-        """
-        try:
-            from providers import get_provider_profile
-            provider = (getattr(self, "provider", "") or "").strip()
-            profile = get_provider_profile(provider)
-            if profile is not None:
-                return getattr(profile, "supports_vision_tool_messages", True)
-        except Exception:
-            pass
-        return True  # default: assume compatible
 
     def _get_transport(self, api_mode: str = None):
         """Return the cached transport for the given (or current) api_mode.
@@ -5738,17 +5405,9 @@ class AIAgent:
             return content
 
         if self._model_supports_vision():
-            # Vision-capable on paper — but if the provider rejects list-type
-            # tool content (e.g. Xiaomi MiMo's 400 "text is not set"), or if
-            # we've already learned this lesson in-session, short-circuit to
+            # Vision-capable on paper — but if we've already learned in-session
+            # that the endpoint rejects list-type tool content, short-circuit to
             # a text summary so we don't burn a round-trip relearning it.
-            if not self._provider_supports_vision_tool_messages():
-                logger.debug(
-                    "Tool %s: provider %s does not accept list-type tool "
-                    "content — sending text summary",
-                    tool_name, getattr(self, "provider", ""),
-                )
-                return _multimodal_text_summary(result)
             key = (
                 (getattr(self, "provider", "") or "").strip().lower(),
                 (getattr(self, "model", "") or "").strip(),
@@ -6445,10 +6104,7 @@ class AIAgent:
         New DELEGATE_TASK_SCHEMA fields only need to be added here to reach all
         invocation paths (concurrent, sequential, inline).
         """
-        from tools.delegate_tool import (
-            _strip_model_hidden_task_fields,
-            delegate_task as _delegate_task,
-        )
+        from tools.delegate_tool import delegate_task as _delegate_task
         # Delegations from the top-level MODEL always run in the background —
         # the model does not get to choose. delegate_task returns immediately
         # with a handle (one per task) and each subagent's result re-enters the
@@ -6464,7 +6120,7 @@ class AIAgent:
         return _delegate_task(
             goal=function_args.get("goal"),
             context=function_args.get("context"),
-            tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
+            tasks=function_args.get("tasks"),
             max_iterations=function_args.get("max_iterations"),
             role=function_args.get("role"),
             background=(not _is_subagent),

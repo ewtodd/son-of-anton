@@ -43,7 +43,7 @@ from agent.interrupt_compat import request_hard_interrupt
 _RUNTIME_PROVIDER_CUSTOM = "custom"
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
-from utils import base_url_hostname, is_truthy_value, strip_decorative_glyphs
+from utils import is_truthy_value, strip_decorative_glyphs
 
 
 # Tools that children must never have access to
@@ -1606,9 +1606,6 @@ def _build_child_agent(
     override_api_mode: Optional[str] = None,
     override_request_overrides: Optional[Dict[str, Any]] = None,
     override_max_tokens: Optional[int] = None,
-    # ACP transport overrides from trusted delegation config.
-    override_acp_command: Optional[str] = None,
-    override_acp_args: Optional[List[str]] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1773,63 +1770,7 @@ def _build_child_agent(
     if not override_base_url:
         effective_base_url = _inherit_parent_base_url(parent_agent, effective_base_url)
     effective_api_key = override_api_key or parent_api_key
-    # Bug #20558 / PR #20563: api_mode must NOT be inherited when the child uses a
-    # different provider than the parent — each provider has its own API surface
-    # (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).
-    # Inheriting the parent's mode causes 404 errors when the child routes to the
-    # wrong endpoint.  Derive the mode from the target provider when it differs.
-    #
-    # Nous Portal is dual-wire within a single provider: anthropic/* → Messages,
-    # everything else → chat_completions. Same-provider inheritance would pin a
-    # child Son of Anton/Qwen subagent onto the parent's Claude Messages wire (or the
-    # reverse). agent_init honors an explicit api_mode above its nous branch, so
-    # re-derive here before construction.
-    _parent_provider = getattr(parent_agent, "provider", None) or ""
-    _effective_provider_norm = (effective_provider or "").strip().lower()
-    if override_api_mode is not None:
-        effective_api_mode = override_api_mode
-    elif effective_provider != _parent_provider:
-        effective_api_mode = None  # force re-derivation from provider's defaults
-    else:
-        effective_api_mode = getattr(parent_agent, "api_mode", None)
-    # Defensive: validate trusted delegation.command exists on PATH before
-    # honoring it. An explicitly pinned transport that cannot run must fail
-    # the spawn loudly (#80450) — silently falling back to the default
-    # transport would run the child somewhere the user explicitly routed it
-    # away from. Normally unreachable via delegate_task, which pre-validates
-    # the command in _resolve_delegation_credentials.
-    if override_acp_command:
-        import shutil as _shutil
-
-        if not _shutil.which(override_acp_command):
-            raise ValueError(
-                f"Pinned delegation command '{override_acp_command}' was not "
-                f"found on PATH. Install it or remove delegation.command from "
-                f"config.toml."
-            )
-    effective_acp_command = override_acp_command or getattr(
-        parent_agent, "acp_command", None
-    )
-    effective_acp_args = list(
-        override_acp_args
-        if override_acp_args is not None
-        else (getattr(parent_agent, "acp_args", []) or [])
-    )
-
-    # When override_provider is set (e.g. delegation.provider: minimax-cn),
-    # the subagent must use direct API calls — not the parent's ACP transport.
-    # Inheriting acp_command unconditionally causes run_agent.py to initialize
-    # CopilotACPClient, bypassing override credentials entirely (issue #16816).
-    if override_provider and not override_acp_command:
-        effective_acp_command = None
-        effective_acp_args = []
-
-    if override_acp_command:
-        # If explicitly forcing an ACP transport override, the provider MUST be copilot-acp
-        # so run_agent.py initializes the CopilotACPClient.
-        effective_provider = "copilot-acp"
-        effective_api_mode = "chat_completions"
-
+    effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
     # Resolve reasoning config: delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
@@ -1851,24 +1792,6 @@ def _build_child_agent(
                 )
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
-
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
-    #
-    # EXCEPT when the user pinned delegation.provider: an explicit pin means
-    # "children run on THIS provider".  Inheriting the parent chain would let
-    # a mid-run auth/429 failure silently reroute the quiet-mode child onto
-    # the parent's fallback models with no surfaced signal (#80450) — the
-    # same class of silent-drag the override_provider filter-clearing below
-    # already prevents for OpenRouter routing preferences.  Predictability >
-    # liveness for explicit pins: the pinned child fails loudly instead.
-    parent_fallback = (
-        None
-        if override_provider
-        else (getattr(parent_agent, "_fallback_chain", None) or None)
-    )
 
     child_max_tokens = (
         override_max_tokens
@@ -1922,13 +1845,10 @@ def _build_child_agent(
                 model=effective_model,
                 provider=effective_provider,
                 api_mode=effective_api_mode,
-                acp_command=effective_acp_command,
-                acp_args=effective_acp_args,
                 max_iterations=max_iterations,
 
                 reasoning_config=child_reasoning,
                 prefill_messages=getattr(parent_agent, "prefill_messages", None),
-                fallback_model=parent_fallback,
                 enabled_toolsets=child_toolsets,
                 disabled_toolsets=child_disabled_toolsets,
                 quiet_mode=True,
@@ -1997,14 +1917,6 @@ def _build_child_agent(
     parent_sid = getattr(parent_agent, "session_id", None)
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
         child._session_init_model_config["_delegate_from"] = parent_sid
-
-    # Share a credential pool with the child when possible so subagents can
-    # rotate credentials on rate limits instead of getting pinned to one key.
-    child_pool = _resolve_child_credential_pool(
-        effective_provider, parent_agent, effective_base_url
-    )
-    if child_pool is not None:
-        child._credential_pool = child_pool
 
     # Register child for interrupt propagation
     if hasattr(parent_agent, "_active_children"):
@@ -2425,18 +2337,6 @@ def _run_single_child(
     _saved_tool_names = getattr(
         child, "_delegate_saved_tool_names", list(model_tools._last_resolved_tool_names)
     )
-
-    child_pool = getattr(child, "_credential_pool", None)
-    leased_cred_id = None
-    if child_pool is not None:
-        leased_cred_id = child_pool.acquire_lease()
-        if leased_cred_id is not None:
-            try:
-                leased_entry = child_pool.current()
-                if leased_entry is not None and hasattr(child, "_swap_credential"):
-                    child._swap_credential(leased_entry)
-            except Exception as exc:
-                logger.debug("Failed to bind child to leased credential: %s", exc)
 
     # Heartbeat: periodically propagate child activity to the parent so the
     # gateway inactivity timeout doesn't fire while the subagent is working.
@@ -3291,12 +3191,6 @@ def _run_single_child(
         if _subagent_id:
             _unregister_subagent(_subagent_id, agent=child)
 
-        if child_pool is not None and leased_cred_id is not None:
-            try:
-                child_pool.release_lease(leased_cred_id)
-            except Exception as exc:
-                logger.debug("Failed to release credential lease: %s", exc)
-
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
         import model_tools
@@ -3827,13 +3721,9 @@ def delegate_task(
                 override_api_mode=creds["api_mode"],
                 override_request_overrides=creds.get("request_overrides"),
                 override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
                 role=effective_role,
             )
         except ValueError as exc:
-            # Explicit-pin preflight failures (e.g. pinned delegation.command
-            # missing from PATH) refuse the spawn loudly (#80450).
             return tool_error(str(exc))
         # Attach the validated schema for the completion-side validation
         # hook in _run_single_child. Absent (None) on schema-less tasks.
@@ -4277,91 +4167,6 @@ def delegate_task(
     return json.dumps(_execute_and_aggregate(), ensure_ascii=False)
 
 
-def _resolve_child_credential_pool(
-    effective_provider: Optional[str],
-    parent_agent,
-    effective_base_url: Optional[str] = None,
-):
-    """Resolve a credential pool for the child agent.
-
-    Rules:
-    1. Same provider as the parent -> share the parent's pool so cooldown state
-       and rotation stay synchronized.
-    2. Different provider -> try to load that provider's own pool.
-    3. No pool available -> return None and let the child keep the inherited
-       fixed credential behavior.
-
-    Custom endpoints are a special case: every direct ``delegation.base_url``
-    runtime collapses to ``provider="custom"``, so bare provider equality would
-    treat two *different* custom endpoints as interchangeable and let the child
-    inherit the parent's pool. Leasing from that pool then overwrites the
-    child's delegated ``base_url`` with the parent's endpoint (issue #7833).
-    We therefore resolve custom runtimes by endpoint identity (the
-    ``custom:<name>`` pool key derived from the base_url) and only share the
-    parent's pool when both resolve to the *same* custom endpoint.
-    """
-    if not effective_provider:
-        return getattr(parent_agent, "_credential_pool", None)
-
-    parent_provider = getattr(parent_agent, "provider", None) or ""
-    parent_pool = getattr(parent_agent, "_credential_pool", None)
-
-    # Custom endpoints: distinguish by endpoint identity, not the bare "custom"
-    # provider string. Two custom runtimes are only interchangeable when they
-    # resolve to the same custom:<name> pool key.
-    if effective_provider == "custom":
-        try:
-            from agent.credential_pool import get_custom_provider_pool_key, load_pool
-
-            child_key = get_custom_provider_pool_key(effective_base_url)
-            if child_key is None:
-                # Unregistered endpoint (raw delegation.base_url with no
-                # matching custom_providers entry) -> no shared pool exists.
-                # Keep the child's fixed delegated credential rather than
-                # risk inheriting the parent's custom endpoint.
-                return None
-
-            # Reuse the parent's pool only when it is the same custom endpoint.
-            parent_key = get_custom_provider_pool_key(
-                getattr(parent_agent, "base_url", None)
-            )
-            if (
-                parent_pool is not None
-                and parent_provider == "custom"
-                and parent_key is not None
-                and parent_key == child_key
-            ):
-                return parent_pool
-
-            pool = load_pool(child_key)
-            if pool is not None and pool.has_credentials():
-                return pool
-        except Exception as exc:
-            logger.debug(
-                "Could not resolve custom credential pool for child endpoint '%s': %s",
-                effective_base_url,
-                exc,
-            )
-        return None
-
-    if parent_pool is not None and effective_provider == parent_provider:
-        return parent_pool
-
-    try:
-        from agent.credential_pool import load_pool
-
-        pool = load_pool(effective_provider)
-        if pool is not None and pool.has_credentials():
-            return pool
-    except Exception as exc:
-        logger.debug(
-            "Could not load credential pool for child provider '%s': %s",
-            effective_provider,
-            exc,
-        )
-    return None
-
-
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -4387,56 +4192,16 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
-    configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
 
-    # Native-SDK providers (Bedrock, Vertex, Google GenAI) speak their own
-    # wire protocol — they cannot be reached via OpenAI chat_completions against
-    # a base_url. For these, always fall through to resolve_runtime_provider()
-    # so the proper SDK path is taken. The configured base_url is still
-    # forwarded through runtime-provider resolution when applicable (e.g. a
-    # custom Bedrock regional endpoint).
-    _NATIVE_SDK_PROVIDERS = {"google", "google-genai"}
-    _provider_lower = (configured_provider or "").strip().lower()
-    _is_native_sdk_provider = _provider_lower in _NATIVE_SDK_PROVIDERS
-
-    if configured_base_url and not _is_native_sdk_provider:
-        # When delegation.api_key is not set, return None so _build_child_agent
-        # falls back to the parent agent's API key via the credential inheritance
-        # path (effective_api_key = override_api_key or parent_api_key). This
-        # lets providers that store their key in a non-OPENAI_API_KEY env var
-        # (e.g. MINIMAX_API_KEY, DASHSCOPE_API_KEY) work without requiring
-        # callers to duplicate the key under delegation.api_key.
-        api_key = configured_api_key  # None → inherited from parent in _build_child_agent
-
-        # Use the shared URL-based api_mode detector (same path the main agent's
-        # runtime resolver uses) so Anthropic-compatible direct endpoints with a
-        # /anthropic suffix — Azure AI Foundry, MiniMax, Zhipu GLM, LiteLLM
-        # proxies — pick the right transport automatically. Without this,
-        # subagents would default to chat_completions and hit 404s on endpoints
-        # that only speak the Anthropic Messages protocol. Fixes #10213.
-        from son_of_anton_cli.runtime_provider import _detect_api_mode_for_url
-
-        base_lower = configured_base_url.lower()
-        provider = "custom"
-        api_mode = _detect_api_mode_for_url(configured_base_url) or "chat_completions"
-        if base_url_hostname(configured_base_url) == "api.anthropic.com":
-            provider = "anthropic"
-            api_mode = "anthropic_messages"
-        elif "api.kimi.com/coding" in base_lower:
-            provider = "custom"
-            api_mode = "anthropic_messages"
-
-        # Explicit delegation.api_mode in config always wins. Lets users force
-        # a transport for non-standard endpoints the URL heuristic can't detect.
-        if configured_api_mode in {"chat_completions", "anthropic_messages"}:
-            api_mode = configured_api_mode
-
+    if configured_base_url:
+        # No delegation.api_key → None, so _build_child_agent inherits the
+        # parent's key.
         return {
             "model": configured_model,
-            "provider": provider,
+            "provider": "custom",
             "base_url": configured_base_url,
-            "api_key": api_key,
-            "api_mode": api_mode,
+            "api_key": configured_api_key,
+            "api_mode": "chat_completions",
         }
 
     if not configured_provider:
@@ -4471,20 +4236,6 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Set the appropriate environment variable or run 'son-of-anton auth'."
         )
 
-    # A pinned ACP transport command must exist — refuse the spawn loudly
-    # rather than letting the child silently fall back to another transport
-    # (#80450).
-    pinned_command = runtime.get("command")
-    if pinned_command:
-        import shutil as _shutil
-
-        if not _shutil.which(pinned_command):
-            raise ValueError(
-                f"Delegation provider '{configured_provider}' is pinned to the "
-                f"'{pinned_command}' command, which was not found on PATH. "
-                f"Install it or choose a different delegation provider."
-            )
-
     return {
         "model": configured_model or runtime.get("model") or None,
         "provider": configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
@@ -4493,8 +4244,6 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "api_mode": runtime.get("api_mode"),
         "request_overrides": dict(runtime.get("request_overrides") or {}),
         "max_output_tokens": runtime.get("max_output_tokens"),
-        "command": runtime.get("command"),
-        "args": list(runtime.get("args") or []),
     }
 
 
@@ -4823,28 +4572,6 @@ def _model_background_value(args: dict, parent_agent=None) -> bool:
     return not is_subagent
 
 
-_MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
-
-
-def _strip_model_hidden_task_fields(tasks: Any) -> Any:
-    if not isinstance(tasks, list):
-        return tasks
-    stripped_tasks = []
-    changed = False
-    for task in tasks:
-        if not isinstance(task, dict):
-            stripped_tasks.append(task)
-            continue
-        stripped = {
-            key: value
-            for key, value in task.items()
-            if key not in _MODEL_HIDDEN_TASK_FIELDS
-        }
-        changed = changed or len(stripped) != len(task)
-        stripped_tasks.append(stripped)
-    return stripped_tasks if changed else tasks
-
-
 registry.register(
     name="delegate_task",
     toolset="delegation",
@@ -4852,7 +4579,7 @@ registry.register(
     handler=lambda args, **kw: delegate_task(
         goal=args.get("goal"),
         context=args.get("context"),
-        tasks=_strip_model_hidden_task_fields(args.get("tasks")),
+        tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),

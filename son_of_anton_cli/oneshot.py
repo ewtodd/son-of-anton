@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Optional
 
 from gateway.session_context import declare_stateless_channel
-from son_of_anton_cli.fallback_config import get_fallback_chain
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -331,7 +330,6 @@ def _run_agent(
     # Imports are local so they don't run when son-of-anton is invoked for
     # other commands (keeps top-level CLI startup cheap).
     from son_of_anton_cli.config import load_config
-    from son_of_anton_cli.models import detect_provider_for_model
     from son_of_anton_cli.runtime_provider import resolve_runtime_provider
     from son_of_anton_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
@@ -353,53 +351,11 @@ def _run_agent(
     env_model = os.getenv("SON_OF_ANTON_INFERENCE_MODEL", "").strip()
     effective_model = (model or "").strip() or env_model or cfg_model
 
-    # Resolve effective provider: explicit arg → (auto-detect from model if
-    # model was explicit) → env / config (handled inside resolve_runtime_provider).
-    #
-    # When --model is given without --provider, auto-detect the provider that
-    # serves that model — same semantic as `/model <name>` in an interactive
-    # session.  Without this, resolve_runtime_provider() would fall back to
-    # the user's configured default provider, which may not host the model
-    # the caller just asked for.
+    # Provider: explicit arg, else env / config (inside resolve_runtime_provider).
     effective_provider = (provider or "").strip() or None
-    explicit_base_url_from_alias: Optional[str] = None
-    if effective_provider is None and (model or env_model):
-        # Only auto-detect when the model was explicitly requested via arg or
-        # env var (not when it came from config — that's the "use my defaults"
-        # path and the configured provider is already correct).
-        explicit_model = (model or "").strip() or env_model
-        if explicit_model:
-            # First check DIRECT_ALIASES populated from config.toml `model_aliases:`.
-            # These map a user-defined alias to (model, provider, base_url) for
-            # endpoints not in any catalog (local servers, custom proxies, etc.).
-            try:
-                from son_of_anton_cli import model_switch as _ms
-                _ms._ensure_direct_aliases()
-                direct = _ms.DIRECT_ALIASES.get(explicit_model.strip().lower())
-            except Exception:
-                direct = None
-            if direct is not None:
-                effective_model = direct.model
-                effective_provider = direct.provider
-                if direct.base_url:
-                    explicit_base_url_from_alias = direct.base_url.rstrip("/")
-            else:
-                cfg_provider = ""
-                if isinstance(model_cfg, dict):
-                    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
-                current_provider = (
-                    cfg_provider
-                    or os.getenv("SON_OF_ANTON_INFERENCE_PROVIDER", "").strip().lower()
-                    or "auto"
-                )
-                detected = detect_provider_for_model(explicit_model, current_provider)
-                if detected:
-                    effective_provider, effective_model = detected
-
     runtime = resolve_runtime_provider(
         requested=effective_provider,
         target_model=effective_model or None,
-        explicit_base_url=explicit_base_url_from_alias,
     )
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
@@ -430,11 +386,6 @@ def _run_agent(
     # os._exit and skips finalizers, so an un-closed connection here would leak.
     agent = None
     try:
-        # Read the effective fallback chain from profile config so oneshot
-        # workers honour the same merge semantics as interactive CLI and
-        # gateway sessions.
-        _fb = get_fallback_chain(cfg)
-
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
@@ -446,8 +397,6 @@ def _run_agent(
             quiet_mode=True,
             platform="cli",
             session_db=session_db,
-            credential_pool=runtime.get("credential_pool"),
-            fallback_model=_fb or None,
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction

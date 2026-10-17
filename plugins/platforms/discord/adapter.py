@@ -6227,11 +6227,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            try:
-                from son_of_anton_cli.providers import get_label
-                provider_label = get_label(current_provider)
-            except Exception:
-                provider_label = current_provider
+            provider_label = current_provider
 
             embed = discord.Embed(
                 title="⚙ Model Configuration",
@@ -7594,7 +7590,6 @@ def _define_discord_view_classes() -> None:
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
             self._selected_provider: str = ""
-            self._pending_expensive_model: str = ""
 
             self._build_provider_select()
 
@@ -7686,41 +7681,6 @@ def _define_discord_view_classes() -> None:
             cancel_btn.callback = self._on_cancel
             self.add_item(cancel_btn)
 
-        def _build_expensive_confirm(self, model_id: str):
-            """Build confirmation buttons for unusually expensive models."""
-            self.clear_items()
-            self._pending_expensive_model = model_id
-
-            confirm_btn = discord.ui.Button(
-                label="Switch anyway",
-                style=discord.ButtonStyle.red,
-                custom_id="model_expensive_confirm",
-            )
-            confirm_btn.callback = self._on_expensive_confirm
-            self.add_item(confirm_btn)
-
-            cancel_btn = discord.ui.Button(
-                label="Cancel",
-                style=discord.ButtonStyle.grey,
-                custom_id="model_expensive_cancel",
-            )
-            cancel_btn.callback = self._on_cancel
-            self.add_item(cancel_btn)
-
-        async def _expensive_warning_for(self, model_id: str):
-            try:
-                from son_of_anton_cli.model_selection_guards import combined_selection_warning
-
-                # Pricing lookup can hit models.dev / a /models endpoint on a
-                # cache miss — keep it off the event loop.
-                return await asyncio.to_thread(
-                    combined_selection_warning,
-                    model_id,
-                    provider=self._selected_provider,
-                )
-            except Exception:
-                return None
-
         async def _on_provider_selected(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
@@ -7808,36 +7768,7 @@ def _define_discord_view_classes() -> None:
                 return
 
             model_id = interaction.data["values"][0]
-            warning = await self._expensive_warning_for(model_id)
-            if warning is not None:
-                self._build_expensive_confirm(model_id)
-                await interaction.response.edit_message(
-                    embed=discord.Embed(
-                        title=f"⚠ {warning.title}",
-                        description=warning.message,
-                        color=discord.Color.red(),
-                    ),
-                    view=self,
-                )
-                return
-
             await self._switch_selected_model(interaction, model_id)
-
-        async def _on_expensive_confirm(self, interaction: discord.Interaction):
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
-                )
-                return
-            if not self._pending_expensive_model:
-                await interaction.response.send_message(
-                    "Model selection expired.", ephemeral=True
-                )
-                return
-            await self._switch_selected_model(
-                interaction,
-                self._pending_expensive_model,
-            )
 
         async def _on_back(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
@@ -7848,11 +7779,7 @@ def _define_discord_view_classes() -> None:
 
             self._build_provider_select()
 
-            try:
-                from son_of_anton_cli.providers import get_label
-                provider_label = get_label(self.current_provider)
-            except Exception:
-                provider_label = self.current_provider
+            provider_label = self.current_provider
 
             await interaction.response.edit_message(
                 embed=discord.Embed(

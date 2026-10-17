@@ -106,63 +106,6 @@ def _normalize_route_base_url(base_url: Any) -> str:
     return normalize_route_base_url(base_url)
 
 
-def _provider_default_routes(provider: str) -> set[str]:
-    """Return known exact default routes for a canonical provider id."""
-    routes: set[str] = set()
-    try:
-        from son_of_anton_cli.providers import SON_OF_ANTON_OVERLAYS, get_provider
-
-        overlay = SON_OF_ANTON_OVERLAYS.get(provider)
-        provider_def = get_provider(provider, allow_network=False)
-        for value in (
-            getattr(overlay, "base_url_override", ""),
-            getattr(provider_def, "base_url", ""),
-        ):
-            route = _normalize_route_base_url(value)
-            if route:
-                routes.add(route)
-    except Exception:
-        pass
-
-    try:
-        from providers import get_provider_profile
-
-        profile = get_provider_profile(provider)
-        route = _normalize_route_base_url(
-            getattr(profile, "base_url", "")
-        )
-        if route:
-            routes.add(route)
-    except Exception:
-        pass
-
-    try:
-        from son_of_anton_cli.auth import PROVIDER_REGISTRY
-        from son_of_anton_cli.models import normalize_provider as normalize_model_provider
-        from son_of_anton_cli.providers import normalize_provider as normalize_registry_provider
-
-        for provider_id, config in PROVIDER_REGISTRY.items():
-            canonical_id = normalize_registry_provider(
-                normalize_model_provider(provider_id)
-            )
-            if canonical_id != provider:
-                continue
-            route = _normalize_route_base_url(
-                getattr(config, "inference_base_url", "")
-            )
-            if route:
-                routes.add(route)
-    except Exception:
-        pass
-
-    if provider == "gemini":
-        routes.update(
-            f"{route.rstrip('/')}/openai"
-            for route in list(routes)
-        )
-    return routes
-
-
 def _context_route_mismatch(
     configured_base_url: Any,
     active_base_url: Any,
@@ -180,46 +123,9 @@ def _context_route_mismatch(
         active_route = _normalize_route_base_url(active_base_url)
     if configured_route:
         return configured_route != active_route
-
-    configured_provider = str(configured_provider or "").strip()
-    active_provider = str(active_provider or "").strip()
-    if not configured_provider:
-        return False
-    try:
-        from son_of_anton_cli.models import normalize_provider as normalize_model_provider
-
-        configured_provider = normalize_model_provider(configured_provider)
-        active_provider = normalize_model_provider(active_provider)
-    except Exception:
-        configured_provider = configured_provider.lower()
-        active_provider = active_provider.lower()
-    try:
-        from son_of_anton_cli.providers import normalize_provider as normalize_registry_provider
-
-        configured_provider = normalize_registry_provider(configured_provider)
-        active_provider = normalize_registry_provider(active_provider)
-    except Exception:
-        pass
-
-    if active_route:
-        configured_routes = _provider_default_routes(configured_provider)
-        if configured_routes:
-            return active_route not in configured_routes
-        # Named/custom providers have no catalog default routes. An empty
-        # configured URL with a matching provider identity is still the same
-        # route — agent_init fills base_url from custom_providers before this
-        # check, but gateway display/hygiene paths historically compared the
-        # raw empty model.base_url and falsely dropped model.context_length,
-        # falling through to family defaults (e.g. qwen → 131072) on Discord
-        # session-reset banners while /status still showed the config pin.
-        if active_provider and configured_provider == active_provider:
-            return False
-        return True
-    return bool(
-        configured_provider
-        and active_provider
-        and configured_provider != active_provider
-    )
+    configured_provider = str(configured_provider or "").strip().lower()
+    active_provider = str(active_provider or "").strip().lower()
+    return bool(configured_provider and active_provider and configured_provider != active_provider)
 
 
 def _normalize_custom_provider_name(value: Any) -> str:
@@ -353,10 +259,6 @@ def init_agent(
     api_key: str = None,
     provider: str = None,
     api_mode: str = None,
-    acp_command: str = None,
-    acp_args: list[str] | None = None,
-    command: str = None,
-    args: list[str] | None = None,
     model: str = "",
     max_iterations: int = sys.maxsize,  # Default: unlimited tool-calling iterations (shared with subagents)
     enabled_toolsets: List[str] = None,
@@ -387,7 +289,6 @@ def init_agent(
     reaction_callback: Optional[Callable[[str], None]] = None,
     max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None,
-    service_tier: str = None,
     request_overrides: Dict[str, Any] = None,
     prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None,
@@ -406,8 +307,6 @@ def init_agent(
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
     run_budget_seconds: Optional[float] = None,
-    fallback_model: Dict[str, Any] = None,
-    credential_pool=None,
     checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20,
     checkpoint_max_total_size_mb: int = 500,
@@ -500,29 +399,8 @@ def init_agent(
         if isinstance(requested_provider, str) and requested_provider.strip()
         else agent.provider
     )
-    agent._credential_pool = credential_pool
-    agent.acp_command = acp_command or command
-    agent.acp_args = list(acp_args or args or [])
     # The wire is always OpenAI-compatible chat completions.
     agent.api_mode = "chat_completions"
-
-    # Credential-pool validation runs AFTER provider auto-detection so
-    # a pool scoped to e.g. "anthropic" is not rejected when the agent
-    # was constructed with provider=None and an anthropic.com URL.
-    # Regression from #63048 which placed this check before the
-    # URL-based auto-detection block above (fixed #63425).
-    if credential_pool is not None:
-        try:
-            from agent.credential_pool import credential_pool_matches_provider
-
-            if not credential_pool_matches_provider(
-                credential_pool,
-                agent.provider,
-                base_url=agent.base_url,
-            ):
-                agent._credential_pool = None
-        except Exception:
-            agent._credential_pool = None
 
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.
@@ -530,17 +408,6 @@ def init_agent(
         agent._get_transport()
     except Exception:
         pass  # Non-fatal — transport may not exist for all modes yet
-
-    try:
-        from son_of_anton_cli.model_normalize import (
-            _AGGREGATOR_PROVIDERS,
-            normalize_model_for_provider,
-        )
-
-        if agent.provider not in _AGGREGATOR_PROVIDERS:
-            agent.model = normalize_model_for_provider(agent.model, agent.provider)
-    except Exception:
-        pass
 
     agent.tool_progress_callback = tool_progress_callback
     agent.tool_start_callback = tool_start_callback
@@ -627,7 +494,6 @@ def init_agent(
     # Read once at init; switch_model / try_activate_fallback / restore
     # keep it in sync with the active provider.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
-    agent.service_tier = service_tier
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
@@ -850,92 +716,15 @@ def init_agent(
             }
             if _provider_timeout is not None:
                 client_kwargs["timeout"] = _provider_timeout
-            # Preserve provider-specific headers the router set.  The
-            # OpenAI SDK stores caller-provided default_headers in
-            # _custom_headers; older/mocked clients may expose
-            # _default_headers instead.
-            _routed_headers = getattr(_routed_client, "_custom_headers", None)
-            if not _routed_headers:
-                _routed_headers = getattr(_routed_client, "default_headers", None)
-            if not _routed_headers:
-                _routed_headers = getattr(_routed_client, "_default_headers", None)
-            if _routed_headers:
-                client_kwargs["default_headers"] = dict(_routed_headers)
+            from agent.transports.chat_completions import user_agent
+
+            client_kwargs["default_headers"] = {"User-Agent": user_agent()}
         else:
-            # When the user explicitly chose a non-OpenRouter provider
-            # but no credentials were found, fail fast with a clear
-            # message instead of silently routing through OpenRouter.
-            _explicit = (agent.provider or "").strip().lower()
-            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
-                # Look up the actual env var name from the provider
-                # config — some providers use non-standard names
-                # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
-                _env_hint = f"{_explicit.upper()}_API_KEY"
-                try:
-                    from son_of_anton_cli.auth import PROVIDER_REGISTRY
-                    _pcfg = PROVIDER_REGISTRY.get(_explicit)
-                    if _pcfg and _pcfg.api_key_env_vars:
-                        _env_hint = _pcfg.api_key_env_vars[0]
-                except Exception:
-                    pass
-                # --- Init-time fallback (#17929) ---
-                _fb_entries = []
-                if isinstance(fallback_model, list):
-                    _fb_entries = [
-                        f for f in fallback_model
-                        if isinstance(f, dict) and f.get("provider") and f.get("model")
-                    ]
-                elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-                    _fb_entries = [fallback_model]
-                _fb_resolved = False
-                for _fb in _fb_entries:
-                    try:
-                        from son_of_anton_cli.fallback_config import resolve_entry_api_key
-                        _fb_explicit_key = resolve_entry_api_key(_fb)
-                        _fb_client, _fb_model = resolve_provider_client(
-                            _fb["provider"], model=_fb["model"],
-                            explicit_base_url=_fb.get("base_url"),
-                            explicit_api_key=_fb_explicit_key,
-                        )
-                    except Exception as _fb_exc:
-                        logger.debug(
-                            "Init-time fallback entry %s failed: %s",
-                            _fb.get("provider"), _fb_exc,
-                        )
-                        continue
-                    if _fb_client is not None:
-                        agent.provider = _fb["provider"]
-                        agent.model = _fb_model or _fb["model"]
-                        agent._fallback_activated = True
-                        client_kwargs = {
-                            "api_key": _fb_client.api_key,
-                            "base_url": str(_fb_client.base_url),
-                        }
-                        if _provider_timeout is not None:
-                            client_kwargs["timeout"] = _provider_timeout
-                        _fb_headers = getattr(_fb_client, "_custom_headers", None)
-                        if not _fb_headers:
-                            _fb_headers = getattr(_fb_client, "default_headers", None)
-                        if not _fb_headers:
-                            _fb_headers = getattr(_fb_client, "_default_headers", None)
-                        if _fb_headers:
-                            client_kwargs["default_headers"] = dict(_fb_headers)
-                        _fb_resolved = True
-                        break
-                if not _fb_resolved:
-                    raise RuntimeError(
-                        f"Provider '{_explicit}' is set in config.toml but no API key "
-                        f"was found. Set the {_env_hint} environment "
-                        f"variable, or switch to a different provider with `son-of-anton model`."
-                    )
-            if not getattr(agent, "_fallback_activated", False):
-                # No provider configured — reject with a clear message.
-                raise RuntimeError(
-                    "No LLM provider configured. Declare one under model in "
-                    "config.toml (the Nix module's settings), or run "
-                    "`son-of-anton model`."
-                )
-    
+            raise RuntimeError(
+                "No LLM provider configured. Declare the endpoint under "
+                "custom_providers in config.toml (the Nix module's settings)."
+            )
+
     agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
     # Enable fine-grained tool streaming for Claude on OpenRouter.
@@ -979,34 +768,7 @@ def init_agent(
     # OAuth refreshes can replace the runtime token before a failed request is
     # recovered, so the mutable API-key value alone cannot reliably attribute
     # the failure to its source entry.
-    from agent.agent_runtime_helpers import sync_credential_pool_entry_id
-    sync_credential_pool_entry_id(agent)
     
-    # Provider fallback chain — ordered list of backup providers tried
-    # when the primary is exhausted (rate-limit, overload, connection
-    # failure).  Supports both legacy single-dict ``fallback_model`` and
-    # new list ``fallback_providers`` format.
-    if isinstance(fallback_model, list):
-        agent._fallback_chain = [
-            f for f in fallback_model
-            if isinstance(f, dict) and f.get("provider") and f.get("model")
-        ]
-    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-        agent._fallback_chain = [fallback_model]
-    else:
-        agent._fallback_chain = []
-    agent._fallback_index = 0
-    agent._fallback_activated = getattr(agent, "_fallback_activated", False)
-    # Legacy attribute kept for backward compat (tests, external callers)
-    agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
-    if agent._fallback_chain and not agent.quiet_mode:
-        if len(agent._fallback_chain) == 1:
-            fb = agent._fallback_chain[0]
-            print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
-        else:
-            print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
-                  " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
-
     # A multiplexed gateway may enter a different SON_OF_ANTON_HOME after
     # ``model_tools`` was first imported. Ensure that profile's keyed plugin
     # manager has discovered its registrations before taking the tool snapshot.
@@ -1759,18 +1521,6 @@ def init_agent(
         _configured_default_model = str(_default or "").strip()
         _configured_default_runtime_model = _configured_default_model
         _active_runtime_model = agent.model
-        if _configured_default_model:
-            try:
-                from son_of_anton_cli.model_normalize import normalize_model_for_provider
-
-                _configured_default_runtime_model = normalize_model_for_provider(
-                    _configured_default_model, agent.provider
-                )
-                _active_runtime_model = normalize_model_for_provider(
-                    agent.model, agent.provider
-                )
-            except Exception:
-                pass
         _configured_provider = str(_model_cfg.get("provider") or "").strip()
         _configured_base_url = _normalize_route_base_url(
             _model_cfg.get("base_url")
@@ -1782,23 +1532,6 @@ def init_agent(
         _runtime_first_provider_ids = {"auto"}
         if _configured_provider_norm in _runtime_first_provider_ids:
             _custom_provider_candidate = False
-        elif (
-            _custom_provider_candidate
-            and _configured_provider_norm != "custom"
-            and not _configured_provider_norm.startswith("custom:")
-        ):
-            try:
-                from son_of_anton_cli.auth import resolve_provider as resolve_auth_provider
-
-                _resolved_auth_provider = resolve_auth_provider(
-                    _configured_provider_norm
-                )
-                _custom_provider_candidate = (
-                    str(_resolved_auth_provider or "").strip().lower()
-                    != _configured_provider_norm
-                )
-            except Exception:
-                pass
         if not _configured_base_url and _custom_provider_candidate:
             _configured_custom_provider = _normalize_custom_provider_name(
                 _configured_provider

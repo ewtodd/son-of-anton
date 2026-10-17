@@ -654,9 +654,6 @@ def build_turn_context(
     # Tag log records on this thread with the session ID for ``son-of-anton logs``.
     set_session_context(agent.session_id)
 
-    # Restore the primary runtime if the previous turn activated fallback.
-    agent._restore_primary_runtime()
-
     # Tell auxiliary_client what the live main provider/model are for this turn
     # after primary restoration has settled the runtime.
     try:

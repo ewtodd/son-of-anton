@@ -1,105 +1,37 @@
-"""Provider-catalog contracts — the fork ships exactly one API-key provider
-(openai-api) plus config.toml custom endpoints. These tests assert the catalog
-structure that the /model picker, setup wizard, and provider resolution all
-derive from, so a provider added or removed in one layer but not the others
-fails loudly.
-
-DeepSeek was the second API-key provider until 2026-08-27. Its models are
-still reachable — as any other model is — by pointing a custom endpoint or an
-aggregator at them; what went away is the direct-API integration.
+"""Endpoint contracts — the fork speaks to one kind of endpoint: an
+OpenAI-compatible ``custom_providers`` entry in config.toml.
 """
 
 from __future__ import annotations
 
-from son_of_anton_cli.auth import PROVIDER_REGISTRY
-from son_of_anton_cli.models import CANONICAL_PROVIDERS
-from son_of_anton_cli.providers import (
-    determine_api_mode,
-    get_label,
-    get_provider,
-    normalize_provider,
-)
+import importlib
 
 
-def test_registry_contains_exactly_the_fork_providers() -> None:
-    assert set(PROVIDER_REGISTRY) == {"openai-api"}
+def test_removed_provider_modules_are_gone() -> None:
+    """Vendor adapters, auth flows and catalogs must not come back.
 
-
-def test_registry_entries_are_usable_api_key_providers() -> None:
-    for pid, pconfig in PROVIDER_REGISTRY.items():
-        assert pconfig.id == pid
-        assert pconfig.auth_type == "api_key"
-        assert pconfig.inference_base_url.startswith("https://")
-        assert pconfig.api_key_env_vars, f"{pid} must declare an API key env var"
-
-
-def test_canonical_providers_include_fork_providers() -> None:
-    slugs = {p.slug for p in CANONICAL_PROVIDERS}
-    assert "openai-api" in slugs
-    assert "deepseek" not in slugs
-    # The custom endpoint slot is the plugin-registered third surface.
-    assert "custom" in slugs
-
-
-def test_every_canonical_provider_resolves_to_a_known_surface() -> None:
-    # Each canonical slug must resolve through either the auth registry
-    # (api-key providers), the plugin profile registry (custom), or the
-    # models.dev/overlay lookup. No orphan entries in the picker.
-    from providers import get_provider_profile
-
-    for entry in CANONICAL_PROVIDERS:
-        slug = entry.slug
-        in_registry = slug in PROVIDER_REGISTRY
-        in_plugins = get_provider_profile(slug) is not None
-        assert in_registry or in_plugins, f"canonical provider {slug!r} resolves nowhere"
-
-
-def test_openai_alias_resolves_to_openai_api() -> None:
-    assert normalize_provider("openai") == "openai-api"
-    assert normalize_provider("OpenAI") == "openai-api"
-
-
-def test_removed_providers_no_longer_resolve_offline() -> None:
-    # Pruned providers must not resolve through overlays; with models.dev
-    # unreachable (isolated test home, no cache) they resolve to None.
-    for slug in (
-        "nous", "openrouter", "gemini", "copilot",
-        # Removed 2026-08-25: the dead-provider sweep. Each had a full
-        # adapter + auth + pricing + runtime-resolution surface that could
-        # never fire, because none of them are in SON_OF_ANTON_OVERLAYS.
-        "bedrock", "aws", "aws-bedrock",
-        "vertex", "google-vertex", "vertex-ai",
-        "azure-foundry", "foundry",
-        # Removed 2026-08-27: the direct DeepSeek API, in favour of reaching
-        # those models over an OpenAI-compatible endpoint like everything
-        # else. The alias went with it.
-        "deepseek", "deep-seek",
-    ):
-        assert get_provider(slug, allow_network=False) is None, f"{slug} still resolves"
-
-
-def test_removed_provider_adapters_are_gone() -> None:
-    """The dead-provider adapters must not come back as importable modules.
-
-    Each of these was reachable only through a provider id that
-    ``get_provider`` rejects, so re-adding the module without re-adding the
-    provider would recreate ~2,700 lines of unreachable code.
+    Each was reachable only through a provider the fork no longer ships, so
+    re-adding the module without the provider recreates unreachable code.
     """
-    import importlib
-
     for mod in (
         "agent.bedrock_adapter",
-        "agent.azure_identity_adapter",
         "agent.vertex_adapter",
-        "agent.transports.bedrock",
-        "son_of_anton_cli.azure_detect",
-        # Removed 2026-08-27: wires no shipped provider could select.
         "agent.anthropic_adapter",
         "agent.transports.anthropic",
         "agent.gemini_native_adapter",
-        "agent.gemini_schema",
         "agent.copilot_acp_client",
-        "son_of_anton_cli.copilot_auth",
+        "agent.credential_pool",
+        "agent.credential_persistence",
+        "agent.models_dev",
+        "agent.billing_links",
+        "providers",
+        "son_of_anton_cli.auth",
+        "son_of_anton_cli.providers",
+        "son_of_anton_cli.credential_lifecycle",
+        "son_of_anton_cli.fallback_config",
+        "son_of_anton_cli.model_normalize",
+        "son_of_anton_cli.model_selection_guards",
+        "son_of_anton_cli.model_setup_flows",
     ):
         try:
             importlib.import_module(mod)
@@ -108,71 +40,42 @@ def test_removed_provider_adapters_are_gone() -> None:
         raise AssertionError(f"{mod} is importable again — dead provider resurrected")
 
 
-def test_no_dead_provider_auth_types_registered() -> None:
-    """PROVIDER_REGISTRY must not carry auth flows with no provider behind them."""
-    from son_of_anton_cli.auth import PROVIDER_REGISTRY
-
-    auth_types = {p.auth_type for p in PROVIDER_REGISTRY.values()}
-    assert "aws_sdk" not in auth_types, "aws_sdk auth survives without Bedrock"
-    assert "vertex" not in auth_types, "vertex auth survives without the adapter"
-
-
-def test_api_mode_for_fork_providers() -> None:
-    assert determine_api_mode("deepseek") == "chat_completions"
-    assert determine_api_mode("openai-api") == "chat_completions"
-    assert determine_api_mode("custom") == "chat_completions"
-
-
-def test_labels_do_not_carry_upstream_copy() -> None:
-    label = get_label("deepseek")
-    assert "nous" not in label.lower()
-    assert "openrouter" not in label.lower()
-
-
 def test_custom_providers_dict_form_normalizes() -> None:
     # The keyed dict form (custom_providers.custom.base_url = ...) is the
-    # shape the fork's examples and declarative configs use; the runtime
-    # resolution must normalize it (gateway live-bug regression).
+    # shape the fork's declarative configs use.
     from son_of_anton_cli.config import get_compatible_custom_providers
 
     providers = get_compatible_custom_providers(
-        {
-            "custom_providers": {
-                "custom": {"base_url": "http://127.0.0.1:8080/v1"},
-            },
-        }
+        {"custom_providers": {"custom": {"base_url": "http://127.0.0.1:8080/v1"}}}
     )
     assert len(providers) == 1
     assert providers[0]["name"] == "custom"
     assert providers[0]["base_url"] == "http://127.0.0.1:8080/v1"
 
 
-def test_the_anthropic_wire_cannot_be_selected() -> None:
-    """The fork speaks OpenAI-compatible wires only.
+def test_runtime_resolves_the_declared_endpoint_and_its_key_env(monkeypatch) -> None:
+    """``provider = "custom"`` resolves to the entry's base_url, with the key
+    read from the env var its ``key_env`` names, on the chat-completions wire."""
+    import os
 
-    Three things used to route a turn onto the Anthropic Messages transport:
-    ``provider: anthropic``, a base URL at api.anthropic.com, and any URL
-    ending in ``/anthropic``. None of them can now, so the adapter behind
-    them had nothing left to reach it.
-    """
-    from son_of_anton_cli.providers import (
-        TRANSPORT_TO_API_MODE,
-        determine_api_mode,
-    )
+    from son_of_anton_cli.runtime_provider import resolve_runtime_provider
 
-    assert set(TRANSPORT_TO_API_MODE.values()) == {"chat_completions"}
-    assert determine_api_mode("anthropic") == "chat_completions"
+    home = os.environ["SON_OF_ANTON_HOME"]
+    with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as f:
+        f.write(
+            '[model]\nprovider = "custom"\ndefault = "m"\n'
+            '[custom_providers.custom]\nbase_url = "http://10.0.0.2:4002/v1/"\n'
+            'key_env = "SOA_TEST_VK"\n'
+        )
+    monkeypatch.setenv("SOA_TEST_VK", "vk-secret-value")
 
+    runtime = resolve_runtime_provider()
+    assert runtime["provider"] == "custom"
+    assert runtime["api_mode"] == "chat_completions"
+    assert runtime["base_url"] == "http://10.0.0.2:4002/v1"
+    assert runtime["api_key"] == "vk-secret-value"
 
-def test_custom_profile_identifies_son_of_anton_by_user_agent() -> None:
-    """Gateways (Bifrost) attribute callers by User-Agent.
-
-    The stock OpenAI SDK UA reads as a generic API client, so the custom
-    profile pins a son-of-anton UA in default_headers; the SDK forwards a
-    caller-supplied User-Agent unchanged.
-    """
-    from providers import get_provider_profile
-
-    profile = get_provider_profile("custom")
-    assert profile is not None
-    assert profile.default_headers["User-Agent"].startswith("son-of-anton-cli")
+    # An explicit base_url never carries the entry's stored key elsewhere.
+    other = resolve_runtime_provider(explicit_base_url="http://elsewhere.example/v1")
+    assert other["base_url"] == "http://elsewhere.example/v1"
+    assert other["api_key"] != "vk-secret-value"

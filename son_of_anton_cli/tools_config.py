@@ -1503,8 +1503,8 @@ def _configure_vision_provider_model(config: dict, vision_cfg: dict) -> None:
 
     if not providers:
         _print_warning(
-            "  No authenticated providers found. Configure a provider first "
-            "with `son-of-anton model`, then re-run this."
+            "  No providers found. Declare one under custom_providers in "
+            "config.toml, then re-run this."
         )
         return
 

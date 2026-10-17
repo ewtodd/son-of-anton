@@ -902,13 +902,9 @@ def _device_login_available() -> bool:
 
 
 def _headless() -> tuple[bool, bool]:
-    """(is_remote, can_open_browser) — degrades safely if son_of_anton_cli internals move."""
-    try:
-        from son_of_anton_cli.auth import _can_open_graphical_browser, _is_remote_session
-
-        return _is_remote_session(), _can_open_graphical_browser()
-    except Exception:
-        return False, True
+    """(is_remote, can_open_browser)."""
+    remote = bool(os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"))
+    return remote, not remote
 
 
 def _apply_grant_to_host(son_of_anton_host: dict, cred) -> None:

@@ -7,8 +7,6 @@ verbatim from son_of_anton_cli/config.py. Must not import from son_of_anton_cli.
 DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
-    "fallback_providers": [],
-    "credential_pool_strategies": {},
     "toolsets": ["son-of-anton-cli"],
     # SQLite journal mode used by every Son of Anton database opener. WAL is the
     # normal default; set DELETE for weak-fsync/shared filesystems where WAL is
@@ -147,7 +145,6 @@ DEFAULT_CONFIG = {
             # leaves the budget untouched.
             "cost_threshold_usd": 0.25,
         },
-        "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false
@@ -1982,25 +1979,6 @@ DEFAULT_CONFIG = {
         "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # Max size per log file before rotation
         "backup_count": 3,     # Number of rotated backup files to keep
-    },
-
-    # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
-    # Remote curated model list, falling back to the in-repo snapshot on
-    # network failure. Disabled by default in the fork (no hosted catalog).
-    "model_catalog": {
-        "enabled": False,
-        "url": "https://son-of-anton.nousresearch.com/docs/api/model-catalog.json",
-        # Disk cache TTL in hours.  Beyond this, the CLI refetches on the
-        # next /model or `son-of-anton model` invocation; network failures
-        # silently fall back to the stale cache.
-        "ttl_hours": 1,
-        # Optional per-provider override URLs for third parties that want
-        # to self-host their own curation list using the same schema.
-        # Example:
-        #   providers:
-        #     deepseek:
-        #       url: https://example.com/my-curation.json
-        "providers": {},
     },
 
     # Per-model metadata overrides — manually declare context_window,

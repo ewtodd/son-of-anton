@@ -12,10 +12,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from son_of_anton_cli.auth import AuthError, resolve_provider
 from son_of_anton_cli.colors import Colors, color
 from son_of_anton_cli.config import get_env_path, get_env_value, get_son_of_anton_home, load_config
-from son_of_anton_cli.models import provider_label
 from son_of_anton_cli.runtime_provider import resolve_requested_provider
 
 
@@ -53,33 +51,6 @@ def _configured_model_label(config: dict) -> str:
     else:
         model = ""
     return model or "(not set)"
-
-
-def _effective_provider_label() -> str:
-    """Return the provider label matching current CLI runtime resolution."""
-    requested = resolve_requested_provider()
-    try:
-        effective = resolve_provider(requested)
-    except AuthError:
-        effective = requested or "auto"
-
-    if effective == "openrouter":
-        # A custom endpoint may be configured either in config.toml
-        # (model.base_url — the canonical location; the runtime treats
-        # config.toml as the single source of truth) or via the legacy
-        # OPENAI_BASE_URL env var. Either way, labeling it "OpenRouter"
-        # is misleading (#3296).
-        config_base_url = ""
-        try:
-            model_cfg = load_config().get("model")
-            if isinstance(model_cfg, dict):
-                config_base_url = (model_cfg.get("base_url") or "").strip()
-        except Exception:
-            pass
-        if config_base_url or get_env_value("OPENAI_BASE_URL"):
-            effective = "custom"
-
-    return provider_label(effective)
 
 
 def _estop_status_line():
@@ -130,7 +101,7 @@ def show_status(args):
         config = {}
 
     print(f"  Model:        {_configured_model_label(config)}")
-    print(f"  Provider:     {_effective_provider_label()}")
+    print(f"  Provider:     {resolve_requested_provider()}")
 
     # =========================================================================
     # API Keys
@@ -140,8 +111,6 @@ def show_status(args):
 
     # Values may be a single env var name (str) or a tuple of alternates (first found wins).
     keys: dict[str, str | tuple[str, ...]] = {
-        "OpenAI": "OPENAI_API_KEY",
-        "DeepSeek": "DEEPSEEK_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
         "Tavily": "TAVILY_API_KEY",
         "GitHub": "GITHUB_TOKEN",

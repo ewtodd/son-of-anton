@@ -1781,7 +1781,6 @@ def check_config_version() -> Tuple[int, int]:
 # absent from DEFAULT_CONFIG (omitted when unused / alternate schema forms).
 _EXTRA_KNOWN_ROOT_KEYS = {
     "custom_providers",  # legacy list form; modern equivalent is providers: {}
-    "fallback_model",    # optional single dict or chain list; omitted when disabled
     "mcp_servers",       # MCP server definitions written by setup/tools flows
     # Roots read from the raw user TOML (or written by our own flows) that are
     # intentionally absent from DEFAULT_CONFIG:
@@ -1864,62 +1863,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                         f"custom_providers[{i}] is missing 'base_url' field",
                         "Add the API endpoint URL, e.g.: base_url: https://api.example.com/v1",
                     ))
-
-    # ── fallback_model: single dict OR list of dicts (chain) ─────────────
-    fb = config.get("fallback_model")
-    if fb is not None:
-        if isinstance(fb, list):
-            # Chain fallback — validate each entry
-            for i, entry in enumerate(fb):
-                if not isinstance(entry, dict):
-                    issues.append(ConfigIssue(
-                        "error",
-                        f"fallback_model[{i}] should be a dict, got {type(entry).__name__}",
-                        "Each entry needs provider + model",
-                    ))
-                else:
-                    if not entry.get("provider"):
-                        issues.append(ConfigIssue(
-                            "warning",
-                            f"fallback_model[{i}] is missing 'provider' field",
-                            "Add: provider: openrouter (or another provider)",
-                        ))
-                    if not entry.get("model"):
-                        issues.append(ConfigIssue(
-                            "warning",
-                            f"fallback_model[{i}] is missing 'model' field",
-                            "Add: model: <model-name>",
-                        ))
-        elif not isinstance(fb, dict):
-            issues.append(ConfigIssue(
-                "error",
-                f"fallback_model should be a dict with 'provider' and 'model', got {type(fb).__name__}",
-                "Change to:\n"
-                "  fallback_model:\n"
-                "    provider: openrouter\n"
-                "    model: anthropic/claude-sonnet-4",
-            ))
-        elif fb:
-            if not fb.get("provider"):
-                issues.append(ConfigIssue(
-                    "warning",
-                    "fallback_model is missing 'provider' field — fallback will be disabled",
-                    "Add: provider: openrouter (or another provider)",
-                ))
-            if not fb.get("model"):
-                issues.append(ConfigIssue(
-                    "warning",
-                    "fallback_model is missing 'model' field — fallback will be disabled",
-                    "Add: model: anthropic/claude-sonnet-4 (or another model)",
-                ))
-
-    # ── Check for fallback_model accidentally nested inside custom_providers ──
-    if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
-        issues.append(ConfigIssue(
-            "error",
-            "fallback_model appears inside custom_providers instead of at root level",
-            "Move fallback_model to the top level of config.toml (no indentation)",
-        ))
 
     # ── model section: should exist when custom_providers is configured ──
     model_cfg = config.get("model")
@@ -4669,7 +4612,6 @@ def _default_value_for_key(dotted_key: str):
 # or ``providers.openrouter.api_key`` without us needing to know server names.
 _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
     "providers",
-    "credential_pool_strategies",
     "mcp_servers",
     "hooks",
     "quick_commands",
@@ -4952,11 +4894,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         sys.exit(1)
     # Check if it's an API key (goes to .env)
     if _is_env_config_key(key):
-        # Unified lifecycle: also rotates any config.toml mirror of the old
-        # value so a stale higher-precedence copy can't win (#62269).
-        from son_of_anton_cli.credential_lifecycle import save_provider_env_credential
-
-        save_provider_env_credential(key.upper(), value)
+        save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
 
@@ -5223,12 +5161,7 @@ def unset_config_value(key: str):
         sys.exit(1)
 
     if _is_env_config_key(key):
-        # Unified lifecycle: prune env-seeded credential_pool entries and
-        # model-cache rows too, so `son-of-anton config unset <KEY>` fully removes
-        # the provider instead of leaving it resurrectable (#51071 family).
-        from son_of_anton_cli.credential_lifecycle import remove_provider_env_credential
-
-        if not remove_provider_env_credential(key.upper()).get("found"):
+        if not remove_env_value(key.upper()):
             print(f"Config key not set: {key}", file=sys.stderr)
             sys.exit(1)
         print(f"✓ Unset {key} from {get_env_path()}")
@@ -5439,52 +5372,10 @@ def config_command(args):
         sys.exit(1)
 
 
-# ── Profile-driven env var injection ─────────────────────────────────────────
-# Any provider registered in providers/ with auth_type="api_key" automatically
-# gets its env_vars exposed in OPTIONAL_ENV_VARS without editing this file.
-# Runs once at import time.
-
-_profile_env_vars_injected = False
-
-
-def _inject_profile_env_vars() -> None:
-    """Populate OPTIONAL_ENV_VARS from provider profiles not already listed.
-
-    Called once at module load time. Idempotent — repeated calls are no-ops.
-    """
-    global _profile_env_vars_injected
-    if _profile_env_vars_injected:
-        return
-    _profile_env_vars_injected = True
-    try:
-        from providers import list_providers
-        for _pp in list_providers():
-            if _pp.auth_type not in {"api_key",}:
-                continue
-            for _var in _pp.env_vars:
-                if _var in OPTIONAL_ENV_VARS:
-                    continue
-                _is_key = not _var.endswith("_BASE_URL") and not _var.endswith("_URL")
-                OPTIONAL_ENV_VARS[_var] = {
-                    "description": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL override'}",
-                    "prompt": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL (leave empty for default)'}",
-                    "url": _pp.signup_url or None,
-                    "password": _is_key,
-                    "category": "provider",
-                    "advanced": True,
-                }
-    except Exception:
-        pass
-
-
-# Eagerly inject so that OPTIONAL_ENV_VARS is fully populated at import time.
-_inject_profile_env_vars()
-
-
 # ── Platform-plugin env var injection ────────────────────────────────────────
 # Bundled platform plugins under ``plugins/platforms/*/plugin.toml`` declare
-# their required env vars via ``requires_env``.  This mirror of
-# ``_inject_profile_env_vars`` surfaces them in ``son-of-anton config`` UI so users
+# their required env vars via ``requires_env``.  This surfaces them in
+# the ``son-of-anton config`` UI so users
 # can configure plugin platforms without the core repo ever needing
 # to know they exist.
 #

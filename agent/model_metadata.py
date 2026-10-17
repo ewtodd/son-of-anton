@@ -81,15 +81,6 @@ def _resolve_requests_verify(base_url: str = "") -> bool | str:
             return val
     return True
 
-# Compatibility snapshot for callers that inspect this private constant.
-# Prefix routing below queries the registry live so later registrations work.
-try:
-    from providers import list_providers as _list_providers
-except Exception:
-    def _list_providers():
-        return []
-
-
 _OLLAMA_TAG_PATTERN = re.compile(
     r"^(\d+\.?\d*b|latest|stable|q\d|fp?\d|instruct|chat|coder|vision|text)",
     re.IGNORECASE,
@@ -117,14 +108,9 @@ def _strip_provider_prefix(model: str) -> str:
     if ":" not in model or model.startswith("http"):
         return model
     prefix, suffix = model.split(":", 1)
-    prefix_lower = prefix.strip().lower()
-    try:
-        from providers import get_provider_profile
+    from son_of_anton_constants import _CUSTOM_FAMILY_PROVIDERS
 
-        is_provider = get_provider_profile(prefix_lower) is not None
-    except Exception:
-        is_provider = False
-    if is_provider:
+    if prefix.strip().lower() in _CUSTOM_FAMILY_PROVIDERS:
         # Don't strip if suffix looks like an Ollama tag (e.g. "7b", "latest", "q4_0")
         if _OLLAMA_TAG_PATTERN.match(suffix.strip()):
             return model
@@ -686,17 +672,6 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "tokenhub.tencentmaas.com": "tencent-tokenhub",
     "ollama.com": "ollama-cloud",
 }
-
-# Auto-extend with hostnames derived from provider profiles.
-# Any provider with a base_url not already in the map gets added automatically.
-try:
-    for _pp in _list_providers():
-        _host = _pp.get_hostname()
-        if _host and _host not in _URL_TO_PROVIDER:
-            _URL_TO_PROVIDER[_host] = _pp.name
-except Exception:
-    pass
-
 
 def _infer_provider_from_url(base_url: str) -> Optional[str]:
     """Infer the models.dev provider name from a base URL.
@@ -2558,22 +2533,6 @@ def get_model_context_length(
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
 
-    # 0b. model_overrides config — EXPLICIT per-provider+model context_window
-    # override only (fill-gap _default entries are applied later, inside
-    # lookup_models_dev_context at step 5f, once the catalog has actually
-    # missed — so a _default can never preempt custom_providers or live
-    # probes). This is the supported self-unblock path for models with
-    # wrong context in models.dev (#84482) and for custom/local models
-    # (#8731). Config-read only; never blocks on the network.
-    if provider and model:
-        try:
-            from agent.models_dev import _override_context_window
-            mo_ctx = _override_context_window(provider, model)
-            if mo_ctx is not None and mo_ctx > 0:
-                return mo_ctx
-        except Exception:
-            pass  # fall through to other resolution paths
-
     # 0c. custom_providers per-model override — check before any probe.
     # This closes the gap where /model switch and display paths used to fall
     # back to 128K despite the user having a per-model context_length set.
@@ -2822,25 +2781,6 @@ def get_model_context_length(
             if inferred:
                 effective_provider = inferred
 
-    # 5a. Copilot live /models API — max_prompt_tokens from the user's account.
-    # This catches account-specific models (e.g. claude-opus-4.6-1m) that
-    # don't exist in models.dev. For models that ARE in models.dev, this
-    # returns the provider-enforced limit which is what users can actually use.
-    if effective_provider in {"copilot", "copilot-acp", "github-copilot"}:
-        try:
-            from son_of_anton_cli.models import get_copilot_model_context
-            ctx = get_copilot_model_context(model, api_key=api_key)
-            if ctx:
-                return ctx
-        except Exception:
-            pass  # Fall through to models.dev
-
-    if effective_provider == "gmi" and base_url:
-        # GMI exposes authoritative context_length via /models, but it is not
-        # in models.dev yet. Preserve that higher-fidelity endpoint lookup.
-        ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
-        if ctx is not None:
-            return ctx
     # 5e. Ollama native /api/show probe — runs for providers whose base_url
     # is NOT a known non-Ollama provider.  Ollama-compatible servers expose
     # this endpoint regardless of hostname (local Ollama, Ollama Cloud,
@@ -2864,45 +2804,6 @@ def get_model_context_length(
                 if not _skip_persistent_context_cache(base_url, provider):
                     save_context_length(model, base_url, ctx)
                 return ctx
-    # 5f. OpenRouter live /models metadata — authoritative for OpenRouter-routed
-    # models. OpenRouter's catalog carries per-model context_length (e.g.
-    # anthropic/claude-fable-5 -> 1M) and refreshes as new slugs ship, so it
-    # must win over both models.dev (step 5g) and the hardcoded family catch-all
-    # (step 8). Before this branch, an OpenRouter selection set
-    # effective_provider="openrouter", which (a) made the models.dev lookup miss
-    # brand-new slugs and (b) skipped the step-6 OR fallback (gated on `not
-    # effective_provider`), so a fresh slug like claude-fable-5 fell through to
-    # the generic "claude": 200K entry and under-reported a 1M window. Mirrors
-    # the dedicated Nous/Copilot/GMI branches above.
-    if effective_provider == "openrouter":
-        metadata = fetch_model_metadata()
-        entry = metadata.get(model)
-        if entry:
-            or_ctx = entry.get("context_length")
-            # Guard against the known OpenRouter Kimi-family 32k underreport
-            # (same class the hardcoded overrides exist to mitigate).
-            if isinstance(or_ctx, int) and or_ctx > 0 and not (
-                or_ctx == 32768 and _model_name_suggests_kimi(model)
-            ):
-                return or_ctx
-
-    if effective_provider:
-        from agent.models_dev import lookup_models_dev_context
-        ctx = lookup_models_dev_context(effective_provider, model)
-        if ctx:
-            # MiniMax M3: models.dev reports 512K but actual context is 1M.
-            # Prefer hardcoded catalog over stale probe value.
-            if _model_name_suggests_minimax_m3(model):
-                catalog = DEFAULT_CONTEXT_LENGTHS.get("minimax-m3")
-                if catalog and ctx < catalog:
-                    logger.info(
-                        "Rejecting models.dev context=%s for %r "
-                        "(MiniMax-M3 underreport); using hardcoded default %s",
-                        ctx, model, f"{catalog:,}",
-                    )
-                    ctx = catalog
-            return ctx
-
     # 6. OpenRouter live API metadata — provider-unaware fallback.
     # Only consulted when the provider is unknown (no effective_provider),
     # because OpenRouter data is community-maintained and can be incorrect
