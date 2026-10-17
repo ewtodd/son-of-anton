@@ -359,13 +359,6 @@ not_logged_in = "Not logged into Nous Portal. Log in to see your credit balance 
 
 [gateway.verbose]
 not_enabled = "The `/verbose` command is not enabled for messaging platforms.\n\nEnable it in `config.toml`:\n```toml\n[display]\ntool_progress_command = true\n```"
-mode_off = "Tool progress: **OFF** — no tool activity shown."
-mode_new = "Tool progress: **NEW** — shown when tool changes (preview length: `display.tool_preview_length`, default 40)."
-mode_all = "Tool progress: **ALL** — every tool call shown (preview length: `display.tool_preview_length`, default 40)."
-mode_verbose = "Tool progress: **VERBOSE** — every tool call with full arguments."
-mode_log = "Tool progress: **LOG** — silent in chat; tool calls written to ~/.son-of-anton/logs/tool_calls.log."
-saved_suffix = "_(saved for **{platform}** — takes effect on next message)_"
-save_failed = "_(could not save to config: {error})_"
 
 [gateway.yolo]
 disabled = "YOLO mode **OFF** for this session — dangerous commands will require approval."

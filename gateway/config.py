@@ -42,7 +42,7 @@ def _normalize_transport_token(value: Any) -> str:
     """Normalize a streaming transport/mode value to a canonical token.
 
     Handles the TOML 1.1 boolean quirk where bare ``on`` / ``off`` parse to
-    Python ``True`` / ``False`` (see ``gateway/display_config.py`` ``_normalise``).
+    Python ``True`` / ``False``.
     Without this, ``mode: off`` arrives as boolean ``False`` and stringifying it
     yields ``"false"`` instead of the advertised ``"off"``, so streaming would be
     enabled instead of disabled. Booleans map to ``"auto"`` (True) / ``"off"``

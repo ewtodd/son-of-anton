@@ -2066,22 +2066,6 @@ class BasePlatformAdapter(ABC):
             f"{type(self).__name__} does not implement send_draft"
         )
 
-    # ── Structured stream-event rendering ────────────────────────────────
-    #
-    # These methods let an adapter decide *how* to present each structured
-    # streaming event (see gateway/stream_events.py).  The default
-    # implementations reproduce the historical behavior exactly: assistant
-    # text/commentary/segment events delegate to the stream consumer, and
-    # tool events render the same "emoji tool_name: preview" chrome the
-    # gateway has always produced.  Adapters override these to be more native
-    # to their platform (e.g. streaming a MarkdownV2 ```bash``` block
-    # as a draft; iMessage eating tool chrome it cannot format).
-    #
-    # The contract is presentation-only: nothing rendered here is persisted to
-    # conversation history.  History is owned by the agent; what an adapter
-    # chooses to "eat" must never change the bytes the agent stored.
-
-
     def format_tool_preview(self, preview: "ToolPreview") -> str:
         """Apply platform-native formatting to a compact tool preview.
 

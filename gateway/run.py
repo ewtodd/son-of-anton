@@ -39,14 +39,6 @@ if TYPE_CHECKING:
     from agent.session_activity import ActivityProvenance
 
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
-from agent.conversation_compaction import (
-    COMPACTION_STATUS,
-    COMPACTION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
-    COMPACTION_RETRY_MESSAGES_STATUS_TEMPLATE,
-    COMPACTION_RETRY_TOKENS_STATUS_TEMPLATE,
-    COMPACTION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
-    IDLE_COMPACTION_STATUS_TEMPLATE,
-)
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
@@ -282,67 +274,6 @@ def _record_hygiene_cooldown(
     except Exception as exc:
         logger.debug("session hygiene cooldown persist failed: %s", exc)
 
-
-def _status_template_to_regex(template: str) -> str:
-    """Compile a compaction status template constant into a regex source.
-
-    Literal text is escaped verbatim (so wording drift in
-    agent/conversation_compaction.py cannot silently diverge from this
-    matcher — the constants ARE the wording) and each ``{field}`` format
-    placeholder is replaced with a numeric-ish pattern covering every value
-    the emit sites format in (ints, ``{:,}`` thousands separators).
-    """
-    parts = re.split(r"\{[^{}]*\}", template)
-    return r"[\d,]+".join(re.escape(part) for part in parts)
-
-
-# ROUTINE compaction progress statuses, derived from the SAME template
-# constants the emit sites format (agent/conversation_compaction.py, #69550)
-# — never re-inlined wording. Used ONLY by the opt-in
-# ``compaction.progress_notices`` gate below (#52995) to decide which of the
-# noisy statuses matched by _NOISY_STATUS_RE are compaction
-# progress (deliverable when the user opted in) versus unrelated aux/retry
-# chatter (always suppressed on chat surfaces). Failure notices and manual
-# /compact feedback never match _NOISY_STATUS_RE in the first
-# place, so they are unaffected by this gate.
-_COMPACTION_PROGRESS_STATUS_RE = re.compile(
-    "|".join(
-        _status_template_to_regex(_template)
-        for _template in (
-            COMPACTION_STATUS,
-            IDLE_COMPACTION_STATUS_TEMPLATE,
-            COMPACTION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
-            COMPACTION_RETRY_MESSAGES_STATUS_TEMPLATE,
-            COMPACTION_RETRY_TOKENS_STATUS_TEMPLATE,
-            COMPACTION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
-        )
-    ),
-    re.IGNORECASE,
-)
-
-
-def _gateway_compaction_progress_notices_enabled() -> bool:
-    """True when the user opted into routine compaction progress notices.
-
-    Reads ``compaction.progress_notices`` from the gateway's raw TOML config
-    (#52995). Default False — routine compaction stays silent-by-design on
-    chat platforms unless explicitly enabled. Read live (mtime-cached) so a
-    config edit on a running gateway takes effect on the next status.
-    Fail-closed: any config read error keeps the silent default.
-    """
-    try:
-        config = _load_gateway_config()
-        compaction_cfg = config.get("compaction") if isinstance(config, dict) else None
-        if isinstance(compaction_cfg, dict):
-            return str(compaction_cfg.get("progress_notices", False)).strip().lower() in {
-                "true",
-                "1",
-                "yes",
-                "on",
-            }
-    except Exception:
-        pass
-    return False
 
 # Surfaces that consume gateway text programmatically (CLI/TUI "local"
 # diagnostics) and therefore must keep RAW status/error text. EVERY other
@@ -719,17 +650,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
 
     text = _redact_gateway_user_facing_secrets(text)
     if _NOISY_STATUS_RE.search(text):
-        # Opt-in #52995: `compaction.progress_notices: true` lets ROUTINE
-        # compaction progress statuses through to chat platforms. The
-        # membership check is derived from the #69550 template constants, so
-        # non-compaction noise (aux failures, provider retry chatter, ...)
-        # stays suppressed even when the gate is open. Default False keeps
-        # the silent-by-design behavior byte-identical.
-        if not (
-            _gateway_compaction_progress_notices_enabled()
-            and _COMPACTION_PROGRESS_STATUS_RE.search(text)
-        ):
-            return None
+        return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
     return text
@@ -840,24 +761,30 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
     return response
 
 
-def _resolve_gateway_display_bool(
-    user_config: dict,
-    platform_key: str,
-    setting: str,
-    *,
-    default: bool = False,
-) -> bool:
-    """Resolve a boolean display setting for a platform."""
-    from gateway.display_config import resolve_display_setting
+def _gateway_show_reasoning(user_config: dict, platform_key: str) -> bool:
+    """Whether a reply is prefixed with the model's reasoning.
 
-    value = resolve_display_setting(user_config, platform_key, setting, default)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"true", "yes", "1", "on"}
+    ``display.platforms.<platform>.show_reasoning`` (written by the gateway's
+    ``/reasoning show|hide``) wins over ``display.show_reasoning`` (written by
+    the TUI's); off when neither is set.
+    """
+    display = user_config.get("display") or {}
+    if not isinstance(display, dict):
+        return False
+    platform_cfg = (display.get("platforms") or {}).get(platform_key)
+    value = platform_cfg.get("show_reasoning") if isinstance(platform_cfg, dict) else None
     if value is None:
-        return bool(default)
+        value = display.get("show_reasoning")
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on", "raw", "verbose"}
     return bool(value)
+
+
+def _escape_code_fences_for_display(text: str) -> str:
+    """Escape ``` so reasoning text can sit inside an outer ``` block."""
+    if not isinstance(text, str) or "```" not in text:
+        return text
+    return text.replace("```", "\\`\\`\\`")
 
 
 # Only auto-continue interrupted gateway turns while the interruption is fresh.# Stale tool-tail/resume markers can otherwise revive an unrelated old task
@@ -3325,34 +3252,16 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
 
 
 class TurnRunner:
-    """Per-turn collaborator carrying the tool-progress callbacks that used to
-    be nested closures inside ``GatewayRunner._run_agent``.
-
-    The bodies are byte-identical to the original closures modulo
-    ``local_name`` -> ``ctx.field`` rewrites (closed-over locals now travel on
-    the shared :class:`gateway.turn_context.TurnContext`) and ``self`` ->
-    ``self._runner`` (the owning :class:`GatewayRunner`). Module-global
-    references (logger, cfg_get, BasePlatformAdapter, ...) resolve in this
-    same module exactly as before.
+    """Per-turn collaborator for ``GatewayRunner._run_agent``: builds or
+    reuses the AIAgent, wires its per-turn callbacks and runs the turn on the
+    executor thread. Turn state travels on the shared
+    :class:`gateway.turn_context.TurnContext`; ``self._runner`` is the owning
+    :class:`GatewayRunner`.
     """
 
     def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
-
-    def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
-        """Callback invoked by agent on tool lifecycle events.
-
-        Signal cannot edit messages, so tool progress never reaches the chat;
-        only ``display.tool_progress = "log"`` records tool calls, to
-        tool_calls.log.
-        """
-        ctx = self._ctx
-        if ctx.log_queue is not None:
-            if event_type == "tool.started" and tool_name and tool_name != "_thinking":
-                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                preview_str = f' "{preview}"' if preview else ""
-                ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
 
     def _step_callback_sync(self, iteration: int, prev_tools: list) -> None:
         ctx = self._ctx
@@ -3516,78 +3425,6 @@ class TurnRunner:
             model=model,
         )
         self._runner._reasoning_config = reasoning_config
-        # Set up stream consumer for token streaming or interim commentary.
-        _stream_consumer = None
-        _stream_delta_cb = None
-        _scfg = getattr(getattr(self._runner, 'config', None), 'streaming', None)
-        if _scfg is None:
-            from gateway.config import StreamingConfig
-            _scfg = StreamingConfig()
-
-        # Per-platform streaming gate: display.platforms.<plat>.streaming
-        # can disable streaming for specific platforms even when the global
-        # streaming config is enabled.
-        _plat_streaming = ctx.resolve_display_setting(
-            ctx.user_config, platform_key, "streaming"
-        )
-        # None = no per-platform override → follow global config
-        _streaming_enabled = (
-            _scfg.enabled and _scfg.transport != "off"
-            if _plat_streaming is None
-            else bool(_plat_streaming)
-        )
-        _want_stream_deltas = _streaming_enabled
-        _want_interim_messages = ctx.interim_assistant_messages_enabled
-        _want_interim_consumer = _want_interim_messages
-        if _want_stream_deltas or _want_interim_consumer:
-            try:
-                from gateway.stream_consumer import GatewayStreamConsumer
-                _adapter = self._runner._adapter_for_source(ctx.source)
-                if _adapter:
-                    _consumer_cfg, _pause_typing_before_finalize = (
-                        self._runner._build_stream_consumer_config(
-                            ctx.source, _scfg, _adapter,
-                        )
-                    )
-                    _stream_consumer = GatewayStreamConsumer(
-                        adapter=_adapter,
-                        chat_id=ctx.source.chat_id,
-                        config=_consumer_cfg,
-                        metadata=ctx._status_thread_metadata,
-                        on_before_finalize=_pause_typing_before_finalize,
-                        initial_reply_to_id=ctx.event_message_id,
-                        run_still_current=ctx._run_still_current,
-                    )
-                    if _want_stream_deltas:
-                        def _stream_delta_cb(text: str) -> None:
-                            if ctx._run_still_current():
-                                _stream_consumer.on_delta(text)
-                    ctx.stream_consumer_holder[0] = _stream_consumer
-            except Exception as _sc_err:
-                logger.debug("Could not set up stream consumer: %s", _sc_err)
-
-        def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
-            if not ctx._run_still_current():
-                return
-            display_text = text
-            if _stream_consumer is not None:
-                if already_streamed:
-                    _stream_consumer.on_segment_break()
-                else:
-                    _stream_consumer.on_commentary(display_text)
-                return
-            if already_streamed or not ctx._status_adapter or not str(display_text or "").strip():
-                return
-            safe_schedule_threadsafe(
-                ctx._status_adapter.send(
-                    ctx._status_chat_id,
-                    display_text,
-                    metadata=ctx._status_thread_metadata,
-                ),
-                ctx._loop_for_step,
-                logger=logger,
-                log_message="interim_assistant_callback scheduling error",
-            )
 
         turn_route = self._runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
 
@@ -3851,12 +3688,10 @@ class TurnRunner:
 
         # Per-message state — callbacks and reasoning config change every
         # turn and must not be baked into the cached agent constructor.
-        agent.tool_progress_callback = (
-            ctx.progress_callback if ctx.log_mode_enabled else None
-        )
+        # Signal cannot edit messages, so the agent gets no token-stream,
+        # interim-message or tool-progress callbacks: a reply is delivered
+        # once, whole, when the turn ends.
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
-        agent.stream_delta_callback = _stream_delta_cb
-        agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
         agent.status_callback = ctx._status_callback_sync
         # Credits / out-of-band notices (usage bands, depletion, restored).
         # Messaging has no persistent status bar, so each notice is a
@@ -3937,25 +3772,6 @@ class TurnRunner:
             except Exception:
                 pass
 
-            # Ordering barrier (#clarify-ordering): flush any buffered
-            # assistant prose (interim commentary / streamed deltas) to the
-            # platform BEFORE sending the poll.  The poll is delivered on a
-            # separate, agent-thread-blocking path; without this barrier it
-            # races ahead of prose still sitting in the stream consumer's
-            # queue, so the question renders ABOVE its own explanation.
-            # Best-effort + short timeout: never hang the agent thread if
-            # the consumer task isn't running.
-            try:
-                _sc = ctx.stream_consumer_holder[0] if ctx.stream_consumer_holder else None
-                _flush = getattr(_sc, "flush_pending_sync", None)
-                if callable(_flush):
-                    _flush(timeout=3.0)
-            except Exception:
-                logger.debug(
-                    "Stream-consumer flush before clarify prompt failed",
-                    exc_info=True,
-                )
-
             fut = safe_schedule_threadsafe(
                 ctx._status_adapter.send_clarify(
                     chat_id=ctx._status_chat_id,
@@ -3982,11 +3798,6 @@ class TurnRunner:
 
         agent.clarify_callback = _clarify_callback_sync
 
-        # Show assistant thinking between tool calls — independent of
-        # tool_progress mode. High-noise threaded surfaces need an
-        # explicit per-platform opt-in so global scratch-text display
-        # does not leak into threads.
-        agent.thinking_progress = ctx._thinking_enabled
         # Store agent reference for interrupt support
         ctx.agent_holder[0] = agent
         # Wire the platform thread-rename lane onto the agent, because the
@@ -4058,20 +3869,11 @@ class TurnRunner:
         )
 
         def _approval_notify_sync(approval_data: dict) -> None:
-            """Send the approval request to the user from the agent thread.
-
-                If the adapter supports interactive button-based approvals
-                (e.g. Discord's ``send_exec_approval``), use that for a richer
-                UX.  Otherwise fall back to a plain text message with
-                ``/approve`` instructions.
-                """
-            # Pause the typing indicator while the agent waits for
-            # user approval.  Critical for Slack's Assistant API where
-            # assistant_threads_setStatus disables the compose box — the
-            # user literally cannot type /approve while "is thinking..."
-            # is active.  The approval message send auto-clears the Slack
-            # status; pausing prevents _keep_typing from re-setting it.
-            # Typing resumes in _handle_approve_command/_handle_deny_command.
+            """Send the approval request (a text prompt with ``/approve``
+            instructions) to the user from the agent thread."""
+            # Pause the typing indicator while the agent waits for user
+            # approval; typing resumes in _handle_approve_command /
+            # _handle_deny_command.
             ctx._status_adapter.pause_typing_for_chat(ctx._status_chat_id)
 
             cmd = approval_data.get("command", "")
@@ -4080,63 +3882,9 @@ class TurnRunner:
             # Redact credentials from the command before displaying it in
             # the approval prompt — Tirith's findings are already redacted,
             # but the raw command string still leaks secrets to the chat
-            # platform (#48456). Applied here so BOTH the button-based
-            # (send_exec_approval) and plain-text fallback paths below use
-            # the redacted value.
+            # platform (#48456).
             cmd = _redact_approval_command(cmd)
 
-            # Prefer button-based approval when the adapter supports it.
-            # Check the *class* for the method, not the instance — avoids
-            # false positives from MagicMock auto-attribute creation in tests.
-            if getattr(type(ctx._status_adapter), "send_exec_approval", None) is not None:
-                try:
-                    _approval_fut = safe_schedule_threadsafe(
-                        ctx._status_adapter.send_exec_approval(
-                            chat_id=ctx._status_chat_id,
-                            command=cmd,
-                            session_key=_approval_session_key,
-                            description=desc,
-                            metadata=ctx._status_thread_metadata,
-                            allow_permanent=approval_data.get("allow_permanent", True),
-                            allow_session=approval_data.get("allow_session", True),
-                            smart_denied=approval_data.get("smart_denied", False),
-                        ),
-                        ctx._loop_for_step,
-                        logger=logger,
-                        log_message="send_exec_approval scheduling error",
-                    )
-                    if _approval_fut is None:
-                        raise RuntimeError("send_exec_approval: loop unavailable")
-                    _outcome = _approval_send_outcome(_approval_fut, timeout=15)
-                    if _outcome == "sent":
-                        return
-                    if _outcome == "ambiguous":
-                        # Timeout ≠ failure: the card may have posted with a
-                        # late ack (slow platform API call or transient
-                        # connector backpressure). The prompt
-                        # registration stays alive, so a tap on the rendered
-                        # card still resolves; re-sending here is what
-                        # produced duplicate cards and an orphaned
-                        # "/approve: nothing pending" in live relay testing.
-                        # Skip the text fallback.
-                        logger.warning(
-                            "Button-based approval send timed out — treating "
-                            "as possibly-delivered (no re-send; the prompt "
-                            "stays armed for a late tap)"
-                        )
-                        return
-                    logger.warning(
-                        "Button-based approval failed (send returned error), falling back to text"
-                    )
-                except Exception as _e:
-                    logger.warning(
-                        "Button-based approval failed, falling back to text: %s", _e
-                    )
-
-            # Fallback: plain text approval prompt.  Use the adapter's
-            # typed prefix so Slack users are told the form they
-            # can actually type (`!approve`) — typed "/" is blocked in
-            # Slack threads.
             _p = getattr(ctx._status_adapter, "typed_command_prefix", "/")
             msg = _format_exec_approval_fallback(
                 cmd,
@@ -4359,44 +4107,6 @@ class TurnRunner:
             reset_current_session_key(_approval_session_token)
         ctx.result_holder[0] = result
 
-        # Signal the stream consumer that the agent is done. Pass the
-        # completed final_response as the authoritative finalize payload:
-        # it includes post-stream augmentation (file-mutation verifier
-        # footer, turn-completion explainer) the consumer's accumulator
-        # never saw, so the seal/final edit delivers the TRUE final and no
-        # separate corrective send fires (live finding #11). Failed turns
-        # pass nothing — error text is delivered by the gateway's normal
-        # path, not baked into the stream.
-        if _stream_consumer is not None:
-            _final_for_stream = None
-            # Adopt ONLY a genuinely completed final (review B6): interrupt
-            # paths return {interrupted: True, completed: False} with a
-            # DIAGNOSTIC final_response ("Operation interrupted during …")
-            # and no failed key — adopting that would seal the user's
-            # streamed partial answer over with the diagnostic AND make
-            # delivered_final_matches reconcile, suppressing the gateway's
-            # own error-delivery path. Writers of these shapes:
-            # agent/conversation_loop.py interrupt/retry-abort returns.
-            if (
-                isinstance(result, dict)
-                and not result.get("failed")
-                and not result.get("interrupted")
-                and result.get("completed") is not False
-            ):
-                _fr = result.get("final_response")
-                if isinstance(_fr, str) and _fr.strip() and _fr != "(empty)":
-                    _final_for_stream = _fr
-            if _final_for_stream is not None:
-                # Duck-type safe: test doubles / older consumers may expose a
-                # zero-arg finish(). The payload is an optimization, not a
-                # requirement — fall back to the bare signal.
-                try:
-                    _stream_consumer.finish(_final_for_stream)
-                except TypeError:
-                    _stream_consumer.finish()
-            else:
-                _stream_consumer.finish()
-
         # Return final response, or a message if something went wrong
         final_response = result.get("final_response")
 
@@ -4550,8 +4260,6 @@ class TurnRunner:
             "model": _resolved_model,
             "context_length": _context_length,
             "session_id": effective_session_id,
-            "response_previewed": result.get("response_previewed", False),
-            "response_transformed": result.get("response_transformed", False),
             # Pass through the agent_persisted flag so the persistence block
             # above knows whether the turn persisted its own messages.
             # Default True preserves the skip-db behaviour.
@@ -6371,45 +6079,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if now - last_ack < _BUSY_ACK_COOLDOWN:
             return True  # message queued; ack already delivered recently
 
-        from gateway.display_config import resolve_display_setting
-
         self._session_state(session_key).turn.busy_ack_ts = now
 
-        # Build a status-rich acknowledgment. Mobile chat defaults keep this
-        # terse; detailed iteration/tool state is still available in logs and
-        # can be opted in per platform via display.platforms.<platform>.busy_ack_detail.
-        status_parts = []
-        busy_ack_detail_enabled = bool(
-            resolve_display_setting(
-                _load_gateway_config(),
-                _platform_config_key(event.source.platform),
-                "busy_ack_detail",
-                True,
-            )
-        )
-
-        if busy_ack_detail_enabled and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-            try:
-                summary = running_agent.get_activity_summary()
-                iteration = summary.get("api_call_count", 0)
-                max_iter = summary.get("max_iterations", 0)
-                current_tool = summary.get("current_tool")
-                start_ts = _busy_state.turn.started_ts if _busy_state else 0
-                if start_ts:
-                    elapsed_min = int((now - start_ts) / 60)
-                    if elapsed_min > 0:
-                        status_parts.append(f"{elapsed_min} min elapsed")
-                if max_iter:
-                    status_parts.append(f"iteration {iteration}/{max_iter}")
-                if current_tool:
-                    status_parts.append(f"running: {current_tool}")
-            except Exception:
-                pass
-
-        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+        # Terse on Signal: the iteration/tool state stays in the logs.
         message = (
-            f"Queued for the next turn{status_detail}. "
-            f"I'll respond once the current task finishes."
+            "Queued for the next turn. "
+            "I'll respond once the current task finishes."
         )
 
         # First-touch onboarding: the very first time a user sends a message
@@ -6873,29 +6548,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             await self._cleanup_agent_resources_off_loop(
                 agent, context="shutdown finalize"
             )
-
-    def _should_emit_long_running_notification(
-        self,
-        session_key: Optional[str],
-        agent: Any,
-        executor_task: Optional[Any],
-    ) -> bool:
-        """Only emit the heartbeat while this task still owns the live run.
-
-        Guards against a stale ``running: delegate_task`` heartbeat outliving the
-        run that started it: stop once the executor finishes, the agent is gone,
-        or the session key has been rebound to a different live agent (e.g. the
-        user sent ``/new`` and a fresh agent took the slot mid-run, #12029).
-        """
-        if agent is None:
-            return False
-        if executor_task is not None and executor_task.done():
-            return False
-        if session_key:
-            _hb_state = self._peek_session_state(session_key)
-            if (_hb_state.turn.agent if _hb_state else None) is not agent:
-                return False
-        return True
 
     # Upper bound on off-loop agent-resource cleanup invoked from coroutines
     # running on the gateway's event loop (session-expiry sweep, in-turn
@@ -11954,7 +11606,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     agent_result=_agent_result,
                     source=source,
                     is_internal=is_internal,
-                    event=event,
                 )
             except Exception as _goal_exc:
                 logger.debug("post-turn hook failed: %s", _goal_exc)
@@ -13814,7 +13465,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # below; a /new or another lifecycle transition may move
             # session_entry.session_id while the old run is still unwinding.
             _run_start_session_id = session_entry.session_id
-            _turn_started_monotonic = time.monotonic()
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
@@ -13830,7 +13480,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
             )
-            _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # Stop persistent typing indicator now that the agent is done.
             # Slack AI status is scoped to a thread/workspace, so preserve the
@@ -13972,18 +13621,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
             # Prepend reasoning/thinking if display is enabled (per-platform).
             try:
-                _show_reasoning_effective = _resolve_gateway_display_bool(
+                _show_reasoning_effective = _gateway_show_reasoning(
                     _load_gateway_config(),
                     _platform_config_key(source.platform),
-                    "show_reasoning",
-                    default=bool(getattr(self, "_show_reasoning", False)),
                 )
             except Exception:
                 _show_reasoning_effective = getattr(self, "_show_reasoning", False)
             if _show_reasoning_effective and response and not _intentional_silence:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
-                    from gateway.stream_consumer import escape_code_fences_for_display
                     # Collapse long reasoning to keep messages readable
                     lines = last_reasoning.strip().splitlines()
                     if len(lines) > 15:
@@ -13991,56 +13637,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
                     else:
                         display_reasoning = last_reasoning.strip()
-                    # Render style is per-platform: Discord defaults to "-# "
-                    # subtext (native small grey metadata text); other
-                    # platforms keep the fenced code block.
-                    try:
-                        from gateway.display_config import resolve_display_setting
-                        _reasoning_style = resolve_display_setting(
-                            _load_gateway_config(),
-                            _platform_config_key(source.platform),
-                            "reasoning_style",
-                            "code",
-                        )
-                    except Exception:
-                        _reasoning_style = "code"
-                    if _reasoning_style == "subtext":
-                        _quoted = "\n".join(
-                            f"-# {ln}" if ln else "-#" for ln in display_reasoning.splitlines()
-                        )
-                        response = f"-# Reasoning\n{_quoted}\n\n{response}"
-                    elif _reasoning_style == "blockquote":
-                        _quoted = "\n".join(
-                            f"> {ln}" if ln else ">" for ln in display_reasoning.splitlines()
-                        )
-                        response = f"> **Reasoning:**\n{_quoted}\n\n{response}"
-                    else:
-                        # Escape ``` inside reasoning so inner fences don't
-                        # break the outer code block used to render it.
-                        display_reasoning = escape_code_fences_for_display(display_reasoning)
-                        response = f"**Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
-
-            # Runtime-metadata footer — only on the FINAL message of the turn.
-            # Off by default (display.runtime_footer.enabled=false).  When
-            # streaming already delivered the body, we can't mutate the sent
-            # text, so we fire a separate trailing send below.
-            _footer_line = ""
-            try:
-                from gateway.runtime_footer import build_footer_line as _bfl
-                _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
-                    platform_key=_platform_config_key(source.platform),
-                    model=agent_result.get("model"),
-                    context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
-                    context_length=agent_result.get("context_length") or None,
-                    cwd=os.environ.get("TERMINAL_CWD", ""),
-                    turn_seconds=_turn_seconds,
-                )
-            except Exception as _footer_err:
-                logger.debug("runtime_footer build failed: %s", _footer_err)
-                _footer_line = ""
-            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
-                response = f"{response}\n\n{_footer_line}"
+                    # Escape ``` inside reasoning so inner fences don't
+                    # break the outer code block used to render it.
+                    display_reasoning = _escape_code_fences_for_display(display_reasoning)
+                    response = f"**Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -14372,49 +13972,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     session_entry.session_id,
                 )
                 response = ""
-
-            # If streaming already delivered the response, extract and
-            # deliver any MEDIA: files before returning None.  Streaming
-            # sends raw text chunks that include MEDIA: tags — the normal
-            # post-processing in _process_message_background is skipped
-            # when already_sent is True, so media files would never be
-            # delivered without this.
-            #
-            # Never skip when the agent failed — the error message is new
-            # content the user hasn't seen (streaming only sent earlier
-            # partial output before the failure).  Without this guard,
-            # users see the agent "stop responding without explanation."
-            if agent_result.get("already_sent") and not agent_result.get("failed"):
-                if response:
-                    _media_adapter = self._adapter_for_source(source)
-                    if _media_adapter:
-                        await self._deliver_media_from_response(
-                            response, event, _media_adapter,
-                        )
-                # Streaming already delivered the body text, but the footer was
-                # intentionally held back (see the `not already_sent` gate above).
-                # Send it now as a small trailing message so Discord/Slack/etc.
-                # still surface the runtime metadata on the final reply.
-                if _footer_line:
-                    try:
-                        _foot_adapter = self._adapter_for_source(source)
-                        if _foot_adapter:
-                            await _foot_adapter.send(
-                                source.chat_id,
-                                _footer_line,
-                                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
-                            )
-                    except Exception as _e:
-                        logger.debug("trailing footer send failed: %s", _e)
-                # This branch returns None so the adapter does not send the
-                # body twice. /loop and /goal hooks in _handle_message read
-                # the return value, so stash the delivered text on the event
-                # or those hooks never run and a /loop tick stays awaiting.
-                try:
-                    event._streamed_final_response = str(response or "")
-                except Exception:
-                    pass
-                return None
 
             return response
             
@@ -14900,10 +14457,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         agent_result: Any,
         source: Any,
         is_internal: bool,
-        event: Any = None,
     ) -> None:
         """Run goal and loop bookkeeping after an agent turn returns."""
-        final_text = self._final_text_for_post_turn_hooks(agent_result, event)
+        final_text = self._final_text_for_post_turn_hooks(agent_result)
 
         try:
             session_entry = await self.async_session_store.get_or_create_session(
@@ -14935,23 +14491,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             logger.debug("loop completion hook failed: %s", exc)
 
     @staticmethod
-    def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:
-        """Text for /goal and /loop after a gateway turn.
-
-        Streamed turns return None from _handle_message_with_agent
-        (already_sent). The delivered reply is stashed on the event so
-        those hooks still see it.
-        """
+    def _final_text_for_post_turn_hooks(agent_result) -> str:
+        """Text for /goal and /loop after a gateway turn."""
         text = ""
         if isinstance(agent_result, dict):
             text = str(agent_result.get("final_response") or "")
         elif isinstance(agent_result, str):
             text = agent_result
-        if text.strip():
-            return text
-        streamed = getattr(event, "_streamed_final_response", None)
-        if isinstance(streamed, str) and streamed.strip():
-            return streamed
         return text
 
     async def _post_turn_loop_completion(
@@ -15116,19 +14662,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     ) -> None:
         """Extract explicit MEDIA: tags from a response and deliver them.
 
-        Called after streaming has already sent the text to the user, so the
-        text itself is already delivered — this only handles file attachments
-        that the normal _process_message_background path would have caught.
-
-        Unlike the non-streaming path in ``gateway/platforms/base.py`` (which
-        also auto-detects bare local paths via ``extract_local_files``), this
-        post-stream rescan is EXPLICIT-ONLY. The visible reply has already
-        been streamed verbatim, so a bare path string here was either (a)
-        already shown to the user as text, or (b) stale tool/inspected
-        content that was never part of the intended visible reply. Promoting
-        such paths into uploads after the fact sent files the model never
+        Used for a queued turn's first response, whose text is sent directly
+        (see ``_deliver_queued_first_response``) rather than through
+        _process_message_background. Unlike that path in
+        ``gateway/platforms/base.py`` (which also auto-detects bare local
+        paths via ``extract_local_files``), this rescan is EXPLICIT-ONLY:
+        promoting bare path strings into uploads sent files the model never
         asked to deliver (#20834). Only ``MEDIA:`` directives — the explicit
-        attachment contract — trigger post-stream uploads.
+        attachment contract — trigger uploads.
         """
         from pathlib import Path
         from urllib.parse import quote as _quote
@@ -15242,53 +14783,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         adapter,
         metadata: Optional[Dict[str, Any]] = None,
         event_message_id: Optional[str] = None,
-        text_already_delivered: bool = False,
         deliver_media: bool = True,
-        stream_consumer=None,
     ) -> None:
         """Deliver a queued response using the normal text+attachment split."""
-        if not text_already_delivered:
-            text_content = _strip_response_attachments_for_direct_send(response, adapter)
-            if text_content:
-                # Reconcile-by-edit first (live finding, 2026-08-16 canary):
-                # when the stream consumer delivered/sealed a message but its
-                # recorded payload didn't confirm the final (post-stream
-                # mutation), plain-sending here creates the duplicate — the
-                # sealed message already carries most of the answer. A sealed
-                # native stream is a regular message; chat.update on it is
-                # live-verified working. Fall back to plain send only when
-                # there is no editable message or the edit fails.
-                _reconciled = False
-                _sc_msg_id = getattr(stream_consumer, "message_id", None)
-                if (
-                    _sc_msg_id
-                    and _sc_msg_id != "__no_edit__"
-                    and not getattr(stream_consumer, "_turn_split_delivery", False)
-                ):
-                    try:
-                        _edit_res = await adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=_sc_msg_id,
-                            content=text_content,
-                            finalize=True,
-                        )
-                        if getattr(_edit_res, "success", False):
-                            _reconciled = True
-                            logger.info(
-                                "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
-                                _sc_msg_id,
-                            )
-                    except Exception as _qe:
-                        logger.debug(
-                            "Queued-lane reconcile edit failed (%s); falling back to send.",
-                            _qe,
-                        )
-                if not _reconciled:
-                    await adapter.send(
-                        source.chat_id,
-                        text_content,
-                        metadata=metadata,
-                    )
+        text_content = _strip_response_attachments_for_direct_send(response, adapter)
+        if text_content:
+            await adapter.send(
+                source.chat_id,
+                text_content,
+                metadata=metadata,
+            )
 
         # Failed turns still deliver their (normalized failure) text above,
         # but must not upload attachments as if the turn succeeded — mirrors
@@ -19319,49 +18823,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             ).start()
         return len(to_evict)
 
-    def _build_stream_consumer_config(
-        self,
-        source: "SessionSource",
-        scfg: Any,
-        adapter: Any,
-    ) -> "tuple[Any, Optional[Callable[[], None]]]":
-        """Build the ``StreamConsumerConfig`` and the optional pause-typing
-        closure for an agent run.
-
-        Raises ``RuntimeError`` for a platform whose adapter sets
-        ``SUPPORTS_MESSAGE_EDITING = False``, so the caller's ``except``
-        skips streaming entirely.
-
-        Returns ``(consumer_cfg, pause_typing_before_finalize)``.
-        """
-        from gateway.stream_consumer import StreamConsumerConfig
-
-        _pause_typing_before_finalize = None
-        # Platforms that don't support editing sent messages
-        # should skip streaming entirely —
-        # without edit support, the consumer sends a partial
-        # first message that can never be updated, resulting in
-        # duplicate messages (partial + final).
-        if not getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True):
-            raise RuntimeError("skip streaming for non-editable platform")
-        _effective_cursor = scfg.cursor
-        _buffer_only = False
-        # Fresh-final (fresh-message replacement of a long-lived streamed
-        # preview) is a per-platform opt-in; none of the remaining platforms
-        # enable it, so the value is always 0.0.
-        # (Ported from openclaw/openclaw#72038.)
-        _fresh_final_secs = 0.0
-        _consumer_cfg = StreamConsumerConfig(
-            edit_interval=scfg.edit_interval,
-            buffer_threshold=scfg.buffer_threshold,
-            cursor=_effective_cursor,
-            buffer_only=_buffer_only,
-            fresh_final_after_seconds=_fresh_final_secs,
-            transport=scfg.transport or "edit",
-            chat_type=getattr(source, "chat_type", "") or "",
-        )
-        return _consumer_cfg, _pause_typing_before_finalize
-
     # ------------------------------------------------------------------
 
     async def _run_agent(
@@ -19394,7 +18855,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         Supports interruption via new messages.
         """
         from run_agent import AIAgent
-        import queue
 
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
@@ -19412,116 +18872,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         disabled_toolsets = parse_config_string_list(agent_cfg_local.get("disabled_toolsets")) or None
 
-        display_config = user_config.get("display", {})
-        if not isinstance(display_config, dict):
-            display_config = {}
-
-        # Per-platform display settings — resolve via display_config module
-        # which checks display.platforms.<platform>.<key> first, then
-        # display.<key> global, then built-in platform defaults.
-        from gateway.display_config import resolve_display_setting
-
-        # Apply tool preview length config (0 = no limit)
-        try:
-            from agent.display import set_tool_preview_max_len
-            _tpl = resolve_display_setting(user_config, platform_key, "tool_preview_length", 0)
-            set_tool_preview_max_len(int(_tpl) if _tpl else 0)
-        except Exception:
-            pass
-
-        # Apply friendly tool labels config (default on) — per-platform aware
-        try:
-            from agent.display import set_friendly_tool_labels
-            _ftl = resolve_display_setting(user_config, platform_key, "friendly_tool_labels", True)
-            set_friendly_tool_labels(bool(_ftl))
-        except Exception:
-            pass
-
-        # Tool progress mode — resolved per-platform with env var fallback
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
-        _env_tp = os.getenv("SON_OF_ANTON_TOOL_PROGRESS_MODE")
-        _display_cfg = display_config if isinstance(display_config, dict) else {}
-        _platforms_cfg = _display_cfg.get("platforms") or {}
-        _platform_cfg = _platforms_cfg.get(platform_key) or {}
-        _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
-        _tool_progress_configured = (
-            "tool_progress" in _display_cfg
-            or (
-                isinstance(_platform_cfg, dict)
-                and "tool_progress" in _platform_cfg
-            )
-            or (
-                isinstance(_legacy_tp_overrides, dict)
-                and platform_key in _legacy_tp_overrides
-            )
-        )
-        progress_mode = (
-            _env_tp
-            if _env_tp and not _tool_progress_configured
-            else (_resolved_tp or _env_tp or "all")
-        )
-        from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
-        _generic_status_recent: List[str] = []
-        _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
-
-        def _display_surface_mode(
-            setting: str,
-            *,
-            default: bool = False,
-            allow_generic: bool = False,
-        ) -> str:
-            """Return off|raw|generic for a gateway visibility surface."""
-            value = resolve_display_setting(user_config, platform_key, setting, default)
-            if isinstance(value, str) and value.strip().lower() == "generic":
-                return "generic" if allow_generic else "off"
-            return "raw" if bool(value) else "off"
-
-        def _generic_status_phrase(kind: str, *, tool_name: str | None = None, preview: str | None = None, args: Any = None) -> str:
-            try:
-                return choose_status_phrase(
-                    kind,
-                    tool_name=tool_name,
-                    preview=preview,
-                    args=args,
-                    recent=_generic_status_recent,
-                    catalog=_generic_status_catalog,
-                )
-            except Exception as _phrase_err:
-                logger.debug("generic status phrase selection failed: %s", _phrase_err)
-                return "still on it" if kind in {"heartbeat", "waiting", "long_running", "status"} else "one sec"
-        # "log" mode: tool calls are written to ~/.son-of-anton/logs/tool_calls.log
-        # instead of the chat (#3459 / #3458). Gateway-only by design.
-        log_mode_enabled = progress_mode == "log"
-        log_queue: "queue.Queue | None" = queue.Queue() if log_mode_enabled else None
-        # Natural assistant status messages are intentionally independent from
-        # tool progress and token streaming. Users can keep tool_progress quiet
-        # in chat platforms while opting into concise mid-turn updates.
-        interim_assistant_messages_mode = _display_surface_mode(
-            "interim_assistant_messages",
-            default=True,
-        )
-        interim_assistant_messages_enabled = (
-            interim_assistant_messages_mode != "off"
-        )
-        _thinking_mode = _display_surface_mode(
-            "thinking_progress",
-            default=False,
-        )
-        _thinking_enabled = _thinking_mode != "off"
+        # Tool previews (activity descriptions, logs) are cut at 40 chars on
+        # Signal.
+        from agent.display import set_tool_preview_max_len
+        set_tool_preview_max_len(40)
 
         turn_ctx = TurnContext(
             source=source,
             _run_still_current=_run_still_current,
-            _thinking_enabled=_thinking_enabled,
-            log_queue=log_queue,
             message=message,
             AIAgent=AIAgent,
-            resolve_display_setting=resolve_display_setting,
             user_config=user_config,
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
-            log_mode_enabled=log_mode_enabled,
-            interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             history=history,
             context_prompt=context_prompt,
             channel_prompt=channel_prompt,
@@ -19535,77 +18898,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             persist_user_display_kind=persist_user_display_kind,
         )
         turn_runner = TurnRunner(self, turn_ctx)
-        # Callback invoked by agent on tool lifecycle events — extracted to
-        # TurnRunner.progress_callback (bound method, same signature).
-        turn_ctx.progress_callback = turn_runner.progress_callback
         
         _progress_thread_id = str(source.thread_id) if source.thread_id else None
-
-        async def write_tool_log():
-            """Drain log_queue and append tool-call lines to tool_calls.log.
-
-            Only active when ``display.tool_progress`` is ``log``. Uses a
-            RotatingFileHandler (5MB × 3 backups) so the audit log can't grow
-            unbounded, and the shared RedactingFormatter so secrets never land
-            on disk.
-            """
-            if log_queue is None:
-                return
-            from logging.handlers import RotatingFileHandler
-
-            from agent.redact import RedactingFormatter
-
-            log_dir = _son_of_anton_home / "logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            file_handler = RotatingFileHandler(
-                log_dir / "tool_calls.log",
-                maxBytes=5 * 1024 * 1024,
-                backupCount=3,
-                encoding="utf-8",
-            )
-            file_handler.setFormatter(RedactingFormatter("%(message)s"))
-            tool_logger = logging.getLogger(f"son-of-anton.tool_calls.{id(log_queue)}")
-            tool_logger.setLevel(logging.INFO)
-            tool_logger.propagate = False
-            tool_logger.addHandler(file_handler)
-            try:
-                while True:
-                    try:
-                        tool_logger.info("%s", log_queue.get_nowait())
-                    except queue.Empty:
-                        await asyncio.sleep(0.3)
-                    except Exception as e:
-                        logger.error("write_tool_log error: %s", e)
-                        await asyncio.sleep(1)
-            except asyncio.CancelledError:
-                pass
-            finally:
-                # Drain remaining entries before closing so late tool calls
-                # from the final iteration aren't lost.
-                while True:
-                    try:
-                        tool_logger.info("%s", log_queue.get_nowait())
-                    except queue.Empty:
-                        break
-                    except Exception:
-                        break
-                tool_logger.removeHandler(file_handler)
-                try:
-                    file_handler.flush()
-                    file_handler.close()
-                except Exception:
-                    pass
-
         
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance
         turn_ctx.agent_holder = agent_holder
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
-        stream_consumer_holder = [None]  # Mutable container for stream consumer
         turn_ctx.result_holder = result_holder
         turn_ctx.tools_holder = tools_holder
-        turn_ctx.stream_consumer_holder = stream_consumer_holder
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
@@ -19648,25 +18950,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # executor call below is unchanged).  Its closed-over locals travel
         # on turn_ctx; `nonlocal message` rebinds became ctx.message writes.
         run_sync = turn_runner.run_sync
-        
-        # Start the tool-call log writer when tool_progress == "log".
-        log_task = None
-        if log_mode_enabled:
-            log_task = asyncio.create_task(write_tool_log())
-
-        # Start stream consumer task — polls for consumer creation since it
-        # happens inside run_sync (thread pool) after the agent is constructed.
-        stream_task = None
-
-        async def _start_stream_consumer():
-            """Wait for the stream consumer to be created, then run it."""
-            for _ in range(200):  # Up to 10s wait
-                if stream_consumer_holder[0] is not None:
-                    await stream_consumer_holder[0].run()
-                    return
-                await asyncio.sleep(0.05)
-
-        stream_task = asyncio.create_task(_start_stream_consumer())
         
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created
@@ -19758,127 +19041,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
 
-        # Periodic "still working" notifications for long-running tasks.
-        # Fires every N seconds so the user knows the agent hasn't died.
-        # Config: agent.gateway_notify_interval in config.toml, or
-        # SON_OF_ANTON_AGENT_NOTIFY_INTERVAL env var.  Default 180s (3 min).
-        # 0 = disable notifications.
-        _NOTIFY_INTERVAL_RAW = _float_env("SON_OF_ANTON_AGENT_NOTIFY_INTERVAL", 180)
-        _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
-        _long_running_mode = _display_surface_mode(
-            "long_running_notifications",
-            default=True,
-            allow_generic=True,
-        )
-        if _long_running_mode == "off":
-            _NOTIFY_INTERVAL = None
-        _notify_start = time.time()
-
-        async def _notify_long_running():
-            if _NOTIFY_INTERVAL is None:
-                return  # Notifications disabled (gateway_notify_interval: 0)
-            _notify_adapter = self._adapter_for_source(source)
-            if not _notify_adapter:
-                return
-            while True:
-                await asyncio.sleep(_NOTIFY_INTERVAL)
-                # Stop heartbeating once this run no longer owns the session
-                # slot or the executor has finished — otherwise a stale
-                # "running: delegate_task" bubble can outlive the run that
-                # spawned it (#12029). _executor_task is a closure var bound
-                # just after this task is scheduled; tolerate the brief window
-                # before then (the first wake is _NOTIFY_INTERVAL away anyway).
-                try:
-                    _exec_ref = _executor_task
-                except NameError:
-                    _exec_ref = None
-                if not self._should_emit_long_running_notification(
-                    session_key, agent_holder[0], _exec_ref
-                ):
-                    break
-                _elapsed_mins = int((time.time() - _notify_start) // 60)
-                # Include agent activity context if available. Default
-                # heartbeat is terse: elapsed + current tool. Verbose
-                # iteration counter is gated on busy_ack_detail so users
-                # who want it can opt in per platform.
-                _agent_ref = agent_holder[0]
-                _status_detail = ""
-                _want_iteration_detail = bool(
-                    resolve_display_setting(
-                        user_config,
-                        platform_key,
-                        "busy_ack_detail",
-                        True,
-                    )
-                )
-                if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
-                    try:
-                        _a = _agent_ref.get_activity_summary()
-                        _parts = []
-                        if _want_iteration_detail:
-                            _parts.append(
-                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
-                            )
-                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
-                        if _action:
-                            _parts.append(str(_action))
-                        if _parts:
-                            _status_detail = " — " + ", ".join(_parts)
-                    except Exception:
-                        pass
-                _heartbeat_text = (
-                    _generic_status_phrase("status")
-                    if _long_running_mode == "generic"
-                    else f"Working — {_elapsed_mins} min{_status_detail}"
-                )
-                try:
-                    await _notify_adapter.send(
-                        source.chat_id,
-                        _heartbeat_text,
-                        metadata=_status_thread_metadata,
-                    )
-                except Exception as _ne:
-                    logger.debug("Long-running notification error: %s", _ne)
-
-        _notify_task = asyncio.create_task(_notify_long_running())
-
-        def _stream_confirmed_final_delivery(
-            consumer,
-            final_text: str,
-            *,
-            previewed: bool = False,
-        ) -> bool:
-            """Return True only when the actual final reply reached the user."""
-            if consumer is None:
-                return False
-            if getattr(consumer, "final_response_sent", False):
-                # A successful finalize call is not proof the *content* was
-                # final: the edit may have carried only the last preview
-                # snapshot while the tail generated between that snapshot and
-                # stream completion never reached any API call (#71643).
-                # Reconcile the recorded turn-final payload against the
-                # completed response; only a demonstrable mismatch (False)
-                # overrides the flag — including payload-less multi-message
-                # split delivery (#78541). None (no record on a non-split
-                # legacy path) keeps the legacy trust so ambiguous-timeout
-                # dedup is not regressed.
-                matcher = getattr(consumer, "delivered_final_matches", None)
-                if callable(matcher):
-                    try:
-                        if matcher(final_text) is False:
-                            return False
-                    except Exception:
-                        pass
-                return True
-            if previewed:
-                has_delivered_text = getattr(consumer, "has_delivered_text", None)
-                if callable(has_delivered_text):
-                    try:
-                        return bool(has_delivered_text(final_text))
-                    except Exception:
-                        return False
-            return False
-
         try:
             # Run in thread pool to not block.  Use an *inactivity*-based
             # timeout instead of a wall-clock limit: the agent can run for
@@ -19888,11 +19050,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             #
             # Config: agent.gateway_timeout in config.toml, or
             # SON_OF_ANTON_AGENT_TIMEOUT env var (env var takes precedence).
-            # Default 1800s (30 min inactivity).  0 = unlimited.
-            _agent_timeout_raw = _float_env("SON_OF_ANTON_AGENT_TIMEOUT", 1800)
-            _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
-            _agent_warning_raw = _float_env("SON_OF_ANTON_AGENT_TIMEOUT_WARNING", 900)
-            _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
+            # Default 1800s (30 min inactivity); a staged warning fires at 900s.
+            _agent_timeout = _float_env("SON_OF_ANTON_AGENT_TIMEOUT", 1800)
+            _agent_warning = _float_env("SON_OF_ANTON_AGENT_TIMEOUT_WARNING", 900)
             _warning_fired = False
 
             # A background=true process intentionally survives a successful
@@ -19943,23 +19103,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         _finished_agent._gateway_turn_process_task_id = ""
                         _finished_agent._gateway_turn_process_baseline = frozenset()
 
-            if _agent_timeout is not None:
-                threading.Thread(
-                    target=_watch_gateway_turn_inactivity,
-                    kwargs={
-                        "agent_holder": agent_holder,
-                        "task_id": _turn_task_id,
-                        "process_baseline": _turn_process_baseline,
-                        "timeout": _agent_timeout,
-                        "worker_done": _turn_worker_done,
-                        "timeout_fired": _turn_timeout_fired,
-                        "cleanup_lock": _turn_cleanup_lock,
-                        "poll_interval": 5.0,
-                        "is_still_current": _turn_is_current,
-                    },
-                    name=f"gateway-turn-watchdog-{_turn_task_id[:12]}",
-                    daemon=True,
-                ).start()
+            threading.Thread(
+                target=_watch_gateway_turn_inactivity,
+                kwargs={
+                    "agent_holder": agent_holder,
+                    "task_id": _turn_task_id,
+                    "process_baseline": _turn_process_baseline,
+                    "timeout": _agent_timeout,
+                    "worker_done": _turn_worker_done,
+                    "timeout_fired": _turn_timeout_fired,
+                    "cleanup_lock": _turn_cleanup_lock,
+                    "poll_interval": 5.0,
+                    "is_still_current": _turn_is_current,
+                },
+                name=f"gateway-turn-watchdog-{_turn_task_id[:12]}",
+                daemon=True,
+            ).start()
             _executor_task = asyncio.ensure_future(
                 self._run_in_executor_with_context(_run_sync_with_timeout_lifecycle)
             )
@@ -19967,140 +19126,98 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             _inactivity_timeout = False
             _POLL_INTERVAL = 5.0
 
-            if _agent_timeout is None:
-                # Unlimited — still poll periodically for backup interrupt
-                # detection in case monitor_for_interrupt() silently died.
-                response = None
-                while True:
-                    done, _ = await asyncio.wait(
-                        {_executor_task}, timeout=_POLL_INTERVAL
-                    )
-                    if done:
-                        response = _executor_task.result()
-                        break
-                    # Backup interrupt check: if the monitor task died or
-                    # missed the interrupt, catch it here.
-                    if not _interrupt_detected.is_set() and session_key:
-                        _backup_adapter = self._adapter_for_source(source)
-                        _backup_agent = agent_holder[0]
-                        if (_backup_adapter and _backup_agent
-                                and hasattr(_backup_adapter, 'has_pending_interrupt')
-                                and _backup_adapter.has_pending_interrupt(session_key)):
-                            _bp_event = _backup_adapter._pending_messages.get(session_key)
-                            _bp_text = _bp_event.text if _bp_event else None
-                            if _bp_event is not None:
-                                _bp_media_urls = getattr(_bp_event, "media_urls", None) or []
-                                if self._pending_event_audio_paths(_bp_event):
-                                    _bp_text = await self._enrich_pending_voice(
-                                        _bp_event,
-                                        _bp_text or "",
-                                        log_context="Voice-backup-interrupt",
-                                    )
-                                elif not _bp_text and _bp_media_urls:
-                                    _bp_text = _build_media_placeholder(_bp_event)
-                            logger.info(
-                                "Backup interrupt detected for session %s "
-                                "(monitor task state: %s)",
-                                session_key,
-                                "done" if interrupt_monitor.done() else "running",
-                            )
-                            _backup_agent.interrupt(_bp_text)
-                            _interrupt_detected.set()
-
-            else:
-                # Poll loop: check the agent's built-in activity tracker
-                # (updated by _touch_activity() on every tool call, API
-                # call, and stream delta) every few seconds.
-                response = None
-                while True:
-                    done, _ = await asyncio.wait(
-                        {_executor_task}, timeout=_POLL_INTERVAL
-                    )
-                    if done:
-                        # Prefer the real result when the worker finished,
-                        # even if the watchdog fired in the same window: the
-                        # completed run already persisted its reply to session
-                        # history, so surfacing the "agent inactive" diagnostic
-                        # here would contradict the stored transcript. This
-                        # mirrors _abandon_timed_out_gateway_turn's own
-                        # worker_done-wins tiebreak (under cleanup_lock).
-                        response = _executor_task.result()
-                        break
-                    if _turn_timeout_fired.is_set():
-                        _inactivity_timeout = True
-                        break
-                    # Agent still running — check inactivity.
-                    _agent_ref = agent_holder[0]
-                    _idle_secs = 0.0
-                    if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
+            # Poll loop: check the agent's built-in activity tracker
+            # (updated by _touch_activity() on every tool call, API
+            # call, and stream delta) every few seconds.
+            response = None
+            while True:
+                done, _ = await asyncio.wait(
+                    {_executor_task}, timeout=_POLL_INTERVAL
+                )
+                if done:
+                    # Prefer the real result when the worker finished,
+                    # even if the watchdog fired in the same window: the
+                    # completed run already persisted its reply to session
+                    # history, so surfacing the "agent inactive" diagnostic
+                    # here would contradict the stored transcript. This
+                    # mirrors _abandon_timed_out_gateway_turn's own
+                    # worker_done-wins tiebreak (under cleanup_lock).
+                    response = _executor_task.result()
+                    break
+                if _turn_timeout_fired.is_set():
+                    _inactivity_timeout = True
+                    break
+                # Agent still running — check inactivity.
+                _agent_ref = agent_holder[0]
+                _idle_secs = 0.0
+                if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
+                    try:
+                        _act = _agent_ref.get_activity_summary()
+                        _idle_secs = _act.get("seconds_since_activity", 0.0)
+                    except Exception:
+                        pass
+                # Staged warning: fire once before escalating to full timeout.
+                if not _warning_fired and _idle_secs >= _agent_warning:
+                    _warning_fired = True
+                    _warn_adapter = self._adapter_for_source(source)
+                    if _warn_adapter:
+                        _elapsed_warn = int(_agent_warning // 60) or 1
+                        _remaining_mins = int((_agent_timeout - _agent_warning) // 60) or 1
                         try:
-                            _act = _agent_ref.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    # Staged warning: fire once before escalating to full timeout.
-                    if (not _warning_fired and _agent_warning is not None
-                            and _idle_secs >= _agent_warning):
-                        _warning_fired = True
-                        _warn_adapter = self._adapter_for_source(source)
-                        if _warn_adapter:
-                            _elapsed_warn = int(_agent_warning // 60) or 1
-                            _remaining_mins = int((_agent_timeout - _agent_warning) // 60) or 1
-                            try:
-                                await _warn_adapter.send(
-                                    source.chat_id,
-                                    f"No activity for {_elapsed_warn} min. "
-                                    f"If the agent does not respond soon, it will "
-                                    f"be timed out in {_remaining_mins} min. "
-                                    f"You can continue waiting or use /reset.",
-                                    metadata=_status_thread_metadata,
-                                )
-                            except Exception as _warn_err:
-                                logger.debug("Inactivity warning send error: %s", _warn_err)
-                    if _idle_secs >= _agent_timeout:
-                        _inactivity_timeout = True
-                        threading.Thread(
-                            target=_abandon_timed_out_gateway_turn,
-                            kwargs={
-                                "agent_holder": agent_holder,
-                                "task_id": _turn_task_id,
-                                "process_baseline": _turn_process_baseline,
-                                "worker_done": _turn_worker_done,
-                                "timeout_fired": _turn_timeout_fired,
-                                "cleanup_lock": _turn_cleanup_lock,
-                                "is_still_current": _turn_is_current,
-                            },
-                            name=f"gateway-turn-reaper-{_turn_task_id[:12]}",
-                            daemon=True,
-                        ).start()
-                        break
-                    # Backup interrupt check (same as unlimited path).
-                    if not _interrupt_detected.is_set() and session_key:
-                        _backup_adapter = self._adapter_for_source(source)
-                        _backup_agent = agent_holder[0]
-                        if (_backup_adapter and _backup_agent
-                                and hasattr(_backup_adapter, 'has_pending_interrupt')
-                                and _backup_adapter.has_pending_interrupt(session_key)):
-                            _bp_event = _backup_adapter._pending_messages.get(session_key)
-                            _bp_text = _bp_event.text if _bp_event else None
-                            if _bp_event is not None:
-                                _bp_media_urls = getattr(_bp_event, "media_urls", None) or []
-                                if self._pending_event_audio_paths(_bp_event):
-                                    _bp_text = await self._enrich_pending_voice(
-                                        _bp_event,
-                                        _bp_text or "",
-                                        log_context="Voice-backup-interrupt",
-                                    )
-                                elif not _bp_text and _bp_media_urls:
-                                    _bp_text = _build_media_placeholder(_bp_event)
-                            logger.info(
-                                "Backup interrupt detected for session %s "
-                                "(monitor task state: %s)",
-                                session_key,
-                                "done" if interrupt_monitor.done() else "running",
+                            await _warn_adapter.send(
+                                source.chat_id,
+                                f"No activity for {_elapsed_warn} min. "
+                                f"If the agent does not respond soon, it will "
+                                f"be timed out in {_remaining_mins} min. "
+                                f"You can continue waiting or use /reset.",
+                                metadata=_status_thread_metadata,
                             )
-                            _backup_agent.interrupt(_bp_text)
-                            _interrupt_detected.set()
+                        except Exception as _warn_err:
+                            logger.debug("Inactivity warning send error: %s", _warn_err)
+                if _idle_secs >= _agent_timeout:
+                    _inactivity_timeout = True
+                    threading.Thread(
+                        target=_abandon_timed_out_gateway_turn,
+                        kwargs={
+                            "agent_holder": agent_holder,
+                            "task_id": _turn_task_id,
+                            "process_baseline": _turn_process_baseline,
+                            "worker_done": _turn_worker_done,
+                            "timeout_fired": _turn_timeout_fired,
+                            "cleanup_lock": _turn_cleanup_lock,
+                            "is_still_current": _turn_is_current,
+                        },
+                        name=f"gateway-turn-reaper-{_turn_task_id[:12]}",
+                        daemon=True,
+                    ).start()
+                    break
+                # Backup interrupt check, in case monitor_for_interrupt() died.
+                if not _interrupt_detected.is_set() and session_key:
+                    _backup_adapter = self._adapter_for_source(source)
+                    _backup_agent = agent_holder[0]
+                    if (_backup_adapter and _backup_agent
+                            and hasattr(_backup_adapter, 'has_pending_interrupt')
+                            and _backup_adapter.has_pending_interrupt(session_key)):
+                        _bp_event = _backup_adapter._pending_messages.get(session_key)
+                        _bp_text = _bp_event.text if _bp_event else None
+                        if _bp_event is not None:
+                            _bp_media_urls = getattr(_bp_event, "media_urls", None) or []
+                            if self._pending_event_audio_paths(_bp_event):
+                                _bp_text = await self._enrich_pending_voice(
+                                    _bp_event,
+                                    _bp_text or "",
+                                    log_context="Voice-backup-interrupt",
+                                )
+                            elif not _bp_text and _bp_media_urls:
+                                _bp_text = _build_media_placeholder(_bp_event)
+                        logger.info(
+                            "Backup interrupt detected for session %s "
+                            "(monitor task state: %s)",
+                            session_key,
+                            "done" if interrupt_monitor.done() else "running",
+                        )
+                        _backup_agent.interrupt(_bp_text)
+                        _interrupt_detected.set()
 
             if _inactivity_timeout:
                 # Build a diagnostic summary from the agent's activity tracker.
@@ -20281,32 +19398,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 if not was_interrupted:
                     # Queued message after normal completion — deliver the first
                     # response before processing the queued follow-up.
-                    # Skip if streaming already delivered it.
-                    _sc = stream_consumer_holder[0]
-                    if _sc and stream_task:
-                        try:
-                            await asyncio.wait_for(stream_task, timeout=5.0)
-                        except (asyncio.TimeoutError, asyncio.CancelledError):
-                            stream_task.cancel()
-                            try:
-                                await stream_task
-                            except asyncio.CancelledError:
-                                pass
-                        except Exception as e:
-                            logger.debug("Stream consumer wait before queued message failed: %s", e)
                     # The queued branch needs raw ``result`` for interruption,
                     # history, and recursion state, but delivery must use the
                     # finalized task result. The latter contains empty/failure
                     # normalization and any final response processing applied by
                     # _run_agent_task; sending the raw copy bypasses those steps.
                     _delivery_result = response if isinstance(response, dict) else (result or {})
-                    _previewed = bool(_delivery_result.get("response_previewed"))
                     first_response = _delivery_result.get("final_response", "")
-                    _already_streamed = _stream_confirmed_final_delivery(
-                        _sc,
-                        first_response,
-                        previewed=_previewed,
-                    )
                     # Apply the same predicate as the normal completed-turn path.
                     # This direct queued-send branch predates intentional-silence
                     # filtering, so without this check it leaks the literal marker.
@@ -20324,25 +19422,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         )
                     elif first_response:
                         try:
-                            if _already_streamed:
-                                logger.info(
-                                    "Queued follow-up for session %s: final text delivery confirmed; delivering explicit media before continuing.",
-                                    session_key or "?",
-                                )
-                            else:
-                                logger.info(
-                                    "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
-                                    session_key or "?",
-                                )
+                            logger.info(
+                                "Queued follow-up for session %s: sending first response before continuing.",
+                                session_key or "?",
+                            )
                             await self._deliver_queued_first_response(
                                 first_response,
                                 source=source,
                                 adapter=adapter,
                                 metadata=_status_thread_metadata,
                                 event_message_id=event_message_id,
-                                text_already_delivered=_already_streamed,
                                 deliver_media=not _delivery_result.get("failed"),
-                                stream_consumer=_sc,
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
@@ -20355,15 +19445,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                             session_key,
                             generation=run_generation,
                         )
-                        if callable(_bg_cb):
-                            try:
-                                _bg_result = _bg_cb()
-                                if inspect.isawaitable(_bg_result):
-                                    await _bg_result
-                            except Exception:
-                                pass
-                    elif adapter and hasattr(adapter, "_post_delivery_callbacks"):
-                        _bg_cb = adapter._post_delivery_callbacks.pop(session_key, None)
                         if callable(_bg_cb):
                             try:
                                 _bg_result = _bg_cb()
@@ -20459,39 +19540,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
-            # Stop the tool-log writer, interrupt monitor, and notification task
-            if log_task:
-                log_task.cancel()
+            # Stop the interrupt monitor
             interrupt_monitor.cancel()
-            _notify_task.cancel()
-
-            # Wait for stream consumer to finish its final edit
-            if stream_task:
-                # If the agent never created a stream consumer (e.g. non-
-                # streaming code path, or a test stub returning synchronously)
-                # there is nothing to flush — cancel immediately instead of
-                # waiting out the 5s timeout on a task that's just polling for
-                # a consumer that will never arrive.  This was a 5-second
-                # cost per non-streaming test run.
-                _has_stream_consumer = (
-                    stream_consumer_holder
-                    and stream_consumer_holder[0] is not None
-                )
-                if not _has_stream_consumer:
-                    stream_task.cancel()
-                    try:
-                        await stream_task
-                    except asyncio.CancelledError:
-                        pass
-                else:
-                    try:
-                        await asyncio.wait_for(stream_task, timeout=5.0)
-                    except (asyncio.TimeoutError, asyncio.CancelledError):
-                        stream_task.cancel()
-                        try:
-                            await stream_task
-                        except asyncio.CancelledError:
-                            pass
 
             # Clean up tracking
             tracking_task.cancel()
@@ -20508,7 +19558,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 self._update_runtime_status("draining")
             
             # Wait for cancelled tasks
-            for task in [log_task, interrupt_monitor, tracking_task, _notify_task]:
+            for task in [interrupt_monitor, tracking_task]:
                 if task:
                     try:
                         await task
@@ -20523,150 +19573,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                         logger.debug(
                             "background turn task failed during cleanup",
                             exc_info=True,
-                        )
-
-        # If streaming already delivered the response, mark it so the
-        # caller's send() is skipped (avoiding duplicate messages).
-        # BUT: never suppress delivery when the agent failed — the error
-        # message is new content the user hasn't seen, and it must reach
-        # them even if streaming had sent earlier partial output.
-        #
-        # Also never suppress when the final response is "(empty)" — this
-        # means the model failed to produce content after tool calls (common
-        # with mimo-v2-pro, GLM-5, etc.).  The stream consumer may have
-        # sent intermediate text ("Let me search for that…") alongside the
-        # tool call, setting already_sent=True, but that text is NOT the
-        # final answer.  Suppressing delivery here leaves the user staring
-        # at silence.  (#10xxx — "agent stops after web search")
-        _sc = stream_consumer_holder[0]
-        if isinstance(response, dict) and not response.get("failed"):
-            _final = response.get("final_response") or ""
-            _is_empty_sentinel = not _final or _final == "(empty)"
-            # response_previewed means the interim_assistant_callback already
-            # saw the final text, but only suppress the normal send if that
-            # exact final text was delivered. Unrelated commentary/progress
-            # must not be mistaken for the final response (#14238).
-            _previewed = bool(response.get("response_previewed"))
-            _content_delivered = bool(
-                _sc and getattr(_sc, "final_content_delivered", False)
-            )
-            # #71643: a *successful* finalize edit can still carry only the
-            # last preview snapshot — deltas generated between that edit and
-            # stream completion never reach any API call, and both suppression
-            # flags are set from the call's success rather than its content.
-            # Reconcile the consumer's recorded turn-final payload against the
-            # completed response: on a demonstrable mismatch (False) neither
-            # final_response_sent nor final_content_delivered may suppress the
-            # normal final send. False also covers payload-less multi-message
-            # split delivery (#78541). None (no record on a non-split legacy
-            # path) keeps legacy trust; the failed-finalize family
-            # (#51828 / #33793) is unaffected because those paths leave the
-            # flags False or record the complete fallback payload.
-            _stale_finalized = False
-            if _content_delivered and not _is_empty_sentinel:
-                _matcher = getattr(_sc, "delivered_final_matches", None)
-                if callable(_matcher):
-                    try:
-                        _stale_finalized = _matcher(_final) is False
-                    except Exception:
-                        _stale_finalized = False
-                if _stale_finalized:
-                    _content_delivered = False
-            # Plugin hooks (e.g. transform_llm_output) may have appended content
-            # after streaming finished — when the response was transformed, always
-            # send the final version so the appended content reaches the client.
-            _transformed = bool(response.get("response_transformed"))
-            # Only suppress the normal send when the actual final reply reached
-            # the user: the stream consumer streamed it (final_response_sent /
-            # final_content_delivered), or the interim preview delivered that
-            # *exact* final text. Unrelated commentary/progress shown during a
-            # compaction/session split must not be mistaken for the final
-            # response (#14238).
-            _streamed = _stream_confirmed_final_delivery(
-                _sc,
-                _final,
-                previewed=_previewed,
-            )
-            if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
-                logger.info(
-                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
-                    session_key or "?",
-                    _streamed,
-                    _previewed,
-                    _content_delivered,
-                )
-                response["already_sent"] = True
-            elif not _is_empty_sentinel and not _transformed and _stale_finalized and _sc is not None:
-                # Stale finalize (#71643): the streamed message holds only the
-                # last preview snapshot. Prefer editing it up to the complete
-                # response (same shape as the transformed branch below) so the
-                # user gets one corrected message; on edit failure fall through
-                # with already_sent unset so the normal final send delivers the
-                # complete text.
-                #
-                # Not valid for a multi-message split delivery: there
-                # ``message_id`` is only the LAST chunk, so editing it with the
-                # complete response would repeat every sealed head chunk's text
-                # inside the tail message. Fall through to the normal final send
-                # instead (#78541).
-                _sc_msg_id = _sc.message_id
-                _sc_adapter = getattr(_sc, "adapter", None)
-                if getattr(_sc, "_turn_split_delivery", False):
-                    logger.info(
-                        "Stale streamed finalize detected for session %s on a multi-message split; skipping the in-place reconciliation edit and delivering the complete response via normal final send (#78541).",
-                        session_key or "?",
-                    )
-                elif _sc_msg_id and _sc_msg_id != "__no_edit__" and _sc_adapter is not None:
-                    try:
-                        _reconcile_res = await _sc_adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=_sc_msg_id,
-                            content=_final,
-                            finalize=True,
-                        )
-                        if getattr(_reconcile_res, "success", True):
-                            response["already_sent"] = True
-                            logger.info(
-                                "Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).",
-                                session_key or "?", _sc_msg_id,
-                            )
-                        else:
-                            logger.warning(
-                                "Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
-                                session_key or "?",
-                                getattr(_reconcile_res, "error", None),
-                            )
-                    except Exception as _edit_err:
-                        logger.warning(
-                            "Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
-                            session_key or "?", _edit_err,
-                        )
-                else:
-                    logger.info(
-                        "Stale streamed finalize detected for session %s with no editable message; delivering complete response via normal final send (#71643).",
-                        session_key or "?",
-                    )
-            elif not _is_empty_sentinel and _transformed and _sc is not None:
-                # Plugin hooks transformed the response after streaming — edit the
-                # existing streamed message instead of sending a duplicate.
-                _sc_msg_id = _sc.message_id
-                if _sc_msg_id:
-                    try:
-                        await _sc.adapter.edit_message(
-                            chat_id=source.chat_id,
-                            message_id=_sc_msg_id,
-                            content=response["final_response"],
-                            finalize=True,
-                        )
-                        response["already_sent"] = True
-                        logger.info(
-                            "Edited streamed message %s for session %s to include plugin-transformed content.",
-                            _sc_msg_id, session_key or "?",
-                        )
-                    except Exception as _edit_err:
-                        logger.warning(
-                            "Failed to edit streamed message for session %s: %s",
-                            session_key or "?", _edit_err,
                         )
 
         return response

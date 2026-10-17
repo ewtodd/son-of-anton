@@ -1112,10 +1112,6 @@ DEFAULT_CONFIG = {
         },
         "interim_assistant_messages": True,  # Gateway: send natural mid-turn assistant status messages. Desktop: keep mid-turn narration between tool calls instead of collapsing to the final message.
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
-        # NOTE: display.tool_progress_overrides is deprecated and no longer
-        # seeded here — use display.platforms. A user-set value is still
-        # honored at runtime (gateway display_config back-compat read) and
-        # folded into display.platforms by the v15→16 migration.
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
         # Human-phrased tool status labels for built-in tools: "Searching the
         # web for ...", "Reading <file>", "Browsing <url>" instead of the raw
@@ -1132,33 +1128,11 @@ DEFAULT_CONFIG = {
         # timer ("⚡ Reading file  ( 2.3s · ↓ 1.2k tok)"). Updates as each API
         # call in the turn reports usage.
         "spinner_token_flow": True,
-        # Optional custom phrases for generic long-running status messages.
-        # Built-in defaults live in gateway/assets/status_phrases.toml. Users
-        # can set `path`/`paths` to SON_OF_ANTON_HOME-relative TOML files/directories
-        # (or rely on conventional status_phrases.toml / status_phrases/*.yaml).
-        # Keys: status, generic. Use
-        # mode: "append" (default) to add phrases, or "replace" to fully
-        # replace configured surfaces. Per-platform overrides live under
-        # display.platforms.<platform>.status_phrases.
-        "status_phrases": {},
-        # How a reasoning/thinking summary renders when show_reasoning is on.
-        # "code" (default) = 💭 fenced code block; "blockquote" = "> " lines;
-        # "subtext" = "-# " lines; override per-platform via
-        # display.platforms.<platform>.reasoning_style.
-        "reasoning_style": "code",
-        # Per-platform display/streaming overrides. Each key is a gateway
-        # platform ("signal", …) mapping to a dict of display settings that
-        # override the global value for that platform only. A setting left
-        # unset here falls through to the global default.
+        # Per-platform display overrides. Each key is a gateway platform
+        # ("signal", …) mapping to a dict of display settings that override
+        # the global value for that platform only. Currently read:
+        # show_reasoning (written by the gateway's /reasoning show|hide).
         "platforms": {},
-        # Gateway runtime-metadata footer appended to the FINAL message of a turn
-        # (disabled by default to keep replies minimal). When enabled, renders
-        # e.g. `model · 68% · ~/projects/son-of-anton`. Per-platform overrides go under
-        # display.platforms.<platform>.runtime_footer.
-        "runtime_footer": {
-            "enabled": False,
-            "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
-        },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },
 
