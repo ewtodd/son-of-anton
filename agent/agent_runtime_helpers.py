@@ -598,8 +598,8 @@ def strip_think_blocks(agent, content: str) -> str:
       2. Unterminated open tag at a block boundary (start of text or
          after a newline) — e.g. MiniMax M2.7 / NIM endpoints where the
          closing tag is dropped.  Everything from the open tag to end
-         of string is stripped.  The block-boundary check mirrors
-         ``gateway/stream_consumer.py``'s filter so models that mention
+         of string is stripped.  The block-boundary check mirrors the
+         gateway's stream filter so models that mention
          `` <think>`` in prose aren't over-stripped.
       3. Stray orphan open/close tags that slip through.
       4. Tag variants: `` <think>``, ``<thinking>``, ``<reasoning>``,
