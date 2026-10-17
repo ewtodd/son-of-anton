@@ -338,7 +338,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
 
     success = False
     try:
-        success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
+        success = asyncio.run(start_gateway(verbosity=verbosity))
         _exit_diag("asyncio.run.returned", success=success)
     except KeyboardInterrupt:
         # On detached runs this shouldn't fire (we absorb SIGINT above),

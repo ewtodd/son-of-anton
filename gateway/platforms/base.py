@@ -1899,13 +1899,7 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
         self._fatal_error_retryable = True
-        # Cross-SON_OF_ANTON_HOME token takeover is armed by GatewayRunner only for
-        # an adapter's initial connect during an explicit ``gateway run
-        # --replace`` startup.  Ordinary starts and every reconnect fail safe
-        # through the existing retryable conflict path.
-        self._platform_lock_takeover_allowed = False
-        self._platform_lock_takeover_attempted = False
-        
+
         # Track active message handlers per session for interrupt support.
         # _active_sessions stores the per-session interrupt Event; _session_tasks
         # maps session → the specific Task currently processing it so that
@@ -2155,18 +2149,8 @@ class BasePlatformAdapter(ABC):
                 logger.debug("Failed to write runtime status (%s) for %s: %s", context, self.platform.value, exc)
 
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
-        """Acquire a scoped lock for this adapter. Returns True on success.
-
-        A live cross-SON_OF_ANTON_HOME holder may be replaced only when the runner
-        explicitly arms this adapter for its initial ``--replace`` connect.
-        The status module validates PID/start-time/home ownership, places the
-        marker in the target's home, and performs the bounded termination.
-        """
-        from gateway.status import (
-            acquire_scoped_lock,
-            scoped_lock_owner_label,
-            take_over_scoped_lock_holder,
-        )
+        """Acquire a scoped lock for this adapter. Returns True on success."""
+        from gateway.status import acquire_scoped_lock, scoped_lock_owner_label
 
         self._platform_lock_scope = scope
         self._platform_lock_identity = identity
@@ -2175,41 +2159,6 @@ class BasePlatformAdapter(ABC):
         )
         if acquired:
             return True
-
-        takeover_allowed = bool(
-            getattr(self, "_platform_lock_takeover_allowed", False)
-        )
-        takeover_attempted = bool(
-            getattr(self, "_platform_lock_takeover_attempted", False)
-        )
-        if takeover_allowed and not takeover_attempted and isinstance(existing, dict):
-            # Consume the authority before doing any I/O: one adapter connect
-            # gets at most one termination attempt, even if lock re-acquire or
-            # later initialization fails.
-            self._platform_lock_takeover_allowed = False
-            self._platform_lock_takeover_attempted = True
-            owner_pid = take_over_scoped_lock_holder(existing)
-            if owner_pid is not None:
-                logger.warning(
-                    "[%s] %s was held by gateway PID %d — explicit --replace "
-                    "handoff completed",
-                    self.name,
-                    resource_desc,
-                    owner_pid,
-                )
-                acquired, existing = acquire_scoped_lock(
-                    scope,
-                    identity,
-                    metadata={"platform": self.platform.value},
-                )
-                if acquired:
-                    logger.info(
-                        "[%s] Acquired %s after taking over PID %d",
-                        self.name,
-                        resource_desc,
-                        owner_pid,
-                    )
-                    return True
 
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None
         # OOF-3: scoped locks are machine-global, so the holder is often a

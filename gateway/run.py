@@ -23,7 +23,6 @@ import logging
 import os
 import queue
 import re
-import shlex
 import sys
 import signal
 import threading
@@ -1511,27 +1510,8 @@ def _ensure_ssl_certs() -> None:
             return
 
     # 2. certifi (ships its own Mozilla bundle)
-    try:
-        import certifi
-        os.environ["SSL_CERT_FILE"] = certifi.where()
-        return
-    except ImportError:
-        pass
-
-    # 3. Common distro / macOS locations
-    for candidate in (
-        "/etc/ssl/certs/ca-certificates.crt",               # Debian/Ubuntu/Gentoo
-        "/etc/pki/tls/certs/ca-bundle.crt",                 # RHEL/CentOS 7
-        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", # RHEL/CentOS 8+
-        "/etc/ssl/ca-bundle.pem",                            # SUSE/OpenSUSE
-        "/etc/ssl/cert.pem",                                 # Alpine / macOS
-        "/etc/pki/tls/cert.pem",                             # Fedora
-        "/usr/local/etc/openssl@1.1/cert.pem",               # macOS Homebrew Intel
-        "/opt/homebrew/etc/openssl@1.1/cert.pem",            # macOS Homebrew ARM
-    ):
-        if os.path.exists(candidate):
-            os.environ["SSL_CERT_FILE"] = candidate
-            return
+    import certifi
+    os.environ["SSL_CERT_FILE"] = certifi.where()
 
 def _home_target_env_var(platform_name: str) -> str:
     """Return the configured home-target env var for a platform.
@@ -1558,28 +1538,12 @@ def _restart_notification_pending() -> bool:
     return (_son_of_anton_home / ".restart_notify.json").exists()
 
 
-def _planned_restart_notification_path() -> Path:
-    return _son_of_anton_home / ".restart_pending.json"
-
-
-def _planned_restart_notification_pending() -> bool:
-    """Return True when a non-chat planned restart should notify home channels."""
-    return _planned_restart_notification_path().exists()
-
-
-def _clear_planned_restart_notification() -> None:
-    _planned_restart_notification_path().unlink(missing_ok=True)
-
-
 # True only in a process that is *actually* the gateway.
 #
 # Set by the gateway LAUNCHERS (cli.py's ``--gateway`` path and
 # son_of_anton_cli/gateway.py) immediately before they import this module, so
 # an incidental ``import gateway.run`` can never forge it.
-# ``__name__ == "__main__"`` covers ``python -m gateway.run`` / direct exec.
-_IS_GATEWAY_PROCESS = (
-    os.environ.get("_SON_OF_ANTON_GATEWAY_PROC") == "1" or __name__ == "__main__"
-)
+_IS_GATEWAY_PROCESS = os.environ.get("_SON_OF_ANTON_GATEWAY_PROC") == "1"
 
 # Mark this process (and every child that inherits its environment) as running
 # inside the gateway. Consumers read it to answer "am I in the gateway process
@@ -2050,9 +2014,6 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
-    parse_cron_drain_timeout,
-    parse_restart_after_turn_timeout,
-    parse_restart_drain_timeout,
     resolve_cron_drain_budget,
 )
 
@@ -4591,13 +4552,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     _draining: bool = False
     _restart_requested: bool = False
     _restart_task_started: bool = False
-    _restart_detached: bool = False
-    _restart_via_service: bool = False
-    _detached_restart_helper_started: bool = False
     _restart_command_source: Optional[SessionSource] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
-    _systemd_watchdog: Optional[Any] = None
     _startup_restore_in_progress: bool = False
 
     # ------------------------------------------------------------------
@@ -4677,8 +4634,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     _loop_floor_timer_handle: Optional[Any] = None
     _loop_liveness_watchdog: Optional[Any] = None
     _gateway_started_at: float = 0.0
-    _shutdown_watchdog_done: Optional["threading.Event"] = None
-    _platform_lock_takeover_on_start: bool = False
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -4698,9 +4653,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._show_reasoning = self._load_show_reasoning()
-        self._restart_drain_timeout = self._load_restart_drain_timeout()
-        self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
-        self._cron_drain_timeout = self._load_cron_drain_timeout()
 
         # Wire process registry into session store for reset protection.
         # A background process older than the configured threshold (default 24h,
@@ -4733,33 +4685,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self._exit_reason: Optional[str] = None
         self._exit_code: Optional[int] = None
         self._draining = False
-        self._systemd_watchdog = None
         self._restart_requested = False
-        # Set by shutdown_signal_handler when a SIGTERM/SIGINT arrived
-        # WITHOUT a planned-stop / takeover marker — i.e. an unexpected
-        # external signal (container/s6 SIGTERM on `docker restart` or
-        # image upgrade, OOM-killer, bare `kill`). Distinct from an
-        # operator-requested stop, which writes a marker first. Used by
-        # _stop_impl to decide whether to persist gateway_state=stopped
-        # (see issue #42675): an unexpected signal must NOT persist
-        # "stopped", or container_boot refuses to auto-start the gateway
-        # on the next boot.
+        # Set by shutdown_signal_handler when a SIGTERM arrived (anything but
+        # an interactive Ctrl+C). _stop_impl then persists gateway_state
+        # "running" instead of "stopped".
         self._signal_initiated_shutdown = False
         self._restart_task_started = False
-        self._restart_detached = False
-        self._restart_via_service = False
-        self._detached_restart_helper_started = False
         self._restart_command_source: Optional[SessionSource] = None
-        # Monotonic-ish wall clock of when this GatewayRunner was constructed.
-        # Used by the /restart redelivery guard to bound the window in which a
-        # missing dedup marker is treated as a stale redelivery.
-        self._startup_time: float = time.time()
-        # Set True at startup when this process booted as the result of a
-        # chat-originated /restart (i.e. .restart_notify.json existed on boot).
-        # A one-shot signal consumed by _is_stale_restart_redelivery so the
-        # marker-missing fallback only suppresses a /restart when we KNOW we
-        # just came out of a restart cycle — never on a genuine fresh boot.
-        self._booted_from_restart: bool = False
         self._stop_task: Optional[asyncio.Task] = None
         self._restart_task: Optional[asyncio.Task] = None
         self._executor_lock = threading.Lock()
@@ -4819,10 +4751,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # with the synthetic resume turns for the same session.  The queued
         # events drain only after all startup resume tasks have finished.
         self._startup_restore_in_progress = False
-        # Set by start_gateway() only for an explicit ``--replace`` launch.
-        # _connect_initial_adapter_with_timeout scopes it to each adapter's
-        # cold-start connect and removes it before any reconnect can run.
-        self._platform_lock_takeover_on_start = False
         self._startup_restore_queue: List[MessageEvent] = []
         self._startup_restore_tasks: List[asyncio.Task] = []
         # LRU cache of live SessionSources keyed by session_key. Used by
@@ -5261,25 +5189,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             f"{platform.value} connect timed out after {timeout:g}s"
         )
 
-    async def _connect_initial_adapter_with_timeout(self, adapter, platform) -> bool:
-        """Connect one cold-start adapter with tightly scoped replace intent.
-
-        The capability is visible only while this initial connect is awaited.
-        Reconnects call ``_connect_adapter_with_timeout`` directly and adapters
-        also default to deny, so a later network recovery can never evict a
-        healthy token holder.
-        """
-        adapter._platform_lock_takeover_allowed = bool(
-            self._platform_lock_takeover_on_start
-        )
-        try:
-            return await self._connect_adapter_with_timeout(
-                adapter, platform, initial=True
-            )
-        finally:
-            adapter._platform_lock_takeover_allowed = False
-
-    @property
     def should_exit_cleanly(self) -> bool:
         return self._exit_cleanly
 
@@ -5985,71 +5894,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             cfg_get(cfg, "display", "show_reasoning"),
             default=False,
         )
-
-    @staticmethod
-    def _load_restart_drain_timeout() -> float:
-        """Load graceful gateway restart/stop drain timeout in seconds."""
-        raw = os.getenv("SON_OF_ANTON_RESTART_DRAIN_TIMEOUT", "").strip()
-        if not raw:
-            cfg = _load_gateway_runtime_config()
-            raw = str(cfg_get(cfg, "agent", "restart_drain_timeout", default="") or "").strip()
-        value = parse_restart_drain_timeout(raw)
-        if raw and value == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT:
-            try:
-                float(raw)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Invalid restart_drain_timeout '%s', using default %.0fs",
-                    raw,
-                    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
-                )
-        return value
-
-    @staticmethod
-    def _load_restart_after_turn_timeout() -> float:
-        """Load in-band restart wait-for-idle timeout in seconds (#77184)."""
-        env_raw = os.getenv("SON_OF_ANTON_RESTART_AFTER_TURN_TIMEOUT")
-        if env_raw is not None and str(env_raw).strip() != "":
-            raw: object = env_raw
-        else:
-            cfg = _load_gateway_runtime_config()
-            raw = cfg_get(cfg, "agent", "restart_after_turn_timeout", default=None)
-        value = parse_restart_after_turn_timeout(raw)
-        # Warn only when the user supplied a non-empty value that failed to
-        # parse (parser falls back to the default). ``0`` is valid.
-        if raw is not None and str(raw).strip() != "":
-            try:
-                float(raw)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Invalid restart_after_turn_timeout '%s', using default %.0fs",
-                    raw,
-                    DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
-                )
-        return value
-
-    @staticmethod
-    def _load_cron_drain_timeout() -> float:
-        """Load the cron-only floor under the stop()/drain wait (#82161)."""
-        env_raw = os.getenv("SON_OF_ANTON_CRON_DRAIN_TIMEOUT")
-        if env_raw is not None and str(env_raw).strip() != "":
-            raw: object = env_raw
-        else:
-            cfg = _load_gateway_runtime_config()
-            raw = cfg_get(cfg, "agent", "cron_drain_timeout", default=None)
-        value = parse_cron_drain_timeout(raw)
-        # Warn only when the user supplied a non-empty value that failed to
-        # parse (parser falls back to the default). ``0`` is valid.
-        if raw is not None and str(raw).strip() != "":
-            try:
-                float(raw)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Invalid cron_drain_timeout '%s', using default %.0fs",
-                    raw,
-                    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
-                )
-        return value
 
     @staticmethod
     def _load_background_notifications_mode() -> str:
@@ -7184,145 +7028,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception:
             pass
 
-    async def _launch_detached_restart_command(self) -> None:
-        import shutil
-        import subprocess
-
-        son_of_anton_cmd = _resolve_son_of_anton_bin()
-        if not son_of_anton_cmd:
-            logger.error("Could not locate son-of-anton binary for detached /restart")
-            return
-        if self._detached_restart_helper_started:
-            return
-        self._detached_restart_helper_started = True
-
-        current_pid = os.getpid()
-        restart_after_s = max(float(getattr(self, "_restart_drain_timeout", 0.0) or 0.0) + 5.0, 5.0)
-
-        cmd = " ".join(shlex.quote(part) for part in son_of_anton_cmd)
-        shell_cmd = (
-            f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
-            f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
-            f"{cmd} gateway restart"
-        )
-        # This watcher runs `son-of-anton gateway restart` from outside the
-        # gateway, but it inherits _SON_OF_ANTON_GATEWAY=1 from us, and the CLI's
-        # self-restart loop guard refuses to run when that marker is set —
-        # silently (DEVNULL), so the gateway stops and never comes back.
-        from tools.environments.local import build_subprocess_env
-        watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
-        watcher_env.pop("_SON_OF_ANTON_GATEWAY", None)
-        # Shed the launcher marker too, or the watcher's `gateway restart`
-        # would re-mark itself as a gateway the moment it imports gateway.run.
-        watcher_env.pop("_SON_OF_ANTON_GATEWAY_PROC", None)
-        setsid_bin = shutil.which("setsid")
-        if setsid_bin:
-            subprocess.Popen(
-                [setsid_bin, "bash", "-lc", shell_cmd],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=watcher_env,
-                start_new_session=True,
-            )
-        else:
-            subprocess.Popen(
-                ["bash", "-lc", shell_cmd],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=watcher_env,
-                start_new_session=True,
-            )
-
-    def _launch_systemd_restart_shortcut(self) -> None:
-        """Best-effort helper to bypass systemd's automatic restart delay.
-
-        For planned in-chat restarts, the gateway exits cleanly so systemd does
-        not record a failure.  However, units with RestartSteps still count
-        automatic restarts and can delay repeated /restart tests.  A transient
-        user service survives our cgroup teardown and explicitly starts the
-        gateway as soon as this PID exits, while the unit keeps its normal
-        backoff for real crash loops.
-        """
-        if sys.platform != "linux" or not os.environ.get("INVOCATION_ID"):
-            return
-
-        try:
-            import shutil
-            import subprocess
-
-            systemd_run = shutil.which("systemd-run")
-            systemctl = shutil.which("systemctl")
-            if not systemd_run or not systemctl:
-                return
-
-            service_name = "son-of-anton-gateway"
-
-            current_pid = os.getpid()
-
-            # Detect whether the gateway unit is registered as a system or
-            # user service.  Daemon-style deployments are typically system
-            # units (e.g. /etc/systemd/system/son-of-anton-gateway.service), while
-            # `son-of-anton setup` under a non-root account may register a user
-            # unit.  Hard-coding ``--user`` broke system-unit deployments:
-            # systemctl returned an empty MainPID, the PID-equality check
-            # below failed, and the planned-restart helper was never
-            # launched — leaving the gateway dead until a manual reboot.
-            def _query_pid(scope_flags):
-                try:
-                    out = subprocess.run(
-                        [systemctl, *scope_flags, "show", service_name,
-                         "--property=MainPID", "--value"],
-                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
-                    )
-                    return (out.stdout or "").strip()
-                except Exception:
-                    return ""
-
-            system_pid = _query_pid([])
-            user_pid = _query_pid(["--user"])
-            if str(current_pid) == system_pid:
-                scope_flags = []
-                systemctl_scope = "systemctl"
-            elif str(current_pid) == user_pid:
-                scope_flags = ["--user"]
-                systemctl_scope = "systemctl --user"
-            else:
-                # MainPID does not match in either scope — likely invoked
-                # outside of systemd or the unit was renamed.  Bail out
-                # rather than restart the wrong unit.
-                return
-
-            service_arg = shlex.quote(service_name)
-            shell_cmd = (
-                f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
-                f"{systemctl_scope} reset-failed {service_arg}; "
-                f"{systemctl_scope} restart {service_arg}"
-            )
-            unit_name = f"{service_name}-planned-restart-{current_pid}".replace(".", "-")
-            subprocess.Popen(
-                [
-                    systemd_run,
-                    *scope_flags,
-                    "--collect",
-                    "--unit",
-                    unit_name,
-                    "/bin/sh",
-                    "-lc",
-                    shell_cmd,
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            logger.info(
-                "Launched systemd planned-restart helper for %s (pid=%s, scope=%s)",
-                service_name,
-                current_pid,
-                "user" if scope_flags else "system",
-            )
-        except Exception as e:
-            logger.debug("Failed to launch systemd planned-restart helper: %s", e)
-
     def _wedged_agent_count(self) -> int:
         """Count running chat agents already past the inactivity timeout.
 
@@ -7465,12 +7170,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         )
         return True
 
-    def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
+    def request_restart(self) -> bool:
+        """Drain, then exit 75 so systemd (Restart=always) relaunches us."""
         if self._restart_task_started:
             return False
         self._restart_requested = True
-        self._restart_detached = detached
-        self._restart_via_service = via_service
         self._restart_task_started = True
         # Refuse new turns immediately while in-flight work finishes.
         # Keep ``_running`` True so adapters stay connected and the active
@@ -7479,17 +7183,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
         async def _run_restart() -> None:
             await self._await_active_work_before_restart()
-            # Launch the detached helper only AFTER the after-turn wait.
-            # Its deadline is drain_timeout+5 and covers stop() teardown —
-            # launching earlier would fire `son-of-anton gateway restart` while
-            # the requesting turn was still running.
-            if detached:
-                try:
-                    await self._launch_detached_restart_command()
-                except Exception as e:
-                    logger.error("Failed to launch detached gateway restart helper: %s", e)
             await asyncio.sleep(0.05)
-            await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
+            await self.stop(restart=True)
 
         # _run_restart is a short-lived self-terminating task (calls stop()
         # then returns).  Don't add it to _background_tasks — _stop_impl
@@ -7947,11 +7642,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if stop_task is not None and stop_task is not current_task:
             await stop_task
         elif not self._shutdown_event.is_set():
-            await self.stop(
-                restart=self._restart_requested,
-                detached_restart=self._restart_detached,
-                service_restart=self._restart_via_service,
-            )
+            await self.stop(restart=self._restart_requested)
         return True
 
     def _start_loop_liveness_guards(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -8057,45 +7748,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         Returns True if at least one adapter connected successfully.
         """
         logger.info("Starting Son of Anton Gateway...")
-        # Enable faulthandler for stack dumps on freezes/crashes (#70344).
-        # Falls back to a log file when sys.stderr is None (detached service)
-        # — otherwise the gateway would die here and take every adapter
-        # offline. See #71671.
+        # Enable faulthandler for stack dumps on freezes/crashes (#70344);
+        # under systemd stderr goes to the journal.
         try:
             faulthandler.enable()
         except (RuntimeError, ValueError, OSError):
-            try:
-                _fh_log_dir = getattr(self.config, "log_dir", None) or os.path.join(
-                    str(get_son_of_anton_home()),
-                    "logs",
-                )
-                os.makedirs(_fh_log_dir, exist_ok=True)
-                _fh_enable_path = os.path.join(_fh_log_dir, "gateway_faulthandler.log")
-                _fh_enable_file = open(_fh_enable_path, "a", encoding="utf-8")
-                faulthandler.enable(file=_fh_enable_file, all_threads=True)
-            except Exception:
-                logger.debug("faulthandler.enable() unavailable", exc_info=True)
-        # Also dump stacks to a rotating file for off-line analysis when
-        # the gateway is running under a service manager that doesn't
-        # capture stderr.
-        _sigusr2 = getattr(signal, "SIGUSR2", None)
-        if _sigusr2 is not None and hasattr(faulthandler, "register"):
-            try:
-                _log_dir = getattr(self.config, "log_dir", None) or os.path.join(
-                    str(get_son_of_anton_home()),
-                    "logs",
-                )
-                _faulthandler_path = os.path.join(_log_dir, "gateway_faulthandler.log")
-                os.makedirs(_log_dir, exist_ok=True)
-                _fh = open(_faulthandler_path, "a", encoding="utf-8")
-                faulthandler.register(
-                    _sigusr2,
-                    file=_fh,
-                    all_threads=True,
-                    chain=True,
-                )
-            except Exception:
-                logger.debug("Could not set up faulthandler file logging", exc_info=True)
+            logger.debug("faulthandler.enable() unavailable", exc_info=True)
 
         try:
             self._gateway_loop = asyncio.get_running_loop()
@@ -8105,27 +7763,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             self._start_loop_liveness_guards(self._gateway_loop)
         logger.info("Session storage: %s", self.config.sessions_dir)
 
-        # Sanity-check that systemd's TimeoutStopSec covers our drain
-        # window.  When the user upgraded son-of-anton without re-running
-        # ``son-of-anton setup``, their unit file may still encode the old
-        # default — in which case SIGKILL hits mid-drain and looks like
-        # a phantom kill in the journal.  Best-effort, never raises.
-        try:
-            from gateway.shutdown_forensics import check_systemd_timing_alignment
-            _alignment = check_systemd_timing_alignment(self._restart_drain_timeout)
-            if _alignment is not None and _alignment.get("mismatch"):
-                logger.warning(
-                    "Stale systemd unit detected: %s has TimeoutStopSec=%.0fs but "
-                    "drain_timeout=%.0fs (expected >=%.0fs). systemd may SIGKILL the "
-                    "gateway mid-drain. Run `son-of-anton gateway install --force` "
-                    "to regenerate the unit, or shorten agent.restart_drain_timeout.",
-                    _alignment.get("unit", "(unknown)"),
-                    _alignment["timeout_stop_sec"],
-                    _alignment["drain_timeout"],
-                    _alignment["expected_min"],
-                )
-        except Exception as _e:
-            logger.debug("check_systemd_timing_alignment failed: %s", _e)
         # Log the resolved max_iterations budget so operators can verify the
         # config.toml → env bridge did the right thing at a glance (instead
         # of silently running at a stale .env value for weeks).
@@ -8163,11 +7800,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             pass
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(
-                gateway_state="starting",
-                exit_reason=None,
-                clear_profile_platforms=True,
-            )
+            write_runtime_status(gateway_state="starting", exit_reason=None)
         except Exception:
             pass
 
@@ -8324,17 +7957,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
 
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                # Distinguish between missing builtin deps and missing plugin
-                _pval = platform.value
-                _builtin_names = {m.value for m in Platform.__members__.values()}
-                if _pval not in _builtin_names:
-                    logger.warning(
-                        "No adapter for '%s' -- is the plugin installed? "
-                        "(platform is enabled in config.toml but no plugin registered it)",
-                        _pval,
-                    )
-                else:
-                    logger.warning("No adapter available for %s", _pval)
+                logger.warning("No adapter available for %s", platform.value)
                 continue
 
             # Set up message + fatal error handlers. Under multiplexing the
@@ -8358,7 +7981,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 p.value, platform_state="connecting", error_code=None, error_message=None,
             )
             try:
-                ok = await self._connect_initial_adapter_with_timeout(adp, p)
+                ok = await self._connect_adapter_with_timeout(adp, p, initial=True)
             except Exception as _exc:  # noqa: BLE001 - surfaced below as a retryable error
                 return (p, adp, p_cfg, "exception", _exc)
             return (p, adp, p_cfg, "ok" if ok else "failed", None)
@@ -8502,13 +8125,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if await self._abort_startup_if_shutdown_requested():
             return True
 
-        # Startup authority is one phase, not a persistent runner mode. From
-        # this point onward every adapter retry is non-evicting: several
-        # gateways can share one platform account (separated by group id), so a
-        # retry that took the platform lock by force would knock a sibling
-        # instance off the wire.
-        self._platform_lock_takeover_on_start = False
-
         if connected_count == 0:
             if startup_nonretryable_errors and not startup_retryable_errors:
                 reason = "; ".join(startup_nonretryable_errors)
@@ -8617,18 +8233,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception as e:
             logger.warning("Channel directory build failed: %s", e)
         
-        # Check if we're restarting after a /update command. If the update is
-        # still running, keep watching so we notify once it actually finishes.
-        notified = await self._send_update_notification()
-        if not notified and any(
-            path.exists()
-            for path in (
-                _son_of_anton_home / ".update_pending.json",
-                _son_of_anton_home / ".update_pending.claimed.json",
-            )
-        ):
-            self._schedule_update_notification_watch()
-
         # Give freshly connected platform adapters a brief moment to settle
         # before sending restart/startup lifecycle messages. In practice this
         # helps Discord thread deliveries right after reconnect.
@@ -8636,29 +8240,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             await asyncio.sleep(1.0)
 
         # Notify the chat that initiated /restart that the gateway is back.
-        chat_restart_notification_pending = _restart_notification_pending()
-        planned_restart_notification_pending = _planned_restart_notification_pending()
-        # Capture, before _send_restart_notification() unlinks the marker,
-        # whether this process booted from a chat-originated /restart. Used as
-        # a one-shot signal by the /restart redelivery guard so a missing
-        # dedup marker only suppresses a /restart when we KNOW we just came out
-        # of a restart cycle (see _is_stale_restart_redelivery).
-        if chat_restart_notification_pending:
-            self._booted_from_restart = True
         await self._send_restart_notification()
-
-        # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
-            try:
-                await self._send_home_channel_startup_notifications(
-                    skip_targets=None,
-                )
-            finally:
-                _clear_planned_restart_notification()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -8673,10 +8255,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         await self._redeliver_pending_obligations()
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
-
-        # Surface state.db init failures to the user's messaging platforms
-        # so they know persistence is broken before losing data (#88235).
-        await self._send_session_db_warning_notifications()
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
@@ -9579,37 +9157,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     return
                 await asyncio.sleep(1)
 
-    def _start_systemd_watchdog(self) -> bool:
-        """Start sd_notify only after a configured gateway is truly running."""
-        if not self._running or self.config.systemd_watchdog_seconds <= 0:
-            return False
-        if self._systemd_watchdog is not None:
-            return True
-
-        from gateway.systemd_notify import SystemdWatchdog
-
-        watchdog = SystemdWatchdog(config_enabled=True)
-        if not watchdog.start():
-            return False
-        self._systemd_watchdog = watchdog
-        watchdog.ready("Son of Anton Gateway running")
-        return True
-
-    async def _stop_systemd_watchdog(self) -> None:
-        """Stop heartbeats before any potentially long shutdown drain."""
-        watchdog = self._systemd_watchdog
-        if watchdog is None:
-            return
-        self._systemd_watchdog = None
-        await watchdog.stop()
-
-    async def stop(
-        self,
-        *,
-        restart: bool = False,
-        detached_restart: bool = False,
-        service_restart: bool = False,
-    ) -> None:
+    async def stop(self, *, restart: bool = False) -> None:
         """Stop the gateway and disconnect all adapters."""
         # getattr-guard: shutdown-path tests build bare runners via
         # object.__new__ that lack the liveness-guard machinery.
@@ -9618,8 +9166,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             _stop_guards()
         if restart:
             self._restart_requested = True
-            self._restart_detached = detached_restart
-            self._restart_via_service = service_restart
         if self._stop_task is not None:
             await self._stop_task
             return
@@ -9698,7 +9244,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             # Skip under pytest so stop()-driving unit tests don't get a
             # delayed hard-exit in the worker.
             _watchdog_done = threading.Event()
-            self._shutdown_watchdog_done = _watchdog_done
             _stop_started_at_box: dict[str, float] = {}
 
             def _shutdown_watchdog_snapshot() -> dict:
@@ -9748,10 +9293,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             self._running = False
             self._clear_plugin_message_injector()
             self._draining = True
-
-            stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
-            if callable(stop_watchdog):
-                await stop_watchdog()
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
@@ -9933,12 +9474,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                     _phase_elapsed(),
                 )
 
-            if self._restart_requested and self._restart_detached:
-                try:
-                    await self._launch_detached_restart_command()
-                except Exception as e:
-                    logger.error("Failed to launch detached gateway restart: %s", e)
-
             await self._finalize_shutdown_agents(active_agents)
 
             # Also shut down memory providers on idle cached agents.
@@ -10118,70 +9653,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             if active_agents:
                 self._increment_restart_failure_counts(set(active_agents.keys()))
 
-            if self._restart_requested and self._restart_command_source is None:
-                try:
-                    atomic_json_write(
-                        _planned_restart_notification_path(),
-                        {
-                            "requested_at": time.time(),
-                            "via_service": bool(self._restart_via_service),
-                            "detached": bool(self._restart_detached),
-                        },
-                        indent=None,
-                    )
-                except Exception as e:
-                    logger.debug("Failed to write planned restart notification marker: %s", e)
-
-            if self._restart_requested and self._restart_via_service:
-                self._launch_systemd_restart_shortcut()
-                # Always exit with TEMPFAIL (75) on service-managed
-                # restarts.  The shortcut helper above is best-effort and
-                # commonly fails on real deployments: non-root gateway
-                # units hit Polkit denials when invoking ``systemd-run
-                # --system``, headless boxes have no user bus for
-                # ``--user``, and operator-managed unit files may use
-                # ``Restart=on-failure`` rather than ``Restart=always``.
-                # Exit 75 paired with ``RestartForceExitStatus=75`` makes
-                # systemd treat the planned restart as a controlled
-                # failure and revive the unit via ``Restart=on-failure``,
-                # regardless of whether the helper survived.  Without
-                # this, a clean exit (0) on Linux left the gateway dead
-                # until someone rebooted the host.  Only the planned code
-                # (75) is whitelisted via ``RestartForceExitStatus``; a
-                # genuine crash exits non-zero-but-not-75, so real crash
-                # loops are still governed by the unit's normal
-                # ``Restart=``/``RestartSec`` (and any StartLimit the
-                # operator sets) rather than force-restarted here.
+            if self._restart_requested:
+                # Exit with TEMPFAIL (75): the unit's Restart=always relaunches
+                # the gateway, and the non-zero code marks the exit as planned.
                 self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
             self._draining = False
-            # Persist the terminal gateway_state. The default is "stopped",
-            # but when this teardown was triggered by an UNEXPECTED external
-            # signal (container/s6 SIGTERM on `docker restart` or image
-            # upgrade, OOM-killer, bare `kill`) we instead persist "running"
-            # to preserve the operator's run-intent across the restart.
-            #
-            # On Docker (s6-overlay), container_boot.py reads gateway_state
-            # on the next boot and only auto-starts gateways whose last
-            # state was "running" (_AUTOSTART_STATES). Persisting "stopped"
-            # — or leaving the mid-shutdown "draining" marker in place — for
-            # a routine `docker compose up --force-recreate` permanently
-            # suppresses auto-start, so the messaging channels silently stay
-            # dark until the operator manually restarts (issue #42675).
-            #
-            # An operator-initiated stop (`son-of-anton gateway stop`,
-            # systemd/launchd ExecStop, the s6 stop path, Ctrl+C) writes a
-            # planned-stop marker BEFORE signalling, so it is classified as
-            # a planned stop (not signal-initiated) and correctly persists
-            # "stopped" — respecting the explicit intent. A restart also
-            # persists "stopped" here; the restarting process brings the
-            # gateway back up itself.
+            # Persist the terminal gateway_state: "stopped" for a restart or
+            # Ctrl+C, "running" when a SIGTERM drove the stop (the run-intent
+            # survives it).
             if getattr(self, "_signal_initiated_shutdown", False) and not self._restart_requested:
                 logger.info(
-                    "Gateway stopped by an unexpected signal — persisting "
-                    "gateway_state=running so container_boot auto-starts on "
-                    "the next boot (issue #42675)"
+                    "Gateway stopped by a signal — persisting gateway_state=running"
                 )
                 self._update_runtime_status("running", self._exit_reason)
             else:
@@ -15895,392 +15379,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         return _reply_anchor_for_event(event)
 
 
-    def _schedule_update_notification_watch(self) -> None:
-        """Ensure a background task is watching for update completion."""
-        existing_task = getattr(self, "_update_notification_task", None)
-        if existing_task and not existing_task.done():
-            return
-
-        try:
-            self._update_notification_task = asyncio.create_task(
-                self._watch_update_progress()
-            )
-        except RuntimeError:
-            logger.debug("Skipping update notification watcher: no running event loop")
-
-    async def _watch_update_progress(
-        self,
-        poll_interval: float = 2.0,
-        stream_interval: float = 4.0,
-        timeout: float = 1800.0,
-    ) -> None:
-        """Watch ``son-of-anton update --gateway``, streaming output + forwarding prompts.
-
-        Polls ``.update_output.txt`` for new content and sends chunks to the
-        user periodically.  Detects ``.update_prompt.json`` (written by the
-        update process when it needs user input) and forwards the prompt to
-        the messenger.  The user's next message is intercepted by
-        ``_handle_message`` and written to ``.update_response``.
-        """
-        pending_path = _son_of_anton_home / ".update_pending.json"
-        claimed_path = _son_of_anton_home / ".update_pending.claimed.json"
-        output_path = _son_of_anton_home / ".update_output.txt"
-        exit_code_path = _son_of_anton_home / ".update_exit_code"
-        prompt_path = _son_of_anton_home / ".update_prompt.json"
-
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-
-        # Resolve the adapter and chat_id for sending messages
-        adapter = None
-        chat_id = None
-        session_key = None
-        metadata = None
-        for path in (claimed_path, pending_path):
-            if path.exists():
-                try:
-                    pending = json.loads(path.read_text(encoding="utf-8"))
-                    platform_str = pending.get("platform")
-                    chat_id = pending.get("chat_id")
-                    chat_type = pending.get("chat_type")
-                    session_key = pending.get("session_key")
-                    thread_id = pending.get("thread_id")
-                    message_id = pending.get("message_id")
-                    if platform_str and chat_id:
-                        platform = Platform(platform_str)
-                        adapter = self.adapters.get(platform)
-                        metadata = self._thread_metadata_for_target(
-                            platform,
-                            chat_id,
-                            thread_id,
-                            chat_type=chat_type,
-                            reply_to_message_id=message_id,
-                            adapter=adapter,
-                        )
-                        # Fallback session key if not stored (old pending files)
-                        if not session_key:
-                            session_key = f"{platform_str}:{chat_id}"
-                    break
-                except Exception:
-                    pass
-
-        if not adapter or not chat_id:
-            logger.warning("Update watcher: cannot resolve adapter/chat_id, falling back to completion-only")
-            # Fall back to completion-only: wait for the exit code and send the
-            # final notification. _send_update_notification re-resolves the
-            # adapter on every call, so when the target platform is still
-            # reconnecting it returns False and keeps the markers. Keep polling
-            # until it actually delivers (returns True) instead of giving up
-            # after the first completion check — otherwise a platform that
-            # reconnects a few seconds after completion never gets notified.
-            while (pending_path.exists() or claimed_path.exists()) and loop.time() < deadline:
-                if exit_code_path.exists() and await self._send_update_notification():
-                    return
-                await asyncio.sleep(poll_interval)
-            if (pending_path.exists() or claimed_path.exists()) and not exit_code_path.exists():
-                exit_code_path.write_text("124", encoding="utf-8")
-                await self._send_update_notification()
-            return
-
-        def _strip_ansi(text: str) -> str:
-            from tools.ansi_strip import strip_ansi
-            return strip_ansi(text)
-
-        def _read_output_since(path: Path, offset: int) -> tuple[str, int]:
-            """Read update output defensively; logs may contain invalid UTF-8."""
-            try:
-                data = path.read_bytes()
-            except OSError:
-                return "", offset
-            if len(data) <= offset:
-                return "", len(data)
-            return data[offset:].decode("utf-8", errors="replace"), len(data)
-
-        bytes_sent = 0
-        last_stream_time = loop.time()
-        buffer = ""
-
-        async def _flush_buffer() -> None:
-            """Send buffered output to the user."""
-            nonlocal buffer, last_stream_time
-            if not buffer.strip():
-                buffer = ""
-                return
-            # Chunk to fit message limits
-            clean = _strip_ansi(buffer).strip()
-            buffer = ""
-            last_stream_time = loop.time()
-            if not clean:
-                return
-            # Split into chunks if too long
-            max_chunk = 3500
-            chunks = [clean[i:i + max_chunk] for i in range(0, len(clean), max_chunk)]
-            for chunk in chunks:
-                try:
-                    await adapter.send(
-                        chat_id,
-                        f"```\n{chunk}\n```",
-                        metadata=metadata,
-                    )
-                except Exception as e:
-                    logger.debug("Update stream send failed: %s", e)
-
-        while loop.time() < deadline:
-            # Check for completion
-            if exit_code_path.exists():
-                # Read any remaining output
-                if output_path.exists():
-                    try:
-                        chunk, bytes_sent = _read_output_since(output_path, bytes_sent)
-                        if chunk:
-                            buffer += chunk
-                    except OSError:
-                        pass
-                await _flush_buffer()
-
-                # Send final status
-                try:
-                    exit_code_raw = exit_code_path.read_text(encoding="utf-8").strip() or "1"
-                    exit_code = int(exit_code_raw)
-                    if exit_code == 0:
-                        await adapter.send(
-                            chat_id,
-                            "Son of Anton update finished.",
-                            metadata=metadata,
-                        )
-                    else:
-                        await adapter.send(
-                            chat_id,
-                            "Son of Anton update failed (exit code {}).".format(exit_code),
-                            metadata=metadata,
-                        )
-                    logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
-                except Exception as e:
-                    logger.warning("Update final notification failed: %s", e)
-
-                # Cleanup
-                for p in (pending_path, claimed_path, output_path,
-                          exit_code_path, prompt_path):
-                    p.unlink(missing_ok=True)
-                (_son_of_anton_home / ".update_response").unlink(missing_ok=True)
-                _up_done = self._peek_session_state(session_key)
-                if _up_done is not None:
-                    _up_done.persistent.update_prompt_pending = False
-                return
-
-            # Check for new output
-            if output_path.exists():
-                try:
-                    chunk, bytes_sent = _read_output_since(output_path, bytes_sent)
-                    if chunk:
-                        buffer += chunk
-                except OSError:
-                    pass
-
-            # Flush buffer periodically
-            if buffer.strip() and (loop.time() - last_stream_time) >= stream_interval:
-                await _flush_buffer()
-
-            # Check for prompts — only forward if we haven't already sent
-            # one that's still awaiting a response.  Without this guard the
-            # watcher would re-read the same .update_prompt.json every poll
-            # cycle and spam the user with duplicate prompt messages.
-            _up_pending_state = (
-                self._peek_session_state(session_key) if session_key else None
-            )
-            if (prompt_path.exists() and session_key
-                    and not (
-                        _up_pending_state is not None
-                        and _up_pending_state.persistent.update_prompt_pending
-                    )):
-                try:
-                    prompt_data = json.loads(prompt_path.read_text(encoding="utf-8"))
-                    prompt_text = prompt_data.get("prompt", "")
-                    default = prompt_data.get("default", "")
-                    if prompt_text:
-                        # Flush any buffered output first so the user sees
-                        # context before the prompt
-                        await _flush_buffer()
-                        # Try platform-native buttons first (Discord)
-                        sent_buttons = False
-                        if getattr(type(adapter), "send_update_prompt", None) is not None:
-                            try:
-                                await adapter.send_update_prompt(
-                                    chat_id=chat_id,
-                                    prompt=prompt_text,
-                                    default=default,
-                                    session_key=session_key,
-                                    metadata=metadata,
-                                )
-                                sent_buttons = True
-                            except Exception as btn_err:
-                                logger.debug("Button-based update prompt failed: %s", btn_err)
-                        if not sent_buttons:
-                            default_hint = f" (default: {default})" if default else ""
-                            _p = getattr(adapter, "typed_command_prefix", "/")
-                            await adapter.send(
-                                chat_id,
-                                f"**Update needs your input:**\n\n"
-                                f"{prompt_text}{default_hint}\n\n"
-                                f"Reply `{_p}approve` (yes) or `{_p}deny` (no), "
-                                f"or type your answer directly.",
-                                metadata=metadata,
-                            )
-                        # Keep the prompt marker on disk until the user
-                        # answers. If the gateway restarts mid-prompt, the
-                        # next watcher can recover by re-forwarding it from
-                        # disk. Duplicate sends in the same process are
-                        # still suppressed by _update_prompt_pending.
-                        self._session_state(
-                            session_key
-                        ).persistent.update_prompt_pending = True
-                        # .update_response to continue — it doesn't re-check
-                        logger.info("Forwarded update prompt to %s: %s", session_key, prompt_text[:80])
-                except (json.JSONDecodeError, OSError) as e:
-                    logger.debug("Failed to read update prompt: %s", e)
-
-            await asyncio.sleep(poll_interval)
-
-        # Timeout
-        if not exit_code_path.exists():
-            logger.warning("Update watcher timed out after %.0fs", timeout)
-            exit_code_path.write_text("124", encoding="utf-8")
-            await _flush_buffer()
-            try:
-                await adapter.send(
-                    chat_id,
-                    "Son of Anton update timed out after 30 minutes.",
-                    metadata=metadata,
-                )
-            except Exception:
-                pass
-            for p in (pending_path, claimed_path, output_path,
-                      exit_code_path, prompt_path):
-                p.unlink(missing_ok=True)
-            (_son_of_anton_home / ".update_response").unlink(missing_ok=True)
-            _up_timeout_state = self._peek_session_state(session_key)
-            if _up_timeout_state is not None:
-                _up_timeout_state.persistent.update_prompt_pending = False
-
-    async def _send_update_notification(self) -> bool:
-        """If an update finished, notify the user.
-
-        Returns False when the update is still running so a caller can retry
-        later. Returns True after a definitive send/skip decision.
-
-        This is the legacy notification path used when the streaming watcher
-        cannot resolve the adapter (e.g. after a gateway restart where the
-        platform hasn't reconnected yet).
-        """
-        pending_path = _son_of_anton_home / ".update_pending.json"
-        claimed_path = _son_of_anton_home / ".update_pending.claimed.json"
-        output_path = _son_of_anton_home / ".update_output.txt"
-        exit_code_path = _son_of_anton_home / ".update_exit_code"
-
-        if not pending_path.exists() and not claimed_path.exists():
-            return False
-
-        cleanup = True
-        active_pending_path = claimed_path
-        try:
-            if pending_path.exists():
-                try:
-                    pending_path.replace(claimed_path)
-                except FileNotFoundError:
-                    if not claimed_path.exists():
-                        return True
-            elif not claimed_path.exists():
-                return True
-
-            pending = json.loads(claimed_path.read_text(encoding="utf-8"))
-            platform_str = pending.get("platform")
-            chat_id = pending.get("chat_id")
-            chat_type = pending.get("chat_type")
-            thread_id = pending.get("thread_id")
-            message_id = pending.get("message_id")
-
-            if not exit_code_path.exists():
-                logger.info("Update notification deferred: update still running")
-                cleanup = False
-                active_pending_path = pending_path
-                claimed_path.replace(pending_path)
-                return False
-
-            exit_code_raw = exit_code_path.read_text(encoding="utf-8").strip() or "1"
-            exit_code = int(exit_code_raw)
-
-            # Read the captured update output
-            output = ""
-            if output_path.exists():
-                output = output_path.read_bytes().decode("utf-8", errors="replace")
-
-            # Resolve adapter
-            platform = Platform(platform_str)
-            adapter = self.adapters.get(platform)
-
-            if not adapter and chat_id:
-                # The update finished, but the target platform has not
-                # reconnected yet (common right after the restart that
-                # `son-of-anton update` triggers). Treating "adapter missing" as a
-                # definitive skip would delete the markers and silently lose the
-                # completion notification — the user never learns whether the
-                # update succeeded or timed out. Preserve the markers instead so
-                # a later retry (the watcher poll loop, or the next gateway
-                # startup) can deliver the result once the adapter is back.
-                logger.info(
-                    "Update notification deferred: %s adapter not connected yet",
-                    platform_str,
-                )
-                cleanup = False
-                active_pending_path = pending_path
-                claimed_path.replace(pending_path)
-                return False
-
-            if adapter and chat_id:
-                metadata = self._thread_metadata_for_target(
-                    platform,
-                    chat_id,
-                    thread_id,
-                    chat_type=chat_type,
-                    reply_to_message_id=message_id,
-                    adapter=adapter,
-                )
-                # Strip ANSI escape codes for clean display
-                from tools.ansi_strip import strip_ansi
-                output = strip_ansi(output).strip()
-                if output:
-                    if len(output) > 3500:
-                        output = "…" + output[-3500:]
-                    if exit_code == 0:
-                        msg = f"Son of Anton update finished.\n\n```\n{output}\n```"
-                    else:
-                        msg = f"Son of Anton update failed.\n\n```\n{output}\n```"
-                elif exit_code == 0:
-                    msg = "Son of Anton update finished successfully."
-                else:
-                    msg = "Son of Anton update failed. Check the gateway logs or run `son-of-anton update` manually for details."
-                await adapter.send(
-                    chat_id,
-                    msg,
-                    metadata=metadata,
-                )
-                logger.info(
-                    "Sent post-update notification to %s:%s (exit=%s)",
-                    platform_str,
-                    chat_id,
-                    exit_code,
-                )
-        except Exception as e:
-            logger.warning("Post-update notification failed: %s", e)
-        finally:
-            if cleanup:
-                active_pending_path.unlink(missing_ok=True)
-                claimed_path.unlink(missing_ok=True)
-                output_path.unlink(missing_ok=True)
-                exit_code_path.unlink(missing_ok=True)
-
-        return True
-
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
         notify_path = _son_of_anton_home / ".restart_notify.json"
@@ -16353,152 +15451,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             return None
         finally:
             notify_path.unlink(missing_ok=True)
-
-    async def _send_home_channel_startup_notifications(
-        self,
-        *,
-        skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
-    ) -> set[tuple[str, str, Optional[str]]]:
-        """Notify configured home channels that the gateway is back online.
-
-        The notification is best-effort and sent once per connected platform
-        home channel. ``skip_targets`` lets startup avoid duplicate messages
-        when a more specific restart notification is queued for the same chat.
-        """
-        delivered: set[tuple[str, str, Optional[str]]] = set()
-        skipped = skip_targets or set()
-        message = "Gateway online — Son of Anton is back and ready."
-
-        for platform, platform_cfg in self.config.platforms.items():
-            home = platform_cfg.home_channel
-            if not home or not home.chat_id:
-                continue
-
-            transport = resolve_delivery_transport(platform, self.config, self.adapters)
-            if transport is None:
-                continue
-
-            if not platform_cfg.gateway_restart_notification:
-                logger.info(
-                    "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
-                    platform.value,
-                )
-                continue
-
-            target = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
-            if target in skipped or target in delivered:
-                continue
-
-            try:
-                metadata = self._thread_metadata_for_target(
-                    platform,
-                    home.chat_id,
-                    home.thread_id,
-                    adapter=transport.adapter,
-                )
-                result = await transport.send(
-                    platform,
-                    str(home.chat_id),
-                    message,
-                    metadata=metadata,
-                )
-                if result is not None and getattr(result, "success", True) is False:
-                    logger.warning(
-                        "Home-channel startup notification failed for %s:%s: %s",
-                        platform.value,
-                        home.chat_id,
-                        getattr(result, "error", "send returned success=False"),
-                    )
-                    continue
-
-                delivered.add(target)
-                logger.info(
-                    "Sent home-channel startup notification to %s:%s",
-                    platform.value,
-                    home.chat_id,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Home-channel startup notification failed for %s:%s: %s",
-                    platform.value,
-                    home.chat_id,
-                    exc,
-                )
-
-        return delivered
-
-    async def _send_session_db_warning_notifications(self) -> None:
-        """Broadcast a state.db failure warning to all home channels (#88235).
-
-        When SessionDB init fails at gateway startup, messages may flow but
-        nothing is persisted — /resume, /history, and session_search all
-        silently break.  This sends a one-time warning to each connected
-        platform's home channel so the user knows to investigate before
-        losing data.  Best-effort: failures are logged, not raised.
-        """
-        error = getattr(self, "_session_db_init_error", None)
-        if not error:
-            return
-
-        from son_of_anton_state import classify_persistence_error, format_session_db_unavailable
-
-        cause = classify_persistence_error(error)
-        hint = format_session_db_unavailable()
-        if cause == "corrupt":
-            message = (
-                "Session database corruption detected. Messages may not be "
-                "persisted. Recovery options:\n"
-                "1. Run `son-of-anton doctor --fix`\n"
-                "2. Salvage with: sqlite3 ~/.son-of-anton/state.db \".recover\" "
-                "(then replace state.db)\n"
-                "3. Restore from a backup in ~/.son-of-anton/backups/\n"
-                f"Error: {error}"
-            )
-        else:
-            message = (
-                f"Session database unavailable — messages may not be persisted. "
-                f"{hint}\n"
-                f"Run `son-of-anton doctor` for diagnostics."
-            )
-
-        logger.warning(
-            "Broadcasting state.db failure warning to home channels: %s", error
-        )
-
-        for platform, platform_cfg in self.config.platforms.items():
-            home = platform_cfg.home_channel
-            if not home or not home.chat_id:
-                continue
-            transport = resolve_delivery_transport(platform, self.config, self.adapters)
-            if transport is None:
-                continue
-            try:
-                metadata = self._thread_metadata_for_target(
-                    platform,
-                    home.chat_id,
-                    home.thread_id,
-                    adapter=transport.adapter,
-                )
-                result = await transport.send(
-                    platform,
-                    str(home.chat_id),
-                    message,
-                    metadata=metadata,
-                )
-                if result is not None and getattr(result, "success", True) is False:
-                    logger.warning(
-                        "state.db warning notification failed for %s:%s: %s",
-                        platform.value,
-                        home.chat_id,
-                        getattr(result, "error", "send returned success=False"),
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "state.db warning notification failed for %s:%s: %s",
-                    platform.value,
-                    home.chat_id,
-                    exc,
-                )
 
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.
@@ -20672,84 +19624,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         return response
 
 
-def _run_planned_stop_watcher(
-    stop_event: threading.Event,
-    runner,
-    loop: asyncio.AbstractEventLoop,
-    shutdown_handler,
-    *,
-    poll_interval: float = 0.5,
-) -> None:
-    """Poll for the planned-stop marker and trigger graceful shutdown.
-
-    The CLI's ``son-of-anton gateway stop`` writes the planned-stop marker
-    BEFORE killing, and this thread notices it and drives the same shutdown
-    path the signal handler would have.  Runs on every platform (cheap,
-    defensive) so non-signal-bearing environments (sandboxed CI runners
-    that mask SIGTERM) still get a clean drain.
-
-    On POSIX this is a no-op safety net — the signal handler always
-    races us to consuming the marker file because it fires synchronously
-    from the kernel's signal delivery.
-
-    Args:
-        stop_event: cleared by start_gateway() during normal shutdown
-            to tell the watcher to exit.
-        runner: the GatewayRunner instance; we check ``_running`` and
-            ``_draining`` to avoid triggering shutdown if the gateway
-            is already in one of those states.
-        loop: the asyncio event loop the shutdown handler must run on.
-        shutdown_handler: same callable that's wired to SIGTERM —
-            tolerates a ``None`` signal argument (planned stop case)
-            and consumes the marker via
-            ``consume_planned_stop_marker_for_self()``.
-        poll_interval: seconds between marker checks. 0.5s gives a
-            responsive shutdown without burning CPU.
-    """
-    from gateway.status import (
-        _get_planned_stop_marker_path,
-        planned_stop_marker_targets_self,
-    )
-    marker_path = _get_planned_stop_marker_path()
-    while not stop_event.is_set():
-        try:
-            if (
-                marker_path.exists()
-                and not getattr(runner, "_draining", False)
-                and getattr(runner, "_running", False)
-            ):
-                # A marker existing is NOT sufficient — it may have been
-                # written for a PREVIOUS gateway instance (different PID)
-                # and left behind because that process exited before the
-                # CLI's stop() could clean it up. Firing the handler on a
-                # stale/foreign marker drives the gateway into shutdown,
-                # then consume_planned_stop_marker_for_self() correctly
-                # reports a PID mismatch — but by then we're already
-                # stopping, so it's logged as an unexpected "UNKNOWN" exit
-                # and the watchdog crash-loops the gateway (issue #34597,
-                # a regression from PR #33798 which added this watcher
-                # without the PID check).
-                #
-                # Only fire when the marker actually targets us. The probe
-                # is non-destructive on a match (the handler does the
-                # authoritative consume on the loop thread) and self-heals
-                # by unlinking stale/malformed markers so they cannot wedge
-                # a freshly booted gateway.
-                if not planned_stop_marker_targets_self():
-                    stop_event.wait(poll_interval)
-                    continue
-                # Drive the same path as a real signal handler.
-                # Pass signal=None — the handler tolerates that and consumes
-                # the marker via consume_planned_stop_marker_for_self,
-                # which also validates target_pid + start_time match us.
-                loop.call_soon_threadsafe(shutdown_handler, None)
-                # Done — the handler will set _draining; we exit on next tick.
-                break
-        except Exception as _e:
-            logger.debug("Planned-stop watcher tick error: %s", _e)
-        stop_event.wait(poll_interval)
-
-
 def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
     """Background thread for gateway-only periodic chores (NOT cron).
 
@@ -20937,19 +19811,16 @@ def _gateway_stderr_formatter() -> logging.Formatter:
     return RedactingFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
-async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
+async def start_gateway(config: Optional[GatewayConfig] = None, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
-    
+
     This is the main entry point for running the gateway.
     Returns True if the gateway ran successfully, False if it failed to start.
     A False return causes a non-zero exit code so systemd can auto-restart.
-    
+
     Args:
         config: Optional gateway configuration override.
-        replace: If True, kill any existing gateway instance before starting.
-                 Useful for systemd services to avoid restart-loop deadlocks
-                 when the previous process hasn't fully exited yet.
     """
     # Enable interactive exec approval for dangerous commands on messaging
     # platforms. Set here (not at module import) so incidental imports of
@@ -20962,162 +19833,23 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # ── Duplicate-instance guard ──────────────────────────────────────
     # Prevent two gateways from running under the same SON_OF_ANTON_HOME.
-    # The PID file is scoped to SON_OF_ANTON_HOME, so future multi-profile
-    # setups (each profile using a distinct SON_OF_ANTON_HOME) will naturally
-    # allow concurrent instances without tripping this guard.
+    # The PID file is scoped to SON_OF_ANTON_HOME, so each instance (its own
+    # SON_OF_ANTON_HOME) can run concurrently without tripping this guard.
     from gateway.status import (
         acquire_gateway_runtime_lock,
         get_running_pid,
-        get_process_start_time,
         release_gateway_runtime_lock,
-        remove_pid_file,
-        terminate_pid,
     )
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
-        if replace:
-            existing_start_time = get_process_start_time(existing_pid)
-            logger.info(
-                "Replacing existing gateway instance (PID %d) with --replace.",
-                existing_pid,
-            )
-            # Record a takeover marker so the target's shutdown handler
-            # recognises its SIGTERM as a planned takeover and exits 0
-            # (rather than exit 1, which would trigger systemd's
-            # Restart=on-failure and start a flap loop against us).
-            # Best-effort — proceed even if the write fails.
-            try:
-                from gateway.status import write_takeover_marker
-                write_takeover_marker(existing_pid)
-            except Exception as e:
-                logger.debug("Could not write takeover marker: %s", e)
-            # Snapshot the old gateway's child processes BEFORE signalling it:
-            # once it exits, orphans are reparented and can no longer be found
-            # by a parent walk. Adapter subprocesses that outlive the gateway
-            # keep holding scoped token locks and block the replacement.
-            # Best-effort — [] on any failure.
-            try:
-                from gateway.status import _snapshot_gateway_children
-                _old_gateway_children = _snapshot_gateway_children(existing_pid)
-            except Exception:
-                _old_gateway_children = []
-            try:
-                terminate_pid(existing_pid, force=False)
-            except ProcessLookupError:
-                pass  # Already gone
-            except (PermissionError, OSError):
-                logger.error(
-                    "Permission denied killing PID %d. Cannot replace.",
-                    existing_pid,
-                )
-                # Marker is scoped to a specific target; clean it up on
-                # give-up so it doesn't grief an unrelated future shutdown.
-                try:
-                    from gateway.status import clear_takeover_marker
-                    clear_takeover_marker()
-                except Exception:
-                    pass
-                return False
-            # Wait up to 10 seconds for the old process to exit.
-            from gateway.status import _pid_exists
-            old_gateway_exited = False
-            for _ in range(20):
-                if not _pid_exists(existing_pid):
-                    old_gateway_exited = True
-                    break  # Process is gone
-                time.sleep(0.5)
-            else:
-                # Still alive after 10s — force kill
-                logger.warning(
-                    "Old gateway (PID %d) did not exit after SIGTERM, sending SIGKILL.",
-                    existing_pid,
-                )
-                try:
-                    terminate_pid(existing_pid, force=True)
-                except ProcessLookupError:
-                    old_gateway_exited = True
-                except (PermissionError, OSError):
-                    pass
-                # Confirm the force-kill actually reaped the process before we
-                # clear its PID file / scoped locks. SIGKILL can fail to take
-                # (e.g. an uninterruptible-sleep or zombie-reaping parent), and
-                # if we blindly clear the metadata and start a fresh instance
-                # we end up with two live gateways fighting over the same
-                # token — the duplicate-gateway failure in #19471.
-                if not old_gateway_exited:
-                    for _ in range(20):
-                        if not _pid_exists(existing_pid):
-                            old_gateway_exited = True
-                            break
-                        time.sleep(0.25)
-                if not old_gateway_exited:
-                    logger.error(
-                        "Old gateway (PID %d) still appears alive after SIGKILL; "
-                        "aborting replacement to avoid a duplicate gateway.",
-                        existing_pid,
-                    )
-                    try:
-                        from gateway.status import clear_takeover_marker
-                        clear_takeover_marker()
-                    except Exception:
-                        pass
-                    return False
-            # Old gateway confirmed dead — reap any orphaned child processes
-            # it left behind. Orphaned adapter subprocesses would otherwise
-            # keep holding scoped token locks against us. Best-effort, never
-            # raises.
-            try:
-                from gateway.status import reap_gateway_children
-                reap_gateway_children(
-                    _old_gateway_children, parent_pid=existing_pid
-                )
-            except Exception:
-                logger.debug(
-                    "Child reap for replaced gateway PID %d failed",
-                    existing_pid,
-                    exc_info=True,
-                )
-            remove_pid_file()
-            # remove_pid_file() is a no-op when the PID doesn't match.
-            # Force-unlink to cover the old-process-crashed case.
-            try:
-                (get_son_of_anton_home() / "gateway.pid").unlink(missing_ok=True)
-            except Exception:
-                pass
-            # Clean up any takeover marker the old process didn't consume
-            # (e.g. SIGKILL'd before its shutdown handler could read it).
-            try:
-                from gateway.status import clear_takeover_marker
-                clear_takeover_marker()
-            except Exception:
-                pass
-            # Also release all scoped locks left by the old process.
-            # Stopped (Ctrl+Z) processes don't release locks on exit,
-            # leaving stale lock files that block the new gateway from starting.
-            try:
-                from gateway.status import release_all_scoped_locks
-                _released = release_all_scoped_locks(
-                    owner_pid=existing_pid,
-                    owner_start_time=existing_start_time,
-                )
-                if _released:
-                    logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
-            except Exception:
-                pass
-        else:
-            son_of_anton_home = str(get_son_of_anton_home())
-            logger.error(
-                "Another gateway instance is already running (PID %d, SON_OF_ANTON_HOME=%s). "
-                "Use 'son-of-anton gateway restart' to replace it, or 'son-of-anton gateway stop' first.",
-                existing_pid, son_of_anton_home,
-            )
-            print(
-                f"\n❌ Gateway already running (PID {existing_pid}).\n"
-                f"   Use 'son-of-anton gateway restart' to replace it,\n"
-                f"   or 'son-of-anton gateway stop' to kill it first.\n"
-                f"   Or use 'son-of-anton gateway run --replace' to auto-replace.\n"
-            )
-            return False
+        son_of_anton_home = str(get_son_of_anton_home())
+        logger.error(
+            "Another gateway instance is already running (PID %d, SON_OF_ANTON_HOME=%s). "
+            "Stop it first.",
+            existing_pid, son_of_anton_home,
+        )
+        print(f"\n❌ Gateway already running (PID {existing_pid}). Stop it first.\n")
+        return False
 
     # Centralized logging — agent.log (INFO+), errors.log (WARNING+),
     # and gateway.log (INFO+, gateway-component records only).
@@ -21159,122 +19891,34 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logging.getLogger().setLevel(_stderr_level)
 
     runner = GatewayRunner(config)
-    # ``--replace`` is explicit startup authority, not a durable reconnect
-    # policy. GatewayRunner scopes this bit to cold adapter connects and clears
-    # it before the background reconnect watcher starts.
-    runner._platform_lock_takeover_on_start = bool(replace)
-    
-    # Track whether an unexpected signal initiated the shutdown. When an
-    # unexpected SIGTERM kills the gateway, we exit non-zero so service
-    # managers can revive the process. Planned stop paths write a marker
-    # before signalling us so they can exit cleanly instead.
+
+    # Track whether a SIGTERM initiated the shutdown. An unexpected SIGTERM
+    # (not from the service manager) exits non-zero so a supervisor revives
+    # the process; SIGINT is an interactive Ctrl+C and exits cleanly.
     _signal_initiated_shutdown = False
     # True when the unexpected signal came from the service manager itself
     # (systemd stop / rebuild). See exit_status_after_signal().
     _signal_from_service_manager = False
 
     # Set up signal handlers
-    def shutdown_signal_handler(received_signal=None):
+    def shutdown_signal_handler(received_signal):
         nonlocal _signal_initiated_shutdown, _signal_from_service_manager
-        # Planned --replace takeover check: when a sibling gateway is
-        # taking over via --replace, it wrote a marker naming this PID
-        # before sending SIGTERM. If present, treat the signal as a
-        # planned shutdown and exit 0 so systemd's Restart=on-failure
-        # doesn't revive us (which would flap-fight the replacer when
-        # both services are enabled, e.g. son-of-anton.service + son-of-anton-
-        # gateway.service from pre-rename installs).
-        planned_takeover = False
-        try:
-            from gateway.status import consume_takeover_marker_for_self
-            planned_takeover = consume_takeover_marker_for_self()
-        except Exception as e:
-            logger.debug("Takeover marker check failed: %s", e)
-
-        # Planned stop check: service managers and `son-of-anton gateway stop`
-        # also send SIGTERM, which is indistinguishable from an unexpected
-        # external kill unless the CLI marks it first. SIGINT comes from an
-        # interactive Ctrl+C and is likewise an intentional foreground stop.
-        planned_stop = False
+        sig_name = signal.Signals(received_signal).name
         if received_signal == signal.SIGINT:
-            planned_stop = True
-        elif not planned_takeover:
-            try:
-                from gateway.status import consume_planned_stop_marker_for_self
-                planned_stop = consume_planned_stop_marker_for_self()
-            except Exception as e:
-                logger.debug("Planned stop marker check failed: %s", e)
-
-        # Fast (<10ms) snapshot of who's asking us to shut down — runs
-        # synchronously inside the asyncio signal handler, so we keep it
-        # purely stdlib + /proc reads, no subprocesses.  See PR #15826
-        # (May 2026): the previous implementation called `ps aux` here
-        # synchronously, blocking the event loop for up to 3s while
-        # adapter teardown couldn't begin.
-        try:
-            from gateway.shutdown_forensics import (
-                format_context_for_log,
-                snapshot_shutdown_context,
-                spawn_async_diagnostic,
-            )
-            _shutdown_ctx = snapshot_shutdown_context(received_signal)
-        except Exception as _e:
-            _shutdown_ctx = None
-            logger.debug("snapshot_shutdown_context failed: %s", _e)
-
-        if planned_takeover:
-            logger.info(
-                "Received %s as a planned --replace takeover — exiting cleanly",
-                _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM",
-            )
-        elif planned_stop:
-            logger.info(
-                "Received %s as a planned gateway stop — exiting cleanly",
-                _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",
-            )
+            logger.info("Received %s as a planned gateway stop — exiting cleanly", sig_name)
         else:
             _signal_initiated_shutdown = True
-            _signal_from_service_manager = bool(
-                _shutdown_ctx and _shutdown_ctx.get("under_systemd")
+            # systemd sets INVOCATION_ID for its units; ppid 1 means init
+            # reaped and forwarded the signal.
+            _signal_from_service_manager = (
+                bool(os.environ.get("INVOCATION_ID")) or os.getppid() == 1
             )
-            # Mirror onto the runner so _stop_impl can suppress the
-            # gateway_state=stopped persist for unexpected signals
-            # (container/s6 SIGTERM on restart, OOM, bare kill) — see
-            # issue #42675. Operator-initiated stops set a planned-stop
-            # marker first, land in the `planned_stop` branch above, and
-            # leave this flag False so they DO persist "stopped".
+            # Mirror onto the runner so _stop_impl persists gateway_state
+            # "running" rather than "stopped" for a signal-initiated stop.
             runner._signal_initiated_shutdown = True
-            logger.info(
-                "Received %s — initiating shutdown",
-                _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",
-            )
-
-        # Always log who/what triggered the signal — most useful single
-        # line when diagnosing "the gateway keeps dying" tickets.  Format
-        # is one line, key=value, parent_cmdline last (often long).
-        if _shutdown_ctx is not None:
-            try:
-                logger.warning(
-                    "Shutdown context: %s", format_context_for_log(_shutdown_ctx)
-                )
-            except Exception as _e:
-                logger.debug("format_context_for_log failed: %s", _e)
-
-            # Spawn the heavyweight diagnostic (ps auxf, pstree, dmesg) in
-            # a detached subprocess so it can finish writing to disk even
-            # if our cgroup is being torn down.  Bounded by an internal
-            # timeout; never blocks the event loop here.
-            try:
-                _diag_log = _son_of_anton_home / "logs" / "gateway-shutdown-diag.log"
-                spawn_async_diagnostic(
-                    _diag_log, _shutdown_ctx["signal"], timeout_seconds=5.0
-                )
-            except Exception as _e:
-                logger.debug("spawn_async_diagnostic failed: %s", _e)
+            logger.info("Received %s — initiating shutdown", sig_name)
         asyncio.create_task(runner.stop())
 
-    def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True)
-    
     loop = asyncio.get_running_loop()
 
     # Install a loop-level exception handler that swallows transient
@@ -21293,39 +19937,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     if threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(sig, shutdown_signal_handler, sig)
-            except NotImplementedError:
-                pass
-        if hasattr(signal, "SIGUSR1"):
-            try:
-                loop.add_signal_handler(signal.SIGUSR1, restart_signal_handler)
-            except NotImplementedError:
-                pass
+            loop.add_signal_handler(sig, shutdown_signal_handler, sig)
     else:
         logger.info("Skipping signal handlers (not running in main thread).")
 
-    # Marker-polling fallback: `son-of-anton gateway stop` writes the
-    # planned-stop marker BEFORE killing, and this thread notices it and
-    # drives the same shutdown path the signal handler would have.  Runs
-    # on every platform (cheap, defensive) so non-signal-bearing
-    # environments (sandboxed CI runners that mask SIGTERM) still get a
-    # clean drain.
-    _planned_stop_watcher_stop = threading.Event()
-    _planned_stop_watcher_thread = threading.Thread(
-        target=_run_planned_stop_watcher,
-        args=(_planned_stop_watcher_stop, runner, loop, shutdown_signal_handler),
-        daemon=True,
-        name="planned-stop-watcher",
-    )
-    _planned_stop_watcher_thread.start()
-
-    # Claim the PID file BEFORE bringing up any platform adapters.
-    # This closes the --replace race window: two concurrent `gateway run
-    # --replace` invocations both pass the termination-wait above, but
-    # only the winner of the O_CREAT|O_EXCL race below will ever open
-    # platform polling, Discord gateway sockets, etc. The loser exits
-    # cleanly before touching any external service.
+    # Claim the PID file BEFORE bringing up any platform adapters. Two
+    # concurrent starts can both pass the guard above, but only the winner of
+    # the O_CREAT|O_EXCL race below ever opens the Signal connection; the
+    # loser exits before touching any external service.
     import atexit
     from gateway.status import write_pid_file, remove_pid_file, get_running_pid
     _current_pid = get_running_pid()
@@ -21355,7 +19974,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # uncleanly (SIGKILL / OOM / VM death — no exit path ran), then claim
     # the sentinel for this life. Placed after the PID-file/lock claim so
     # only the authoritative gateway for this SON_OF_ANTON_HOME touches the
-    # sentinel — a --replace loser exiting above must not clobber it.
+    # sentinel — a start that lost the race above must not clobber it.
     try:
         from gateway.lifecycle_ledger import record_startup as _lifecycle_record_startup
         _lifecycle_record_startup()
@@ -21453,13 +20072,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     )
     housekeeping_thread.start()
 
-    # READY is emitted only after adapters, cron, and housekeeping have all
-    # reached their running boundary. Missing config/systemd runtime state
-    # leaves the watchdog disabled without changing gateway behavior.
-    start_watchdog = getattr(runner, "_start_systemd_watchdog", None)
-    if callable(start_watchdog):
-        start_watchdog()
-
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
@@ -21487,10 +20099,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         housekeeping_thread, timeout=_HOUSEKEEPING_SHUTDOWN_DRAIN_TIMEOUT
     )
 
-    # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).
-    _planned_stop_watcher_stop.set()
-    _planned_stop_watcher_thread.join(timeout=2)
-
     # Close MCP server connections
     try:
         from tools.mcp_tool import shutdown_mcp_servers
@@ -21501,14 +20109,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if runner.exit_code is not None:
         raise SystemExit(runner.exit_code)
 
-    # When an unexpected SIGTERM caused the shutdown and it wasn't a planned
-    # restart (/restart, /update, SIGUSR1), exit non-zero so systemd's
-    # Restart=on-failure revives the process.  This covers:
-    #   - son-of-anton update killing the gateway mid-work
-    #   - External kill commands
-    #   - WSL2/container runtime sending unexpected signals
-    # `son-of-anton gateway stop` and interactive Ctrl+C are handled above as
-    # planned stops and should not trigger service-manager revival.
+    # When an unexpected SIGTERM (an external kill, not the service manager)
+    # caused the shutdown and it wasn't a /restart, exit non-zero so a
+    # Restart=on-failure supervisor revives the process. Interactive Ctrl+C
+    # is a planned stop and exits cleanly.
     if not exit_status_after_signal(
         signal_initiated=_signal_initiated_shutdown,
         restart_requested=bool(runner._restart_requested),
@@ -21524,15 +20128,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             "Exiting cleanly: the stop came from the service manager "
             "(systemd stop or rebuild); its Restart= policy decides revival."
         )
-
-    # Older restart paths may reach here without ``runner.exit_code`` set.
-    # Keep the historical non-zero fallback for service-managed restarts.
-    if runner._restart_via_service:
-        logger.info(
-            "Exiting with code 75 (service-restart requested) so the service "
-            "manager relaunches the gateway."
-        )
-        raise SystemExit(75)
 
     return True
 
@@ -21553,74 +20148,6 @@ def exit_status_after_signal(
     if not signal_initiated or restart_requested:
         return True
     return from_service_manager
-
-
-def main():
-    """CLI entry point for the gateway."""
-    # Advertise the agent harness to child processes (AI_AGENT is the
-    # cross-agent standard; SON_OF_ANTON_AGENT the Son of Anton-specific marker — see
-    # _advertise_agent_env in son_of_anton_cli/main.py, kept inline here to avoid
-    # importing that module's startup side effects). The value must equal our
-    # public agent-harness registry id (``son-of-anton``) — standard-var
-    # matching is exact. setdefault so an outer harness is never clobbered.
-    os.environ.setdefault("AI_AGENT", "son-of-anton")
-    os.environ.setdefault("SON_OF_ANTON_AGENT", "true")
-
-    # Positive process identity: ledger registration + job-object
-    # self-attach, so update-time reapers can identify this gateway.
-    # Best-effort — never blocks startup.
-    try:
-        from son_of_anton_cli.process_identity import (
-            attach_self_to_kill_on_close_job,
-            register_self,
-        )
-
-        register_self("gateway")
-        attach_self_to_kill_on_close_job()
-    except Exception:
-        pass
-
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Son of Anton Gateway - Multi-platform messaging")
-    parser.add_argument("--config", "-c", help="Path to gateway config file")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    
-    args = parser.parse_args()
-    
-    config = None
-    if args.config:
-        import tomllib
-        with open(args.config, encoding="utf-8") as f:
-            data = tomllib.loads(f.read()) or {}
-            config = GatewayConfig.from_dict(data)
-    
-    # start_gateway() performs the full graceful teardown (adapters
-    # disconnected, sessions saved + flushed, SQLite closed, cron/MCP stopped,
-    # PID file + runtime lock released) before it returns OR raises SystemExit
-    # with an explicit code. Force-exit afterwards so a wedged non-daemon worker
-    # thread (e.g. a ThreadPoolExecutor tool/LLM call blocked with no timeout)
-    # cannot block interpreter finalization (Py_FinalizeEx joins all non-daemon
-    # threads, incl. concurrent.futures' _python_exit) and strand the gateway
-    # half-shut down with the supervisor unable to restart it (#53107).
-    #
-    # SystemExit is caught explicitly: start_gateway raises it on the
-    # clean-fatal-config (#51228), planned-restart, and service-restart paths,
-    # all of which complete teardown first. Routing those codes through the
-    # same os._exit backstop means EVERY exit path is wedge-proof, not just the
-    # boolean-return ones.
-    try:
-        success = asyncio.run(start_gateway(config))
-        exit_code = 0 if success else 1
-    except SystemExit as e:
-        # e.code may be None (→ 0), an int, or a str (→ 1, like CPython).
-        if e.code is None:
-            exit_code = 0
-        elif isinstance(e.code, int):
-            exit_code = e.code
-        else:
-            exit_code = 1
-    _exit_after_graceful_shutdown(exit_code)
 
 
 def _exit_after_graceful_shutdown(exit_code: int) -> None:
@@ -21692,7 +20219,3 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     except Exception:
         pass
     os._exit(exit_code)
-
-
-if __name__ == "__main__":
-    main()
