@@ -121,7 +121,7 @@ def executor(tmp_path):
         scratchpad=Scratchpad(tmp_path),
         workspace_root=tmp_path,
         iteration=1,
-        policy=SandboxPolicy(workspace=tmp_path, mode="off"),
+        policy=SandboxPolicy(workspace=tmp_path),
         mcp=_FakeToolset(
             {
                 "manager": ["arxiv-get_abstract", "context7-query-docs"],
@@ -174,7 +174,7 @@ def test_no_mcp_configured_leaves_the_manager_unchanged(tmp_path) -> None:
         scratchpad=Scratchpad(tmp_path),
         workspace_root=tmp_path,
         iteration=1,
-        policy=SandboxPolicy(workspace=tmp_path, mode="off"),
+        policy=SandboxPolicy(workspace=tmp_path),
     )
     assert executor.all_tools() == list(ManagerToolExecutor.ALL_TOOLS)
 

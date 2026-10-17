@@ -315,7 +315,7 @@ def test_removed_source_stops_being_searchable(embed, tmp_path) -> None:
 def test_gateway_chats_are_isolated_from_each_other_and_from_cli(embed) -> None:
     _make_session("20261001_000070_cli", "cli")
     _make_session("20261001_000071_chatA", "signal", chat_id="groupA")
-    _make_session("20261001_000072_chatB", "discord", chat_id="chanB")
+    _make_session("20261001_000072_chatB", "signal", chat_id="chanB")
     _write_journal("20261001_000070_cli", [_msg("alpha workstation fact")])
     _write_journal("20261001_000071_chatA", [_msg("alpha said in chat A")])
     _write_journal("20261001_000072_chatB", [_msg("alpha said in chat B")])
@@ -326,7 +326,7 @@ def test_gateway_chats_are_isolated_from_each_other_and_from_cli(embed) -> None:
 
     in_a = texts(scope="gateway", chat=rag.chat_identity("signal", "groupA"))
     assert "chat A" in in_a and "chat B" not in in_a and "workstation" not in in_a
-    in_b = texts(scope="gateway", chat=rag.chat_identity("discord", "chanB"))
+    in_b = texts(scope="gateway", chat=rag.chat_identity("signal", "chanB"))
     assert "chat B" in in_b and "chat A" not in in_b
     from_cli = texts(scope="cli")
     assert "workstation" in from_cli and "chat" not in from_cli
@@ -522,12 +522,12 @@ def test_cron_sessions_take_the_scope_of_their_delivery_target(monkeypatch) -> N
         "abc123def456": {"id": "abc123def456", "deliver": "signal:+1555"},
         # Made from the CLI: no origin, saved locally.
         "000000local0": {"id": "000000local0", "deliver": "local"},
-        # Made in a Discord channel, saved locally.
+        # Made in a Signal chat, saved locally.
         "0000origin00": {"id": "0000origin00", "deliver": "local",
-                         "origin": {"platform": "discord", "chat_id": "chanX"}},
+                         "origin": {"platform": "signal", "chat_id": "chanX"}},
         # An origin that names no chat cannot be placed.
         "000nochat000": {"id": "000nochat000", "deliver": "local",
-                         "origin": {"platform": "discord"}},
+                         "origin": {"platform": "signal"}},
     }
     targets = {"abc123def456": [{"platform": "signal", "chat_id": "+1555"}]}
     monkeypatch.setattr(cron.jobs, "get_job", lambda job_id: jobs.get(job_id))
@@ -537,7 +537,7 @@ def test_cron_sessions_take_the_scope_of_their_delivery_target(monkeypatch) -> N
         _make_session(f"cron_{job_id}_20261001_120000", "cron")
     assert _identity("cron_abc123def456_20261001_120000") == ("gateway", ["signal:+1555"])
     # Delivering nowhere is never "shared": it is the creating chat's, or the CLI's.
-    assert _identity("cron_0000origin00_20261001_120000") == ("gateway", ["discord:chanX"])
+    assert _identity("cron_0000origin00_20261001_120000") == ("gateway", ["signal:chanX"])
     assert _identity("cron_000000local0_20261001_120000") == ("cli", [])
     assert _identity("cron_000nochat000_20261001_120000") is None
     # The job is gone: unknown, not shared.

@@ -138,8 +138,6 @@ def test_every_entry_point_goes_through_one_runner(path: str, function: str) -> 
         f"{path}:{function} does not call autophysicist.run.run_problem — a "
         "second copy of the run logic is how the modes drifted apart before"
     )
-    for kwargs in calls:
-        assert "mode" in kwargs
 
 
 def test_the_runner_passes_the_spec(monkeypatch, tmp_path) -> None:

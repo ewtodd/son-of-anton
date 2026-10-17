@@ -4480,33 +4480,13 @@ def _resolve_block_from_details(
         return details.message
     if details.action == "approve":
         try:
-            from tools.approval import (
-                request_tool_approval,
-                reset_current_observability_context,
-                set_current_observability_context,
-            )
+            from tools.approval import request_tool_approval
 
-            approval_tokens = None
-            try:
-                approval_tokens = set_current_observability_context(
-                    turn_id=turn_id,
-                    tool_call_id=tool_call_id,
-                    session_id=session_id,
-                )
-            except Exception:
-                pass
-            try:
-                result = request_tool_approval(
-                    tool_name,
-                    details.message or "",
-                    rule_key=details.rule_key or tool_name,
-                )
-            finally:
-                if approval_tokens is not None:
-                    try:
-                        reset_current_observability_context(approval_tokens)
-                    except Exception:
-                        pass
+            result = request_tool_approval(
+                tool_name,
+                details.message or "",
+                rule_key=details.rule_key or tool_name,
+            )
         except Exception:
             # Fail-closed: if the gate itself errors, block rather than
             # silently execute an action a plugin flagged for approval.

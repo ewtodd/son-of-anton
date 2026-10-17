@@ -156,11 +156,4 @@ def test_gateway_config_has_no_multiplex_settings() -> None:
         assert name not in fields, f"GatewayConfig.{name} is back"
 
 
-def test_getenv_reads_the_process_environment(monkeypatch) -> None:
-    """Gateway env reads resolve from os.environ, with no scope in between."""
-    from gateway.config import _getenv
 
-    monkeypatch.setenv("SON_OF_ANTON_TEST_TOKEN", "  value  ")
-    assert _getenv("SON_OF_ANTON_TEST_TOKEN") == "  value  "
-    monkeypatch.delenv("SON_OF_ANTON_TEST_TOKEN")
-    assert _getenv("SON_OF_ANTON_TEST_TOKEN", "fallback") == "fallback"
