@@ -12,8 +12,11 @@ What this deliberately does NOT do:
 *Give every tool to the agent.* The aggregating gateway this points at exposes
 25 tools, 19 of them arXiv. The Manager's whole budget is a handful of tools and
 fifteen calls an iteration; 25 schemas in every request would crowd out the
-problem statement and invite the model to go browsing. ``allow`` is required,
-not optional — with nothing allowed, MCP stays off.
+problem statement and invite the model to go browsing. Per-role allowlists
+(``physics.mcp.roles``) are required, not optional — with nothing allowed, MCP
+stays off. Name tools, not server prefixes, where a server is large: ``arxiv``
+matches all nineteen of its tools, including a human's library-management
+workflow.
 
 *Hold a session open.* One ``asyncio.run`` per call, with the tool list fetched
 once per run and cached. A persistent session would need a background thread and
@@ -29,59 +32,22 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-import warnings
 from typing import Any, Protocol
+
+import httpx2
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+
+from ..core.config import agent_config as _agent_config
 
 DEFAULT_TIMEOUT = 120.0
 
-#: Default per-role allowlists, used when ``physics.mcp.roles`` is absent.
-#:
-#: Named tools, not server prefixes. ``"arxiv"`` matches all nineteen tools
-#: that server exposes — including topic watches, alert checks, a reindexer and
-#: four LaTeX-source readers, which are a human's library-management workflow —
-#: and putting nineteen schemas in front of an agent with a fifteen-call budget
-#: is the crowding the allowlist exists to prevent.
-#:
-#: The Manager gets reading tools only: find, triage, fetch, read, search
-#: within. It does not get ``context7``, because it does not write code — it
-#: writes the brief, and the sub-agent that writes the code has its own
-#: documentation lookup.
-_ARXIV_READING = (
-    "arxiv-search_papers",
-    "arxiv-get_abstract",
-    "arxiv-download_paper",
-    "arxiv-read_paper",
-    "arxiv-search_paper_text",
-)
-
-DEFAULT_ROLES: dict[str, tuple[str, ...]] = {
-    "manager": _ARXIV_READING,
-    "subagent": ("context7",),
-}
-
-#: Keys from the flat pre-``roles`` shape. Present-but-ignored config is the
-#: failure mode this whole audit kept turning up, so it is named rather than
-#: dropped.
-_RETIRED_KEYS = ("allow", "agents")
 #: Tool results are truncated before they reach the model's context.
 RESULT_LIMIT = 20_000
 
 
-class MCPUnavailableError(RuntimeError):
-    """The MCP SDK is missing, or the endpoint could not be reached."""
-
-
-def _agent_config() -> dict:
-    try:
-        from son_of_anton_cli.config import load_config
-
-        return load_config() or {}
-    except Exception:
-        return {}
-
-
 def resolve_mcp_config(config: dict | None = None) -> dict | None:
-    """Resolve ``physics.mcp`` into {url, headers, allow, timeout}, or None.
+    """Resolve ``physics.mcp`` into {url, headers, roles, timeout}, or None.
 
     ``physics.mcp.server`` names an entry in the top-level ``mcp_servers``, so
     an endpoint the deployment already declares for the main agent is written
@@ -92,16 +58,6 @@ def resolve_mcp_config(config: dict | None = None) -> dict | None:
     if not isinstance(section, dict):
         return None
 
-    stale = [k for k in _RETIRED_KEYS if k in section]
-    if stale:
-        warnings.warn(
-            f"physics.mcp.{{{', '.join(stale)}}} is no longer read — allowlists "
-            f"are per role now. Move them under physics.mcp.roles, e.g. "
-            f"roles: {{manager: [arxiv-search_papers], subagent: [context7]}}. "
-            f"Until then the built-in defaults apply and your list is ignored.",
-            stacklevel=2,
-        )
-
     declared = section.get("roles")
     roles: dict[str, tuple[str, ...]] = {}
     if isinstance(declared, dict):
@@ -111,29 +67,16 @@ def resolve_mcp_config(config: dict | None = None) -> dict | None:
             )
             if entries:
                 roles[str(role)] = entries
-    elif declared is None:
-        roles = dict(DEFAULT_ROLES)
     if not roles:
         return None
 
-    url = str(section.get("url") or "").strip()
-    headers: dict[str, str] = {}
-
     server_name = str(section.get("server") or "").strip()
-    if server_name:
-        entry = (agent.get("mcp_servers") or {}).get(server_name) or {}
-        url = url or str(entry.get("url") or "").strip()
-        for key, value in (entry.get("headers") or {}).items():
-            headers[str(key)] = os.path.expandvars(str(value))
-    for key, value in (section.get("headers") or {}).items():
-        headers[str(key)] = os.path.expandvars(str(value))
-
-    key_env = str(section.get("api_key_env") or "").strip()
-    if key_env and "Authorization" not in headers:
-        token = os.environ.get(key_env, "")
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-
+    entry = (agent.get("mcp_servers") or {}).get(server_name) or {}
+    url = str(entry.get("url") or "").strip()
+    headers = {
+        str(key): os.path.expandvars(str(value))
+        for key, value in (entry.get("headers") or {}).items()
+    }
     if not url:
         return None
     return {
@@ -158,15 +101,6 @@ def is_allowed(tool_name: str, allow: list[str]) -> bool:
 
 
 async def _with_session(url: str, headers: dict, timeout: float, action):
-    try:
-        import httpx2
-        from mcp import ClientSession
-        from mcp.client.streamable_http import streamable_http_client
-    except ImportError as exc:  # pragma: no cover - depends on the install
-        raise MCPUnavailableError(
-            "the MCP SDK is not installed (son-of-anton[mcp])"
-        ) from exc
-
     client = httpx2.AsyncClient(headers=headers, timeout=timeout)
     async with client:
         async with streamable_http_client(url, http_client=client) as streams:
@@ -194,9 +128,7 @@ class MCPToolset:
     def __init__(self, settings: dict):
         self.url = settings["url"]
         self.headers = settings["headers"]
-        self.roles: dict[str, tuple[str, ...]] = dict(
-            settings.get("roles") or DEFAULT_ROLES
-        )
+        self.roles: dict[str, tuple[str, ...]] = dict(settings["roles"])
         self.timeout = settings["timeout"]
         self._discovered: list | None = None
 
@@ -204,10 +136,6 @@ class MCPToolset:
     def from_config(cls, config: dict | None = None) -> "MCPToolset | None":
         settings = resolve_mcp_config(config)
         return cls(settings) if settings else None
-
-    def enabled_for(self, role: str) -> bool:
-        """Whether *role* is configured for any lookups at all."""
-        return bool(self._allow_for(role))
 
     def _allow_for(self, role: str) -> tuple[str, ...]:
         """The allowlist for *role*: exact name, then longest prefix."""
@@ -338,8 +266,6 @@ class LookupToolset(Protocol):
     sub-agent take any of them without caring which.
     """
 
-    def enabled_for(self, role: str) -> bool: ...
-
     def tools_for(self, role: str) -> list[dict]: ...
 
     def handles(self, tool_name: str, role: str) -> bool: ...
@@ -358,9 +284,6 @@ class CompositeToolset:
     def __init__(self, members: list):
         self.members = [m for m in members if m is not None]
 
-    def enabled_for(self, role: str) -> bool:
-        return any(m.enabled_for(role) for m in self.members)
-
     def tools_for(self, role: str) -> list[dict]:
         tools: list[dict] = []
         seen: set[str] = set()
@@ -375,26 +298,12 @@ class CompositeToolset:
     def handles(self, tool_name: str, role: str) -> bool:
         return any(m.handles(tool_name, role) for m in self.members)
 
-    @staticmethod
-    def _roles_of(member) -> tuple[str, ...]:
-        """The roles a member serves, for routing a call back to its owner.
-
-        The executor has already checked ``handles`` for the calling role, so
-        this only has to find which member owns the name — but it must not
-        assume the deployment named its roles "manager" and "subagent".
-        """
-        roles = getattr(member, "roles", None)
-        if isinstance(roles, dict):
-            return tuple(roles)
-        if isinstance(roles, (list, tuple)):
-            return tuple(roles)
-        return ("manager", "subagent")
-
     def call(self, tool_name: str, arguments: dict) -> tuple[str, bool]:
+        # The executor has already checked ``handles`` for the calling role;
+        # this only finds which member owns the name, through any role it
+        # serves (``roles`` is a dict on MCPToolset, a tuple on ApiDocsToolset).
         for member in self.members:
-            if any(
-                member.handles(tool_name, role) for role in self._roles_of(member)
-            ):
+            if any(member.handles(tool_name, role) for role in member.roles):
                 return member.call(tool_name, arguments)
         return f"MCP error: no toolset handles {tool_name}", True
 

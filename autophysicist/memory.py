@@ -319,10 +319,6 @@ class Scratchpad:
             return ""
         return tail_entries(text, self._window_size)
 
-    def read_full(self) -> str:
-        """Read entire scratchpad (for logging/debug)."""
-        return self._path.read_text() if self._path.exists() else ""
-
     @property
     def entry_count(self) -> int:
         return self._entry_count

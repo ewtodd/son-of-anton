@@ -10,7 +10,6 @@ api_retry_max_delay = 60.0
 # 0 = bounded by the attempt count only.
 api_retry_total_timeout = 7200.0
 api_timeout = 2400.0
-parse_retries = 2
 max_tokens_retries = 2
 critique_every_n = 1
 

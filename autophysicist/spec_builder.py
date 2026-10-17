@@ -303,9 +303,6 @@ def probe_data(
             interpreter=policy.interpreter,
             workspace=workdir,
             data_dirs=policy.data_dirs,
-            mode=policy.mode,
-            network=False,
-            file_size_limit_mb=policy.file_size_limit_mb,
         )
         result = execute_python(script, timeout=timeout, cwd=workdir, policy=probe_policy)
     if result.returncode != 0:
@@ -501,12 +498,11 @@ Rules for "checks":
 
 def call_model(system: str, user: str, model: str | None) -> str:
     """One chat completion through the physics endpoint resolution."""
-    from autophysicist.core.config import build_config
+    from autophysicist.core.config import Config
+    from autophysicist.core.models import resolve_models
     from autophysicist.llm import call_llm
 
-    from autophysicist.core.models import resolve_models
-
-    config = build_config(None)
+    config = Config()
     resolve_models(config, model)
     # The spec writer emits one JSON object to a fixed schema. That is a
     # formatting job, not a reasoning one, and the physics it needs — that
@@ -542,7 +538,7 @@ def parse_json_object(text: str) -> dict:
     return _TOLERANT_JSON.decode(stripped[start : end + 1])
 
 
-def validate_spec(spec: dict, require_checks: bool = False) -> list[str]:
+def validate_spec(spec: dict) -> list[str]:
     """Return a list of problems with *spec*. Empty means it is usable.
 
     An empty ``checks`` list is allowed. Some goals have nothing that can be
@@ -561,8 +557,6 @@ def validate_spec(spec: dict, require_checks: bool = False) -> list[str]:
     if len(text) < 80:
         problems.append("'problem' is missing or too short to brief an agent")
     checks = spec.get("checks") or []
-    if require_checks and not checks:
-        problems.append("'checks' is empty — the run would have nothing to score")
     seen_keys: set[str] = set()
     for index, check in enumerate(checks):
         if not isinstance(check, dict):
@@ -680,11 +674,7 @@ def deterministic_spec(
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    """Attach the spec-builder options to *parser*.
-
-    Shared so the CLI subcommand and any direct ``python -m`` invocation take
-    exactly the same flags, rather than drifting into two interfaces.
-    """
+    """Attach the spec-builder options to *parser* (``problem create``)."""
     parser.add_argument(
         "--data",
         action="append",
@@ -753,10 +743,7 @@ def run(args, parser: argparse.ArgumentParser | None = None) -> int:
     policy = SandboxPolicy.from_config(extra_data_dirs=data_paths)
     runtime = runtime_summary(policy.interpreter)
     print(f"runtime:  {policy.interpreter}", file=sys.stderr)
-    print(
-        f"sandbox:  {'bubblewrap' if policy.mode != 'off' else 'OFF (unconfined)'}",
-        file=sys.stderr,
-    )
+    print("sandbox:  bubblewrap", file=sys.stderr)
     if not runtime.get("packages"):
         print(
             "warning:  the physics interpreter has no scientific packages; the "

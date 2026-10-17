@@ -12,15 +12,7 @@ to those two roles.
 
 from __future__ import annotations
 
-
-def _physics_config() -> dict:
-    try:
-        from son_of_anton_cli.config import load_config
-
-        section = (load_config() or {}).get("physics")
-        return section if isinstance(section, dict) else {}
-    except Exception:
-        return {}
+from .config import physics_config as _physics_config
 
 
 def resolve_models(config, model: str | None = None) -> None:

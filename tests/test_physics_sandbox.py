@@ -28,15 +28,11 @@ needs_bwrap = pytest.mark.skipif(
 )
 
 
-def _policy(tmp_path: Path, **kwargs) -> SandboxPolicy:
-    return SandboxPolicy(
-        interpreter=sys.executable, workspace=tmp_path, **kwargs
-    )
+def _policy(tmp_path: Path) -> SandboxPolicy:
+    return SandboxPolicy(interpreter=sys.executable, workspace=tmp_path)
 
 
 def test_resolve_interpreter_is_an_existing_executable(monkeypatch) -> None:
-    monkeypatch.delenv("SON_OF_ANTON_PHYSICS_PYTHON", raising=False)
-    monkeypatch.delenv("SON_OF_ANTON_PYTHON", raising=False)
     monkeypatch.setattr("autophysicist.utils.sandbox._physics_config", dict)
     interpreter = resolve_interpreter()
     assert interpreter != "python"
@@ -46,11 +42,10 @@ def test_resolve_interpreter_is_an_existing_executable(monkeypatch) -> None:
     )
 
 
-def test_config_python_wins_over_environment(monkeypatch, tmp_path) -> None:
+def test_config_python_wins(monkeypatch, tmp_path) -> None:
     fake = tmp_path / "python3"
     fake.write_text("#!/bin/sh\n")
     fake.chmod(0o755)
-    monkeypatch.setenv("SON_OF_ANTON_PYTHON", sys.executable)
     monkeypatch.setattr(
         "autophysicist.utils.sandbox._physics_config",
         lambda: {"python": str(fake)},
@@ -59,8 +54,6 @@ def test_config_python_wins_over_environment(monkeypatch, tmp_path) -> None:
 
 
 def test_nonexistent_configured_interpreter_falls_through(monkeypatch) -> None:
-    monkeypatch.delenv("SON_OF_ANTON_PHYSICS_PYTHON", raising=False)
-    monkeypatch.setenv("SON_OF_ANTON_PYTHON", sys.executable)
     monkeypatch.setattr(
         "autophysicist.utils.sandbox._physics_config",
         lambda: {"python": "/nonexistent/python3"},
@@ -106,7 +99,6 @@ def test_secrets_are_not_inherited(tmp_path: Path, monkeypatch) -> None:
     result = execute_python(
         script, timeout=60, cwd=tmp_path, policy=_policy(tmp_path)
     )
-    assert result.sandboxed
     assert result.stdout.strip() == "ABSENT"
 
 
@@ -118,7 +110,6 @@ def test_home_directory_is_not_visible(tmp_path: Path) -> None:
     result = execute_python(
         script, timeout=60, cwd=tmp_path, policy=_policy(tmp_path)
     )
-    assert result.sandboxed
     assert result.stdout.strip() == "False"
 
 
@@ -180,17 +171,8 @@ def test_undeclared_paths_are_invisible(tmp_path: Path) -> None:
     assert result.stdout.strip() == "False"
 
 
-def test_sandbox_off_is_opt_in_and_reported(tmp_path: Path) -> None:
-    script = tmp_path / "s.py"
-    script.write_text("print('unconfined')\n")
-    policy = _policy(tmp_path, mode="off")
-    result = execute_python(script, timeout=60, cwd=tmp_path, policy=policy)
-    assert result.returncode == 0, result.stderr
-    assert result.sandboxed is False
-
-
 def test_missing_bwrap_fails_closed(tmp_path: Path, monkeypatch) -> None:
-    """With no bwrap and mode=auto the run must refuse, not silently unconfine."""
+    """With no bwrap the run must refuse, not silently unconfine."""
     monkeypatch.setattr("autophysicist.utils.sandbox.bwrap_path", lambda: None)
     script = tmp_path / "s.py"
     script.write_text("print('should not run')\n")
@@ -219,14 +201,6 @@ def test_notes_only_appear_for_libraries_that_are_present() -> None:
     assert "analysis_utilities" in notes_for({"analysis_utilities": "26.8.27"})
 
 
-def test_extra_notes_are_appended() -> None:
-    from autophysicist.utils.runtime_notes import notes_for
-
-    assert "house rule" in notes_for({}, extra="house rule")
-    combined = notes_for({"analysis_utilities": "1"}, extra="house rule")
-    assert "analysis_utilities" in combined and "house rule" in combined
-
-
 def test_guidance_reaches_the_subagent_instructions(monkeypatch) -> None:
     from autophysicist.subagent import code_execution_suffix
 
@@ -236,7 +210,6 @@ def test_guidance_reaches_the_subagent_instructions(monkeypatch) -> None:
             "interpreter": "x",
             "python_version": "3.12",
             "packages": {"analysis_utilities": "26.8.27"},
-            "bwrap": "",
         },
     )
     suffix = code_execution_suffix(None, 60)
@@ -254,7 +227,6 @@ def test_no_guidance_when_the_library_is_absent(monkeypatch) -> None:
             "interpreter": "x",
             "python_version": "3.12",
             "packages": {"numpy": "2.0"},
-            "bwrap": "",
         },
     )
     suffix = code_execution_suffix(None, 60)
@@ -320,7 +292,6 @@ def test_the_code_execution_rules_state_the_real_timeout(monkeypatch) -> None:
             "interpreter": "x",
             "python_version": "3.12",
             "packages": {"numpy": "2.0"},
-            "bwrap": "",
         },
     )
     suffix = code_execution_suffix(None, 900)

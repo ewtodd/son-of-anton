@@ -13,7 +13,20 @@ from __future__ import annotations
 import pytest
 
 from autophysicist.core.config import Config
-from autophysicist.utils.mcp import DEFAULT_ROLES, MCPToolset
+from autophysicist.utils.mcp import MCPToolset
+
+#: The owner's physics.mcp.roles: arXiv reading for the Manager, library docs
+#: for the sub-agents that write code.
+ROLES = {
+    "manager": (
+        "arxiv-search_papers",
+        "arxiv-get_abstract",
+        "arxiv-download_paper",
+        "arxiv-read_paper",
+        "arxiv-search_paper_text",
+    ),
+    "subagent": ("context7",),
+}
 
 SPEC = {
     "name": "parity",
@@ -37,7 +50,7 @@ class _FakeToolset(MCPToolset):
             {
                 "url": "http://gateway.invalid/mcp/",
                 "headers": {},
-                "roles": dict(roles or DEFAULT_ROLES),
+                "roles": dict(roles or ROLES),
                 "timeout": 5.0,
             }
         )
@@ -75,7 +88,7 @@ def runner_kwargs(tmp_path, monkeypatch):
     from utils import dump_toml
 
     spec_path.write_text(dump_toml(spec), encoding="utf-8")
-    run_problem(str(spec_path), mode="physics")
+    run_problem(str(spec_path))
     return seen, data_dir
 
 
@@ -146,7 +159,7 @@ def test_no_mcp_leaves_the_run_lookups_empty(monkeypatch, tmp_path) -> None:
     )
     from autophysicist.run import run_problem
 
-    run_problem("a plain question", mode="physics")
+    run_problem("a plain question")
     assert seen["problem_def"] is None
 
 
@@ -161,8 +174,3 @@ def test_a_coding_dispatch_resolves_to_the_coder_model() -> None:
     assert config.model_for_agent("subagent", coding=False) == "reasoning-model"
     # ...and the run's config is untouched.
     assert config.model == "reasoning-model"
-
-
-def test_the_role_table_is_the_autophysicists() -> None:
-    """The same names mean the same thing wherever they are consulted."""
-    assert set(DEFAULT_ROLES) == {"manager", "subagent"}

@@ -145,7 +145,7 @@ def test_a_fresh_run_writes_the_spec_into_the_workspace(monkeypatch, tmp_path) -
     spec_path = tmp_path / "problem.toml"
     spec_path.write_text(dump_toml(spec), encoding="utf-8")
 
-    run_module.run_problem(str(spec_path), mode="physics", workspace_root=tmp_path / "ws")
+    run_module.run_problem(str(spec_path), workspace_root=tmp_path / "ws")
 
     assert seen["problem_def"] == spec
     assert seen["problem_name"] == "decay_curve"

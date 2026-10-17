@@ -1268,13 +1268,12 @@ def cmd_problem(args, parser=None):
 
         workspace = run_problem(
             args.spec,
-            mode="physics",
             max_iterations=getattr(args, "max_iterations", None),
             script_timeout=getattr(args, "script_timeout", None),
             token_budget=getattr(args, "token_budget", None),
             workspace_root=getattr(args, "workspace", None),
         )
-        print(render_report(workspace, "physics"))
+        print(render_report(workspace))
         return 0
 
     print(

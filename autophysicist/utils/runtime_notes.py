@@ -12,9 +12,6 @@ into the tool description and the sub-agent code-execution instructions, and
 only when that library actually imports in the configured runtime. The briefs
 are deliberately terse: the entry points, the idiom, and what NOT to hand-roll.
 Anything longer competes with the task for the model's attention.
-
-``physics.runtime_notes`` in config.toml appends deployment-specific text — a
-second lab, another internal package, a local convention.
 """
 
 from __future__ import annotations
@@ -134,22 +131,18 @@ are what the published fits used.""",
 }
 
 
-def notes_for(packages, extra: str = "", timeout: int = 60) -> str:
+def notes_for(packages, timeout: int = 60) -> str:
     """Return the guidance for whichever known libraries *packages* contains.
 
     *packages* is the probe result from :func:`autophysicist.utils.sandbox.
-    runtime_summary` — a mapping of importable module name to version. *extra*
-    is appended verbatim (``physics.runtime_notes``). *timeout* is substituted
-    into the notes: "the timeout is short" was ignored, and a real number with
-    the consequence spelled out is harder to skim past.
+    runtime_summary` — a mapping of importable module name to version.
+    *timeout* is substituted into the notes: "the timeout is short" was
+    ignored, and a real number with the consequence spelled out is harder to
+    skim past.
     """
     names = set(packages or ())
-    blocks = [
+    return "\n\n".join(
         note.replace("{timeout}", str(timeout))
         for name, note in LIBRARY_NOTES.items()
         if name in names
-    ]
-    extra = (extra or "").strip()
-    if extra:
-        blocks.append(extra)
-    return "\n\n".join(blocks)
+    )
