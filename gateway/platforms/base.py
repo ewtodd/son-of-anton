@@ -10,7 +10,6 @@ import logging
 import os
 import random
 import re
-import sys
 import threading
 import time
 import uuid
@@ -21,20 +20,10 @@ logger = logging.getLogger(__name__)
 
 
 # Audio file extensions Son of Anton recognizes for native audio delivery.
-_AUDIO_MIME_TYPES = {
-    ".ogg": "audio/ogg",
-    ".opus": "audio/opus",
-    ".mp3": "audio/mpeg",
-    ".m2a": "audio/mpeg",
-    ".wav": "audio/wav",
-    ".m4a": "audio/m4a",
-    ".flac": "audio/flac",
-}
-_AUDIO_EXTS = frozenset(_AUDIO_MIME_TYPES)
+_AUDIO_EXTS = frozenset({".ogg", ".opus", ".mp3", ".m2a", ".wav", ".m4a", ".flac"})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
-# Delivery-time history is best-effort dedup metadata, not canonical state.
-# Keep this comfortably below the Discord heartbeat watchdog window and fail
-# open rather than withholding a legitimate attachment.
+# Delivery-time history is best-effort dedup metadata, not canonical state:
+# fail open rather than withholding a legitimate attachment.
 _HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS = 5.0
 # Timed-out reads cannot be cancelled while SQLite/Python code is already
 # running. Isolate and cap them so wedged best-effort dedup work cannot consume
@@ -43,22 +32,6 @@ _HISTORY_MEDIA_LOOKUP_MAX_WORKERS = 2
 _HISTORY_MEDIA_LOOKUP_ADMISSION = threading.BoundedSemaphore(
     _HISTORY_MEDIA_LOOKUP_MAX_WORKERS
 )
-
-
-def _platform_name(platform) -> str:
-    """Normalize a Platform enum / raw string into a lowercase name."""
-    value = getattr(platform, "value", platform)
-    return str(value or "").lower()
-
-
-def _float_env(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return default
 
 
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
@@ -116,18 +89,12 @@ def _custom_unit_to_cp(s: str, budget: int, len_fn) -> int:
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 from enum import Enum
-
-from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
-from son_of_anton_constants import get_default_son_of_anton_root, get_son_of_anton_dir, get_son_of_anton_home
-
-if TYPE_CHECKING:
-    from agent.display import ToolPreview
+from son_of_anton_constants import get_son_of_anton_dir, get_son_of_anton_home
 
 
 def safe_url_for_log(url: str, max_len: int = 80) -> str:
@@ -192,78 +159,19 @@ async def _ssrf_redirect_guard(response):
 # (e.g. platform file URLs expire after ~1 hour).
 # ---------------------------------------------------------------------------
 
-# Import-time default. Tests monkeypatch this; the get_*_cache_dir() getters
-# re-resolve per call so the active profile override is honored.
 IMAGE_CACHE_DIR = get_son_of_anton_dir("cache/images", "image_cache")
 
-
-def _resolve_cache_dir(constant_name: str, new_subpath: str, old_name: str) -> Path:
-    """Resolve fresh via get_son_of_anton_dir (active profile), unless a test has
-    monkeypatched the constant away from its import-time default."""
-    fresh = get_son_of_anton_dir(new_subpath, old_name)
-    current = globals().get(constant_name)
-    default = _CACHE_DIR_IMPORT_DEFAULTS.get(constant_name)
-    if current is not None and default is not None and current != default:
-        return Path(current)
-    return fresh
-
-# ---------------------------------------------------------------------------
-# Inbound media size cap (#13145)
-#
-# Inbound image / audio / video payloads are buffered fully into process
-# memory before being written to the cache directory. With no cap, a single
-# large upload (Discord Nitro allows 500 MB) — or a remote URL in an inbound
-# message payload pointing at an arbitrarily large file — can spike RAM and
-# OOM-kill the gateway. The ``cache_*_from_bytes`` helpers (the shared funnel
-# every platform reaches eventually) and the ``cache_*_from_url`` downloaders
-# enforce this cap, so the protection holds regardless of which platform
-# adapter or code path produced the bytes.
-#
-# Configurable via ``gateway.max_inbound_media_bytes`` in config.toml.
-# ``0`` disables the cap. Default 128 MiB — generous enough for ordinary
-# photos/voice notes/short clips while still bounding a hostile upload.
-# ---------------------------------------------------------------------------
-DEFAULT_INBOUND_MEDIA_MAX_BYTES = 128 * 1024 * 1024
+# Inbound image / audio payloads are buffered fully into memory before they
+# are cached, so a hostile upload or remote URL is capped at 128 MiB.
+INBOUND_MEDIA_MAX_BYTES = 128 * 1024 * 1024
 
 
-def get_inbound_media_max_bytes() -> int:
-    """Return the max inbound image/audio/video bytes allowed in memory.
-
-    Reads ``gateway.max_inbound_media_bytes`` from config.toml. ``0`` (or a
-    negative / unparseable value) disables the cap. Non-fatal if config is
-    unreadable — falls back to the default.
-    """
-    try:
-        from son_of_anton_cli.config import load_config_readonly as _load_config
-        cfg = _load_config()  # read-only: .get() only, never mutated
-    except Exception:
-        return DEFAULT_INBOUND_MEDIA_MAX_BYTES
-    gw = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
-    if not isinstance(gw, dict) or "max_inbound_media_bytes" not in gw:
-        return DEFAULT_INBOUND_MEDIA_MAX_BYTES
-    try:
-        return int(gw["max_inbound_media_bytes"])
-    except (TypeError, ValueError):
-        return DEFAULT_INBOUND_MEDIA_MAX_BYTES
-
-
-def validate_inbound_media_size(
-    size: int,
-    *,
-    media_type: str = "media",
-    max_bytes: Optional[int] = None,
-) -> None:
-    """Raise ``ValueError`` if an inbound media payload exceeds the cap.
-
-    A ``max_bytes`` of ``0`` (or the configured cap resolving to ``0``)
-    disables the check entirely. Passing ``max_bytes`` lets callers resolve
-    the limit once and reuse it across an incremental read.
-    """
-    limit = get_inbound_media_max_bytes() if max_bytes is None else max_bytes
-    if limit and size > limit:
+def validate_inbound_media_size(size: int, *, media_type: str = "media") -> None:
+    """Raise ``ValueError`` if an inbound media payload exceeds the cap."""
+    if size > INBOUND_MEDIA_MAX_BYTES:
         raise ValueError(
             f"Inbound {media_type} payload is too large "
-            f"({size} bytes > {limit} bytes)"
+            f"({size} bytes > {INBOUND_MEDIA_MAX_BYTES} bytes)"
         )
 
 
@@ -274,7 +182,6 @@ async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
     the running total as chunks arrive so a lying/absent header can't smuggle
     an unbounded body past the cap.
     """
-    max_bytes = get_inbound_media_max_bytes()
     content_length = response.headers.get("content-length")
     if content_length:
         try:
@@ -285,22 +192,20 @@ async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
                 media_type, content_length,
             )
         else:
-            validate_inbound_media_size(
-                declared_size, media_type=media_type, max_bytes=max_bytes,
-            )
+            validate_inbound_media_size(declared_size, media_type=media_type)
 
     chunks: list[bytes] = []
     total = 0
     async for chunk in response.aiter_bytes():
         total += len(chunk)
-        validate_inbound_media_size(total, media_type=media_type, max_bytes=max_bytes)
+        validate_inbound_media_size(total, media_type=media_type)
         chunks.append(chunk)
     return b"".join(chunks)
 
 
 def get_image_cache_dir() -> Path:
     """Return the image cache directory, creating it if it doesn't exist."""
-    d = _resolve_cache_dir("IMAGE_CACHE_DIR", "cache/images", "image_cache")
+    d = get_son_of_anton_dir("cache/images", "image_cache")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -456,7 +361,7 @@ AUDIO_CACHE_DIR = get_son_of_anton_dir("cache/audio", "audio_cache")
 
 def get_audio_cache_dir() -> Path:
     """Return the audio cache directory, creating it if it doesn't exist."""
-    d = _resolve_cache_dir("AUDIO_CACHE_DIR", "cache/audio", "audio_cache")
+    d = get_son_of_anton_dir("cache/audio", "audio_cache")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -501,50 +406,6 @@ def cleanup_audio_cache(max_age_hours: int = 24) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Video cache utilities
-#
-# Same pattern as image/audio cache -- videos from platforms are downloaded
-# here so the agent can reference them by local file path.
-# ---------------------------------------------------------------------------
-
-VIDEO_CACHE_DIR = get_son_of_anton_dir("cache/videos", "video_cache")
-
-SUPPORTED_VIDEO_TYPES = {
-    ".mp4": "video/mp4",
-    ".mov": "video/quicktime",
-    ".webm": "video/webm",
-    ".mkv": "video/x-matroska",
-    ".avi": "video/x-msvideo",
-}
-
-
-def get_video_cache_dir() -> Path:
-    """Return the video cache directory, creating it if it doesn't exist."""
-    d = _resolve_cache_dir("VIDEO_CACHE_DIR", "cache/videos", "video_cache")
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
-    """Save raw video bytes to the cache and return the absolute file path."""
-    validate_inbound_media_size(len(data), media_type="video")
-    cache_dir = get_video_cache_dir()
-    filename = f"video_{uuid.uuid4().hex[:12]}{ext}"
-    filepath = cache_dir / filename
-    filepath.write_bytes(data)
-    return str(filepath)
-
-
-def cleanup_video_cache(max_age_hours: int = 24) -> int:
-    """
-    Delete cached videos older than *max_age_hours*.
-
-    Returns the number of files removed.
-    """
-    return _cleanup_cache_dir(get_video_cache_dir(), max_age_hours)
-
-
-# ---------------------------------------------------------------------------
 # Document cache utilities
 #
 # Same pattern as image/audio cache -- documents from platforms are downloaded
@@ -553,60 +414,23 @@ def cleanup_video_cache(max_age_hours: int = 24) -> int:
 
 DOCUMENT_CACHE_DIR = get_son_of_anton_dir("cache/documents", "document_cache")
 
-
-# Import-time defaults; _resolve_cache_dir compares against these to tell a
-# test monkeypatch from an unmodified constant.
-_CACHE_DIR_IMPORT_DEFAULTS = {
-    "IMAGE_CACHE_DIR": IMAGE_CACHE_DIR,
-    "AUDIO_CACHE_DIR": AUDIO_CACHE_DIR,
-    "VIDEO_CACHE_DIR": VIDEO_CACHE_DIR,
-    "DOCUMENT_CACHE_DIR": DOCUMENT_CACHE_DIR,
-}
-
 _SON_OF_ANTON_HOME = get_son_of_anton_home()
-_SON_OF_ANTON_ROOT = get_default_son_of_anton_root()
-MEDIA_DELIVERY_ALLOW_DIRS_ENV = "SON_OF_ANTON_MEDIA_ALLOW_DIRS"
-MEDIA_DELIVERY_TRUST_RECENT_ENV = "SON_OF_ANTON_MEDIA_TRUST_RECENT_FILES"
-MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV = "SON_OF_ANTON_MEDIA_TRUST_RECENT_SECONDS"
-# Strict mode toggles the original allowlist+recency path-validation behavior.
-# Off by default — symmetric with inbound (we accept any document type the
-# user uploads), and with the denylist still blocking obvious credential /
-# system paths. Operators running public-facing gateways where prompt
-# injection from one user could exfiltrate the host's secrets to that same
-# user should set this to true.
-MEDIA_DELIVERY_STRICT_ENV = "SON_OF_ANTON_MEDIA_DELIVERY_STRICT"
+# Media the gateway cached is always deliverable, in either cache layout.
 MEDIA_DELIVERY_SAFE_ROOTS = (
     IMAGE_CACHE_DIR,
     AUDIO_CACHE_DIR,
-    VIDEO_CACHE_DIR,
     DOCUMENT_CACHE_DIR,
     _SON_OF_ANTON_HOME / "image_cache",
     _SON_OF_ANTON_HOME / "audio_cache",
-    _SON_OF_ANTON_HOME / "video_cache",
     _SON_OF_ANTON_HOME / "document_cache",
-    # Canonical cache layout — listed alongside the legacy *_cache dirs so
-    # generated artifacts deliver on installs that have both (#31733).
     _SON_OF_ANTON_HOME / "cache" / "images",
     _SON_OF_ANTON_HOME / "cache" / "audio",
-    _SON_OF_ANTON_HOME / "cache" / "videos",
     _SON_OF_ANTON_HOME / "cache" / "documents",
 )
 
-# Default recency window for trusting freshly-produced files (seconds).
-# The agent's actual work generally completes well inside 10 minutes; legitimate
-# build artifacts (PDFs from pandoc, plots from matplotlib, etc.) almost always
-# land seconds before delivery. Old system files (/etc/passwd, ~/.ssh/id_rsa,
-# stray credentials) have mtimes measured in days or months — well outside this
-# window — so prompt-injection paths pointing at pre-existing host files are
-# still rejected.
-_MEDIA_DELIVERY_TRUST_RECENT_DEFAULT_SECONDS = 600
-
-# Hard denylist applied even when a path would otherwise pass recency trust.
-# These prefixes hold credentials, system state, or process introspection that
-# should never be uploaded as a gateway attachment, regardless of how new the
-# file looks. The cache-dir allowlist still beats this — an operator-configured
-# allowed root can intentionally live under one of these prefixes (rare, but
-# their choice).
+# Prefixes that hold credentials, system state, or process introspection and
+# must never be uploaded as a gateway attachment. The cache roots above still
+# win, so cached media under /var/lib (a service's state dir) is deliverable.
 _MEDIA_DELIVERY_DENIED_PREFIXES = (
     "/etc",
     "/proc",
@@ -620,8 +444,6 @@ _MEDIA_DELIVERY_DENIED_PREFIXES = (
 )
 
 # Within $HOME we additionally deny common credential / config directories.
-# Resolved at check time against the live $HOME so containers and alt-home
-# setups work correctly.
 _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
     ".ssh",
     ".aws",
@@ -631,61 +453,19 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
     ".config",
     ".azure",
     ".gcloud",
-    "Library/Keychains",  # macOS
 )
 
-
-# Canonical cache subdirectories that hold deliverable artifacts. Used both
-# for the top-level safe roots above and to enumerate per-profile cache roots
-# at check time (see _media_delivery_allowed_roots).
-
-
-def _media_delivery_allowed_roots() -> List[Path]:
-    """Return roots from which model-emitted local media may be delivered."""
-    roots = [Path(root) for root in MEDIA_DELIVERY_SAFE_ROOTS]
-    extra_roots = os.environ.get(MEDIA_DELIVERY_ALLOW_DIRS_ENV, "")
-    for chunk in extra_roots.split(os.pathsep):
-        for raw_root in chunk.split(","):
-            raw_root = raw_root.strip()
-            if not raw_root:
-                continue
-            root = Path(os.path.expanduser(raw_root))
-            if root.is_absolute():
-                roots.append(root)
-    return roots
-
-
-def _media_delivery_recency_seconds() -> float:
-    """Return the recency window for trusting freshly-produced files.
-
-    0 disables recency-based trust entirely (pure-allowlist mode).
-    """
-    raw = os.environ.get(MEDIA_DELIVERY_TRUST_RECENT_ENV, "1").strip().lower()
-    if raw in ("0", "false", "no", "off", ""):
-        return 0.0
-    try:
-        custom = os.environ.get(MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV, "").strip()
-        if custom:
-            seconds = float(custom)
-            return max(0.0, seconds)
-    except (TypeError, ValueError):
-        pass
-    return float(_MEDIA_DELIVERY_TRUST_RECENT_DEFAULT_SECONDS)
-
-
-def _media_delivery_strict_mode() -> bool:
-    """Return True when path validation should require allowlist/recency match.
-
-    Off by default. In non-strict mode, ``validate_media_delivery_path``
-    accepts any existing regular file that isn't under the credential /
-    system-path denylist — restoring the pre-#29523 behavior for the
-    single-user case. Strict mode preserves the original
-    allowlist+recency-window logic for operators running public-facing
-    gateways where prompt injection from one user shouldn't be able to
-    exfiltrate the host's secrets to that same user.
-    """
-    raw = os.environ.get(MEDIA_DELIVERY_STRICT_ENV, "0").strip().lower()
-    return raw in ("1", "true", "yes", "on")
+# Credential stores at the SON_OF_ANTON_HOME root. Enumerated per file rather
+# than denying the whole tree, so logs/ and agent-written files under it stay
+# deliverable.
+_HOME_CREDENTIAL_PATHS = (
+    ".env",
+    "auth.json",
+    "auth.lock",
+    "credentials",
+    "config.toml",
+    "pairing",
+)
 
 
 def _media_delivery_denied_paths() -> List[Path]:
@@ -694,47 +474,8 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
-    # The active Son of Anton profile and shared Son of Anton root both contain control
-    # files and credentials. Only cache subdirectories under them are
-    # explicitly allowlisted above (matched BEFORE this denylist in
-    # validate_media_delivery_path, so generated media still delivers).
-    #
-    # These are the per-file credential / secret stores that live at the
-    # SON_OF_ANTON_HOME root. The set mirrors the canonical read guard in
-    # agent/file_safety.py (get_read_block_error / build_write_denied_*) so the
-    # delivery (read/exfil) side can't trail the write side: a credential the
-    # agent is forbidden to write or read must also never be auto-attached to a
-    # chat reply. Enumerated explicitly per-file rather than denying the whole
-    # tree, so logs/ and ad-hoc agent-written files under ~/.son-of-anton
-    # stay deliverable (see #32090, #34425).
-    _ROOT_CREDENTIAL_FILES = (
-        ".env",
-        "auth.json",
-        "auth.lock",
-        "credentials",
-        "config.toml",
-        # Anthropic PKCE / OAuth refresh credential store.
-        ".anthropic_oauth.json",
-        # Google Workspace: auto-refreshing OAuth token (mtime bumps
-        # every turn, which defeated the strict-mode recency window) plus the
-        # pending-exchange session/verifier file.
-        "google_token.json",
-        "google_oauth_pending.json",
-        os.path.join("auth", "google_oauth.json"),
-        # Bitwarden Secrets Manager plaintext and encrypted disk caches.
-        os.path.join("cache", "bws_cache.json"),
-        os.path.join("cache", "bws_cache.enc.json"),
-    )
-    # Directory trees whose every child is credential material.
-    # (session/kanban SQLite stores are handled by #41071 — kept out here.)
-    _ROOT_CREDENTIAL_DIRS = (
-        "pairing",
-    )
-    for son_of_anton_root in (_SON_OF_ANTON_HOME, _SON_OF_ANTON_ROOT):
-        for rel in _ROOT_CREDENTIAL_FILES:
-            denied.append(son_of_anton_root / rel)
-        for rel in _ROOT_CREDENTIAL_DIRS:
-            denied.append(son_of_anton_root / rel)
+    for rel in _HOME_CREDENTIAL_PATHS:
+        denied.append(_SON_OF_ANTON_HOME / rel)
     return denied
 
 
@@ -745,12 +486,9 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
     the home itself is not treated as denied. ``/root`` is on the system-path
     denylist so that a non-root gateway can't deliver another user's home, but
     on a root-run gateway ``$HOME=/root`` and the operator's own deliverables
-    (``/root/work/proposal.docx``) live directly under it. The credential
-    sub-directories inside home (``~/.ssh``, ``~/.aws``, ...) and Son of Anton
-    secrets (``~/.son-of-anton/.env``, ``auth.json``) are *separate, more-specific*
-    denied paths, so they stay blocked regardless of this exception — it can
-    only un-block a plain file sitting in the running user's home tree, never a
-    credential location or another user's home.
+    live directly under it. The credential sub-directories inside home
+    (``~/.ssh``, ``~/.aws``, ...) and Son of Anton secrets are *separate,
+    more-specific* denied paths, so they stay blocked regardless.
     """
     try:
         home = Path(os.path.expanduser("~")).resolve(strict=False)
@@ -771,23 +509,6 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
     return False
 
 
-def _file_is_recently_produced(resolved: Path, window_seconds: float) -> bool:
-    """Return True if the file's mtime is within ``window_seconds`` of now.
-
-    Used as a session-scoped trust signal: agents almost always produce
-    delivery artifacts within seconds of asking to send them, while
-    prompt-injection paths pointing at pre-existing host files (/etc/passwd,
-    ~/.ssh/id_rsa) have mtimes measured in days or months.
-    """
-    if window_seconds <= 0:
-        return False
-    try:
-        mtime = resolved.stat().st_mtime
-    except OSError:
-        return False
-    return (time.time() - mtime) <= window_seconds
-
-
 def _path_is_within(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -799,22 +520,9 @@ def _path_is_within(path: Path, root: Path) -> bool:
 def validate_media_delivery_path(path: str) -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
-    Default mode (single-user / private gateway): accept any existing regular
-    file that isn't under the credential / system-path denylist
-    (``_MEDIA_DELIVERY_DENIED_PREFIXES`` + ``~/.ssh``, ``~/.aws``, etc.).
-    This matches the symmetry of inbound delivery — Discord/Slack
-    will hand the agent any file the user uploads, and the agent can hand
-    back any file that isn't a credential.
-
-    Strict mode (opt-in via ``gateway.strict`` in ``config.toml`` or
-    ``SON_OF_ANTON_MEDIA_DELIVERY_STRICT=1``): the file MUST live under a
-    Son of Anton-managed cache, under an operator-allowlisted root
-    (``SON_OF_ANTON_MEDIA_ALLOW_DIRS``), or be freshly produced inside the
-    configured recency window. Suitable for public-facing bots where
-    prompt injection from one user shouldn't be able to exfiltrate the
-    host's secrets to that same user.
-
-    Symlinks are resolved before any containment / denylist check.
+    Accepts an existing regular file under a Son of Anton media cache, or any
+    existing regular file that isn't under the credential / system-path
+    denylist. Symlinks are resolved before any containment / denylist check.
     """
     if not path:
         return None
@@ -842,39 +550,17 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     if not resolved.is_file():
         return None
 
-    # Cache / operator allowlist is always honored — these are unconditionally
-    # trusted regardless of mode.
-    for root in _media_delivery_allowed_roots():
+    for root in MEDIA_DELIVERY_SAFE_ROOTS:
         try:
-            resolved_root = root.expanduser().resolve(strict=False)
+            resolved_root = Path(root).expanduser().resolve(strict=False)
         except (OSError, RuntimeError, ValueError):
             continue
         if _path_is_within(resolved, resolved_root):
             return str(resolved)
 
-    # Non-strict mode (default): accept anything not on the denylist.
-    # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, and the
-    # credential/secret stores under the Son of Anton root (~/.son-of-anton/.env,
-    # auth.json, .anthropic_oauth.json, google_token.json, pairing/, ...) —
-    # so the obvious prompt-injection / credential-exfil sites
-    # (``MEDIA:/etc/passwd``, ``MEDIA:~/.ssh/id_rsa``,
-    # ``MEDIA:~/.son-of-anton/google_token.json``) remain rejected.
-    if not _media_delivery_strict_mode():
-        if _path_under_denied_prefix(resolved):
-            return None
-        return str(resolved)
-
-    # Strict mode: fall back to recency-based trust for freshly-produced
-    # files (e.g. ``pandoc -o /tmp/report.pdf`` or
-    # ``write_file("/home/user/report.pdf", ...)``). System paths and
-    # credential locations remain blocked even when "recent" — see
-    # ``_MEDIA_DELIVERY_DENIED_PREFIXES`` for the denylist.
-    window = _media_delivery_recency_seconds()
-    if window > 0 and not _path_under_denied_prefix(resolved):
-        if _file_is_recently_produced(resolved, window):
-            return str(resolved)
-
-    return None
+    if _path_under_denied_prefix(resolved):
+        return None
+    return str(resolved)
 
 
 # Neutralise control chars and the Unicode line separators (NEL, LS, PS) that
@@ -888,90 +574,27 @@ def _log_safe_path(path: str) -> str:
     return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]
 
 
-SUPPORTED_DOCUMENT_TYPES = {
-    ".pdf": "application/pdf",
-    ".md": "text/markdown",
-    ".txt": "text/plain",
-    ".csv": "text/csv",
-    ".log": "text/plain",
-    ".json": "application/json",
-    ".xml": "application/xml",
-    ".yaml": "application/yaml",
-    ".yml": "application/yaml",
-    ".toml": "application/toml",
-    ".ini": "text/plain",
-    ".cfg": "text/plain",
-    ".zip": "application/zip",
-    ".doc": "application/msword",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".xls": "application/vnd.ms-excel",
-    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ".ppt": "application/vnd.ms-powerpoint",
-    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ".ts": "text/plain",
-    ".py": "text/plain",
-    ".sh": "text/plain",
-}
-
-
 # ---------------------------------------------------------------------------
-# Image document types
-#
-# Image extensions that platforms may deliver as "documents" rather than
-# native photo attachments (users uploading via the file picker,
-# clients that wrap stickers/screenshots as files, etc.). When we see one
-# of these, we route the bytes through the image cache and the normal
-# vision/photo handling path instead of rejecting them as unsupported
-# documents.
-# ---------------------------------------------------------------------------
-
-SUPPORTED_IMAGE_DOCUMENT_TYPES = {
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".webp": "image/webp",
-    ".gif": "image/gif",
-}
-
-
-# ---------------------------------------------------------------------------
-# Media-delivery extension allowlist — SINGLE SOURCE OF TRUTH
-#
-# Both extractors that turn response text into native attachments derive their
-# extension set from this tuple:
-#   * ``extract_media()``       — explicit ``MEDIA:<path>`` tags
-#   * ``extract_local_files()`` — bare absolute/home paths the agent mentions
-#
-# Historically these two carried independently-maintained extension lists.
-# ``extract_media`` had a narrow list (no .md/.json/.yaml/.xml/.html/...) while
-# ``extract_local_files`` had a broad one. Combined with the unconditional
-# ``MEDIA:\\s*\\S+`` cleanup at the dispatch sites, that mismatch created a
-# silent black hole: a ``MEDIA:/report.md`` tag failed the narrow extract_media
-# match, got stripped from the body by the loose cleanup regex, and was then
-# invisible to extract_local_files — the file was never delivered (issue
-# #34517). Keeping one list eliminates the drift; building the cleanup regexes
-# from the same set means a tag is only stripped when its extension is one we
-# can actually deliver, so an unknown-extension path survives in the body
-# instead of vanishing.
-#
-# Covers images (inline), video (inline where supported), audio (voice/audio),
-# documents/spreadsheets/presentations (send_document), archives, and rendered
-# web output. The dispatch partition (image vs video vs document) lives in
-# ``gateway/run.py``.
+# Media-delivery extension allowlist — the single source of truth for both
+# extractors that turn response text into native attachments
+# (``extract_media()`` for ``MEDIA:<path>`` tags, ``extract_local_files()`` for
+# bare paths). Building the cleanup regexes from the same set means a tag is
+# only stripped when its extension is one we can deliver, so an
+# unknown-extension path survives in the body instead of vanishing.
 # ---------------------------------------------------------------------------
 
 MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     # Images (embed inline)
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",
-    # Video (embed inline where supported)
+    # Video
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp",
-    # Audio (delivered as voice/audio where supported)
+    # Audio
     ".mp3", ".m2a", ".wav", ".ogg", ".opus", ".m4a", ".flac",
     # Documents (uploaded as file attachments)
     ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",
     # Spreadsheets / data
     ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
-    # Geospatial / GIS (#24032)
+    # Geospatial / GIS
     ".kmz", ".kml", ".geojson", ".gpx",
     # Presentations
     ".pptx", ".ppt", ".odp", ".key",
@@ -981,91 +604,46 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     ".html", ".htm",
 )
 
-# Regex alternation fragment of bare extensions (no leading dot), e.g.
-# ``png|jpe?g|...``. ``jpe?g`` collapses jpg/jpeg into one branch. Sorted
+# Regex alternation fragment of bare extensions (no leading dot). Sorted
 # longest-first so the alternation never matches a shorter ext as a prefix of
-# a longer one (e.g. ``.tar`` before ``.tar.gz`` components).
+# a longer one.
 _MEDIA_EXT_ALTERNATION = "|".join(
     sorted((e.lstrip(".") for e in MEDIA_DELIVERY_EXTS), key=len, reverse=True)
 )
 
-# Anchored ``MEDIA:<path>`` cleanup pattern. Unlike the old loose
-# ``MEDIA:\\s*\\S+``, this only strips a tag whose path ends in a known
-# deliverable extension (optionally quoted/backticked). A ``MEDIA:`` tag with
-# an unknown extension is left in the text so it can still be picked up by the
-# bare-path detector (extract_local_files) downstream rather than silently
-# deleted. Shared by the non-streaming dispatch path and the streaming
-# consumer so both behave identically.
-# Path anchors: ``~/`` (Unix home-relative), ``/`` (Unix absolute),
-# ``X:\\`` or ``X:/`` (Windows drive-letter absolute — #34632).
-# Emphasis tolerance: models routinely wrap the tag in Markdown emphasis
-# (``**MEDIA:/x.pdf**``, ``*MEDIA:/x.pdf*``, ``_MEDIA:/x.pdf_``) when they
-# present a file to the user. The old single-quote anchor (``[`"']?``) and the
-# closing lookahead (which lacked ``*``/``_``) failed to match such tags, so the
-# file was silently never delivered and the literal ``MEDIA:`` text leaked into
-# the chat. Allow a short run of emphasis/quote markers on both sides so the tag
-# is recognised regardless of cosmetic Markdown. Code-block / inline-code /
-# blockquote contexts are still neutralised earlier by ``_mask_protected_spans``
-# (#35695), so example tags remain non-deliverable.
-#
-# Both the bare and quoted path forms use non-greedy quantifiers so two
-# ``MEDIA:`` tags glued together (``MEDIA:/a.pngMEDIA:/b.png``) or a tag
-# followed by stray text don't merge into one invalid path. The trailing
-# lookahead also accepts ``MEDIA:`` as a boundary, so the next tag stops
-# the current match cleanly (#68773).
-#
-# Sentence-final punctuation: a ``.`` is accepted as a boundary only when
-# followed by whitespace / EOL (``\.(?=\s|$)``) so ``MEDIA:/x/data.csv.``
-# at the end of a sentence still extracts ``data.csv``. The whitespace
-# guard keeps multi-part extensions intact — for ``archive.tar.gz`` the
-# ``.`` after ``tar`` is followed by ``g``, so the match must extend to
-# ``.gz`` instead of stopping early at ``.tar``.
-# CJK full-width punctuation accepted as MEDIA path terminators, mirroring the
-# ASCII set in the looka below. Chinese-language agent output naturally writes
-# ``MEDIA:D:\path\早报.pdf（782.6 KB）`` or ``MEDIA:...pdf：内容`` — without
-# these, the lookahead fails and the attachment is silently dropped (#88038).
+# Anchored ``MEDIA:<path>`` cleanup pattern: only strips a tag whose path ends
+# in a known deliverable extension (optionally quoted/backticked).
+# - A short run of emphasis/quote markers is allowed on both sides, because
+#   models wrap tags in Markdown (``**MEDIA:/x.pdf**``). Code-block / inline-code
+#   / blockquote contexts are neutralised earlier by ``_mask_protected_spans``,
+#   so example tags remain non-deliverable.
+# - Non-greedy path forms plus ``MEDIA:`` as a lookahead boundary keep two glued
+#   tags (``MEDIA:/a.pngMEDIA:/b.png``) from merging into one invalid path.
+# - A ``.`` ends the path only before whitespace / EOL, so a sentence-final
+#   ``data.csv.`` still extracts while ``archive.tar.gz`` stays whole.
+# - CJK full-width punctuation also terminates a path (``...pdf（782.6 KB）``).
 _MEDIA_CJK_TERMINATORS = "（）〈〉《》：，。；！？、\u201c\u201d\u2018\u2019【】"
 
 MEDIA_TAG_CLEANUP_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+?`|"[^"\n]+?"|'[^'\n]+?'|'''
-    r'''(?:~/|/|[A-Za-z]:[/\\])\S+?(?:[^\S\n]+\S+?)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
+    r'''(?:~/|/)\S+?(?:[^\S\n]+\S+?)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
     r'''(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|\.(?:\s|$)|$)[`"'*_]{0,3}\.?''',
     re.IGNORECASE,
 )
 
-# Paths NOT covered by MEDIA_TAG_CLEANUP_RE's extension alternation — both
-# extension-less files (Caddyfile, Dockerfile, Makefile) and files with an
-# unknown extension (.py, .log, .weirdext, ...) — are validated and delivered
-# via MEDIA_EXTENSIONLESS_TAG_RE. Every ``MEDIA:`` path is therefore
-# deliverable regardless of file type (#36060): known extensions extract
-# unconditionally via the anchored pattern above, everything else extracts
-# only after ``validate_media_delivery_path`` accepts it (exists on disk, not
-# under the credential/system denylist, strict-mode rules honored), so
-# prompt-injection paths that do not validate are left visible instead of
-# silently dropped.
-#
-# The path class uses a tempered-greedy token (``[^\s\n`"']+?`` followed by
-# a ``(?=...)`` lookahead) instead of the prior ``[^\s\n`"']+`` so a
-# tag glued to the next ``MEDIA:`` keyword (``MEDIA:/a.pngMEDIA:/b.png``)
-# or to arbitrary following text (``MEDIA:/a.pngSome text``) cannot
-# silently absorb the next path — that earlier behavior merged the two
-# paths into one invalid string and dropped the file (#68773).
-#
-# The bare form stays non-greedy and whitespace-bounded — spaced paths are
-# NOT absorbed at the regex level, because greedy space-tolerance would
-# reintroduce the #68773 bug class (gluing the next MEDIA: tag or trailing
-# prose into one invalid path). Instead, unknown-extension paths containing
-# spaces (``MEDIA:/data/map data.kmz``, ``C:\...\My Documents\x.log``) are
-# recovered by ``_match_extensionless_path`` (#24032): when the bare match
-# fails validation, the candidate is progressively extended forward across
-# single spaces — bounded, stopping at newline / the next ``MEDIA:`` keyword
-# — and the first extension that validates on disk wins. Validation is the
-# oracle, so prose never rides along and non-existent paths stay visible.
+# Paths NOT covered by MEDIA_TAG_CLEANUP_RE's extension alternation — files
+# with no extension (Caddyfile, Makefile) or an unknown one (.py, .log) — are
+# delivered only after ``validate_media_delivery_path`` accepts them, so
+# prompt-injection paths that do not validate stay visible instead of being
+# silently dropped. The bare form is non-greedy and whitespace-bounded (so it
+# cannot absorb the next tag or trailing prose); unknown-extension paths with
+# spaces are recovered by ``_match_extensionless_path``, which extends the
+# candidate across single spaces until one validates on disk.
 MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
-    r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+?)'''
+    r'''(?:~/|/)[^\s\n`"']+?)'''
     r'''(?=[`"'\s,;:)\]}''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|$)'''
     r'''[`"'*_]{0,3}\s*''',
     re.IGNORECASE,
@@ -1234,224 +812,74 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
     return _cleanup_cache_dir(get_document_cache_dir(), max_age_hours)
 
 
-# ---------------------------------------------------------------------------
-# Unified media caching
-#
-# One entry point for "I have raw attachment bytes from a platform — cache them
-# and tell me what I got." Classifies by extension/MIME against the shared
-# registries above, routes to the right cache_*_from_bytes helper, and returns
-# a small result the caller can store and/or describe in a transcript. Used by
-# both the addressed-message path and the observed-group-context path, on any
-# platform — not platform-specific.
-# ---------------------------------------------------------------------------
-
-@dataclass
-class CachedMedia:
-    """Result of caching one attachment's bytes."""
-
-    path: str                 # absolute cache path, agent-visible (sandbox-translated)
-    media_type: str           # MIME type recorded on the MessageEvent
-    kind: str                 # "image" | "video" | "audio" | "document"
-    display_name: str         # human-readable name for transcript notes
-
-    def context_note(self) -> str:
-        """One-line transcript annotation pointing the agent at the file."""
-        return f"[{self.kind} '{self.display_name}' saved at: {self.path}]"
-
-
-def _resolve_media_ext(filename: str, mime_type: str) -> str:
-    """Best-effort file extension from filename, then MIME fallback."""
-    if filename:
-        ext = os.path.splitext(filename)[1].lower()
-        if ext:
-            return ext
-    mime = (mime_type or "").lower()
-    if not mime:
-        return ""
-    for table in (
-        SUPPORTED_IMAGE_DOCUMENT_TYPES,
-        SUPPORTED_VIDEO_TYPES,
-        SUPPORTED_DOCUMENT_TYPES,
-    ):
-        for ext, m in table.items():
-            if m == mime:
-                return ext
-    return ""
-
-
-def cache_media_bytes(
-    data: bytes,
-    *,
-    filename: str = "",
-    mime_type: str = "",
-    default_kind: Optional[str] = None,
-) -> Optional[CachedMedia]:
-    """Classify and cache raw attachment bytes; return a CachedMedia or None.
-
-    ``default_kind`` ("image"/"video"/"audio"/"document") biases classification
-    when the extension/MIME are ambiguous — e.g. a native photo whose
-    file has no usable name. Any non-image/video/audio file is cached as a
-    document and surfaced to the agent (arbitrary types get
-    ``application/octet-stream``); only images that fail validation
-    (``cache_image_from_bytes`` raises ValueError) return None.
-    """
-    ext = _resolve_media_ext(filename, mime_type)
-    mime = (mime_type or "").lower()
-    display = re.sub(r"[^\w.\- ]", "_", filename) if filename else (ext.lstrip(".") or "file")
-
-    is_image = (
-        mime.startswith("image/")
-        or ext in SUPPORTED_IMAGE_DOCUMENT_TYPES
-        or default_kind == "image"
-    )
-    is_video = mime.startswith("video/") or ext in SUPPORTED_VIDEO_TYPES or default_kind == "video"
-    is_audio = mime.startswith("audio/") or ext in _AUDIO_EXTS or default_kind == "audio"
-
-    if is_image:
-        img_ext = ext if ext in SUPPORTED_IMAGE_DOCUMENT_TYPES else ".jpg"
-        try:
-            path = cache_image_from_bytes(data, ext=img_ext)
-        except ValueError:
-            return None
-        out_mime = mime if mime.startswith("image/") else SUPPORTED_IMAGE_DOCUMENT_TYPES.get(img_ext, "image/jpeg")
-        return CachedMedia(path, out_mime, "image", display)
-
-    if is_video:
-        vid_ext = ext if ext in SUPPORTED_VIDEO_TYPES else ".mp4"
-        path = cache_video_from_bytes(data, ext=vid_ext)
-        return CachedMedia(path, SUPPORTED_VIDEO_TYPES.get(vid_ext, "video/mp4"), "video", display)
-
-    if is_audio:
-        aud_ext = ext if ext in _AUDIO_EXTS else ".ogg"
-        path = cache_audio_from_bytes(data, ext=aud_ext)
-        out_mime = mime if mime.startswith("audio/") else _AUDIO_MIME_TYPES[aud_ext]
-        return CachedMedia(path, out_mime, "audio", display)
-
-    # Any other file type is cached and surfaced to the agent as a local path
-    # so it can be inspected with terminal / read_file / etc. Authorization to
-    # talk to the agent is the gate that matters — once a user is allowed to
-    # message it, the file-extension allowlist must not silently drop their
-    # uploads. Known extensions keep their precise MIME; everything else is
-    # tagged application/octet-stream (or the caller-supplied MIME) so the
-    # agent knows it's an arbitrary file and reaches for terminal tools.
-    fallback_name = filename or (f"document{ext}" if ext else "document.bin")
-    path = cache_document_from_bytes(data, fallback_name)
-    if ext in SUPPORTED_DOCUMENT_TYPES:
-        out_mime = SUPPORTED_DOCUMENT_TYPES[ext]
-    else:
-        out_mime = mime if mime else "application/octet-stream"
-    return CachedMedia(path, out_mime, "document", display or fallback_name)
-
-
 class MessageType(Enum):
     """Types of incoming messages."""
     TEXT = "text"
-    LOCATION = "location"
     PHOTO = "photo"
     VIDEO = "video"
     AUDIO = "audio"
     VOICE = "voice"
     DOCUMENT = "document"
-    STICKER = "sticker"
-    COMMAND = "command"  # /command style
-
-
-class ProcessingOutcome(Enum):
-    """Result classification for message-processing lifecycle hooks."""
-
-    SUCCESS = "success"
-    FAILURE = "failure"
-    CANCELLED = "cancelled"
 
 
 @dataclass
 class MessageEvent:
     """
     Incoming message from a platform.
-    
+
     Normalized representation that all adapters produce.
     """
     # Message content
     text: str
     message_type: MessageType = MessageType.TEXT
 
-    # Author of this inbound message.  Carried on the event itself (not
-    # only on ``source``) so prompt builders that build per-message text
-    # can resolve "who said this" without having to dig into ``source``.
-    # ``source`` still carries the same values for callers that already
-    # read from there.  Adapters that produce events from non-IM sources
-    # (cron, autonomous) may leave these as ``None``.
-    user_id: Optional[str] = None
-    user_name: Optional[str] = None
-
     # Source information
     source: SessionSource = None
-    
+
     # Original platform data
     raw_message: Any = None
     message_id: Optional[str] = None
 
-    # Platform-specific update identifier.
-    # Used by ``/restart`` to record the triggering update so the
-    # new gateway can advance the platform offset past it and avoid
-    # processing the same ``/restart`` twice.
+    # Platform-specific update identifier, recorded by ``/restart``.
     platform_update_id: Optional[int] = None
-    
+
     # Media attachments
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
-    
+
     # Reply context
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
-    reply_to_author_id: Optional[str] = None
-    reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
 
-    # Structured interactive-prompt reply (relay Phase 3). Present when this
-    # event is the user answering a native interactive prompt rendered by the
-    # relay connector (Discord component / Slack
-    # Block Kit button-list). Shape mirrors the wire contract:
-    # {prompt_id, option_id, label?, prompt_message_id?}. The RelayAdapter
-    # consumes it in _on_inbound (routing to the approval/slash-confirm/
-    # clarify resolvers) BEFORE normal dispatch; native adapters never set it
-    # (their button callbacks resolve in-process).
-    prompt_response: Optional[Dict[str, Any]] = None
-    
-    # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
-    # Applied at API call time and never persisted to transcript history.
+    # Per-channel ephemeral system prompt. Applied at API call time and never
+    # persisted to transcript history.
     channel_prompt: Optional[str] = None
 
-    # Channel context recovered by history backfill (e.g. messages between
-    # bot turns that were missed due to require_mention).  Kept separate
-    # from ``text`` so the sender-prefix logic in run.py can operate on the
-    # trigger message alone, then prepend this context afterward.
+    # Channel context prepended ahead of the trigger message by run.py.
     channel_context: Optional[str] = None
-    
+
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
-    # Free-form per-event metadata.  Adapters may set platform-specific
-    # signals here.  Plugins
-    # consume via ``event.metadata.get(...)`` and must not rely on any
-    # particular key existing.
+    # Free-form per-event metadata; consumers must not rely on any particular
+    # key existing.
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
 
     # Whether this event may resolve gateway commands or pending control
-    # prompts. Kept last to preserve positional construction compatibility.
-    # Proactive plugin events set this to False so untrusted payload text
-    # remains conversational input.
+    # prompts. Proactive plugin events set this to False so untrusted payload
+    # text remains conversational input.
     allow_gateway_control: bool = True
-    
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
         return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")
-    
+
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
@@ -1466,7 +894,7 @@ class MessageEvent:
         if raw and "/" in raw:
             return None
         return raw
-    
+
     def get_command_args(self) -> str:
         """Get the arguments after a command."""
         if not self.is_command():
@@ -1477,14 +905,6 @@ class MessageEvent:
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
         return args
-
-
-@dataclass
-class TextDebounceState:
-    event: MessageEvent
-    task: asyncio.Task | None
-    first_ts: float
-    last_ts: float
 
 
 _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -1529,50 +949,11 @@ class SendResult:
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
-    # Adapter-specific metadata.  Cross-layer contracts that affect delivery
-    # semantics must be documented at the producer and consumer sites.  Current
-    # known contract: edit overflow partials set
-    # raw_response["partial_overflow"] with delivered_chunks, total_chunks,
-    # last_message_id, delivered_prefix, and continuation_message_ids so the
-    # stream consumer can send the missing tail instead of marking a clipped
-    # response complete.
-    retryable: bool = False  # True for transient connection errors — base will retry automatically
-    # Server-requested retry delay in seconds.
-    # When present, _send_with_retry() honors this instead of its default backoff.
-    retry_after: Optional[float] = None
-    # When the adapter had to split an oversized payload across multiple
-    # platform messages (e.g. edit_message overflow split-and-deliver),
-    # ``message_id`` is the LAST visible message id (so subsequent edits target
-    # the most recent chunk) and these are the additional message ids that
-    # made up the full payload, in send order.  Empty tuple for the common
-    # single-message case.
-    continuation_message_ids: tuple = ()
-    # Machine-readable failure category (set only when ``success`` is False).
-    # ``error`` stays the human-readable detail string; ``error_kind`` lets
-    # consumers branch deterministically instead of substring-matching the raw
-    # provider message.  One of the values in :data:`SEND_ERROR_KINDS` or
-    # ``None`` (unset / not classified).  Producers should set this via
-    # :func:`classify_send_error`.
-    error_kind: Optional[str] = None
 
 
-# Machine-readable send-failure categories.  Kept platform-neutral so every
-# adapter can populate ``SendResult.error_kind`` from the same vocabulary and
-# the gateway can decide — once, in one place — whether a failure is worth
-# surfacing to the user.
-#
-#   too_long      content exceeded the platform's per-message size cap; the
-#                 adapter typically recovers via continuation/split, so this is
-#                 informational rather than a hard failure.
-#   bad_format    the platform rejected the message markup/entities (parse
-#                 error); a plain-text retry is the actionable fix.
-#   forbidden     the bot is blocked, kicked, or lacks permission to post to the
-#                 target — the bot CANNOT reach the user, so there is nowhere to
-#                 surface a notice.
-#   not_found     the target chat/thread/message no longer exists.
-#   rate_limited  the platform throttled the send (flood control).
-#   transient     a connection-level failure that is safe to retry.
-#   unknown       classification did not match any known shape.
+# Send-failure categories ``classify_send_error`` maps an error onto, so the
+# gateway decides in one place whether a failure means the target is dead:
+# too_long, bad_format, forbidden, not_found, rate_limited, transient, unknown.
 
 # ``not_found`` substrings split by blast radius.  A *chat-level* not_found means
 # the chat/user/group itself is gone, so the whole target is dead.  A
@@ -1824,72 +1205,13 @@ def _strip_media_directives(text: str) -> str:
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.
-    
+
     Subclasses implement platform-specific logic for:
     - Connecting and authenticating
     - Receiving messages
     - Sending messages/responses
     - Handling media
     """
-
-    # Whether this platform renders triple-backtick fenced code blocks (i.e.
-    # ``format_message`` translates/preserves markdown fences into a real code
-    # block).  Capability flag for markdown-aware presentation choices.
-    # Default False (plain-text platforms); markdown-rendering adapters set True.
-    # Tool-progress uses this to render a terminal command as a bare fenced code
-    # block (no language tag — Slack mrkdwn would print the tag as a literal
-    # first code line).  Plain-text platforms fall back to the short truncated
-    # preview (see gateway/run.py progress_callback).
-    supports_code_blocks: bool = False
-
-    # Whether this adapter can deliver an ASYNC notification back to the agent
-    # AFTER a turn ends — i.e. wake a fresh turn to surface a background
-    # process completion (terminal notify_on_complete / watch_patterns) or a
-    # detached subagent result (delegate_task background=True).
-    #
-    # True for adapters that hold a persistent outbound channel
-    # Discord, Slack, ... — they have a real ``send()`` and the gateway runs
-    # the watcher/drain loops). False for stateless request/response adapters
-    # (the API server): every route closes its channel when the turn ends, so
-    # there is nowhere to push a later completion. The gateway propagates this
-    # into the ``SON_OF_ANTON_SESSION_ASYNC_DELIVERY`` contextvar at session-bind
-    # time; tools read it via ``async_delivery_supported()`` and refuse to make
-    # a delivery promise they can't keep. A new stateless adapter only needs to
-    # set this to False to stay correct-by-default.
-    supports_async_delivery: bool = True
-
-    # Whether this adapter's ``send()`` splits long content into multiple
-    # messages via ``truncate_message()``.  When True, the delivery router
-    # (gateway/delivery.py) skips gateway-level truncation and lets the
-    # adapter chunk natively — preserving full output on platforms that
-    # support multi-message delivery (Discord, …).  Default False
-    # (conservative); adapters verified to chunk in ``send()`` set True.
-    splits_long_messages: bool = False
-
-    # The command prefix users can always TYPE on this platform to reach
-    # Son of Anton commands.  Default "/" (most platforms deliver "/approve" etc.
-    # as plain message text).  Platforms where typing a leading "/" is
-    # intercepted or restricted by the client (Slack blocks native slash
-    # commands inside threads; some clients reserve "/" for client-local
-    # commands) ship a "!" alias rewrite in their adapter and set this to
-    # "!" so user-facing instruction text ("Reply `!approve` ...") tells
-    # users the form that actually works everywhere.  Capability flag —
-    # shared prompt builders read it via getattr(adapter,
-    # "typed_command_prefix", "/"); no per-platform branching at call sites.
-    typed_command_prefix: str = "/"
-
-    # Whether a human is interactively present on this platform to answer a
-    # "session restored — what next?" prompt.  The startup auto-resume turn
-    # (``_schedule_resume_pending_sessions`` → the ``_is_resume_pending``
-    # branch in ``_handle_message_with_agent``) reads this to pick its
-    # guidance: interactive platforms (Slack, Discord DMs, …) get
-    # "report the restore and ask what the user wants next"; non-interactive
-    # non-interactive event platforms get "finish the interrupted work" because
-    # nobody is there to answer, and an acknowledgement would silently
-    # abandon the task (#57056).  Read generically via ``getattr(adapter,
-    # "interactive_resume", True)`` — no per-platform branching at the call
-    # site.
-    interactive_resume: bool = True
 
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
@@ -1910,19 +1232,9 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
-        # Busy text follow-ups are debounced so a rapid burst becomes one
-        # queued turn. The runner's busy handler usually claims messages
-        # first; this is the adapter-side fallback when no handler is set.
-        self._busy_text_debounce_seconds: float = _float_env(
-            "SON_OF_ANTON_GATEWAY_BUSY_TEXT_DEBOUNCE_SECONDS", 0.35
-        )
-        self._busy_text_hard_cap_seconds: float = _float_env(
-            "SON_OF_ANTON_GATEWAY_BUSY_TEXT_HARD_CAP_SECONDS", 1.0
-        )
-        self._text_debounce: dict[str, TextDebounceState] = {}
         # Background message-processing tasks spawned by handle_message().
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
-        # working on a task after --replace or manual restarts.
+        # working on a task after a restart.
         self._background_tasks: set[asyncio.Task] = set()
         # One-shot callbacks to fire after the main response is delivered.
         # Keyed by session_key. Values are either a bare callback (legacy) or
@@ -1935,139 +1247,6 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
-
-    @property
-    def message_len_fn(self) -> Callable[[str], int]:
-        """Return the length function for measuring message size on this platform.
-
-        Override in adapters whose platform counts characters differently from
-        Python ``len`` (e.g. platforms counting UTF-16 code units).
-        """
-        return len
-
-    def max_message_length_for_chat(self, chat_id: str) -> int:
-        """Per-chat max message length, in ``message_len_fn_for_chat`` units.
-
-        Default: the adapter-scalar ``MAX_MESSAGE_LENGTH`` (4096 when absent) —
-        for a native adapter every chat lives on the same platform so the
-        scalar is already correct. The relay adapter overrides this: one relay
-        adapter fronts N platforms with different caps (Discord 2000 vs
-        Different platforms have different caps, and the right one depends on which
-        platform the chat's inbound arrived from.
-        """
-        try:
-            return int(getattr(self, "MAX_MESSAGE_LENGTH", 4096) or 4096)
-        except (TypeError, ValueError):
-            return 4096
-
-    def message_len_fn_for_chat(self, chat_id: str) -> Callable[[str], int]:
-        """Per-chat length function (companion to max_message_length_for_chat).
-
-        Default: the adapter-wide ``message_len_fn``. The relay adapter
-        overrides it so a UTF-16-counting chat measures units while a
-        Discord-fronted chat on the same adapter measures codepoints.
-        """
-        return self.message_len_fn
-
-    def supports_draft_streaming(
-        self,
-        chat_type: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        chat_id: Optional[str] = None,
-    ) -> bool:
-        """Whether this adapter supports native streaming-draft updates.
-
-        Some platform APIs introduce draft-style sends, which render an
-        animated streaming preview as the bot calls it repeatedly with the
-        same ``draft_id`` and growing text.  Adapters that implement
-        ``send_draft`` should return True here for the chat types where the
-        platform supports it.
-
-        ``chat_id`` lets multi-platform adapters (relay) resolve the answer
-        through the chat's own negotiated capability profile instead of the
-        primary identity's; single-platform adapters may ignore it.
-
-        Default implementation returns False.  Stream consumers fall back to
-        the edit-based path (``send`` + ``edit_message``) when this returns
-        False or when ``send_draft`` raises.
-        """
-        return False
-
-    def prefers_fresh_final_streaming(
-        self,
-        content: str,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> bool:
-        """Whether the stream consumer should finalize a streamed reply by
-        sending a *fresh* final message (and deleting the preview) instead of
-        final-editing the preview.
-
-        Some adapters can send richer final messages than their current edit
-        implementation supports. Son of Anton sends
-        final replies through ``sendRichMessage`` but still finalizes streamed
-        previews through its existing MarkdownV2 edit path until Bot API 10.1's
-        ``rich_message`` edit parameter is wired directly. Such adapters
-        override this to ask the consumer to re-deliver the completed answer as
-        a new rich message and best-effort delete the stale preview, so the
-        final rendering matches the rich send path.
-
-        Default implementation returns False — legacy platforms keep the
-        edit-in-place finalization path.
-        """
-        return False
-
-    def streaming_overflow_limit(self) -> Optional[int]:
-        """Max single-message length (in this adapter's ``message_len_fn``
-        units) the stream consumer may accumulate before it splits, when the
-        adapter can deliver a larger message than its legacy per-message limit.
-
-        Some platform APIs accept up to 32,768 chars in a
-        single rich-message APIs, far above the
-        legacy MarkdownV2 limit.  Adapters with such a richer send/draft path
-        override this so the consumer doesn't fragment a reply that fits one
-        rich message; the live edit preview is still bound by the platform's
-        edit limit, but the finalized reply (and DM draft preview) is delivered
-        whole.
-
-        Return ``None`` (default) to use ``MAX_MESSAGE_LENGTH``.
-        """
-        return None
-
-    async def send_draft(
-        self,
-        chat_id: str,
-        draft_id: int,
-        content: str,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send or update an animated streaming-draft preview.
-
-        Reuse the same ``draft_id`` (any non-zero int) across consecutive
-        calls within a single response so the platform animates the preview
-        rather than re-creating it.  Different responses must use different
-        ``draft_id`` values within the same chat to avoid animating over a
-        prior bubble.
-
-        Drafts have no message_id and cannot be edited, replied to, or
-        deleted via normal message APIs.  When the response finishes, the
-        caller delivers the final answer as a regular ``send`` and the
-        draft preview clears naturally on the client.
-
-        Default implementation raises NotImplementedError; adapters that
-        also return True from :meth:`supports_draft_streaming` must override.
-        """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not implement send_draft"
-        )
-
-    def format_tool_preview(self, preview: "ToolPreview") -> str:
-        """Apply platform-native formatting to a compact tool preview.
-
-        Most adapters only need the compact text. Rich-text adapters can use
-        the preview's explicit metadata to preserve details such as a URL that
-        was shortened for display.
-        """
-        return preview.text
 
     @property
     def has_fatal_error(self) -> bool:
@@ -2096,22 +1275,13 @@ class BasePlatformAdapter(ABC):
         """Write runtime status; log first failure per context at warning, rest at debug.
 
         Status writes can fail on permissions, ENOSPC, missing status dir, etc.
-        A persistently failing status dir used to be silent (``except: pass``).
         Logging every failure would spam the log on reconnect loops, so this
         surfaces the first failure per (platform, context) at warning level and
         downgrades subsequent failures to debug.
         """
         try:
             from gateway.status import write_runtime_status
-            # Multiplexed secondary adapters share the process-level runtime
-            # status file with the primary adapter.  Their runner stamps a
-            # namespaced key (``<profile>:<platform>``) so one profile's fatal
-            # state cannot overwrite another profile's healthy entry.
-            platform_key = (
-                getattr(self, "_runtime_status_platform_key", None)
-                or self.platform.value
-            )
-            write_runtime_status(platform=platform_key, **kwargs)
+            write_runtime_status(platform=self.platform.value, **kwargs)
         except Exception as exc:
             # Use getattr so object.__new__(...) test harnesses that skip __init__
             # don't blow up on attribute access.
@@ -2145,10 +1315,9 @@ class BasePlatformAdapter(ABC):
             return True
 
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None
-        # OOF-3: scoped locks are machine-global, so the holder is often a
-        # gateway serving a different SON_OF_ANTON_HOME — with one service per
-        # account that is the normal case. A bare PID gives an operator no way
-        # to tell WHICH gateway owns the credential — name its home when we can.
+        # Scoped locks are machine-global, so the holder is often a gateway
+        # serving a different SON_OF_ANTON_HOME. A bare PID gives an operator no
+        # way to tell WHICH gateway owns the credential — name its home when we can.
         owner_profile = scoped_lock_owner_label(existing)
         if owner_profile:
             holder = f" by the gateway for {owner_profile}"
@@ -2190,22 +1359,15 @@ class BasePlatformAdapter(ABC):
         self._busy_session_handler = handler
 
     def set_session_store(self, session_store: Any) -> None:
-        """
-        Set the session store for checking active sessions.
-        
-        Used by adapters that need to check if a thread/conversation
-        has an active session before processing messages (e.g., Slack
-        thread replies without explicit mentions).
-        """
+        """Set the session store used to dedup re-delivered media paths."""
         self._session_store = session_store
 
     def _history_media_paths_for_session(self, session_key: str) -> Optional[set]:
         """Return media paths already delivered in prior turns of this session.
 
-        Loads the persisted transcript, drops the most recent assistant entry
-        (which belongs to the current response), and scans the remaining history
-        for MEDIA: tags and image_generate JSON payloads.  Used to prevent the
-        model from re-delivering the same file when it echoes an old MEDIA tag.
+        Loads the persisted transcript, drops the current turn, and scans the
+        remaining history for MEDIA: tags. Used to prevent the model from
+        re-delivering the same file when it echoes an old MEDIA tag.
         """
         store = getattr(self, "_session_store", None)
         if not store:
@@ -2226,12 +1388,8 @@ class BasePlatformAdapter(ABC):
         # Exclude the CURRENT TURN entirely — everything from the last user
         # message onward. The agent persists rows as it produces them, so by
         # delivery time the transcript already contains this turn's tool
-        # results and assistant reply. The old form dropped only the most
-        # recent assistant entry, which left THIS turn's tool results in
-        # "history": a text_to_speech result carrying media_tag then put its
-        # own path into the dedup set and delivery silently stripped the
-        # attachment (staging repro 2026-07-29 — `response_delivery_dropped`
-        # for a MEDIA-tag-only reply; user saw TTS produce no audio).
+        # results and assistant reply, whose paths must not suppress their own
+        # delivery.
         history = list(transcript)
         last_user_idx = None
         for i in range(len(history) - 1, -1, -1):
@@ -2345,21 +1503,10 @@ class BasePlatformAdapter(ABC):
 
     @abstractmethod
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """
-        Connect to the platform and start receiving messages.
+        """Connect to the platform and start receiving messages.
 
-        Args:
-            is_reconnect: False on a cold first boot (the gateway is
-                starting this platform for the first time); True when the
-                reconnect watcher is re-establishing a platform that was
-                previously running and dropped after an outage. Adapters
-                that buffer a server-side update queue
-                API) should preserve that queue when ``is_reconnect`` is
-                True so messages sent during the outage are delivered rather
-                than silently discarded. Adapters with no such queue may
-                ignore the flag.
-
-        Returns True if connection was successful.
+        ``is_reconnect`` is True when the reconnect watcher re-establishes a
+        platform that dropped after an outage. Returns True on success.
         """
         pass
     
@@ -2390,64 +1537,6 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
-    # Default: the adapter treats ``finalize=True`` on edit_message as a
-    # no-op and is happy to have the stream consumer skip redundant final
-    # edits.  Subclasses that *require* an explicit finalize call to close
-    # out the message lifecycle (e.g. rich card / AI assistant surfaces
-    # such as rich AI-card surfaces) override this to True (class attribute or
-    # property) so the stream consumer knows not to short-circuit.
-    REQUIRES_EDIT_FINALIZE: bool = False
-
-    async def edit_message(
-        self,
-        chat_id: str,
-        message_id: str,
-        content: str,
-        *,
-        finalize: bool = False,
-    ) -> SendResult:
-        """
-        Edit a previously sent message. Optional — platforms that don't
-        support editing return success=False and callers fall back to
-        sending a new message.
-
-        ``finalize`` signals that this is the last edit in a streaming
-        sequence.  Most platforms (Slack, Discord,
-        etc.) treat it as a no-op because their edit APIs have no notion
-        of message lifecycle state — an edit is an edit.  Platforms that
-        render streaming updates with a distinct "in progress" state and
-        require explicit closure (e.g. rich card / AI assistant surfaces
-        such as rich AI-card surfaces) use it to finalize the message and
-        transition the UI out of the streaming indicator — those should
-        also set ``REQUIRES_EDIT_FINALIZE = True`` so callers route a
-        final edit through even when content is unchanged.  Callers
-        should set ``finalize=True`` on the final edit of a streamed
-        response (typically when ``got_done`` fires in the stream
-        consumer) and leave it ``False`` on intermediate edits.
-        """
-        return SendResult(success=False, error="Not supported")
-
-    async def delete_message(
-        self,
-        chat_id: str,
-        message_id: str,
-    ) -> bool:
-        """
-        Delete a previously sent message.  Optional — platforms that don't
-        support deletion return ``False`` and callers fall back to leaving
-        the message in place.
-
-        Used by the stream consumer's fresh-final cleanup path (see
-        openclaw/openclaw#72038) to remove long-lived preview messages
-        after sending the completed reply as a fresh message so the
-        platform's visible timestamp reflects completion time.
-
-        Returns ``True`` on successful deletion, ``False`` otherwise.
-        Subclasses should override for platforms with a deletion API
-        (e.g. platform ``deleteMessage``).
-        """
-        return False
-
     async def send_slash_confirm(
         self,
         chat_id: str,
@@ -2457,29 +1546,11 @@ class BasePlatformAdapter(ABC):
         confirm_id: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a three-option slash-command confirmation prompt.
+        """Send a button slash-command confirmation prompt.
 
-        Used by the gateway's generic slash-confirm primitive (see
-        ``GatewayRunner._request_slash_confirm``) for commands that have a
-        non-destructive but expensive side effect the user should explicitly
-        acknowledge — the current caller is ``/reload-mcp``, which
-        invalidates the provider prompt cache.
-
-        Platforms with inline-button support (Discord, Slack)
-        should override this to render three buttons:
-        Approve Once / Always Approve / Cancel.  Button callbacks MUST be
-        routed back through the gateway by calling
-        ``GatewayRunner._resolve_slash_confirm(confirm_id, choice)`` where
-        ``choice`` is ``"once"`` / ``"always"`` / ``"cancel"``.
-
-        Platforms without button UIs leave this as the default and fall
-        through to the gateway's text fallback (which sends ``message`` as
-        plain text and intercepts the next ``/approve`` / ``/always`` /
-        ``/cancel`` reply).
-
-        ``confirm_id`` is a short string generated by the gateway; the
-        adapter stores it alongside any platform-specific state needed to
-        route the callback (e.g. the platform's ``_approval_state`` dict).
+        Signal has no buttons, so this reports "Not supported" and the gateway
+        falls back to its text prompt (see
+        ``GatewayRunner._request_slash_confirm``).
         """
         return SendResult(success=False, error="Not supported")
 
@@ -2492,34 +1563,12 @@ class BasePlatformAdapter(ABC):
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a clarify prompt to the user.
+        """Send a clarify prompt to the user as text.
 
-        Two render modes:
-
-          * **Multiple choice** (``choices`` is a non-empty list) — adapters
-            that override this should render inline buttons (one per choice
-            plus a final "Other" / free-text option).  Button callbacks
-            MUST resolve via
-            ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``
-            with the chosen string.  Picking the "Other" button calls
-            ``mark_awaiting_text(clarify_id)`` so the next message in the
-            session is captured as the response.
-
-          * **Open-ended** (``choices`` is None or empty) — render the
-            question as a plain text message; the next user message in the
-            session is captured by the gateway's text-intercept and
-            resolves the clarify automatically (see
-            ``GatewayRunner._maybe_intercept_clarify_text``).
-
-        The default implementation falls back to a numbered text list,
-        which works on every platform — the user replies with a number
-        ("2") or with the literal choice text, and the gateway intercepts
-        and resolves.  For the text fallback path, the default calls
-        ``mark_awaiting_text()`` so that the gateway text-intercept
-        (:meth:`GatewayRunner._maybe_intercept_clarify_text`) catches the
-        user's reply instead of timing out.
-        Adapters with native button UIs (Discord) SHOULD
-        override this for a richer UX.
+        Multiple choice renders a numbered list and calls
+        ``mark_awaiting_text()`` so the gateway's text-intercept captures the
+        typed reply ("2" or the choice text); an open-ended question is sent as
+        plain text and the next message in the session answers it.
         """
         if choices:
             # Multi-select clarifies register their flag on the pending entry;
@@ -2558,44 +1607,13 @@ class BasePlatformAdapter(ABC):
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """
-        Send a typing indicator.
-        
-        Override in subclasses if the platform supports it.
-        metadata: optional dict with platform-specific context (e.g. thread_id for Slack).
-        """
-        pass
+        """Send a typing indicator."""
 
     async def stop_typing(self, chat_id: str) -> None:
-        """Stop a persistent typing indicator (if the platform uses one).
-
-        Override in subclasses that start background typing loops.
-        Default is a no-op for platforms with one-shot typing indicators.
-        """
-        pass
+        """Stop a typing indicator."""
 
     async def _stop_typing_with_metadata(self, chat_id: str, metadata=None) -> None:
-        """Stop typing while preserving platform-specific routing metadata.
-
-        Most adapters key typing state by chat and retain the historical
-        ``stop_typing(chat_id)`` signature. Slack AI status is per thread and
-        workspace, however, so losing metadata can clear a sibling thread or
-        leave the current one active. Introspect at this shared chokepoint so
-        existing adapters remain source-compatible.
-        """
-        if metadata:
-            try:
-                params = inspect.signature(self.stop_typing).parameters
-                accepts_metadata = "metadata" in params or any(
-                    param.kind is inspect.Parameter.VAR_KEYWORD
-                    for param in params.values()
-                )
-            except (TypeError, ValueError):
-                accepts_metadata = False
-            if accepts_metadata:
-                stop_typing = getattr(self, "stop_typing")
-                await stop_typing(chat_id, metadata=metadata)
-                return
+        """Stop typing; Signal keys typing state by chat, so metadata is unused."""
         await self.stop_typing(chat_id)
 
     @staticmethod
