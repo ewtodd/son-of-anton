@@ -71,7 +71,7 @@ let
       inherit uv2nix pyproject-nix pyproject-build-systems pythonSrc dependency-groups;
     };
 
-  sonOfAntonVenv = (mkSonOfAntonVenv [ "all" ]).venv;
+  sonOfAntonVenv = (mkSonOfAntonVenv [ ]).venv;
 
   bundledLocales = lib.cleanSourceWith {
     src = ../locales;
@@ -125,7 +125,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   passthru =
     let
-      devPython = (mkSonOfAntonVenv [ "all" "dev" ]).editableVenv;
+      devPython = (mkSonOfAntonVenv [ "dev" ]).editableVenv;
     in
     {
       inherit sonOfAntonVenv;

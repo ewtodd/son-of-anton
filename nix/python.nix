@@ -9,7 +9,7 @@
   # Filtered Python source (see son-of-anton.nix pythonSrc) — keeps
   # nix/ edits from invalidating the venv derivation.
   pythonSrc,
-  dependency-groups ? [ "all" ],
+  dependency-groups ? [ ],
 }:
 let
   workspace = uv2nix.lib.workspace.loadWorkspace { workspaceRoot = pythonSrc; };
