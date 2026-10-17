@@ -4,7 +4,6 @@ Session management for the gateway.
 Handles:
 - Session context tracking (where messages come from)
 - Session storage (conversations persisted to disk)
-- Reset policy evaluation (when to start fresh)
 - Dynamic system prompt injection (agent knows its context)
 """
 
@@ -87,7 +86,6 @@ def _hash_chat_id(value: str) -> str:
 from .config import (
     Platform,
     GatewayConfig,
-    SessionResetPolicy,  # noqa: F401 — re-exported via gateway/__init__.py
     HomeChannel,
 )
 from utils import atomic_replace
@@ -867,12 +865,6 @@ class SessionStore:
         self._transcript_append_failures: Dict[str, int] = {}
         self._fts_rebuild_attempted = False
         self._has_active_processes_fn = has_active_processes_fn
-        # Whether to keep writing the legacy sessions.json mirror alongside
-        # the primary gateway_routing table in state.db. Default True for
-        # backward compatibility; disable via gateway.write_sessions_json.
-        self._write_sessions_json = bool(
-            getattr(config, "write_sessions_json", True)
-        )
         
         # Initialize SQLite session database.
         #
@@ -1244,19 +1236,18 @@ class SessionStore:
                         logger.warning(
                             "gateway.session: state.db routing save failed: %s", exc
                         )
-            if getattr(self, "_write_sessions_json", True) or not db_saved:
-                try:
-                    self._save_sessions_json(data)
-                except Exception as exc:
-                    if not db_saved:
-                        raise
-                    # state.db is authoritative. A failed legacy mirror must not
-                    # report the already-committed primary write as failed.
-                    logger.warning(
-                        "gateway.session: sessions.json mirror save failed "
-                        "after state.db commit: %s",
-                        exc,
-                    )
+            try:
+                self._save_sessions_json(data)
+            except Exception as exc:
+                if not db_saved:
+                    raise
+                # state.db is authoritative. A failed legacy mirror must not
+                # report the already-committed primary write as failed.
+                logger.warning(
+                    "gateway.session: sessions.json mirror save failed "
+                    "after state.db commit: %s",
+                    exc,
+                )
             self._persisted_routing_generation = generation
             # This rewrite supersedes fast records at or below its
             # generation; newer ones stay for the next delayed full writer.
@@ -1285,9 +1276,7 @@ class SessionStore:
                 "Maps messaging session keys (agent:main:<platform>:...) to "
                 "active session IDs. This is NOT the session list. ALL "
                 "sessions (CLI, TUI, and gateway) live in ~/.son-of-anton/state.db "
-                "and are shown by `son-of-anton sessions list` and `/sessions`. "
-                "Disable this file with `gateway.write_sessions_json: false` "
-                "in config.toml."
+                "and are shown by `son-of-anton sessions list` and `/sessions`."
             ),
             **data,
         }
@@ -1530,10 +1519,7 @@ class SessionStore:
     ) -> Optional[SessionEntry]:
         """Rebuild a missing session-key mapping from durable state.db data.
 
-        Returns ``None`` when no row is recoverable, or when the recovered
-        session is already overdue under the configured reset policy — the
-        row is then durably promoted to a reset boundary instead of being
-        resurrected as freshly active.
+        Returns ``None`` when no row is recoverable.
         """
         recovered = self._find_gateway_session_row(
             session_key=session_key,
@@ -1549,21 +1535,6 @@ class SessionStore:
             source=source,
             now=now,
         )
-        reset_reason = self._should_reset(entry, source)
-        if reset_reason:
-            try:
-                promote = getattr(self._db, "promote_to_session_reset", None)
-                if callable(promote):
-                    promote(entry.session_id, reset_reason)
-                else:
-                    self._db.end_session(entry.session_id, reset_reason)
-            except Exception as exc:
-                logger.debug(
-                    "Gateway recovered-session reset promotion failed for %s: %s",
-                    session_key,
-                    exc,
-                )
-            return None
         try:
             self._db.reopen_session(entry.session_id)
         except Exception as exc:
@@ -1575,9 +1546,8 @@ class SessionStore:
     ):
         """DB-only half of _recover_session_from_db (no lock needed).
 
-        Returns a SessionEntry or None.  Caller assigns _entries[key] under lock.
-        The returned entry's session row is NOT reopened here: the caller
-        evaluates the reset policy first and decides reset vs resume.
+        Returns a SessionEntry or None.  Caller assigns _entries[key] under lock
+        and reopens the session row.
         """
         recovered = self._find_gateway_session_row(
             session_key=session_key,
@@ -1586,9 +1556,6 @@ class SessionStore:
         )
         if not isinstance(recovered, dict):
             return None
-        # Reopen only after the caller evaluates reset policy against durable
-        # last activity.  An agent_close/ws_orphan row may need promotion to a
-        # real reset boundary instead.
         entry = self._create_entry_from_recovered_row(
             row=recovered, session_key=session_key, source=source, now=now,
         )
@@ -1643,125 +1610,6 @@ class SessionStore:
         except Exception as exc:
             logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
 
-    def set_expiry_finalized(
-        self, entry: SessionEntry, *, clear_model_override: bool = True
-    ) -> None:
-        """Mark a session entry expiry-finalized in memory, sessions.json, AND state.db.
-
-        Single write-path for the expiry watcher (#9006): keeps the durable
-        state.db flag in sync with the JSON routing index so the flag
-        survives sessions.json pruning/loss.
-
-        ``clear_model_override=False`` preserves the give-up path's original
-        behavior (flag only, no override drop).
-        """
-        with self._lock:
-            entry.expiry_finalized = True
-            if clear_model_override:
-                # Session finalization is a conversation boundary — drop the
-                # persisted /model override too so a later message doesn't
-                # rehydrate it after the in-memory override was popped.
-                entry.model_override = None
-            self._save()
-        if self._db:
-            setter = getattr(self._db, "set_expiry_finalized", None)
-            if callable(setter):
-                try:
-                    setter(entry.session_id, True)
-                except Exception as exc:
-                    logger.debug(
-                        "Session DB expiry_finalized write failed for %s: %s",
-                        entry.session_id, exc,
-                    )
-            try:
-                # Expiry finalization is a real conversation boundary. Without
-                # a durable ``session_reset`` end_reason, later agent cleanup can
-                # close the row as ``agent_close``; stale-route recovery treats
-                # that as resumable and resurrects the expired full history.
-                #
-                # promote_to_session_reset is conditional: it only promotes
-                # live rows or rows ended with ``agent_close``.  Explicit
-                # boundaries (compaction, session_reset, new_command, etc.)
-                # are preserved — the first writer wins.
-                self._db.promote_to_session_reset(entry.session_id)
-            except Exception as exc:
-                logger.debug(
-                    "Session DB promote_to_session_reset failed for %s: %s",
-                    entry.session_id, exc,
-                )
-    
-    def _is_session_expired(self, entry: SessionEntry) -> bool:
-        """Check if a session has expired based on its reset policy.
-        
-        Works from the entry alone — no SessionSource needed.
-        Used by the background expiry watcher to proactively flush memories.
-        Sessions with active background processes are never considered expired.
-        """
-        if self._has_active_processes_safe(entry.session_key, context="expiry"):
-            logger.debug(
-                "Session %s not expired — active background processes",
-                entry.session_key,
-            )
-            return False
-
-        policy = self.config.get_reset_policy(
-            platform=entry.platform,
-            session_type=entry.chat_type,
-        )
-
-        if policy.mode == "none":
-            return False
-
-        now = _now()
-
-        if policy.mode in {"idle", "both"}:
-            idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
-            if now > idle_deadline:
-                return True
-
-        if policy.mode in {"daily", "both"}:
-            today_reset = now.replace(
-                hour=policy.at_hour,
-                minute=0, second=0, microsecond=0,
-            )
-            if now.hour < policy.at_hour:
-                today_reset -= timedelta(days=1)
-            if entry.updated_at < today_reset:
-                return True
-
-        return False
-
-    def is_session_finalizable(self, entry: SessionEntry) -> bool:
-        """Return True if the expiry watcher will *ever* finalize this session.
-
-        The expiry watcher (``GatewayRunner._session_expiry_watcher``) only
-        tears an agent down — and only then fires ``on_session_end`` — for
-        sessions whose reset policy eventually expires. A ``mode == "none"``
-        session never expires (``_is_session_expired`` returns ``False``
-        forever), so the watcher will never finalize it.
-
-        This distinction matters for the agent-cache idle sweep: deferring
-        idle eviction to "let the watcher finalize it later" is only correct
-        when the watcher WILL run for this session. For a ``mode == "none"``
-        session, deferring pins the cached agent in memory for the gateway's
-        entire lifetime with no finalization ever coming — the exact leak the
-        idle sweep exists to relieve. Callers use this predicate to decide
-        whether the session store owns the eviction boundary (finalizable) or
-        the idle sweep must still reap the agent itself (not finalizable).
-
-        Public wrapper so callers don't reach into policy internals. Errors
-        resolving the policy are treated as "not finalizable" (safe: the idle
-        sweep falls back to reaping the agent rather than pinning it).
-        """
-        try:
-            policy = self.config.get_reset_policy(
-                platform=entry.platform,
-                session_type=entry.chat_type,
-            )
-            return policy.mode != "none"
-        except Exception:
-            return False
-
     def _is_session_ended_in_db(self, session_id: str) -> bool:
         """Return True iff state.db has this session with a non-null end_reason.
 
@@ -1788,53 +1636,6 @@ class SessionStore:
             return False
         return bool(row is not None and row.get("end_reason") is not None)
 
-    def _should_reset(self, entry: SessionEntry, source: SessionSource) -> Optional[str]:
-        """
-        Check if a session should be reset based on policy.
-        
-        Returns the reset reason ("idle" or "daily") if a reset is needed,
-        or None if the session is still valid.
-        
-        Sessions with active background processes are never reset.
-        """
-        session_key = self._generate_session_key(source)
-        if self._has_active_processes_safe(session_key, context="reset"):
-            logger.debug(
-                "Session reset skipped for %s — active background processes",
-                session_key,
-            )
-            return None
-
-        policy = self.config.get_reset_policy(
-            platform=source.platform,
-            session_type=source.chat_type
-        )
-        
-        if policy.mode == "none":
-            return None
-        
-        now = _now()
-        
-        if policy.mode in {"idle", "both"}:
-            idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
-            if now > idle_deadline:
-                return "idle"
-        
-        if policy.mode in {"daily", "both"}:
-            today_reset = now.replace(
-                hour=policy.at_hour, 
-                minute=0, 
-                second=0, 
-                microsecond=0
-            )
-            if now.hour < policy.at_hour:
-                today_reset -= timedelta(days=1)
-            
-            if entry.updated_at < today_reset:
-                return "daily"
-        
-        return None
-    
     def _compaction_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
         """Return the latest compaction continuation for *session_id*.
 
@@ -1910,8 +1711,8 @@ class SessionStore:
         Calls for different keys remain concurrent. Overlapping calls for the
         same key share the owner's result, including concurrent ``force_new``
         deliveries, so only one routing transition and SQLite row is created.
-        ``touch_activity=False`` still evaluates reset policy but preserves the
-        prior user-activity clock when an internal/system event reuses a session.
+        ``touch_activity=False`` preserves the prior user-activity clock when
+        an internal/system event reuses a session.
         """
         session_key = self._generate_session_key(source)
         inflight_lock = getattr(self, "_inflight_lock", None)
@@ -2000,36 +1801,16 @@ class SessionStore:
                 _entry_for_checks = self._entries[session_key]
                 _stale_session_id = _entry_for_checks.session_id
 
-        # ---- Phase 1b: no-lock I/O -- stale check + reset policy ----
+        # ---- Phase 1b: no-lock I/O -- stale check ----
+        # Sessions never reset on a timer; only a suspended entry starts
+        # fresh. An expired resume marker falls through to a normal resume of
+        # the preserved transcript, never a silent fresh session (#61052).
         _is_stale = False
         _reset_reason = None
         if _entry_for_checks is not None and _stale_session_id is not None:
             _is_stale = self._is_session_ended_in_db(_stale_session_id)
             if _entry_for_checks.suspended:
                 _reset_reason = "suspended"
-            elif _entry_for_checks.resume_pending:
-                _reset_reason = self._should_reset(_entry_for_checks, source)
-                if not _reset_reason:
-                    # Freshness-gate stale resume_pending zombies (#46934) —
-                    # but honor an explicit ``session_reset.mode: none``: the
-                    # user opted out of ALL automatic resets, so an expired
-                    # resume marker must fall through to a normal resume of
-                    # the preserved transcript, never a silent fresh session
-                    # (#61052).
-                    _policy = self.config.get_reset_policy(
-                        platform=source.platform,
-                        session_type=source.chat_type,
-                    )
-                    if _policy.mode != "none":
-                        _fw = auto_continue_freshness_window()
-                        _ref_time = (
-                            _entry_for_checks.last_resume_marked_at
-                            or _entry_for_checks.updated_at
-                        )
-                        if _fw > 0 and (now - _ref_time).total_seconds() > _fw:
-                            _reset_reason = "resume_pending_expired"
-            else:
-                _reset_reason = self._should_reset(_entry_for_checks, source)
 
         # ---- Phase 2: lock write -- apply decisions to _entries ----
         _needs_save = False
@@ -2073,9 +1854,8 @@ class SessionStore:
                         session_key, entry.session_id,
                     )
                     self._entries.pop(session_key, None)
-                    # If an expiry watcher (daily/idle reset) already finalized
-                    # this session, honour the reset decision instead of silently
-                    # reopening it via recovery.
+                    # A suspended entry keeps its reset decision instead of
+                    # being silently reopened via recovery.
                     if _reset_reason:
                         was_auto_reset = True
                         auto_reset_reason = _reset_reason
@@ -2087,7 +1867,7 @@ class SessionStore:
                 elif entry.session_id != _stale_session_id:
                     # Another thread handled this entry during our lock-free
                     # window. Treat as healthy; internal/system events preserve
-                    # the prior user-activity clock used by reset policy.
+                    # the prior user-activity clock.
                     if touch_activity:
                         entry.updated_at = now
                     _needs_save = touch_activity or _healed
@@ -2118,29 +1898,21 @@ class SessionStore:
                 session_key=session_key, source=source, now=now,
             )
             if recovered is not None:
-                recovered_reset_reason = self._should_reset(recovered, source)
-                if recovered_reset_reason:
-                    was_auto_reset = True
-                    auto_reset_reason = recovered_reset_reason
-                    reset_had_activity = recovered.reset_had_activity
-                    db_end_session_id = recovered.session_id
-                    prev_session_id = recovered.session_id
-                else:
-                    try:
-                        self._db.reopen_session(recovered.session_id)
-                    except Exception as exc:
-                        logger.debug(
-                            "Gateway session DB reopen failed for %s: %s",
-                            session_key,
-                            exc,
-                        )
-                    with self._lock:
-                        published = self._entries.get(session_key)
-                        if published is None:
-                            self._entries[session_key] = recovered
-                            published = recovered
-                    entry = published
-                    _needs_save = True
+                try:
+                    self._db.reopen_session(recovered.session_id)
+                except Exception as exc:
+                    logger.debug(
+                        "Gateway session DB reopen failed for %s: %s",
+                        session_key,
+                        exc,
+                    )
+                with self._lock:
+                    published = self._entries.get(session_key)
+                    if published is None:
+                        self._entries[session_key] = recovered
+                        published = recovered
+                entry = published
+                _needs_save = True
 
         if entry is None:
             # Create a candidate outside the lock, then publish only if another
@@ -2208,9 +1980,7 @@ class SessionStore:
 
         # SQLite operations outside the lock (unchanged).
         if self._db and db_end_session_id:
-            # Use the specific reset reason so state.db is auditable (e.g.
-            # "resume_pending_expired" is distinguishable from a normal
-            # "session_reset" caused by idle/daily expiry).
+            # Use the specific reset reason so state.db is auditable.
             _db_end_reason = auto_reset_reason if auto_reset_reason else "session_reset"
             try:
                 # promote_to_session_reset, not end_session: the row may
@@ -2266,7 +2036,7 @@ class SessionStore:
         """Update lightweight session metadata after an interaction.
 
         Internal/system turns can persist token metadata without advancing the
-        user-activity clock that drives idle and daily reset policy.
+        user-activity clock.
         """
         with self._lock:
             self._ensure_loaded_locked()
@@ -2322,9 +2092,8 @@ class SessionStore:
 
         Metadata writes are internal bookkeeping and deliberately do NOT
         advance ``updated_at``: it is the user-activity clock that drives
-        idle/daily reset policy and the restart-resume freshness gate
-        (#85709), and a background write must not make an idle session look
-        fresh.
+        the restart-resume freshness gate (#85709), and a background write
+        must not make an idle session look fresh.
         """
         with self._lock:
             self._ensure_loaded_locked()
@@ -2774,8 +2543,8 @@ class SessionStore:
                 return None
             # Compaction repoint is store bookkeeping, not user activity —
             # leave ``updated_at`` alone so a background compaction on an
-            # idle session cannot make it look fresh to reset policy or the
-            # restart-resume freshness gate (#85709).
+            # idle session cannot make it look fresh to the restart-resume
+            # freshness gate (#85709).
             self._save()
             return entry
 
