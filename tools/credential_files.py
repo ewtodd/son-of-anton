@@ -110,8 +110,6 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/images", "image_cache"),
     ("cache/audio", "audio_cache"),
     ("cache/videos", "video_cache"),
-    ("cache/screenshots", "browser_screenshots"),
-    ("cache/web", "web_cache"),
     ("cache/delegation", "delegation_cache"),
     # Oversized tool results (tools/tool_result_storage.py). Host-side is the
     # single canonical location; mounting/syncing it lets remote backends

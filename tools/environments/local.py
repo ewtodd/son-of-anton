@@ -177,9 +177,6 @@ def _build_provider_env_blocklist() -> frozenset:
         "FIREWORKS_API_KEY",
         "XAI_API_KEY",
         "HELICONE_API_KEY",
-        "PARALLEL_API_KEY",
-        "FIRECRAWL_API_KEY",
-        "FIRECRAWL_API_URL",
         "TELEGRAM_HOME_CHANNEL",
         "TELEGRAM_HOME_CHANNEL_NAME",
         "DISCORD_HOME_CHANNEL",
@@ -499,8 +496,7 @@ def son_of_anton_subprocess_env(*, inherit_credentials: bool = False) -> dict[st
     flag is grep-able for audit: ``grep -rn 'inherit_credentials=True'`` lists
     every spawn site that still receives provider credentials.
 
-    Callers that need a *specific* non-provider secret (e.g. the browser worker
-    needs ``BROWSERBASE_API_KEY`` / ``FIRECRAWL_API_KEY``) should call with
+    Callers that need a *specific* non-provider secret should call with
     ``inherit_credentials=False`` and copy just those keys back from
     ``os.environ`` into the returned dict.
     """

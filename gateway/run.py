@@ -6171,7 +6171,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
     _cron_drain_timeout: float = DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
-    _external_drain_active: bool = False
     _restart_requested: bool = False
     _restart_task_started: bool = False
     _restart_detached: bool = False
@@ -6323,16 +6322,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         self._exit_code: Optional[int] = None
         self._draining = False
         self._systemd_watchdog = None
-        # External (NAS-driven) drain state — distinct from the shutdown
-        # ``_draining`` flag above. Set by ``_drain_control_watcher`` when the
-        # ``.drain_request.json`` marker is present: the gateway flips
-        # ``gateway_state -> draining`` and refuses NEW turns, but the process
-        # does NOT exit (the whole point — quiesce-without-restart, D4a). It is
-        # fully reversible: removing the marker reverts to ``running`` and
-        # re-accepts turns. ``_draining`` (shutdown) is one-way and ends in
-        # process exit; this one is a steady state NAS polls during its
-        # request -> poll -> proceed loop.
-        self._external_drain_active = False
         self._restart_requested = False
         # Set by shutdown_signal_handler when a SIGTERM/SIGINT arrived
         # WITHOUT a planned-stop / takeover marker — i.e. an unexpected
@@ -7992,92 +7981,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         except Exception:
             pass
 
-    # ------------------------------------------------------------------
-    # External drain control (NAS-driven quiesce-without-restart, Phase 2).
-    # The dashboard's begin/cancel-drain endpoint writes/removes the
-    # ``.drain_request.json`` marker (gateway/drain_control.py); this watcher
-    # observes the marker and flips the gateway between accepting and refusing
-    # NEW turns, WITHOUT exiting the process. Reversible by design (D4a): NAS
-    # POSTs begin-drain, polls /api/status until active_agents hits 0, proceeds
-    # with its lifecycle action, then (on cancel/abort) the marker is removed
-    # and the gateway re-accepts turns.
-    # ------------------------------------------------------------------
-    def _enter_external_drain(self) -> None:
-        """Begin external drain: stop accepting new turns, flip state.
-
-        Idempotent — re-entering while already draining is a no-op beyond a
-        best-effort status re-write. In-flight turns are NOT interrupted (the
-        whole point is to let them finish); only NEW turns are refused.
-        """
-        if self._external_drain_active:
-            return
-        self._external_drain_active = True
-        logger.info(
-            "External drain ENGAGED (.drain_request.json present) — refusing "
-            "new turns; %d in-flight turn(s) will finish. Process stays up.",
-            self._active_work_count(),
-        )
-        # Flip the persisted lifecycle state so /api/status.gateway_busy /
-        # gateway_drainable track the drain. Preserve active_agents (the
-        # read-merge keeps the live count); only the state changes.
-        self._update_runtime_status("draining")
-
-    def _exit_external_drain(self) -> None:
-        """Cancel external drain: revert state, re-accept new turns.
-
-        Idempotent. Only reverts to ``running`` when we are actually mid-drain
-        AND not also shutting down (a real shutdown ``_draining`` must win —
-        never resurrect a stopping gateway to ``running``).
-        """
-        if not self._external_drain_active:
-            return
-        self._external_drain_active = False
-        if self._draining or not self._running:
-            # A shutdown drain is in progress / the loop has stopped — do not
-            # clobber the terminal state back to running.
-            logger.info(
-                "External drain marker cleared during shutdown — not reverting "
-                "to running (shutdown takes precedence)."
-            )
-            return
-        logger.info(
-            "External drain RELEASED (.drain_request.json removed) — "
-            "re-accepting new turns; gateway_state -> running."
-        )
-        self._update_runtime_status("running")
-
-    async def _drain_control_watcher(self, interval: float = 1.0) -> None:
-        """Background task: reconcile gateway accept-state with the drain marker.
-
-        Polls ``.drain_request.json`` (presence-based contract,
-        gateway/drain_control.py). Marker present -> ``_enter_external_drain``;
-        marker absent -> ``_exit_external_drain``. The 1s cadence bounds the
-        observe-the-marker latency the live-validation gate checks (point a).
-        Reconciles once at startup. A marker stamped with a PRIOR
-        instantiation epoch (one that survived a machine restart on the durable
-        SON_OF_ANTON_HOME volume — NS-570) is treated as absent by ``drain_requested``
-        and is NOT honoured; only a marker from the current instantiation flips
-        the gateway into drain. Best-effort: any tick error is logged and the
-        loop continues (a transient stat() failure must not wedge the gateway).
-        """
-        from gateway.drain_control import drain_requested
-
-        while self._running:
-            try:
-                if drain_requested():
-                    self._enter_external_drain()
-                    # API and cron work live outside messaging's
-                    # _running_agents map. Refresh the aggregate while an
-                    # external caller polls this reversible drain state.
-                    self._persist_active_agents()
-                else:
-                    self._exit_external_drain()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.debug("Drain-control watcher tick error: %s", exc, exc_info=True)
-            await asyncio.sleep(interval)
-
     def _update_platform_runtime_status(
         self,
         platform: str,
@@ -9262,32 +9165,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         if self._restart_requested and restart_source is not None:
             logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
             return
-
-        # Suppress ONLY the home-channel broadcast when the drain that is ending
-        # in this shutdown asked us to be quiet (e.g. a NAS auto-update image
-        # migration — drain-gated, then the machine is recreated). On the
-        # always-on Son of Anton Cloud fleet that broadcast would otherwise fire on
-        # every routine auto-update, spamming home channels with operator-
-        # flavoured "gateway shutting down" pings the user doesn't care about.
-        # The per-active-session interrupt pings above are deliberately NOT
-        # gated: on a drained shutdown they're empty by construction, and in the
-        # force-interrupt (deadline-exceeded) case they carry the genuinely
-        # useful "your task was cut off, message me to resume" hint. The flag is
-        # only honoured for a CURRENT-epoch marker (drain_notification_suppressed
-        # reuses the NS-570 staleness check), so an orphaned marker can never
-        # silence a fresh gateway's legitimate broadcast.
-        try:
-            from gateway.drain_control import drain_notification_suppressed
-            if drain_notification_suppressed():
-                logger.info(
-                    "Home-channel shutdown broadcast suppressed by drain marker "
-                    "(suppress_notification=true)"
-                )
-                return
-        except Exception as e:
-            # Never let the suppression check block the shutdown broadcast —
-            # fail toward the louder, more-visible behaviour.
-            logger.debug("drain_notification_suppressed check failed: %s", e)
 
         # Snapshot adapters up front: adapter.send() can hit a fatal error
         # path that pops the adapter from self.adapters (see _handle_fatal
@@ -10728,15 +10605,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             )
         except Exception:
             pass
-        try:
-            from son_of_anton_cli.config import load_config
-            from agent.monitoring.gateway_health_export import start_gateway_health_export
-            self._gateway_health_export_runtime = start_gateway_health_export(load_config())
-            if getattr(self._gateway_health_export_runtime, "enabled", False):
-                logger.info("Gateway health OTLP export: enabled")
-        except Exception:
-            logger.debug("gateway health OTLP export startup failed", exc_info=True)
-
         # Log any active supply-chain security advisories. Operators see this
         # in gateway.log and `son-of-anton status` surfaces it; we do NOT block
         # startup or surface it inline to user messages, since the gateway
@@ -10890,11 +10758,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             from agent.shell_hooks import register_from_config
             _hooks_cfg = load_config()
             register_from_config(_hooks_cfg, accept_hooks=False)
-
-            from agent.outbound_webhooks import (
-                register_from_config as register_outbound_webhooks,
-            )
-            register_outbound_webhooks(_hooks_cfg)
         except Exception:
             logger.debug(
                 "shell-hook registration failed at gateway startup",
@@ -11475,14 +11338,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 self._log_scale_to_zero_not_armed_reason()
         except Exception:  # noqa: BLE001 - arming must never block startup
             logger.debug("scale-to-zero: arm check failed at startup", exc_info=True)
-
-        # Start background drain-control watcher — reconciles the gateway's
-        # new-turn accept-state with the external ``.drain_request.json`` marker
-        # the dashboard begin/cancel-drain endpoint writes (Phase 2). A marker
-        # left behind by a prior instantiation (durable-volume restart, NS-570)
-        # is ignored via its instantiation epoch; only a current-epoch marker
-        # engages drain on the first tick.
-        self._spawn_supervised(self._drain_control_watcher, "drain_control_watcher")
 
         logger.info("Press Ctrl+C to stop")
         
@@ -12994,7 +12849,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 self._update_runtime_status("running", self._exit_reason)
             else:
                 self._update_runtime_status("stopped", self._exit_reason)
-            _shutdown_gateway_health_export(self)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
         self._stop_task = asyncio.create_task(_stop_impl())
@@ -14935,27 +14789,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
-
-        # ── External-drain new-turn gate (Phase 2) ────────────────────
-        # When NAS has engaged an external drain (.drain_request.json present,
-        # observed by _drain_control_watcher), refuse to START a new turn so
-        # the in-flight set can only fall to zero — eliminating the TOCTOU race
-        # (D4a: stop accepting new turns FIRST, then NAS polls until
-        # active_agents==0). In-flight turns are untouched; this only blocks the
-        # claim of a NEW session slot. Internal/system events (restart-recovery
-        # replays, background-process completions) bypass the gate — they are
-        # not user-initiated new work and must still flow during a drain.
-        # Reversible: once the marker is removed the gate opens again.
-        if self._external_drain_active and not is_internal:
-            logger.info(
-                "Refusing new turn for session %s — external drain active.",
-                _quick_key,
-            )
-            return (
-                "This agent is draining for a maintenance action and isn't "
-                "accepting new turns right now. It'll be back in a moment — "
-                "please resend shortly."
-            )
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -24835,18 +24668,6 @@ async def _await_thread_exit(
     return not thread.is_alive()
 
 
-def _shutdown_gateway_health_export(runner: Any) -> None:
-    """Idempotently drain and detach Gateway Health OTLP export."""
-    runtime = getattr(runner, "_gateway_health_export_runtime", None)
-    if runtime is None:
-        return
-    runner._gateway_health_export_runtime = None
-    try:
-        runtime.shutdown()
-    except Exception:
-        logger.debug("gateway health OTLP export shutdown failed", exc_info=True)
-
-
 def _gateway_stderr_formatter() -> logging.Formatter:
     """Return the redacting formatter used by the gateway stderr stream."""
     from agent.redact import RedactingFormatter
@@ -25300,13 +25121,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         logger.debug("MCP tool discovery failed: %s", e)
 
     # Start the gateway
-    try:
-        success = await runner.start()
-    except BaseException:
-        _shutdown_gateway_health_export(runner)
-        raise
+    success = await runner.start()
     if not success:
-        _shutdown_gateway_health_export(runner)
         return False
     # Recover any pending messages flushed during a previous shutdown (#72680).
     try:
@@ -25319,7 +25135,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception:
         pass
     if runner.should_exit_cleanly:
-        _shutdown_gateway_health_export(runner)
         if runner.exit_reason:
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
         # A clean exit that carries an explicit exit code (e.g. a fatal
@@ -25335,27 +25150,24 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if not runner._running:
         # Startup was intentionally aborted by restart/shutdown before entering
         # running mode; preserve that lifecycle path without starting cron.
+        await runner.wait_for_shutdown()
+        if runner.should_exit_with_failure:
+            if runner.exit_reason:
+                logger.error("Gateway exiting with failure: %s", runner.exit_reason)
+            return False
         try:
-            await runner.wait_for_shutdown()
-            if runner.should_exit_with_failure:
-                if runner.exit_reason:
-                    logger.error("Gateway exiting with failure: %s", runner.exit_reason)
-                return False
-            try:
-                from tools.mcp_tool import shutdown_mcp_servers
-                shutdown_mcp_servers()
-            except Exception:
-                pass
-            if runner.exit_code is not None:
-                raise SystemExit(runner.exit_code)
-            return True
-        finally:
-            _shutdown_gateway_health_export(runner)
+            from tools.mcp_tool import shutdown_mcp_servers
+            shutdown_mcp_servers()
+        except Exception:
+            pass
+        if runner.exit_code is not None:
+            raise SystemExit(runner.exit_code)
+        return True
 
     # Start the in-process cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE
-    # support), and the external-drain gate so a draining gateway takes on
-    # no new cron work.
+    # support), and the drain gate so a draining gateway takes on no new
+    # cron work.
     from cron.scheduler_provider import InProcessCronScheduler
 
     cron_stop = threading.Event()
@@ -25365,9 +25177,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         kwargs={
             "adapters": runner.adapters,
             "loop": asyncio.get_running_loop(),
-            "can_dispatch": lambda: not (
-                runner._draining or runner._external_drain_active
-            ),
+            "can_dispatch": lambda: not runner._draining,
         },
         daemon=True,
         name="cron-scheduler",

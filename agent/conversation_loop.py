@@ -86,7 +86,6 @@ from agent.retry_utils import (
     zai_coding_overload_retry_ceiling,
 )
 from agent.repetition_guard import is_repetition_dominated
-from agent.trajectory import has_incomplete_scratchpad
 # Bind before the turn starts so a source-tree swap cannot load a skewed
 # finalizer at turn end.
 from agent.turn_finalizer import finalize_turn
@@ -2316,28 +2315,7 @@ def run_conversation(
                         return agent._interruptible_streaming_api_call(
                             next_api_kwargs, on_first_delta=_stop_spinner
                         )
-                    from agent import relay_llm
-
-                    return relay_llm.execute(
-                        next_api_kwargs,
-                        agent._interruptible_api_call,
-                        session_id=str(agent.session_id or ""),
-                        name=str(agent.provider or "provider"),
-                        model_name=str(agent.model or ""),
-                        metadata={
-                            "api_mode": agent.api_mode,
-                            "api_request_id": api_request_id,
-                            "call_role": (
-                                "delegated"
-                                if getattr(agent, "is_subagent", False)
-                                else "fallback"
-                                if int(getattr(agent, "_fallback_index", 0) or 0) > 0
-                                else "primary"
-                            ),
-                            "retry_count": retry_count,
-                        },
-                        defer_logical_completion=True,
-                    )
+                    return agent._interruptible_api_call(next_api_kwargs)
 
                 from son_of_anton_cli.middleware import run_llm_execution_middleware
 
@@ -3351,12 +3329,6 @@ def run_conversation(
                 # usable content. Empty responses still loop through the
                 # empty-retry path below; the buffer is cleared when
                 # genuinely successful content is detected later (~L4127).
-                from agent import relay_llm
-
-                relay_llm.complete_logical_call(
-                    api_request_id,
-                    outcome="success",
-                )
                 agent._touch_activity(f"API call #{api_call_count} completed")
                 break  # Success, exit retry loop
 
@@ -5409,7 +5381,8 @@ def run_conversation(
             
             # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
             # This means the model ran out of output tokens mid-reasoning — retry up to 2 times
-            if has_incomplete_scratchpad(assistant_message.content or ""):
+            _content = assistant_message.content or ""
+            if "<REASONING_SCRATCHPAD>" in _content and "</REASONING_SCRATCHPAD>" not in _content:
                 agent._incomplete_scratchpad_retries += 1
                 
                 agent._buffer_vprint("⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")

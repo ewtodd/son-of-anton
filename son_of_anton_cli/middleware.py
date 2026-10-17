@@ -129,25 +129,11 @@ def apply_tool_request_middleware(
     current_args = _safe_copy(original_args)
     trace: List[Dict[str, Any]] = []
 
-    session_id = str(context.get("session_id") or "")
-    skip_relay = bool(context.pop("skip_relay", False))
-    if session_id and not skip_relay:
-        from agent import relay_runtime
-
-        relay_args = relay_runtime.apply_tool_request_intercepts(
-            session_id=session_id,
-            tool_name=tool_name,
-            args=current_args,
-        )
-        if relay_args != current_args:
-            current_args = _safe_copy(relay_args)
-            trace.append({"source": "nemo_relay"})
-
     if not _has_middleware(TOOL_REQUEST_MIDDLEWARE):
         return RequestMiddlewareResult(
-            payload=args if not trace else current_args,
+            payload=args,
             original_payload=args,
-            changed=bool(trace),
+            changed=False,
             trace=trace,
         )
 

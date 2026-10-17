@@ -10,8 +10,6 @@ Usage examples::
     son-of-anton logs -f                 # follow agent.log in real time
     son-of-anton logs errors             # last 50 lines of errors.log
     son-of-anton logs gateway -n 100    # last 100 lines of gateway.log
-    son-of-anton logs gui -f            # follow gui.log (dashboard/pty/ws)
-    son-of-anton logs desktop -f        # follow desktop.log (Electron app boot/backend)
     son-of-anton logs --level WARNING    # only WARNING+ lines
     son-of-anton logs --session abc123   # filter by session ID substring
     son-of-anton logs --component tools  # only tool-related lines

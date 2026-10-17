@@ -3328,23 +3328,6 @@ def _run_single_child(
         except Exception:
             logger.debug("Failed to close child agent after delegation")
 
-        # The AIAgent turn boundary normally closes the child scope itself. This
-        # fallback covers failures before that boundary starts, but must not pop
-        # a scope while a timed-out child worker is still unwinding.
-        try:
-            from agent import relay_runtime
-
-            runtime = relay_runtime.get_runtime(create=False)
-            child_session_id = str(getattr(child, "session_id", "") or "")
-            child_turn_is_active = relay_runtime.SESSION_COORDINATOR.has_active_turn(
-                profile_key=relay_runtime.current_profile_key(),
-                session_id=child_session_id,
-            )
-            if runtime is not None and child_session_id and not child_turn_is_active:
-                runtime.unregister_subagent({"child_session_id": child_session_id})
-        except Exception:
-            logger.debug("Failed to close child Relay session after delegation")
-
 
 _PARENT_FINALIZATION_LOCK_GUARD = threading.Lock()
 _PARENT_FINALIZATION_FALLBACK_LOCK = threading.RLock()

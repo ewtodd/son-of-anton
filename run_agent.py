@@ -135,7 +135,6 @@ else:
 # Import our tool system
 from model_tools import (
     get_tool_definitions,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.get_tool_definitions")
-    get_toolset_for_tool,
     handle_function_call,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.handle_function_call")
     check_toolset_requirements,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.check_toolset_requirements")
 )
@@ -190,10 +189,6 @@ from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
     file_mutation_result_landed,
 )
-from agent.trajectory import (
-    convert_scratchpad_to_think,
-    save_trajectory as _save_trajectory_to_file,
-)
 from agent.tool_dispatch_helpers import (
     _should_parallelize_tool_batch,  # noqa: F401  # re-exported for tests that `from run_agent import _should_parallelize_tool_batch`
     _is_destructive_command,  # noqa: F401  # re-exported for tests that access `run_agent._is_destructive_command`
@@ -205,7 +200,6 @@ from agent.tool_dispatch_helpers import (
     _extract_file_mutation_targets,
     _extract_landed_file_mutation_paths,
     _extract_error_preview,
-    _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, strip_decorative_glyphs
 
@@ -362,7 +356,6 @@ class AIAgent:
         tool_delay: float = None,  # Deprecated: accepted for compatibility, ignored
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
-        save_trajectories: bool = False,
         verbose_logging: bool = False,
         quiet_mode: bool = False,
         tool_progress_mode: str = "all",
@@ -376,7 +369,6 @@ class AIAgent:
         thinking_callback: callable = None,
         reasoning_callback: callable = None,
         clarify_callback: callable = None,
-        drive_preview_callback: callable = None,
         step_callback: callable = None,
         stream_delta_callback: callable = None,
         interim_assistant_callback: callable = None,
@@ -440,7 +432,6 @@ class AIAgent:
             max_iterations=max_iterations,
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
-            save_trajectories=save_trajectories,
             verbose_logging=verbose_logging,
             quiet_mode=quiet_mode,
             tool_progress_mode=tool_progress_mode,
@@ -454,7 +445,6 @@ class AIAgent:
             thinking_callback=thinking_callback,
             reasoning_callback=reasoning_callback,
             clarify_callback=clarify_callback,
-            drive_preview_callback=drive_preview_callback,
             step_callback=step_callback,
             stream_delta_callback=stream_delta_callback,
             interim_assistant_callback=interim_assistant_callback,
@@ -2086,31 +2076,6 @@ class AIAgent:
         # Return everything up to (not including) the last assistant message
         return messages[:last_assistant_idx]
 
-    def _format_tools_for_system_message(self) -> str:
-        """Forwarder — see ``agent.system_prompt.format_tools_for_system_message``."""
-        from agent.system_prompt import format_tools_for_system_message
-        return format_tools_for_system_message(self)
-
-    def _convert_to_trajectory_format(self, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
-        """Forwarder — see ``agent.agent_runtime_helpers.convert_to_trajectory_format``."""
-        from agent.agent_runtime_helpers import convert_to_trajectory_format
-        return convert_to_trajectory_format(self, messages, user_query, completed)
-
-    def _save_trajectory(self, messages: List[Dict[str, Any]], user_query: str, completed: bool):
-        """
-        Save conversation trajectory to JSONL file.
-        
-        Args:
-            messages (List[Dict]): Complete message history
-            user_query (str): Original user query
-            completed (bool): Whether the conversation completed successfully
-        """
-        if not self.save_trajectories:
-            return
-        
-        trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
-        _save_trajectory_to_file(trajectory, self.model, completed)
-
     @staticmethod
     def _is_entitlement_failure(
         error_context: Optional[Dict[str, Any]],
@@ -2693,7 +2658,7 @@ class AIAgent:
         """Convert REASONING_SCRATCHPAD to think tags and clean up whitespace."""
         if not content:
             return content
-        content = convert_scratchpad_to_think(content)
+        content = content.replace("<REASONING_SCRATCHPAD>", "<think>").replace("</REASONING_SCRATCHPAD>", "</think>")
         content = re.sub(r'\n+(<think>)', r'\n\1', content)
         content = re.sub(r'(</think>)\n+', r'\1\n', content)
         return content.strip()
@@ -6681,31 +6646,14 @@ class AIAgent:
             reset_accounting_context,
             set_accounting_context,
         )
-        from agent import relay_runtime
         from agent.conversation_loop import run_conversation
-        from son_of_anton_cli.observability.relay_shared_metrics import (
-            finish_task_run,
-            start_task_run,
-        )
         from agent.subagent_lifecycle import bind_subagent_parent
         effective_task_id = task_id or str(uuid.uuid4())
         session_id = str(getattr(self, "session_id", None) or "")
-        task_context = {
-            "session_id": session_id,
-            "task_id": effective_task_id,
-            "platform": getattr(self, "platform", None) or "",
-        }
         relay_turn_id = (
             f"{session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
         )
         self._relay_pending_turn_id = relay_turn_id
-        relay_parent_session_id = (
-            str(getattr(self, "_parent_session_id", None) or "")
-            if task_context["platform"] == "subagent"
-            else ""
-        )
-        relay_lease = None
-        relay_turn = None
         durable_turn_lease = None
         durable_turn_lease_stop = None
         durable_turn_lease_thread = None
@@ -6713,9 +6661,6 @@ class AIAgent:
         durable_turn_lease_turn_active = False
         durable_turn_lease_interrupt_message = None
         acct_token = None
-        task_started = False
-        task_finished = False
-        relay_outcome = "failed"
 
         def _stop_durable_turn_lease_refresher() -> None:
             nonlocal durable_turn_lease_turn_active
@@ -6793,7 +6738,7 @@ class AIAgent:
                 self._session_db_created = True
                 _durable_holder = (
                     f"pid={os.getpid()}:turn={relay_turn_id}:platform="
-                    f"{task_context['platform'] or 'unknown'}"
+                    f"{getattr(self, 'platform', None) or 'unknown'}"
                 )
                 _lease_ttl = 300.0
                 _lease_waited = False
@@ -6825,7 +6770,6 @@ class AIAgent:
                             "session turn lease wait aborted by interrupt: %s",
                             session_id,
                         )
-                        relay_outcome = "cancelled"
                         interrupt_msg = (
                             "Stopped waiting for another Son of Anton process on "
                             "this session. Your message was not processed."
@@ -6872,7 +6816,6 @@ class AIAgent:
                             "Failed to emit session turn lease timeout warning",
                             exc_info=True,
                         )
-                    relay_outcome = "timed_out"
                     return {
                         "final_response": timeout_msg,
                         "messages": list(conversation_history or []),
@@ -6929,7 +6872,6 @@ class AIAgent:
                     latest_session_id = _turn_db.resolve_resume_session_id(session_id)
                     if latest_session_id:
                         self.session_id = latest_session_id
-                        task_context["session_id"] = latest_session_id
                     conversation_history = _turn_db.get_messages_as_conversation(
                         self.session_id,
                         repair_alternation=True,
@@ -7001,27 +6943,6 @@ class AIAgent:
                     daemon=True,
                 )
 
-
-            relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
-                profile_key=relay_runtime.current_profile_key(),
-                session_id=task_context["session_id"],
-                platform=task_context["platform"],
-                parent_session_id=relay_parent_session_id,
-                model=str(getattr(self, "model", None) or ""),
-            )
-            relay_turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
-                relay_lease,
-                turn_id=relay_turn_id,
-                task_id=effective_task_id,
-            )
-            # Keep existing tests and external relay-runtime shims that return
-            # a minimal turn object compatible with the new opt-out flag.
-            if getattr(relay_turn, "relay_enabled", True):
-                start_task_run(
-                    **task_context,
-                    parent_session_id=getattr(self, "_parent_session_id", None) or "",
-                )
-                task_started = True
             # Publish the session accounting handles the same way so auxiliary
             # calls record their token usage into session_model_usage (task
             # dimension) — the fix for aux spend being invisible in analytics
@@ -7081,88 +7002,45 @@ class AIAgent:
                 except Exception:
                     self._durable_transcript_mark = None
                     logger.debug("Could not record the session transcript mark", exc_info=True)
-            terminal = result if isinstance(result, dict) else {}
-            if terminal.get("interrupted") is True:
-                relay_outcome = "cancelled"
-            elif terminal.get("failed") is True:
-                relay_outcome = "failed"
-            else:
-                relay_outcome = "success"
-            relay_runtime.SESSION_COORDINATOR.finish_logical_calls(
-                relay_turn,
-                outcome=relay_outcome,
-            )
-            if task_started:
-                task_finished = True
-                finish_task_run(**task_context, result=result)
             return result
-        except BaseException as exc:
-            if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
-                type(exc).__name__ == "CancelledError"
-            ):
-                relay_outcome = "cancelled"
-            elif isinstance(exc, TimeoutError):
-                relay_outcome = "timed_out"
-            if relay_turn is not None:
-                relay_runtime.SESSION_COORDINATOR.finish_logical_calls(
-                    relay_turn,
-                    outcome=relay_outcome,
-                )
-            if task_started and not task_finished:
-                task_finished = True
-                finish_task_run(**task_context, error=exc)
-            raise
         finally:
-            try:
-                if relay_turn is not None:
-                    relay_runtime.SESSION_COORDINATOR.end_turn(
-                        relay_turn,
-                        outcome=relay_outcome,
-                    )
-            finally:
+            _stop_durable_turn_lease_refresher()
+            if (
+                durable_turn_lease_thread is not None
+                and durable_turn_lease_thread.is_alive()
+            ):
+                durable_turn_lease_thread.join(timeout=1.0)
+            # Clear any interrupt the refresher may have fired between
+            # the inner stop and this join. Must run AFTER join so a
+            # late interrupt does not survive into the next turn.
+            _clear_durable_turn_lease_interrupt()
+            if durable_turn_lease is not None:
                 try:
-                    if relay_lease is not None:
-                        relay_runtime.SESSION_COORDINATOR.release_conversation(
-                            relay_lease
-                        )
-                finally:
-                    _stop_durable_turn_lease_refresher()
-                    if (
-                        durable_turn_lease_thread is not None
-                        and durable_turn_lease_thread.is_alive()
-                    ):
-                        durable_turn_lease_thread.join(timeout=1.0)
-                    # Clear any interrupt the refresher may have fired between
-                    # the inner stop and this join. Must run AFTER join so a
-                    # late interrupt does not survive into the next turn.
-                    _clear_durable_turn_lease_interrupt()
-                    if durable_turn_lease is not None:
-                        try:
-                            _turn_db.release_session_turn_lease(
-                                session_id, durable_turn_lease
-                            )
-                        except Exception:
-                            logger.error(
-                                "Failed to release session turn lease: %s",
-                                session_id,
-                                exc_info=True,
-                            )
-                        if (
-                            getattr(self, "_active_session_turn_lease_holder", None)
-                            == durable_turn_lease
-                        ):
-                            self._active_session_turn_lease_holder = None
-                            self._active_session_turn_lease_ttl_seconds = None
-                    # Always clear mid-turn labels when the turn exits — including
-                    # interrupted early returns that skip finalize_turn. Keep ts.
-                    try:
-                        self._reset_activity_labels_after_turn()
-                    except Exception:
-                        pass
-                    if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
-                        self._relay_pending_turn_id = None
-                    if acct_token is not None:
-                        reset_accounting_context(acct_token)
+                    _turn_db.release_session_turn_lease(
+                        session_id, durable_turn_lease
+                    )
+                except Exception:
+                    logger.error(
+                        "Failed to release session turn lease: %s",
+                        session_id,
+                        exc_info=True,
+                    )
+                if (
+                    getattr(self, "_active_session_turn_lease_holder", None)
+                    == durable_turn_lease
+                ):
+                    self._active_session_turn_lease_holder = None
+                    self._active_session_turn_lease_ttl_seconds = None
+            # Always clear mid-turn labels when the turn exits — including
+            # interrupted early returns that skip finalize_turn. Keep ts.
+            try:
+                self._reset_activity_labels_after_turn()
+            except Exception:
+                pass
+            if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
+                self._relay_pending_turn_id = None
+            if acct_token is not None:
+                reset_accounting_context(acct_token)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """
@@ -7178,220 +7056,3 @@ class AIAgent:
         result = self.run_conversation(message, stream_callback=stream_callback)
         return result["final_response"]
 
-def main(
-    query: str = None,
-    model: str = "",
-    api_key: str = None,
-    base_url: str = "",
-    max_turns: int = 10,
-    enabled_toolsets: str = None,
-    disabled_toolsets: str = None,
-    list_tools: bool = False,
-    save_trajectories: bool = False,
-    save_sample: bool = False,
-    verbose: bool = False,
-    log_prefix_chars: int = 20
-):
-    """
-    Main function for running the agent directly.
-
-    Args:
-        query (str): Natural language query for the agent. Defaults to Python 3.13 example.
-        model (str): Model name to use (OpenRouter format: provider/model). Defaults to anthropic/claude-sonnet-4.6.
-        api_key (str): API key for authentication. Uses OPENROUTER_API_KEY env var if not provided.
-        base_url (str): Base URL for the model API. Defaults to https://openrouter.ai/api/v1
-        max_turns (int): Maximum number of API call iterations. Defaults to 10.
-        enabled_toolsets (str): Comma-separated list of toolsets to enable. Supports predefined
-                              toolsets (e.g., "research", "development", "safe").
-                              Multiple toolsets can be combined: "web,vision"
-        disabled_toolsets (str): Comma-separated list of toolsets to disable (e.g., "terminal")
-        list_tools (bool): Just list available tools and exit
-        save_trajectories (bool): Save conversation trajectories to JSONL files (appends to trajectory_samples.jsonl). Defaults to False.
-        save_sample (bool): Save a single trajectory sample to a UUID-named JSONL file for inspection. Defaults to False.
-        verbose (bool): Enable verbose logging for debugging. Defaults to False.
-        log_prefix_chars (int): Number of characters to show in log previews for tool calls/responses. Defaults to 20.
-
-    Toolset Examples:
-        - "research": Web search, extract, crawl + vision tools
-    """
-    print("🤖 AI Agent with Tool Calling")
-    print("=" * 50)
-    
-    # Handle tool listing
-    if list_tools:
-        from model_tools import get_all_tool_names, get_available_toolsets
-        from toolsets import get_all_toolsets, get_toolset_info
-        
-        print("📋 Available Tools & Toolsets:")
-        print("-" * 50)
-        
-        # Show new toolsets system
-        print("\n🎯 Predefined Toolsets (New System):")
-        print("-" * 40)
-        all_toolsets = get_all_toolsets()
-        
-        # Group by category
-        basic_toolsets = []
-        composite_toolsets = []
-        scenario_toolsets = []
-        
-        for name, toolset in all_toolsets.items():
-            info = get_toolset_info(name)
-            if info:
-                entry = (name, info)
-                if name in {"web", "terminal", "vision", "creative", "reasoning"}:
-                    basic_toolsets.append(entry)
-                elif name in {"research", "development", "analysis", "content_creation", "full_stack"}:
-                    composite_toolsets.append(entry)
-                else:
-                    scenario_toolsets.append(entry)
-        
-        # Print basic toolsets
-        print("\n📌 Basic Toolsets:")
-        for name, info in basic_toolsets:
-            tools_str = ', '.join(info['resolved_tools']) if info['resolved_tools'] else 'none'
-            print(f"  • {name:15} - {info['description']}")
-            print(f"    Tools: {tools_str}")
-        
-        # Print composite toolsets
-        print("\n📂 Composite Toolsets (built from other toolsets):")
-        for name, info in composite_toolsets:
-            includes_str = ', '.join(info['includes']) if info['includes'] else 'none'
-            print(f"  • {name:15} - {info['description']}")
-            print(f"    Includes: {includes_str}")
-            print(f"    Total tools: {info['tool_count']}")
-        
-        # Print scenario-specific toolsets
-        print("\n🎭 Scenario-Specific Toolsets:")
-        for name, info in scenario_toolsets:
-            print(f"  • {name:20} - {info['description']}")
-            print(f"    Total tools: {info['tool_count']}")
-        
-        
-        # Show legacy toolset compatibility
-        print("\n📦 Legacy Toolsets (for backward compatibility):")
-        legacy_toolsets = get_available_toolsets()
-        for name, info in legacy_toolsets.items():
-            status = "✅" if info["available"] else "❌"
-            print(f"  {status} {name}: {info['description']}")
-            if not info["available"]:
-                print(f"    Requirements: {', '.join(info['requirements'])}")
-        
-        # Show individual tools
-        all_tools = get_all_tool_names()
-        print(f"\n🔧 Individual Tools ({len(all_tools)} available):")
-        for tool_name in sorted(all_tools):
-            toolset = get_toolset_for_tool(tool_name)
-            print(f"  📌 {tool_name} (from {toolset})")
-        
-        print("\n💡 Usage Examples:")
-        print("  # Use predefined toolsets")
-        print("  python run_agent.py --enabled_toolsets=research --query='search for Python news'")
-        print("  python run_agent.py --enabled_toolsets=development --query='debug this code'")
-        print("  python run_agent.py --enabled_toolsets=safe --query='analyze without terminal'")
-        print("  ")
-        print("  # Combine multiple toolsets")
-        print("  python run_agent.py --enabled_toolsets=web,vision --query='analyze website'")
-        print("  ")
-        print("  # Disable toolsets")
-        print("  python run_agent.py --disabled_toolsets=terminal --query='no command execution'")
-        print("  ")
-        print("  # Run with trajectory saving enabled")
-        print("  python run_agent.py --save_trajectories --query='your question here'")
-        return
-    
-    # Parse toolset selection arguments
-    enabled_toolsets_list = None
-    disabled_toolsets_list = None
-    
-    if enabled_toolsets:
-        enabled_toolsets_list = [t.strip() for t in enabled_toolsets.split(",")]
-        print(f"🎯 Enabled toolsets: {enabled_toolsets_list}")
-    
-    if disabled_toolsets:
-        disabled_toolsets_list = [t.strip() for t in disabled_toolsets.split(",")]
-        print(f"🚫 Disabled toolsets: {disabled_toolsets_list}")
-    
-    if save_trajectories:
-        print("💾 Trajectory saving: ENABLED")
-        print("   - Successful conversations → trajectory_samples.jsonl")
-        print("   - Failed conversations → failed_trajectories.jsonl")
-    
-    # Initialize agent with provided parameters
-    try:
-        agent = AIAgent(
-            base_url=base_url,
-            model=model,
-            api_key=api_key,
-            max_iterations=max_turns,
-            enabled_toolsets=enabled_toolsets_list,
-            disabled_toolsets=disabled_toolsets_list,
-            save_trajectories=save_trajectories,
-            verbose_logging=verbose,
-            log_prefix_chars=log_prefix_chars
-        )
-    except RuntimeError as e:
-        print(f"❌ Failed to initialize agent: {e}")
-        return
-    
-    # Use provided query or default to Python 3.13 example
-    if query is None:
-        user_query = (
-            "Tell me about the latest developments in Python 3.13 and what new features "
-            "developers should know about. Please search for current information and try it out."
-        )
-    else:
-        user_query = query
-    
-    print(f"\n📝 User Query: {user_query}")
-    print("\n" + "=" * 50)
-    
-    # Run conversation
-    result = agent.run_conversation(user_query)
-    
-    print("\n" + "=" * 50)
-    print("📋 CONVERSATION SUMMARY")
-    print("=" * 50)
-    print(f"✅ Completed: {result['completed']}")
-    print(f"📞 API Calls: {result['api_calls']}")
-    print(f"💬 Messages: {len(result['messages'])}")
-    
-    if result['final_response']:
-        print("\n🎯 FINAL RESPONSE:")
-        print("-" * 30)
-        print(result['final_response'])
-    
-    # Save sample trajectory to UUID-named file if requested
-    if save_sample:
-        sample_id = str(uuid.uuid4())[:8]
-        sample_filename = f"sample_{sample_id}.json"
-        
-        # Convert messages to trajectory format (same as batch_runner)
-        trajectory = agent._convert_to_trajectory_format(
-            result['messages'], 
-            user_query, 
-            result['completed']
-        )
-        
-        entry = {
-            "conversations": trajectory,
-            "timestamp": datetime.now().isoformat(),
-            "model": model,
-            "completed": result['completed'],
-            "query": user_query
-        }
-        
-        try:
-            with open(sample_filename, "w", encoding="utf-8") as f:
-                # Pretty-print JSON with indent for readability
-                f.write(json.dumps(entry, ensure_ascii=False, indent=2))
-            print(f"\n💾 Sample trajectory saved to: {sample_filename}")
-        except Exception as e:
-            print(f"\n⚠️ Failed to save sample: {e}")
-    
-    print("\n👋 Agent execution completed!")
-
-
-if __name__ == "__main__":
-    import fire
-    fire.Fire(main)

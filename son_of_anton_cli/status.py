@@ -142,8 +142,6 @@ def show_status(args):
     keys: dict[str, str | tuple[str, ...]] = {
         "OpenAI": "OPENAI_API_KEY",
         "DeepSeek": "DEEPSEEK_API_KEY",
-        "Firecrawl": "FIRECRAWL_API_KEY",
-        "Tavily": "TAVILY_API_KEY",
         "GitHub": "GITHUB_TOKEN",
     }
 

@@ -1543,13 +1543,6 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
         mode = args.get("mode", "replace")
         return f"[patch] {mode} in {path} ({content_len:,} chars result)"
 
-    if tool_name in {"browser_navigate", "browser_click", "browser_snapshot",
-                     "browser_type", "browser_scroll", "browser_vision"}:
-        url = args.get("url", "")
-        ref = args.get("ref", "")
-        detail = f" {url}" if url else (f" ref={ref}" if ref else "")
-        return f"[{tool_name}]{detail} ({content_len:,} chars)"
-
     if tool_name == "web_search":
         query = args.get("query", "?")
         return f"[web_search] query='{query}' ({content_len:,} chars result)"
@@ -1642,9 +1635,6 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
                 )
             return summary
         return "[clarify] asked user a question"
-
-    if tool_name == "text_to_speech":
-        return f"[text_to_speech] generated audio ({content_len:,} chars)"
 
     if tool_name == "cronjob":
         action = args.get("action", "?")

@@ -25,7 +25,6 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -914,34 +913,9 @@ def reconstruct_static_prefix(
     agent._static_rebuild_failed_for = stored
 
 
-def format_tools_for_system_message(agent: Any) -> str:
-    """Format tool definitions for the system message in the trajectory format.
-
-    Returns:
-        str: JSON string representation of tool definitions
-    """
-    if not agent.tools:
-        return "[]"
-
-    # Convert tool definitions to the format expected in trajectories
-    formatted_tools = []
-    for tool in agent.tools:
-        func = tool["function"]
-        formatted_tool = {
-            "name": func["name"],
-            "description": func.get("description", ""),
-            "parameters": func.get("parameters", {}),
-            "required": None  # Match the format in the example
-        }
-        formatted_tools.append(formatted_tool)
-
-    return json.dumps(formatted_tools, ensure_ascii=False)
-
-
 __all__ = [
     "build_system_prompt_parts",
     "build_system_prompt",
     "invalidate_system_prompt",
     "restore_plugin_prompt_sections",
-    "format_tools_for_system_message",
 ]

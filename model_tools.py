@@ -514,41 +514,6 @@ def _compute_tool_definitions(
                         filtered_tools[i] = {"type": "function", "function": dynamic}
                         break
 
-    # Strip web tool cross-references from browser_navigate description when
-    # web_search / web_extract are not available.  The static schema says
-    # "prefer web_search or web_extract" which causes the model to hallucinate
-    # those tools when they're missing.
-    if "browser_navigate" in available_tool_names:
-        web_tools_available = {"web_search", "web_extract"} & available_tool_names
-        if not web_tools_available:
-            for i, td in enumerate(filtered_tools):
-                if td.get("function", {}).get("name") == "browser_navigate":
-                    desc = td["function"].get("description", "")
-                    desc = desc.replace(
-                        " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
-                        "",
-                    )
-                    filtered_tools[i] = {
-                        "type": "function",
-                        "function": {**td["function"], "description": desc},
-                    }
-                    break
-
-    # browser_exec (Browser Use mode) runs arbitrary Python on the host via
-    # the browser-use CLI subprocess.  A session whose toolset selection
-    # excludes the terminal surface (e.g. a messaging platform configured
-    # without terminal access) must not regain host code execution through
-    # the browser toolset — that would silently widen the operator's chosen
-    # security posture.  Session-level gate, NOT a check_fn: check_fn results
-    # are TTL-cached process-wide while one gateway process serves many
-    # sessions with different toolset configs.
-    if "browser_exec" in available_tool_names and "terminal" not in available_tool_names:
-        filtered_tools = [
-            td for td in filtered_tools
-            if td.get("function", {}).get("name") != "browser_exec"
-        ]
-        available_tool_names.discard("browser_exec")
-
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]
@@ -1194,8 +1159,8 @@ def handle_function_call(
     Args:
         function_name: Name of the function to call.
         function_args: Arguments for the function.
-        task_id: Unique identifier for terminal/browser session isolation.
-        user_task: The user's original task (for browser_snapshot context).
+        task_id: Unique identifier for terminal session isolation.
+        user_task: The user's original task.
         enabled_tools: Tool names enabled for this session.  When provided,
                        execute_code uses this list to determine which sandbox
                        tools to generate.  Falls back to the process-global

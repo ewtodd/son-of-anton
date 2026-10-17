@@ -2088,20 +2088,6 @@ def _notify_context_engine_compaction_complete(
     old_session_id: str,
 ) -> bool:
     """Notify the active context engine after a durable compaction commit."""
-    # Relay session-span segmentation (opt-in, gateway.telemetry.
-    # session_segments.on_compaction): flag the session so its telemetry
-    # scope rotates at the next turn boundary. Observer semantics — a
-    # failure here must never undo or delay the committed compaction.
-    try:
-        from agent import relay_runtime
-
-        relay_runtime.SESSION_COORDINATOR.notify_session_compacted(
-            profile_key=relay_runtime.current_profile_key(),
-            session_id=new_session_id,
-            old_session_id=old_session_id,
-        )
-    except Exception:
-        logger.debug("relay segment rotation notification failed", exc_info=True)
     callback = getattr(agent.context_compactor, "on_session_start", None)
     if not callable(callback):
         return False

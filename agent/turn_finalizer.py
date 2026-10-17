@@ -22,7 +22,6 @@ keep the exact logger name (``"agent.conversation_loop"``).
 from __future__ import annotations
 
 
-from agent.message_sanitization import summarize_message_for_log as _summarize_user_message_for_log
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
@@ -154,10 +153,9 @@ def finalize_turn(
         )
     )
 
-    # Post-loop cleanup must never lose the response.  Trajectory save,
-    # resource teardown, and session persistence all touch fallible
-    # surfaces — file I/O / JSON serialization (_save_trajectory), remote
-    # VM/browser teardown over the network (_cleanup_task_resources), and
+    # Post-loop cleanup must never lose the response.  Resource teardown and
+    # session persistence both touch fallible surfaces — remote
+    # VM teardown over the network (_cleanup_task_resources), and
     # SQLite writes (_persist_session).  A raise from any of them used to
     # propagate straight out of run_conversation, discarding the partial
     # final_response the caller is waiting for (subprocess wrappers saw an
@@ -166,14 +164,6 @@ def finalize_turn(
     # are surfaced on the result dict via ``cleanup_errors`` rather than
     # killing the turn.
     _cleanup_errors = []
-
-    # Save trajectory if enabled.  ``user_message`` may be a multimodal
-    # list of parts; the trajectory format wants a plain string.
-    try:
-        agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
-    except Exception as _save_err:
-        _cleanup_errors.append(f"save_trajectory: {_save_err}")
-        logger.error("finalize_turn: _save_trajectory failed: %s", _save_err, exc_info=True)
 
     # Clean up VM and browser for this task after conversation completes
     try:

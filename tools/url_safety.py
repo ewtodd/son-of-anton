@@ -219,7 +219,6 @@ def _global_allow_private_urls() -> bool:
     Checks (in priority order):
     1. ``SON_OF_ANTON_ALLOW_PRIVATE_URLS`` env var  (``true``/``1``/``yes``)
     2. ``security.allow_private_urls`` in config.toml
-    3. ``browser.allow_private_urls`` in config.toml  (legacy / backward compat)
 
     The single-profile result is cached for the process lifetime. Multiplexed
     profile turns bypass that process-global cache because their config root is
@@ -262,12 +261,6 @@ def _resolve_allow_private_urls() -> bool:
             sec.get("allow_private_urls"), default=False
         ):
             return True
-        # browser.allow_private_urls (legacy fallback)
-        browser = cfg.get("browser", {})
-        if isinstance(browser, dict) and is_truthy_value(
-            browser.get("allow_private_urls"), default=False
-        ):
-            return True
     except Exception:
         # Config unavailable (e.g. tests, early import) — keep default
         pass
@@ -295,105 +288,6 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     if ip in _CGNAT_NETWORK:
         return True
     return False
-
-
-def is_always_blocked_url(url: str) -> bool:
-    """Return True when the URL targets an always-blocked endpoint.
-
-    This is the security floor — cloud metadata IPs / hostnames
-    (169.254.169.254, metadata.google.internal, ECS task metadata, etc.)
-    that have no legitimate agent use regardless of backend, routing, or
-    the ``allow_private_urls`` toggle.  Used by callers that bypass the
-    full ``is_safe_url`` check for their own reasons (e.g. hybrid cloud
-    browser routing to a local Chromium sidecar for private URLs) and
-    still need to enforce the non-negotiable floor before letting the
-    request proceed.
-
-    Returns True (= blocked) on:
-      - Hostnames in ``_BLOCKED_HOSTNAMES``
-      - IPs / networks in ``_ALWAYS_BLOCKED_IPS`` / ``_ALWAYS_BLOCKED_NETWORKS``
-      - URLs whose hostname resolves to any of the above
-
-    Returns False (= not in the always-blocked floor) on:
-      - Benign public / private / loopback URLs (whether or not they'd
-        be blocked by the ordinary SSRF check)
-      - DNS-resolution failures for non-sentinel hostnames (these are
-        someone else's problem — the caller's ordinary fail-closed path
-        will catch them if applicable)
-      - Parse errors (caller decides fail-open vs fail-closed)
-
-    Intentionally narrower than ``is_safe_url``: only blocks the sentinel
-    set, not ordinary private addresses.  Callers that want the full
-    SSRF check should still use ``is_safe_url``.
-    """
-    try:
-        parsed = urlparse(url)
-        hostname = (parsed.hostname or "").strip().lower().rstrip(".")
-        if not hostname:
-            return False
-
-        # Blocked-hostname check fires regardless of DNS resolution
-        if hostname in _BLOCKED_HOSTNAMES:
-            logger.warning(
-                "Blocked request to internal hostname (always-blocked floor): %s",
-                hostname,
-            )
-            return True
-
-        # Literal IP → check directly against the always-blocked set
-        try:
-            ip = ipaddress.ip_address(hostname)
-        except ValueError:
-            ip = None
-
-        if ip is not None:
-            if ip in _ALWAYS_BLOCKED_IPS or any(
-                ip in net for net in _ALWAYS_BLOCKED_NETWORKS
-            ):
-                logger.warning(
-                    "Blocked request to cloud metadata address "
-                    "(always-blocked floor): %s",
-                    hostname,
-                )
-                return True
-            return False
-
-        # Hostname → resolve and check every answer.  DNS failure is NOT
-        # always-blocked (caller's ordinary path handles that).
-        try:
-            addr_info = socket.getaddrinfo(
-                hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
-            )
-        except socket.gaierror:
-            return False
-
-        for _family, _, _, _, sockaddr in addr_info:
-            ip_str = sockaddr[0]
-            if '%' in ip_str:
-                ip_str = ip_str.split('%')[0]
-            try:
-                resolved = ipaddress.ip_address(ip_str)
-            except ValueError:
-                logger.warning("Unparseable IP address %r for hostname %s — skipping address", sockaddr[0], hostname)
-                continue
-            if resolved in _ALWAYS_BLOCKED_IPS or any(
-                resolved in net for net in _ALWAYS_BLOCKED_NETWORKS
-            ):
-                logger.warning(
-                    "Blocked request to cloud metadata address "
-                    "(always-blocked floor): %s -> %s",
-                    hostname,
-                    ip_str,
-                )
-                return True
-
-        return False
-
-    except Exception as exc:
-        # Parse failures or unexpected errors — don't claim the URL is
-        # always-blocked.  Caller decides what to do with a malformed URL.
-        logger.debug("is_always_blocked_url error for %s: %s", url, exc)
-        return False
 
 
 def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:

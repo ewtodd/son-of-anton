@@ -344,7 +344,6 @@ def init_agent(
     max_iterations: int = sys.maxsize,  # Default: unlimited tool-calling iterations (shared with subagents)
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
-    save_trajectories: bool = False,
     verbose_logging: bool = False,
     quiet_mode: bool = False,
     tool_progress_mode: str = "all",
@@ -358,7 +357,6 @@ def init_agent(
     thinking_callback: callable = None,
     reasoning_callback: callable = None,
     clarify_callback: callable = None,
-    drive_preview_callback: callable = None,
     step_callback: callable = None,
     stream_delta_callback: callable = None,
     interim_assistant_callback: callable = None,
@@ -411,7 +409,6 @@ def init_agent(
         max_iterations (int): Maximum number of tool calling iterations (default: 90)
         enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
         disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
-        save_trajectories (bool): Whether to save conversation trajectories to JSONL files (default: False)
         verbose_logging (bool): Enable verbose logging for debugging (default: False)
         quiet_mode (bool): Suppress progress output for clean CLI experience (default: False)
         ephemeral_system_prompt (str): System prompt used during agent execution but NOT saved to trajectories (optional)
@@ -447,7 +444,6 @@ def init_agent(
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
-    agent.save_trajectories = save_trajectories
     agent.verbose_logging = verbose_logging
     agent.quiet_mode = quiet_mode
     agent.tool_progress_mode = tool_progress_mode
@@ -532,7 +528,6 @@ def init_agent(
     agent.thinking_callback = thinking_callback
     agent.reasoning_callback = reasoning_callback
     agent.clarify_callback = clarify_callback
-    agent.drive_preview_callback = drive_preview_callback
     agent.step_callback = step_callback
     agent.stream_delta_callback = stream_delta_callback
     agent.interim_assistant_callback = interim_assistant_callback
@@ -1086,10 +1081,6 @@ def init_agent(
         missing_reqs = [name for name, available in requirements.items() if not available]
         if missing_reqs:
             print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
-    
-    # Show trajectory saving status
-    if agent.save_trajectories and not agent.quiet_mode:
-        print("📝 Trajectory saving enabled")
     
     # Show ephemeral system prompt status
     if agent.ephemeral_system_prompt and not agent.quiet_mode:

@@ -400,15 +400,6 @@ def load_cli_config() -> Dict[str, Any]:
             "home_mode": "auto",
             "lifetime_seconds": 300,
         },
-        "browser": {
-            "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
-            "record_sessions": False,  # Auto-record browser sessions as WebM videos
-            "engine": "auto",  # Browser engine: auto (Chrome), lightpanda, chrome
-            "camofox": {
-                "rewrite_loopback_urls": False,
-                "loopback_host_alias": "host.docker.internal",
-            },
-        },
         "compaction": {
             "enabled": True,      # Auto-compact when approaching context limit
             "threshold": 0.50,    # Compact at 50% of model's context limit
@@ -633,16 +624,6 @@ def load_cli_config() -> Dict[str, Any]:
                     os.environ[env_var] = json.dumps(val)
                 else:
                     os.environ[env_var] = str(val)
-    
-    # Apply browser config to environment variables
-    browser_config = defaults.get("browser", {})
-    browser_env_mappings = {
-        "inactivity_timeout": "BROWSER_INACTIVITY_TIMEOUT",
-    }
-    
-    for config_key, env_var in browser_env_mappings.items():
-        if config_key in browser_config:
-            os.environ[env_var] = str(browser_config[config_key])
     
     # Apply auxiliary model/direct-endpoint overrides to environment variables.
     # Vision and web_extract each have their own provider/model/base_url/api_key tuple.
@@ -955,12 +936,6 @@ def _prepare_deferred_agent_startup() -> None:
 
         _hooks_cfg = load_config()
         register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
-
-        from agent.outbound_webhooks import (
-            register_from_config as register_outbound_webhooks,
-        )
-
-        register_outbound_webhooks(_hooks_cfg)
     except Exception:
         logger.debug(
             "shell-hook registration failed at deferred CLI startup",

@@ -14,8 +14,7 @@ FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch"})
 # MCP tools stay effect-capable by default.
 NO_EFFECT_TOOL_NAMES = frozenset({
     "read_file", "search_files", "session_search",
-    "web_extract", "web_search", "vision_analyze", "browser_snapshot",
-    "browser_get_images", "browser_console", "read_terminal",
+    "web_extract", "web_search", "vision_analyze", "read_terminal",
 })
 
 

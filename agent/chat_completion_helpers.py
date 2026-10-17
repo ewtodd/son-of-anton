@@ -70,35 +70,6 @@ def _context_thread_target(callback):
     return lambda: context.run(callback)
 
 
-def _join_worker_for_relay_teardown(worker, *, label: str) -> None:
-    """Bounded worker join before raising InterruptedError (#81521).
-
-    Raising immediately lets turn teardown (finish_logical_calls /
-    end_turn / close_session) race a still-open Relay physical LLM scope
-    and corrupt the LIFO stack — "scope handle is not at the top of the
-    stack" → CLI EIO / redraw storm.  Only joins when Relay managed
-    execution is actually live: when no Relay consumers are registered
-    there is no scope to unwind, and the join would just delay interrupt
-    detection (tests/run_agent/test_interrupt_propagation.py).
-    """
-    try:
-        from agent import relay_runtime
-
-        runtime = relay_runtime.get_runtime(create=False)
-        if runtime is None or not runtime.managed_execution_enabled():
-            return
-    except Exception:
-        return
-    worker.join(timeout=2.0)
-    if worker.is_alive():
-        logger.warning(
-            "%s worker still alive after interrupt abort (2.0s join "
-            "timeout); Relay teardown will best-effort drain orphaned "
-            "scopes (#81521).",
-            label,
-        )
-
-
 def _ra():
     """Lazy ``run_agent`` reference.
 
@@ -1269,12 +1240,6 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 _close_request_client_once("interrupt_abort")
             except Exception:
                 pass
-            # #81521 (sibling of the streaming-path fix): wait for the worker
-            # to unwind Relay-managed scopes before surfacing
-            # InterruptedError, so turn teardown cannot race a still-open
-            # physical scope and corrupt the LIFO stack. No-op when Relay
-            # managed execution is not live.
-            _join_worker_for_relay_teardown(t, label="Non-streaming")
             raise InterruptedError("Agent interrupted during API call")
     if result["error"] is not None:
         raise result["error"]
@@ -2088,28 +2053,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
     )
 
-    summary_api_request_id = f"iteration-summary:{uuid.uuid4()}"
-    summary_call_outcome = "failed"
-
-    def _managed_summary_call(request, callback, *, retry_count: int):
-        from agent import relay_llm
-
-        return relay_llm.execute_current(
-            request,
-            callback,
-            name=str(getattr(agent, "provider", "") or "provider"),
-            model_name=str(getattr(agent, "model", "") or ""),
-            metadata={
-                "api_mode": str(
-                    getattr(agent, "api_mode", "") or "chat_completions"
-                ),
-                "api_request_id": summary_api_request_id,
-                "call_role": "iteration_summary",
-                "retry_count": retry_count,
-            },
-            defer_logical_completion=True,
-        )
-
     # Shared constant so compaction recognizers can identify this runtime nudge
     # by its stable content after SessionDB projection strips metadata flags
     # (see MAX_ITERATIONS_SUMMARY_REQUEST / _is_synthetic_compaction_user_turn).
@@ -2296,11 +2239,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         summary_client = agent._ensure_primary_openai_client(
             reason="iteration_limit_summary"
         )
-        summary_response = _managed_summary_call(
-            summary_kwargs,
-            lambda request: summary_client.chat.completions.create(**request),
-            retry_count=0,
-        )
+        summary_response = summary_client.chat.completions.create(**summary_kwargs)
         _summary_result = agent._get_transport().normalize_response(summary_response)
         final_response = (_summary_result.content or "").strip()
 
@@ -2308,7 +2247,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if "<think>" in final_response:
                 final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
             if final_response:
-                summary_call_outcome = "success"
                 append_message(
                     messages,
                     {"role": "assistant", "content": final_response},
@@ -2334,11 +2272,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             summary_client = agent._ensure_primary_openai_client(
                 reason="iteration_limit_summary_retry"
             )
-            summary_response = _managed_summary_call(
-                summary_kwargs,
-                lambda request: summary_client.chat.completions.create(**request),
-                retry_count=1,
-            )
+            summary_response = summary_client.chat.completions.create(**summary_kwargs)
             _retry_result = agent._get_transport().normalize_response(summary_response)
             final_response = (_retry_result.content or "").strip()
 
@@ -2346,7 +2280,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 if "<think>" in final_response:
                     final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
                 if final_response:
-                    summary_call_outcome = "success"
                     append_message(
                         messages,
                         {"role": "assistant", "content": final_response},
@@ -2359,13 +2292,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
         final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
-    finally:
-        from agent import relay_llm
-
-        relay_llm.complete_logical_call(
-            summary_api_request_id,
-            outcome=summary_call_outcome,
-        )
 
     return final_response
 
@@ -2773,11 +2699,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _writer_token["value"] = claim_stream_writer(agent)
 
         def _accept_stream_chunk(_chunk: Any) -> bool:
-            # A stale-attempt fence can win while Relay is handing an
-            # already-received tool-call chunk back to Son of Anton. Preserve only
-            # the fact that a tool call was in flight so retry policy does not
-            # misclassify the attempt as a partial text response. The chunk
-            # itself is still rejected below and never reaches callbacks.
+            # A stale-attempt fence can win against an already-received
+            # tool-call chunk. Preserve only the fact that a tool call was in
+            # flight so retry policy does not misclassify the attempt as a
+            # partial text response. The chunk itself is still rejected below
+            # and never reaches callbacks.
             try:
                 choices = getattr(_chunk, "choices", None)
                 delta = getattr(choices[0], "delta", None) if choices else None
@@ -2796,58 +2722,26 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     api_kwargs.get("model", "unknown"),
                 )
                 return False
-            # Record provider activity before Relay processes the chunk. This
-            # prevents the stale watchdog from cancelling a live stream while
-            # an interceptor or codec is still handling an already-received
-            # event.
             last_chunk_time["t"] = time.time()
             return True
 
-        def _relay_final_response() -> dict[str, Any]:
-            tool_calls = [tool_calls_acc[index] for index in sorted(tool_calls_acc)]
-            return {
-                "model": model_name,
-                "choices": [
-                    {
-                        "message": {
-                            "role": role,
-                            "content": "".join(content_parts) or None,
-                            "reasoning_content": "".join(reasoning_parts) or None,
-                            "tool_calls": tool_calls or None,
-                        },
-                        "finish_reason": finish_reason or "stop",
-                    }
-                ],
-                "usage": usage_obj,
-            }
+        raw_stream = _open_stream(api_kwargs)
+        # Some OpenAI-compatible adapters accept ``stream=True`` but return a
+        # completed response; that is handled after the (empty) chunk loop.
+        completed_response = raw_stream if hasattr(raw_stream, "choices") else None
+        if completed_response is None:
+            _set_managed_stream(raw_stream)
+            _stream_created(raw_stream)
 
-        from agent import relay_llm
+        def _accepted_chunks():
+            if completed_response is not None:
+                return
+            for chunk in raw_stream:
+                if not _accept_stream_chunk(chunk):
+                    return
+                yield chunk
 
-        stream = _set_managed_stream(
-            relay_llm.stream(
-                api_kwargs,
-                _open_stream,
-                session_id=str(getattr(agent, "session_id", "") or ""),
-                name=str(getattr(agent, "provider", "") or "provider"),
-                model_name=str(getattr(agent, "model", "") or ""),
-                finalizer=_relay_final_response,
-                on_stream_created=_stream_created,
-                accept_chunk=_accept_stream_chunk,
-                completed_response_predicate=lambda value: hasattr(value, "choices"),
-                metadata={
-                    "api_mode": "chat_completions",
-                    "api_request_id": getattr(agent, "_current_api_request_id", None),
-                    "call_role": (
-                        "delegated"
-                        if getattr(agent, "is_subagent", False)
-                        else "fallback"
-                        if int(getattr(agent, "_fallback_index", 0) or 0) > 0
-                        else "primary"
-                    ),
-                },
-                defer_logical_completion=True,
-            )
-        )
+        stream = _accepted_chunks()
         pending_text_parts: list[str] = []
 
         def _flush_pending_stream_text():
@@ -3105,11 +2999,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 f"stream attempt {stream_attempt_id} was superseded"
             )
 
-        # Some OpenAI-compatible adapters accept ``stream=True`` but return a
-        # completed response. Relay records that attempt while Son of Anton preserves
-        # its existing switch-to-non-streaming behavior for later calls.
-        if stream.final_response is not None:
-            final_response = stream.final_response
+        # A completed response in place of a stream switches this session to
+        # non-streaming for later calls.
+        if completed_response is not None:
+            final_response = completed_response
             logger.info(
                 "Streaming request returned a final response object instead of "
                 "an iterator; switching %s/%s to non-streaming for this session.",
@@ -3779,15 +3672,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _close_request_client_once("stream_interrupt_abort")
             except Exception:
                 pass
-            # Wait for the worker to unwind Relay-managed stream scopes
-            # (physical LLM + deferred logical) before surfacing
-            # InterruptedError. Raising immediately lets turn teardown
-            # (finish_logical_calls / end_turn / close_session) race a
-            # still-open physical scope and corrupt the LIFO stack —
-            # "scope handle is not at the top of the stack" → CLI EIO /
-            # redraw storm (#81521). No-op when Relay managed execution
-            # is not live.
-            _join_worker_for_relay_teardown(t, label="Streaming")
             raise InterruptedError("Agent interrupted during streaming API call")
     # Worker thread exited before the main thread's poll loop could check
     # the interrupt flag.  If the worker returned early due to an interrupt

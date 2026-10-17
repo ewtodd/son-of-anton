@@ -699,10 +699,7 @@ from son_of_anton_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS  
 # Track which env vars were introduced in each config version.
 # Migration only mentions vars new since the user's previous version.
 ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
-    3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
-    4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
     5: ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
-    10: ["TAVILY_API_KEY"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -903,15 +900,11 @@ def _is_env_config_key(key: str) -> bool:
         return False
     key_upper = key.upper()
     api_keys = [
-        'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
-        'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
-        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
-        'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
-        'FAL_KEY', 'DISCORD_BOT_TOKEN',
+        'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+        'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
         'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
-        'GITHUB_TOKEN', 'HONCHO_API_KEY',
+        'GITHUB_TOKEN',
     ]
     return (
         key_upper in api_keys
@@ -4200,16 +4193,9 @@ def show_config():
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
     
-    # Only credentials a shipped tool actually reads. The voice, browser, and
-    # image-generation tools left the fork with their toolsets; their keys kept
-    # being printed here, inviting people to configure services nothing would
-    # ever call. The search and scrape keys below are read by tools/web_tools.py.
+    # Only credentials a shipped tool actually reads.
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
-        ("EXA_API_KEY", "Exa"),
-        ("PARALLEL_API_KEY", "Parallel"),
-        ("FIRECRAWL_API_KEY", "Firecrawl"),
-        ("TAVILY_API_KEY", "Tavily"),
     ]
     
     for env_key, name in keys:

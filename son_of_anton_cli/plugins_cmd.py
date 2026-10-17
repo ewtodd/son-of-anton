@@ -197,18 +197,8 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     trusted and never prompted.
     """
     from rich.console import Console
-    from son_of_anton_cli.relay_plugin_cutover import (
-        LEGACY_RELAY_PLUGIN_KEYS,
-        RELAY_PLUGINS_CONFIG_ENV,
-    )
 
     console = Console()
-    if name in LEGACY_RELAY_PLUGIN_KEYS:
-        console.print(
-            f"[red]Plugin '{name}' was removed.[/red] Relay lifecycle is owned "
-            f"by Son of Anton core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."
-        )
-        sys.exit(1)
 
     # Discover the plugin — check installed (user) AND bundled, including
     # nested category plugins — and normalize to its canonical registry key.
@@ -217,13 +207,6 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
     key, source = resolved
-
-    if key in LEGACY_RELAY_PLUGIN_KEYS:
-        console.print(
-            f"[red]Plugin '{key}' was removed.[/red] Relay lifecycle is owned "
-            f"by Son of Anton core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."
-        )
-        sys.exit(1)
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()

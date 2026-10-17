@@ -34,7 +34,6 @@ Payment / credit exhaustion fallback:
 
 import contextlib
 import contextvars
-import functools
 import hashlib
 import inspect
 import logging
@@ -42,7 +41,6 @@ import os
 import re
 import threading
 import time
-import uuid
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING
@@ -1338,77 +1336,6 @@ _RUNTIME_MAIN_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
     contextvars.ContextVar("auxiliary_runtime_main", default=None)
 )
 
-_RELAY_AUX_CALL_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = (
-    contextvars.ContextVar("auxiliary_relay_call", default=None)
-)
-
-
-def _relay_auxiliary_call(callback):
-    """Give every physical retry in one auxiliary call a shared Relay identity."""
-
-    @functools.wraps(callback)
-    def wrapped(*args, **kwargs):
-        task = args[0] if args else kwargs.get("task")
-        token = _RELAY_AUX_CALL_CONTEXT.set({
-            "task": str(task or "unknown"),
-            "request_id": f"aux-{uuid.uuid4().hex}",
-            "attempt_count": 0,
-            "provider": "",
-            "model": "",
-            "response_model": None,
-            "api_mode": "chat_completions",
-        })
-        try:
-            return callback(*args, **kwargs)
-        except BaseException:
-            _fail_relay_auxiliary_call()
-            raise
-        finally:
-            _RELAY_AUX_CALL_CONTEXT.reset(token)
-
-    return wrapped
-
-
-def _relay_auxiliary_call_async(callback):
-    """Async counterpart to :func:`_relay_auxiliary_call`."""
-
-    @functools.wraps(callback)
-    async def wrapped(*args, **kwargs):
-        task = args[0] if args else kwargs.get("task")
-        token = _RELAY_AUX_CALL_CONTEXT.set({
-            "task": str(task or "unknown"),
-            "request_id": f"aux-{uuid.uuid4().hex}",
-            "attempt_count": 0,
-            "provider": "",
-            "model": "",
-            "response_model": None,
-            "api_mode": "chat_completions",
-        })
-        try:
-            return await callback(*args, **kwargs)
-        except BaseException:
-            _fail_relay_auxiliary_call()
-            raise
-        finally:
-            _RELAY_AUX_CALL_CONTEXT.reset(token)
-
-    return wrapped
-
-
-def _set_relay_auxiliary_route(
-    provider: str | None,
-    model: str | None,
-    api_mode: str | None,
-) -> None:
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is None:
-        return
-    context["provider"] = str(provider or "auxiliary")
-    context["model"] = str(model or "unknown")
-    context["response_model"] = None
-    context["api_mode"] = str(api_mode or "chat_completions")
-
-
 def _record_route_info(
     route_info: Optional[Dict[str, str]],
     provider: Optional[str],
@@ -1420,27 +1347,6 @@ def _record_route_info(
         route_info["model"] = model or "default"
 
 
-def _relay_auxiliary_metadata(
-    *,
-    provider: str | None = None,
-    api_mode: str | None = None,
-) -> tuple[str, str, dict[str, Any]] | None:
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is None:
-        return None
-    attempt_count = int(context.get("attempt_count") or 0)
-    context["attempt_count"] = attempt_count + 1
-    provider_name = str(provider or context.get("provider") or "auxiliary")
-    model_name = str(context.get("model") or "unknown")
-    return provider_name, model_name, {
-        "api_mode": str(api_mode or context.get("api_mode") or "chat_completions"),
-        "api_request_id": str(context["request_id"]),
-        "call_role": f"auxiliary:{context['task']}",
-        "retry_count": attempt_count,
-        "auxiliary_task": str(context["task"]),
-    }
-
-
 def _relay_sync_completion(
     client: Any,
     kwargs: dict[str, Any],
@@ -1450,23 +1356,10 @@ def _relay_sync_completion(
     create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
     callback = create or (lambda request: client.chat.completions.create(**request))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     # Protected compaction calls isolate only the provider callback and stream
     # aggregation.  The owning thread remains free to unwind its lease/DB
     # transaction on hard cancel without touching the process-shared client.
-    if route is None:
-        return _run_protected_sync_provider_call(callback, kwargs)
-    provider_name, fallback_model, metadata = route
-    from agent import relay_llm
-
-    return relay_llm.execute_current(
-        kwargs,
-        lambda request: _run_protected_sync_provider_call(callback, request),
-        name=provider_name,
-        model_name=str(kwargs.get("model") or fallback_model),
-        metadata=metadata,
-        defer_logical_completion=True,
-    )
+    return _run_protected_sync_provider_call(callback, kwargs)
 
 
 async def _relay_async_completion(
@@ -1478,20 +1371,7 @@ async def _relay_async_completion(
     create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
     callback = create or (lambda request: client.chat.completions.create(**request))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
-    if route is None:
-        return await callback(kwargs)
-    provider_name, fallback_model, metadata = route
-    from agent import relay_llm
-
-    return await relay_llm.execute_current_async(
-        kwargs,
-        callback,
-        name=provider_name,
-        model_name=str(kwargs.get("model") or fallback_model),
-        metadata=metadata,
-        defer_logical_completion=True,
-    )
+    return await callback(kwargs)
 
 
 def _relay_sync_stream(
@@ -1501,21 +1381,9 @@ def _relay_sync_stream(
     provider: str | None = None,
     api_mode: str | None = None,
 ) -> Any:
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
-    if route is None:
-        return client.chat.completions.create(**kwargs)
-    provider_name, fallback_model, metadata = route
-    from agent import relay_llm
+    return client.chat.completions.create(**kwargs)
 
-    return relay_llm.stream_current(
-        kwargs,
-        lambda request: client.chat.completions.create(**request),
-        name=provider_name,
-        model_name=str(kwargs.get("model") or fallback_model),
-        finalizer=dict,
-        metadata=metadata,
-        completed_response_predicate=lambda value: hasattr(value, "choices"),
-    )
+
 _RUNTIME_MAIN_COMPAT_SNAPSHOT: Tuple[Any, ...] = ("", "", "", "", "", "")
 _RUNTIME_MAIN_COMPAT_LOCK = threading.Lock()
 
@@ -5518,8 +5386,6 @@ def _validate_llm_response(
     except (AttributeError, TypeError, IndexError) as exc:
         recovered = _recover_aux_response_message(response)
         if recovered is not None:
-            _record_relay_auxiliary_response_model(response)
-            _complete_relay_auxiliary_call()
             return recovered
         response_type = type(response).__name__
         response_preview = str(response)[:120]
@@ -5529,49 +5395,7 @@ def _validate_llm_response(
             f"Expected object with .choices[0].message — check provider "
             f"adapter or custom endpoint compatibility."
         ) from exc
-    _record_relay_auxiliary_response_model(response)
-    _complete_relay_auxiliary_call()
     return response
-
-
-def _complete_relay_auxiliary_call(*, outcome: str = "success") -> None:
-    """Close one auxiliary logical call after acceptance or terminal failure."""
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is None:
-        return
-    from agent import relay_llm
-
-    relay_llm.complete_logical_call(
-        str(context.get("request_id") or ""),
-        outcome=outcome,
-        model_name=str(context.get("model") or "unknown"),
-        provider_name=str(context.get("provider") or "auxiliary"),
-        response_model_name=context.get("response_model"),
-    )
-
-
-def _record_relay_auxiliary_response_model(response: Any) -> None:
-    """Retain the provider-reported model for terminal route attribution."""
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is None:
-        return
-    if isinstance(response, dict):
-        model = response.get("model")
-    else:
-        model = getattr(response, "model", None)
-    if isinstance(model, str) and model.strip():
-        context["response_model"] = model
-
-
-def _fail_relay_auxiliary_call() -> None:
-    """Close a terminally failed call without replacing its original error."""
-    try:
-        _complete_relay_auxiliary_call(outcome="failed")
-    except Exception:
-        logger.warning(
-            "Relay auxiliary failure finalization failed",
-            exc_info=True,
-        )
 
 
 def _recover_aux_response_message(response: Any) -> Optional[Any]:
@@ -5946,7 +5770,6 @@ async def _acreate_with_stream(
     )
 
 
-@_relay_auxiliary_call
 def call_llm_text_completion(
     *,
     task: str,
@@ -6231,11 +6054,6 @@ def _call_llm_impl(
 
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
-    _set_relay_auxiliary_route(
-        request_provider,
-        final_model,
-        resolved_api_mode,
-    )
     _record_route_info(
         route_info, _fallback_provider_from_label(request_provider), final_model
     )
@@ -6752,7 +6570,6 @@ def extract_content_or_reasoning(response) -> str:
     return ""
 
 
-@_relay_auxiliary_call_async
 async def async_call_llm(
     task: str = None,
     *,
@@ -6903,11 +6720,6 @@ async def _async_call_llm_impl(
 
     effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
-    _set_relay_auxiliary_route(
-        request_provider,
-        final_model,
-        resolved_api_mode,
-    )
     _record_route_info(
         route_info, _fallback_provider_from_label(request_provider), final_model
     )

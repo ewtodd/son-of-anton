@@ -6,7 +6,6 @@ Each function takes the parent ``AIAgent`` as its first argument
 keeps thin forwarders for backward compatibility.
 
 Methods covered:
-* ``convert_to_trajectory_format`` — internal -> trajectory-file format
 * ``sanitize_tool_call_arguments`` — repair corrupted JSON in tool_calls
 * ``repair_message_sequence`` — enforce alternation invariants
 * ``strip_think_blocks`` — remove inline reasoning from stored content
@@ -35,8 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from son_of_anton_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import _FULL_ARGS_LOG_BOUND
 from agent.prompt_builder import format_steer_marker
-from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
-from agent.trajectory import convert_scratchpad_to_think
+from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.credential_pool import STATUS_EXHAUSTED, credential_pool_matches_provider
 from agent.error_classifier import FailoverReason
 from agent.turn_context import drop_stale_api_content
@@ -88,176 +86,6 @@ def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
     import run_agent
     return run_agent
-
-
-def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
-    """
-    Convert internal message format to trajectory format for saving.
-    
-    Args:
-        messages (List[Dict]): Internal message history
-        user_query (str): Original user query
-        completed (bool): Whether the conversation completed successfully
-        
-    Returns:
-        List[Dict]: Messages in trajectory format
-    """
-    # Normalize multimodal tool results — trajectories are text-only, so
-    # replace image-bearing tool messages with their text_summary to avoid
-    # embedding ~1MB base64 blobs into every saved trajectory.
-    messages = [_trajectory_normalize_msg(m) for m in messages]
-    trajectory = []
-    
-    # Add system message with tool definitions
-    system_msg = (
-        "You are a function calling AI model. You are provided with function signatures within <tools> </tools> XML tags. "
-        "You may call one or more functions to assist with the user query. If available tools are not relevant in assisting "
-        "with user query, just respond in natural conversational language. Don't make assumptions about what values to plug "
-        "into functions. After calling & executing the functions, you will be provided with function results within "
-        "<tool_response> </tool_response> XML tags. Here are the available tools:\n"
-        f"<tools>\n{agent._format_tools_for_system_message()}\n</tools>\n"
-        "For each function call return a JSON object, with the following pydantic model json schema for each:\n"
-        "{'title': 'FunctionCall', 'type': 'object', 'properties': {'name': {'title': 'Name', 'type': 'string'}, "
-        "'arguments': {'title': 'Arguments', 'type': 'object'}}, 'required': ['name', 'arguments']}\n"
-        "Each function call should be enclosed within <tool_call> </tool_call> XML tags.\n"
-        "Example:\n<tool_call>\n{'name': <function-name>,'arguments': <args-dict>}\n</tool_call>"
-    )
-    
-    trajectory.append({
-        "from": "system",
-        "value": system_msg
-    })
-    
-    # Add the actual user prompt (from the dataset) as the first human message
-    trajectory.append({
-        "from": "human",
-        "value": user_query
-    })
-    
-    # Skip the first message (the user query) since we already added it above.
-    # Prefill messages are injected at API-call time only (not in the messages
-    # list), so no offset adjustment is needed here.
-    i = 1
-    
-    while i < len(messages):
-        msg = messages[i]
-        
-        if msg["role"] == "assistant":
-            # Check if this message has tool calls
-            if "tool_calls" in msg and msg["tool_calls"]:
-                # Format assistant message with tool calls
-                # Add <think> tags around reasoning for trajectory storage
-                content = ""
-                
-                # Prepend reasoning in <think> tags if available (native thinking tokens)
-                if msg.get("reasoning") and msg["reasoning"].strip():
-                    content = f"<think>\n{msg['reasoning']}\n</think>\n"
-                
-                if msg.get("content") and msg["content"].strip():
-                    # Convert any <REASONING_SCRATCHPAD> tags to <think> tags
-                    # (used when native thinking is disabled and model reasons via XML)
-                    content += convert_scratchpad_to_think(msg["content"]) + "\n"
-                
-                # Add tool calls wrapped in XML tags
-                for tool_call in msg["tool_calls"]:
-                    if not tool_call or not isinstance(tool_call, dict): continue
-                    # Parse arguments - should always succeed since we validate during conversation
-                    # but keep try-except as safety net
-                    try:
-                        arguments = json.loads(tool_call["function"]["arguments"]) if isinstance(tool_call["function"]["arguments"], str) else tool_call["function"]["arguments"]
-                    except json.JSONDecodeError:
-                        # This shouldn't happen since we validate and retry during conversation,
-                        # but if it does, log warning and use empty dict
-                        logger.warning("Unexpected invalid JSON in trajectory conversion: %s", tool_call['function']['arguments'][:100])
-                        arguments = {}
-                    
-                    tool_call_json = {
-                        "name": tool_call["function"]["name"],
-                        "arguments": arguments
-                    }
-                    content += f"<tool_call>\n{json.dumps(tool_call_json, ensure_ascii=False)}\n</tool_call>\n"
-                
-                # Ensure every gpt turn has a <think> block (empty if no reasoning)
-                # so the format is consistent for training data
-                if "<think>" not in content:
-                    content = "<think>\n</think>\n" + content
-                
-                trajectory.append({
-                    "from": "gpt",
-                    "value": content.rstrip()
-                })
-                
-                # Collect all subsequent tool responses
-                tool_responses = []
-                j = i + 1
-                while j < len(messages) and messages[j]["role"] == "tool":
-                    tool_msg = messages[j]
-                    # Format tool response with XML tags
-                    tool_response = "<tool_response>\n"
-                    
-                    # Try to parse tool content as JSON if it looks like JSON
-                    tool_content = tool_msg["content"]
-                    try:
-                        if tool_content.strip().startswith(("{", "[")):
-                            tool_content = json.loads(tool_content)
-                    except (json.JSONDecodeError, AttributeError):
-                        pass  # Keep as string if not valid JSON
-                    
-                    tool_index = len(tool_responses)
-                    tool_name = (
-                        msg["tool_calls"][tool_index]["function"]["name"]
-                        if tool_index < len(msg["tool_calls"])
-                        else "unknown"
-                    )
-                    tool_response += json.dumps({
-                        "tool_call_id": tool_msg.get("tool_call_id", ""),
-                        "name": tool_name,
-                        "content": tool_content
-                    }, ensure_ascii=False)
-                    tool_response += "\n</tool_response>"
-                    tool_responses.append(tool_response)
-                    j += 1
-                
-                # Add all tool responses as a single message
-                if tool_responses:
-                    trajectory.append({
-                        "from": "tool",
-                        "value": "\n".join(tool_responses)
-                    })
-                    i = j - 1  # Skip the tool messages we just processed
-            
-            else:
-                # Regular assistant message without tool calls
-                # Add <think> tags around reasoning for trajectory storage
-                content = ""
-                
-                # Prepend reasoning in <think> tags if available (native thinking tokens)
-                if msg.get("reasoning") and msg["reasoning"].strip():
-                    content = f"<think>\n{msg['reasoning']}\n</think>\n"
-                
-                # Convert any <REASONING_SCRATCHPAD> tags to <think> tags
-                # (used when native thinking is disabled and model reasons via XML)
-                raw_content = msg["content"] or ""
-                content += convert_scratchpad_to_think(raw_content)
-                
-                # Ensure every gpt turn has a <think> block (empty if no reasoning)
-                if "<think>" not in content:
-                    content = "<think>\n</think>\n" + content
-                
-                trajectory.append({
-                    "from": "gpt",
-                    "value": content.strip()
-                })
-        
-        elif msg["role"] == "user":
-            trajectory.append({
-                "from": "human",
-                "value": msg["content"]
-            })
-        
-        i += 1
-    
-    return trajectory
 
 
 def sanitize_tool_call_arguments(
@@ -2884,37 +2712,6 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 ),
                 next_args,
             )
-    elif function_name == "drive_preview":
-        def _execute(next_args: dict) -> Any:
-            from tools.drive_preview_tool import drive_preview_tool as _drive_preview_tool
-            return _finish_agent_tool(
-                _drive_preview_tool(
-                    action=next_args.get("action", ""),
-                    ref=next_args.get("ref"),
-                    selector=next_args.get("selector"),
-                    text=next_args.get("text"),
-                    key=next_args.get("key"),
-                    submit=next_args.get("submit"),
-                    amount=next_args.get("amount"),
-                    to=next_args.get("to"),
-                    limit=next_args.get("max"),
-                    callback=getattr(agent, "drive_preview_callback", None),
-                ),
-                next_args,
-            )
-    elif function_name == "annotate_preview":
-        def _execute(next_args: dict) -> Any:
-            from tools.annotate_preview_tool import annotate_preview_tool as _annotate_preview_tool
-            return _finish_agent_tool(
-                _annotate_preview_tool(
-                    action=next_args.get("action", "add"),
-                    ref=next_args.get("ref"),
-                    selector=next_args.get("selector"),
-                    label=next_args.get("label"),
-                    callback=getattr(agent, "drive_preview_callback", None),
-                ),
-                next_args,
-            )
     elif function_name == "delegate_task":
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
@@ -3958,7 +3755,6 @@ def force_close_tcp_sockets(client: Any) -> int:
 
 
 __all__ = [
-    "convert_to_trajectory_format",
     "sanitize_tool_call_arguments",
     "repair_message_sequence",
     "strip_think_blocks",

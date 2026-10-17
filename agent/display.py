@@ -18,7 +18,6 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from utils import safe_json_loads, strip_decorative_glyphs
-from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed
 
 # ANSI escape codes for coloring tool failure indicators
@@ -406,23 +405,6 @@ def _read_file_line_label(args: dict) -> str:
     return f"L{offset}-{offset + limit - 1}"
 
 
-def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | None:
-    """Return a copy of tool args safe for logs/progress UI.
-
-    For ``browser_type`` the ``text`` argument is run through the same
-    secret-pattern redactor used for logs.  Recognizable credentials (API
-    keys, tokens) are masked before the value reaches tool progress
-    notifications; normal typed text is left intact for debuggability.
-    """
-    if not isinstance(args, dict):
-        return args
-    if tool_name == "browser_type" and isinstance(args.get("text"), str):
-        safe_args = dict(args)
-        safe_args["text"] = redact_sensitive_text(args["text"], force=True)
-        return safe_args
-    return args
-
-
 def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, list[str]]:
     if not isinstance(tasks, list):
         return 0, []
@@ -436,22 +418,6 @@ def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, li
     return len(goals), goals
 
 
-def _browser_exec_step_label(args: dict, max_chars: int = 80) -> str | None:
-    """User-friendly step label from browser_exec code's leading comment."""
-    code = str(args.get("code", "") or "").strip()
-    if not code:
-        return None
-    first = code.split("\n", 1)[0].strip()
-    if not first.startswith("#"):
-        return None
-    label = first.lstrip("#").strip()
-    if not label:
-        return None
-    if len(label) > max_chars:
-        label = label[: max_chars - 1] + "…"
-    return label
-
-
 def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
     """Build a short preview of a tool call's primary argument for display.
 
@@ -462,26 +428,15 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         max_len = _tool_preview_max_len
     if not args:
         return None
-    args = redact_tool_args_for_display(tool_name, args) or args
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",
-        "search_files": "pattern", "browser_navigate": "url",
-        "browser_click": "ref", "browser_type": "text",
-        "image_generate": "prompt", "text_to_speech": "text",
+        "search_files": "pattern",
         "vision_analyze": "question",
         "cronjob": "action",
-        "execute_code": "code", "browser_exec": "code", "delegate_task": "goal",
+        "execute_code": "code", "delegate_task": "goal",
         "clarify": "question",
     }
-
-    # browser_exec: prefer the leading `# …` comment as a friendly step label
-    if tool_name == "browser_exec":
-        label = _browser_exec_step_label(args)
-        if label is not None:
-            return _truncate_preview(label, max_len)
-        preview = _oneline(str(args.get("code", "") or ""))
-        return _truncate_preview(preview, max_len) if preview else None
 
     # delegate_task: show goal (single) or individual task goals (batch)
     if tool_name == "delegate_task":
@@ -637,18 +592,12 @@ def prepare_tool_preview(
 _TOOL_VERBS: dict[str, str] = {
     "web_search": "Searching the web",
     "web_extract": "Reading",
-    "browser_navigate": "Browsing",
-    "browser_click": "Clicking",
-    "browser_type": "Typing",
     "read_file": "Reading",
     "write_file": "Writing",
     "patch": "Editing",
     "search_files": "Searching files",
     "terminal": "Running",
     "execute_code": "Running code",
-    "image_generate": "Generating image",
-    "video_generate": "Generating video",
-    "text_to_speech": "Generating speech",
     "vision_analyze": "Looking at the image",
     "session_search": "Searching past sessions",
     "delegate_task": "Delegating",
@@ -1341,7 +1290,6 @@ def _get_cute_tool_message(
     When *result* is provided the line is checked for failure indicators.
     Failed tool calls get a red prefix and an informational suffix.
     """
-    args = redact_tool_args_for_display(tool_name, args) or args
     dur = f"{_DIM}{duration:.1f}s{_ANSI_RESET}"
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     skin_prefix = get_skin_tool_prefix()
@@ -1400,29 +1348,6 @@ def _get_cute_tool_message(
         target = args.get("target", "content")
         verb = "find" if target == "files" else "grep"
         return _wrap(f"┊ 🔎 {verb:9} {pattern}  {dur}")
-    if tool_name == "browser_navigate":
-        url = args.get("url", "")
-        domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-        return _wrap(f"┊ 🌐 navigate  {_trunc(domain, 35)}  {dur}")
-    if tool_name == "browser_snapshot":
-        mode = "full" if args.get("full") else "compact"
-        return _wrap(f"┊ 📸 snapshot  {mode}  {dur}")
-    if tool_name == "browser_click":
-        return _wrap(f"┊ 👆 click     {args.get('ref', '?')}  {dur}")
-    if tool_name == "browser_type":
-        return _wrap(f"┊ ⌨️  type      \"{_trunc(args.get('text', ''), 30)}\"  {dur}")
-    if tool_name == "browser_scroll":
-        d = args.get("direction", "down")
-        arrow = {"down": "↓", "up": "↑", "right": "→", "left": "←"}.get(d, "↓")
-        return _wrap(f"┊ {arrow}  scroll    {d}  {dur}")
-    if tool_name == "browser_back":
-        return _wrap(f"┊ ◀️  back      {dur}")
-    if tool_name == "browser_press":
-        return _wrap(f"┊ ⌨️  press     {args.get('key', '?')}  {dur}")
-    if tool_name == "browser_get_images":
-        return _wrap(f"┊ 🖼️  images    extracting  {dur}")
-    if tool_name == "browser_vision":
-        return _wrap(f"┊ 👁️  vision    analyzing page  {dur}")
     if tool_name == "todo":
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
@@ -1466,10 +1391,6 @@ def _get_cute_tool_message(
             old = old if old else "<missing old_text>"
             return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(old, 20)}\"  {dur}")
         return _wrap(f"┊ 🧠 memory    {action}  {dur}")
-    if tool_name == "image_generate":
-        return _wrap(f"┊ 🎨 create    {_trunc(args.get('prompt', ''), 35)}  {dur}")
-    if tool_name == "text_to_speech":
-        return _wrap(f"┊ 🔊 speak     {_trunc(args.get('text', ''), 30)}  {dur}")
     if tool_name == "vision_analyze":
         return _wrap(f"┊ 👁️  vision    {_trunc(args.get('question', ''), 30)}  {dur}")
     if tool_name == "send_message":
@@ -1486,15 +1407,6 @@ def _get_cute_tool_message(
         code = args.get("code", "")
         first_line = code.strip().split("\n")[0] if code.strip() else ""
         return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
-    if tool_name == "browser_exec":
-        label = _browser_exec_step_label(args)
-        if label is not None:
-            # Leading `# …` comment (the tool description asks for one):
-            # surface it as the user-facing step label; the code itself stays
-            # collapsed behind display.tool_preview_length.
-            return _wrap(f"┊ 🌐 browser   {label}  {dur}")
-        code = " ".join(str(args.get("code", "") or "").split())
-        return _wrap(f"┊ 🌐 browser   {_trunc(code, 35)}  {dur}")
     if tool_name == "delegate_task":
         _action = str(args.get("action") or "").strip().lower()
         if _action in ("list", "steer", "stop"):
