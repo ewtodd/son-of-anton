@@ -2361,7 +2361,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._wal_active = (
                     apply_wal_with_fallback(self._conn, db_label="state.db") == "wal"
                 )
-                apply_database_pragmas(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._init_schema()
 
@@ -2520,7 +2519,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 isolation_level=None,
             )
             conn.row_factory = sqlite3.Row
-            apply_database_pragmas(conn, db_label="state.db")
         except sqlite3.Error:
             # A partially-constructed connection — _connect_tracked_db
             # succeeded, a pragma did not — must be closed here.
@@ -2977,7 +2975,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     apply_wal_with_fallback(new_conn, db_label="state.db")
                     == "wal"
                 )
-                apply_database_pragmas(new_conn, db_label="state.db")
                 new_conn.execute("PRAGMA foreign_keys=ON")
                 self._init_schema()
         except Exception as exc:

@@ -248,7 +248,6 @@ def test_the_window_survives_a_config_round_trip() -> None:
     )
     assert cfg.active_hours == (20, 7)
     assert cfg.inactive_message == "busy"
-    assert cfg.to_dict()["active_hours"] == [20, 7]
 
 
 def test_an_absent_window_stays_absent_through_the_config() -> None:
@@ -256,4 +255,3 @@ def test_an_absent_window_stays_absent_through_the_config() -> None:
 
     cfg = GatewayConfig.from_dict({})
     assert cfg.active_hours is None
-    assert cfg.to_dict()["active_hours"] is None

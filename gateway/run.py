@@ -17177,7 +17177,6 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
         cleanup_audio_cache,
         cleanup_document_cache,
         cleanup_image_cache,
-        cleanup_video_cache,
     )
     from tools.tool_result_storage import cleanup_spillover_cache
     from son_of_anton_cli.debug import _sweep_expired_pastes
@@ -17195,7 +17194,6 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
         ("Image", cleanup_image_cache),
         ("Document", cleanup_document_cache),
         ("Audio", cleanup_audio_cache),
-        ("Video", cleanup_video_cache),
         ("Spillover", cleanup_spillover_cache),
     )
 

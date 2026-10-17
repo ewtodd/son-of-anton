@@ -74,25 +74,10 @@ def test_endpoint_explicit_physics_base_url_wins(monkeypatch) -> None:
     assert _base_url(client) == "http://127.0.0.1:9999/v1"
 
 
-def test_endpoint_deepseek_default(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "autophysicist.llm._load_agent_config",
-        lambda: {
-            "model": {"provider": "deepseek", "default": "deepseek-v4"},
-            "physics": {},
-            "custom_providers": {},
-        },
-    )
-
-    class _Config:
-        model = ""
-        api_timeout = 5.0
-
-    client, _ = _resolve_endpoint(_Config())
-    assert _base_url(client) == "https://api.deepseek.com/v1"
-
-
-def test_endpoint_openai_default(monkeypatch) -> None:
+def test_endpoint_unconfigured_provider_falls_back_to_localhost(monkeypatch) -> None:
+    # No physics.base_url and no custom_providers entry for the provider name:
+    # the endpoint is the local fallback (the vendor-default table is gone —
+    # a cloud provider must be declared under custom_providers).
     monkeypatch.setattr(
         "autophysicist.llm._load_agent_config",
         lambda: {
@@ -108,7 +93,7 @@ def test_endpoint_openai_default(monkeypatch) -> None:
 
     client, model = _resolve_endpoint(_Config())
     assert model == "gpt-5"
-    assert _base_url(client) == "https://api.openai.com/v1"
+    assert _base_url(client) == "http://127.0.0.1:8080/v1"
 
 
 def test_endpoint_custom_provider_then_localhost_fallback(monkeypatch) -> None:

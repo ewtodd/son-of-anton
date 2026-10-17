@@ -764,6 +764,32 @@ def _strip_media_tag_directives(text: str) -> str:
     return cleaned
 
 
+def _platform_name(platform) -> str:
+    """Normalize a Platform enum / raw string into a lowercase name."""
+    value = getattr(platform, "value", platform)
+    return str(value or "").lower()
+
+
+# Import-time defaults; _resolve_cache_dir compares against these to tell a
+# test monkeypatch from an unmodified constant.
+_CACHE_DIR_IMPORT_DEFAULTS = {
+    "IMAGE_CACHE_DIR": IMAGE_CACHE_DIR,
+    "AUDIO_CACHE_DIR": AUDIO_CACHE_DIR,
+    "DOCUMENT_CACHE_DIR": DOCUMENT_CACHE_DIR,
+}
+
+
+def _resolve_cache_dir(constant_name: str, new_subpath: str, old_name: str) -> Path:
+    """Resolve fresh via get_son_of_anton_dir (active profile), unless a test has
+    monkeypatched the constant away from its import-time default."""
+    fresh = get_son_of_anton_dir(new_subpath, old_name)
+    current = globals().get(constant_name)
+    default = _CACHE_DIR_IMPORT_DEFAULTS.get(constant_name)
+    if current is not None and default is not None and current != default:
+        return Path(current)
+    return fresh
+
+
 def get_document_cache_dir() -> Path:
     """Return the document cache directory, creating it if it doesn't exist."""
     d = _resolve_cache_dir("DOCUMENT_CACHE_DIR", "cache/documents", "document_cache")
@@ -820,6 +846,14 @@ class MessageType(Enum):
     AUDIO = "audio"
     VOICE = "voice"
     DOCUMENT = "document"
+
+
+class ProcessingOutcome(Enum):
+    """Result classification for message-processing lifecycle hooks."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -905,6 +939,14 @@ class MessageEvent:
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
         return args
+
+
+@dataclass
+class TextDebounceState:
+    event: MessageEvent
+    task: asyncio.Task | None
+    first_ts: float
+    last_ts: float
 
 
 _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (

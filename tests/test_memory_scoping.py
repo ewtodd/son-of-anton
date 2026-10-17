@@ -119,9 +119,9 @@ def test_approved_write_routes_by_staged_scope() -> None:
 def test_scope_mapping_and_config_override() -> None:
     assert resolve_memory_scope("cli") == "cli"
     assert resolve_memory_scope("signal") == "gateway"
-    assert resolve_memory_scope("discord") == "gateway"
-    assert resolve_memory_scope("slack") == "gateway"
+    # Unknown front-ends (cron, delegates, removed platforms) get the shared store.
     assert resolve_memory_scope("cron") == "shared"
+    assert resolve_memory_scope("discord") == "shared"
     assert resolve_memory_scope("cron", {"memory": {"scope": "cli"}}) == "cli"
     assert resolve_memory_scope("signal", {"memory": {"scope": "bogus"}}) == "gateway"
 

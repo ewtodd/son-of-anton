@@ -13,10 +13,6 @@ DEFAULT_CONFIG = {
     # not crash-safe (for example macOS virtiofs, NFS, or SMB).
     "database": {
         "journal_mode": "wal",
-        # Optional WAL sizing pragmas, applied when set to integers.
-        # None = SQLite defaults (autocheckpoint 1000 pages, no size limit).
-        "wal_autocheckpoint": None,
-        "journal_size_limit": None,
     },
     # Soft file-descriptor limit for long-running Son of Anton server processes.
     # Clamped to the OS hard limit; 0/false/null disables the adjustment.

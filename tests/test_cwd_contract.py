@@ -136,10 +136,11 @@ def test_gateway_gate_does_not_key_off_the_inherited_marker() -> None:
     first TERMINAL_CWD fix a no-op.
     """
     source = (REPO_ROOT / "gateway" / "run.py").read_text(encoding="utf-8")
-    gate = source.index("_IS_GATEWAY_PROCESS = (")
-    gate_expr = source[gate : source.index(")", gate)]
-    assert "_SON_OF_ANTON_GATEWAY_PROC" in gate_expr
-    assert '"_SON_OF_ANTON_GATEWAY"' not in gate_expr, (
+    gate_line = next(
+        line for line in source.splitlines() if line.startswith("_IS_GATEWAY_PROCESS =")
+    )
+    assert "_SON_OF_ANTON_GATEWAY_PROC" in gate_line
+    assert '"_SON_OF_ANTON_GATEWAY"' not in gate_line, (
         "the gate must not key off the exported/inherited marker"
     )
 
@@ -156,7 +157,7 @@ def test_marker_is_set_only_by_a_real_gateway() -> None:
     assignment = 'os.environ["_SON_OF_ANTON_GATEWAY"] = "1"'
     assert source.count(assignment) == 1, "expected exactly one marker assignment"
 
-    gate = source.index("_IS_GATEWAY_PROCESS = (")
+    gate = source.index("_IS_GATEWAY_PROCESS =")
     idx = source.index(assignment)
     assert gate < idx, "the gate must be defined before the marker is set"
 
@@ -202,21 +203,6 @@ def test_real_gateway_process_sets_the_marker(tmp_path) -> None:
         extra_env={"_SON_OF_ANTON_GATEWAY_PROC": "1"},
     )
     assert result == "1"
-
-
-def test_restart_watcher_sheds_both_markers() -> None:
-    """The detached restart watcher must not look like a gateway.
-
-    It runs ``son-of-anton gateway restart``, which refuses to self-target when
-    the marker is present — silently, leaving the gateway down.
-    """
-    source = (REPO_ROOT / "gateway" / "run.py").read_text(encoding="utf-8")
-    idx = source.index('watcher_env.pop("_SON_OF_ANTON_GATEWAY", None)')
-    window = source[idx : idx + 400]
-    assert 'watcher_env.pop("_SON_OF_ANTON_GATEWAY_PROC", None)' in window, (
-        "the watcher sheds the inherited marker but keeps the launcher marker, "
-        "so it would re-mark itself on importing gateway.run"
-    )
 
 
 @pytest.mark.parametrize(

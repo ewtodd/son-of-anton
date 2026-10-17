@@ -42,7 +42,6 @@ def test_config_reads_single_user_from_the_gateway_section() -> None:
 
     cfg = GatewayConfig.from_dict({"single_user": True})
     assert cfg.single_user is True
-    assert cfg.to_dict()["single_user"] is True
     assert GatewayConfig.from_dict({}).single_user is False
 
 

@@ -117,7 +117,7 @@ def _manager(tmp_path):
         scratchpad=Scratchpad(tmp_path),
         workspace_root=tmp_path,
         iteration=1,
-        policy=SandboxPolicy(workspace=tmp_path, mode="off"),
+        policy=SandboxPolicy(workspace=tmp_path),
     )
 
 
@@ -351,7 +351,8 @@ def test_a_missing_module_retry_names_what_is_installed(monkeypatch, tmp_path) -
     monkeypatch.setattr(subagent_module, "call_llm", fake_call_llm)
     monkeypatch.setattr(subagent_module, "execute_python", lambda *a, **k: _Failed())
     monkeypatch.setattr(
-        "autophysicist.utils.sandbox.describe_runtime",
+        subagent_module,
+        "describe_runtime",
         lambda _i=None: "Python 3.12, and: ROOT 6.40.00, analysis_utilities 26.8.27",
     )
 
@@ -362,7 +363,7 @@ def test_a_missing_module_retry_names_what_is_installed(monkeypatch, tmp_path) -
         config=Config(),
         workspace_root=tmp_path,
         iteration=1,
-        policy=SandboxPolicy(workspace=tmp_path, mode="off"),
+        policy=SandboxPolicy(workspace=tmp_path),
     )
 
     retry = prompts[1]
@@ -406,7 +407,7 @@ def test_an_ordinary_error_retry_does_not_lecture_about_packages(
         config=Config(),
         workspace_root=tmp_path,
         iteration=1,
-        policy=SandboxPolicy(workspace=tmp_path, mode="off"),
+        policy=SandboxPolicy(workspace=tmp_path),
     )
     assert "THAT PACKAGE IS NOT INSTALLED" not in prompts[1]
     assert "ZeroDivisionError" in prompts[1]
