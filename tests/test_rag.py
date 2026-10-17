@@ -386,10 +386,10 @@ def test_scope_follows_the_memory_tool_including_a_pin() -> None:
 
 
 def test_subagents_inherit_their_parent_session_identity() -> None:
-    _make_session("20261001_000090_parent", "slack", chat_id="C9")
-    _make_session("20261001_000091_child", "subagent", parent_session_id="20261001_000090_parent")
-    _make_session("20261001_000092_grand", "subagent", parent_session_id="20261001_000091_child")
-    assert _identity("20261001_000092_grand") == ("gateway", ["slack:C9"])
+        _make_session("20261001_000090_parent", "signal", chat_id="C9")
+        _make_session("20261001_000091_child", "subagent", parent_session_id="20261001_000090_parent")
+        _make_session("20261001_000092_grand", "subagent", parent_session_id="20261001_000091_child")
+        assert _identity("20261001_000092_grand") == ("gateway", ["signal:C9"])
 
 
 def test_unknown_origin_fails_closed_and_is_not_reread_until_it_changes(
