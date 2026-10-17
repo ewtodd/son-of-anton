@@ -4978,12 +4978,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
             except Exception as exc:
                 logger.debug("state.db auto-maintenance skipped: %s", exc)
 
-        # DM pairing store for code-based user authorization. One store per
-        # gateway process, shared by the runner and the
-        # ``son-of-anton pairing`` CLI.
-        from gateway.pairing import PairingStore
-        self.pairing_store = PairingStore()
-        
         # Event hook system
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
@@ -10914,63 +10908,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
                 if _action == "allow":
                     break
 
-        if is_internal:
-            pass
-        elif source.user_id is None:
-            # Messages with no user identity (service messages,
-            # channel forwards, anonymous admin posts, sender_chat) can't
-            # be paired, but they can still be authorized via a
-            # chat-scoped allowlist that authorizes every member of the
-            # listed chat regardless of sender. Defer to
-            # _is_user_authorized so that path runs.
-            if not self._is_user_authorized(source):
-                logger.debug("Ignoring message with no user_id from %s", source.platform.value)
-                return None
-        elif not self._is_user_authorized(source):
+        if not is_internal and not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-            # In DMs: offer pairing code. In groups: silently ignore.
-            if (
-                source.chat_type == "dm"
-                and self._get_unauthorized_dm_behavior(source.platform)
-                == "pair"
-            ):
-                platform_name = source.platform.value if source.platform else "unknown"
-                pairing_store = self._pairing_store_for(source)
-                if pairing_store is None:
-                    logger.error(
-                        "Cannot offer pairing code on %s: no pairing store",
-                        platform_name,
-                    )
-                    return None
-                # Rate-limit ALL pairing responses (code or rejection) to
-                # prevent spamming the user with repeated messages when
-                # multiple DMs arrive in quick succession.
-                if pairing_store._is_rate_limited(platform_name, source.user_id):
-                    return None
-                code = pairing_store.generate_code(
-                    platform_name, source.user_id, source.user_name or ""
-                )
-                if code:
-                    adapter = self._adapter_for_source(source)
-                    if adapter:
-                        await adapter.send(
-                            source.chat_id,
-                            f"Hi~ I don't recognize you yet!\n\n"
-                            f"Here's your pairing code: `{code}`\n\n"
-                            f"Ask the bot owner to run:\n"
-                            f"`son-of-anton pairing approve "
-                            f"{platform_name} {code}`"
-                        )
-                else:
-                    adapter = self._adapter_for_source(source)
-                    if adapter:
-                        await adapter.send(
-                            source.chat_id,
-                            "Too many pairing requests right now~ "
-                            "Please try again later!"
-                        )
-                    # Record rate limit so subsequent messages are silently ignored
-                    pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
 
         # Global emergency stop (`son-of-anton pause`): give new turns a brief
@@ -10978,7 +10917,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewaySlashCommandsMixin):
         # (background-process completions from IN-FLIGHT work) bypass the
         # gate — pause stops NEW work, it never kills or orphans running
         # work. Placed after auth so unauthorized senders keep the normal
-        # silent/pairing behavior and can't probe pause state.
+        # silent behavior and can't probe pause state.
         #
         # Passthroughs (pause blocks new AGENT turns, not control traffic):
         #   * recognized slash commands — /status, /help, /new, /approve and
