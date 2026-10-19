@@ -2308,6 +2308,32 @@ def test_a_failing_hook_does_not_break_the_turn(backend, monkeypatch) -> None:
     assert b.run_turn("hi") == "still fine"
 
 
+def test_interrupt_turn_is_ignored_after_the_turn_finishes(backend) -> None:
+    # A second Ctrl+C/Escape that lands after chat() returned must not re-arm
+    # the interrupt on a finished turn. Gating interrupt_turn on the agent
+    # actually having in-flight work (not on the dispatch worker winding down)
+    # keeps that stale flag from aborting the next turn's lease acquisition.
+    b, _rec = backend
+    calls: list[object] = []
+
+    class FakeAgent:
+        def interrupt(self, message=None) -> None:
+            calls.append(message)
+
+    b.agent = FakeAgent()
+
+    # Mid-turn: an interrupt is delivered.
+    b._agent_interruptible = True
+    assert b.interrupt_turn() is True
+    assert calls == [None]
+    calls.clear()
+
+    # Turn work is done: a further interrupt is a no-op.
+    b._agent_interruptible = False
+    assert b.interrupt_turn() is False
+    assert calls == []
+
+
 # ---------------------------------------------------------------------------
 # /commit
 # ---------------------------------------------------------------------------

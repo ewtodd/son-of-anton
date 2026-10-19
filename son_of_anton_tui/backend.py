@@ -253,6 +253,7 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
             pass
 
         self._agent_running = False
+        self._agent_interruptible = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
         self._last_turn_interrupted = False
@@ -428,6 +429,7 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
         terminal (``/pickup``) — and streams like any turn.
         """
         self._agent_running = True
+        self._agent_interruptible = True
         self._interactive_turn = True
         try:
             self._turn_summary_begin()
@@ -440,8 +442,17 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
                 reply = self.chat(None, continue_turn=True)
             else:
                 reply = self.chat(message, images=images)
+            # The agent's turn work is done at this point. A further Ctrl+C or
+            # Escape must not re-arm the interrupt on a finished turn: that
+            # left a stale _interrupt_requested which the next turn's lease
+            # pre-check read as "the user aborted the wait" and surfaced as the
+            # misleading "Stopped waiting for another Son of Anton process".
+            self._agent_interruptible = False
             return reply
         finally:
+            # Idempotent: also clears on the chat() raising path, while the
+            # remaining finally work is dispatch cleanup, not agent activity.
+            self._agent_interruptible = False
             # A drained delegation result is acknowledged only now, and only
             # if this turn took it; otherwise it goes back on the queue.
             try:
@@ -547,7 +558,12 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
     def interrupt_turn(self) -> bool:
         """Ctrl+C while the agent runs: hard-interrupt the current turn."""
         agent = getattr(self, "agent", None)
-        if not (self._agent_running and agent):
+        # Gate on the agent actually having in-flight turn work, not on the
+        # dispatch worker still winding down: the window after chat() returns
+        # (notifications settling, relay_after_turn, post-turn hooks) must not
+        # let a second Ctrl+C/Escape re-arm _interrupt_requested on a finished
+        # turn. That stale flag then aborted the next turn's lease acquisition.
+        if not (getattr(self, "_agent_interruptible", False) and agent):
             return False
         try:
             _cli.request_hard_interrupt(agent)

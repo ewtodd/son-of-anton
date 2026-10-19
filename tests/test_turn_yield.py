@@ -247,6 +247,28 @@ def test_a_yield_before_the_turn_starts_stops_before_any_model_call(db, tmp_path
     assert [r[0] for r in _rows(db)] == ["user"], "the message itself is kept"
 
 
+def test_a_stale_interrupt_does_not_abort_a_fresh_turn(db, tmp_path, monkeypatch) -> None:
+    # A previous turn finished while an interrupt was still armed — a second
+    # Ctrl+C/Escape landed after the turn cleared its own interrupt. That stale
+    # flag used to make the next run_conversation abort immediately: the lease
+    # pre-check read it as "the user aborted the wait" (surfacing as "Stopped
+    # waiting for another Son of Anton process") and the loop read it as
+    # "interrupted_by_user". A fresh turn must start clean.
+    model = FakeModel([("text", "fresh reply")])
+    try:
+        agent = _agent(model, db, tmp_path, monkeypatch)
+        agent._interrupt_requested = True
+        agent._interrupt_message = "stale interrupt"
+        result = agent.run_conversation("fresh message")
+    finally:
+        model.close()
+
+    assert agent._interrupt_requested is False
+    assert result["final_response"] == "fresh reply"
+    assert result.get("interrupted") is False
+    assert model.requests, "the model was actually called (the turn ran)"
+
+
 @pytest.mark.linux_only
 def test_continuing_runs_the_same_turn_without_a_new_message(db, tmp_path, monkeypatch) -> None:
     model = FakeModel([

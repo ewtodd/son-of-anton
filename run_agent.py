@@ -5558,6 +5558,26 @@ class AIAgent:
                     _clear_if_owned()
 
         try:
+            # A turn must start with a clean interrupt state. A previous turn
+            # that ended while an interrupt was still armed — e.g. a second
+            # Ctrl+C/Escape that landed after the turn cleared its own
+            # interrupt, or a /stop that raced the turn boundary — leaves
+            # _interrupt_requested=True. The lease pre-check below reads that
+            # as "the user aborted the wait" and the conversation loop reads it
+            # as "interrupted_by_user", turning a fresh message into the
+            # misleading "Stopped waiting for another Son of Anton process".
+            # Clear it up front; any interrupt meant for THIS turn arrives after
+            # this point and re-arms the flag, so should_abort and the loop's
+            # interrupt check still behave. Redirect/yield state is preserved.
+            self._interrupt_requested = False
+            self._interrupt_message = None
+            _hard_event = getattr(self, "_hard_interrupt_requested", None)
+            if _hard_event is not None:
+                try:
+                    _hard_event.clear()
+                except Exception:
+                    pass
+            self._interrupt_thread_signal_pending = False
             # Serialize the full load -> run -> flush region across Son of Anton
             # processes. Gateway's asyncio lease closes alias routing inside one
             # process; this durable lease covers Desktop, CLI resume, gateway,
