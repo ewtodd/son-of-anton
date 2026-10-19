@@ -51,12 +51,13 @@ from son_of_anton_constants import get_son_of_anton_home
 def _launch_cwd_for_session(source: str) -> Optional[str]:
     """Working directory to stamp on a new session row, or None.
 
-    Only local CLI sessions get a recorded cwd: the directory the process was
-    launched from is meaningful for ``son-of-anton -c`` / ``--resume`` (relaunch
-    where you left off). Gateway/cron sessions have no stable host cwd to
-    restore, so they record nothing.
+    Only local CLI and one-shot (-z) sessions get a recorded cwd: the
+    directory the process was launched from is meaningful for
+    ``son-of-anton -c`` / ``--resume`` (relaunch where you left off).
+    Gateway/cron sessions have no stable host cwd to restore, so they
+    record nothing.
     """
-    if source != "cli":
+    if source not in ("cli", "oneshot"):
         return None
     try:
         return os.getcwd()

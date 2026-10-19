@@ -214,7 +214,19 @@ re-embeds from scratch. A sync embeds new complete journal lines
 (incremental by byte offset) and changed note files, commits each file on its
 own (a crash or endpoint failure loses only the batch in flight), and drops
 deleted sessions and notes from the index. Changing the embedding `model`
-rebuilds the index automatically.
+rebuilds the index automatically. A single refresh embeds at most
+`max_chunks_per_refresh` new chunks (default 200; `0` uncapped) — a fresh
+install with a big journal backlog drains over several refreshes, newest
+first — and `max_chunk_chars` (default `0`, off) cuts every chunk to that
+many characters before it is embedded.
+
+One-shot (`-z`) runs are a session source of their own (`source="oneshot"`):
+they are local sessions, so `-c` / `--resume latest` find them like any other
+CLI session, and they record their launch directory. But they are disposable
+pipeline runs, not conversational memory: by default the indexer skips their
+journals (`index_oneshot`, default off — already-indexed chunks are pruned on
+the next refresh) and a one-shot turn retrieves nothing
+(`oneshot_retrieval`, default off).
 
 Retrieval happens per user turn: the closest chunks above `min_score`
 (default 0.5) are appended to that turn's API copy only — never to the stored

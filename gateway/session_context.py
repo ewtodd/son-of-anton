@@ -403,6 +403,7 @@ NON_MESSAGING_SESSION_SURFACES = frozenset(
         "desktop",
         "gateway",
         "local",
+        "oneshot",
         "tool",
         "tui",
     }

@@ -206,6 +206,13 @@ def run_oneshot(
     # definition — a prompt would hang forever.
     os.environ["SON_OF_ANTON_YOLO_MODE"] = "1"
 
+    # A one-shot run is not a terminal session: stamp its session row with
+    # source="oneshot" (via the same mechanism the --source flag uses) so
+    # listings, the RAG indexer and the resume resolvers can tell it apart.
+    # This process is dedicated to the single run, so the variable cannot
+    # leak into any other session.
+    os.environ["SON_OF_ANTON_SESSION_SOURCE"] = "oneshot"
+
     # One-shot prints a single final response and exits: there is no later turn
     # for a detached subagent's completion to re-enter, and nothing here drains
     # process_registry.completion_queue (only cli.py's interactive process_loop

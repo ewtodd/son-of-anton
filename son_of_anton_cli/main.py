@@ -679,6 +679,16 @@ def _resolve_workspace_key() -> Optional[str]:
         return None
 
 
+def _local_session_sources(source: str) -> list[str]:
+    """Session sources a lookup for ``source`` should also cover.
+
+    One-shot (-z) runs record ``source="oneshot"`` but are local CLI
+    sessions with a launch directory, so a "latest" lookup for CLI
+    sessions must see both.
+    """
+    return ["cli", "oneshot"] if source == "cli" else [source]
+
+
 def _resolve_workspace_session(source: str = "cli") -> Optional[str]:
     """Most recently-used session in the *current* workspace, or ``None``.
 
@@ -694,7 +704,9 @@ def _resolve_workspace_session(source: str = "cli") -> Optional[str]:
         ws_key = _resolve_workspace_key()
         if not ws_key:
             return None
-        sessions = db.search_sessions(source=source, limit=1, workspace_key=ws_key)
+        sessions = db.search_sessions(
+            source=_local_session_sources(source), limit=1, workspace_key=ws_key
+        )
         return sessions[0]["id"] if sessions else None
     except Exception:
         return None
@@ -719,13 +731,14 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
         from son_of_anton_state import SessionDB
 
         db = SessionDB()
+        sources = _local_session_sources(source)
         ws_key = _resolve_workspace_key()
         if ws_key:
-            sessions = db.search_sessions(source=source, limit=1, workspace_key=ws_key)
+            sessions = db.search_sessions(source=sources, limit=1, workspace_key=ws_key)
             if sessions:
                 return sessions[0]["id"]
         # Fallback: global MRU for this source.
-        sessions = db.search_sessions(source=source, limit=1)
+        sessions = db.search_sessions(source=sources, limit=1)
         return sessions[0]["id"] if sessions else None
     except Exception:
         pass

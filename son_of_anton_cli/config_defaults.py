@@ -1128,6 +1128,17 @@ DEFAULT_CONFIG = {
             "failure_cooldown_seconds": 60,
             # Automatic incremental refresh; 0 disables it.
             "reindex_interval_minutes": 15,
+            # -z one-shot runs record source="oneshot" and are disposable:
+            # by default their journals are not indexed and one-shot turns
+            # retrieve nothing. Flip either on to opt in.
+            "index_oneshot": False,
+            "oneshot_retrieval": False,
+            # Throttling: a single refresh embeds at most this many new
+            # chunks (0 = no cap); the rest carry over to the next refresh.
+            "max_chunks_per_refresh": 200,
+            # Cap the text embedded per chunk, in characters (0 = the
+            # chunker's own 1200-char limit only).
+            "max_chunk_chars": 0,
             # Extra note files outside the notes tree, each
             # {path: ..., scope: shared|cli|gateway}.
             "sources": [],

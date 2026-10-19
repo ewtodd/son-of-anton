@@ -78,3 +78,37 @@ def test_detect_git_metadata_finds_a_new_repo(tmp_path) -> None:
     assert repo_root == os.path.abspath(str(tmp_path))
     # Unborn HEAD has no branch name yet.
     assert branch is None
+
+
+def test_workspace_lookup_also_sees_oneshot_sessions(tmp_path, monkeypatch) -> None:
+    here = tmp_path / "here"
+    here.mkdir()
+    db = SessionDB()
+    db.create_session(session_id="20261001_000004_dddddd", source="oneshot", cwd=str(here))
+    db.close()
+    monkeypatch.chdir(here)
+
+    # A CLI "latest"/-c lookup covers one-shot runs, which are local sessions.
+    assert _resolve_workspace_session(source="cli") == "20261001_000004_dddddd"
+    assert _resolve_last_session(source="cli") == "20261001_000004_dddddd"
+    # ...but a non-cli lookup does not absorb them.
+    assert _resolve_last_session(source="tui") is None
+
+
+def test_oneshot_sessions_record_their_launch_cwd(monkeypatch) -> None:
+    from run_agent import _launch_cwd_for_session
+
+    monkeypatch.chdir("/tmp")
+    assert _launch_cwd_for_session("oneshot") == "/tmp"
+    assert _launch_cwd_for_session("cli") == "/tmp"
+    assert _launch_cwd_for_session("signal") is None
+    assert _launch_cwd_for_session("cron") is None
+
+
+def test_oneshot_source_comes_from_the_session_env(monkeypatch) -> None:
+    from run_agent import _session_source_for_agent
+
+    monkeypatch.setenv("SON_OF_ANTON_SESSION_SOURCE", "oneshot")
+    assert _session_source_for_agent("cli") == "oneshot"
+    monkeypatch.delenv("SON_OF_ANTON_SESSION_SOURCE")
+    assert _session_source_for_agent("cli") == "cli"

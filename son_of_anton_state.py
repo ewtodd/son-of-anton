@@ -37,7 +37,7 @@ from pathlib import Path
 from agent.session_activity import ActivityProvenance
 from agent.message_sanitization import _sanitize_surrogates
 from son_of_anton_constants import get_son_of_anton_home
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar, Union
 
 from son_of_anton_state_common import (  # noqa: F401  (re-exported for back-compat)
     _BRANCH_CHILD_SQL,
@@ -9215,12 +9215,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     def search_sessions(
         self,
-        source: str = None,
+        source: Optional[Union[str, List[str]]] = None,
         limit: int = 20,
         offset: int = 0,
         workspace_key: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions, optionally filtered by source.
+
+        ``source`` may be a single source name or a list of them (e.g.
+        ``["cli", "oneshot"]`` for a CLI lookup that should also see
+        one-shot runs).
 
         Returns rows enriched with a computed ``last_active`` column
         (freshest of ``last_activity_at`` and latest message timestamp,
@@ -9241,8 +9245,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         where_clauses = []
         params: list = []
         if source:
-            where_clauses.append("s.source = ?")
-            params.append(source)
+            sources = [source] if isinstance(source, str) else [s for s in source if s]
+            if sources:
+                where_clauses.append(
+                    "s.source IN (" + ", ".join("?" for _ in sources) + ")"
+                )
+                params.extend(sources)
         if workspace_key:
             ws_clause, ws_params = _workspace_key_clause(workspace_key)
             where_clauses.append(ws_clause)

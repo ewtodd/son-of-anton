@@ -154,7 +154,9 @@ def test_embedding_failure_mid_sync_commits_per_journal_without_duplicates(embed
     monkeypatch.setattr(rag, "embed_texts", _flaky)
     first = rag.sync_index(_config())
     assert first["ok"] is False and "endpoint went away" in first["error"]
-    assert any("alpha crash" in t for t in _indexed_texts(_config()))
+    # Per-journal commit: the journals processed before the failure were
+    # kept (freshness order: newest first, so not necessarily the alpha one).
+    assert any("crash note" in t for t in _indexed_texts(_config()))
 
     monkeypatch.setattr(rag, "embed_texts", _fake_embed)
     assert rag.sync_index(_config())["ok"]
@@ -812,3 +814,130 @@ def test_rag_parser_registers_index_command() -> None:
     assert args.rebuild is True
     args.func(args)
     assert seen == ["index"]
+
+
+# ---------------------------------------------------------------------------
+# One-shot (-z) sessions and refresh throttling
+# ---------------------------------------------------------------------------
+
+
+def test_oneshot_journals_are_not_indexed_by_default(embed) -> None:
+    _make_session("20261001_000200_shot", "oneshot")
+    _make_session("20261001_000201_cli", "cli")
+    _write_journal("20261001_000200_shot", [_msg("alpha one-shot content")])
+    _write_journal("20261001_000201_cli", [_msg("alpha cli content")])
+
+    result = rag.sync_index(_config())
+
+    assert result["added"] == 1
+    texts = _indexed_texts(_config())
+    assert any("cli content" in t for t in texts)
+    assert not any("one-shot content" in t for t in texts)
+
+
+def test_oneshot_identity_fails_closed_and_resolves_as_cli_when_enabled() -> None:
+    row = {"source": "oneshot"}
+    off = rag.coerce_rag_config(_config())
+    assert rag.resolve_session_identity("20261001_000202", lambda sid: row, off) is None
+    on = rag.coerce_rag_config(_config(index_oneshot=True))
+    assert rag.resolve_session_identity("20261001_000202", lambda sid: row, on) == ("cli", [])
+
+
+def test_oneshot_indexing_when_enabled(embed) -> None:
+    _make_session("20261001_000210_shot", "oneshot")
+    _write_journal("20261001_000210_shot", [_msg("alpha indexed one-shot")])
+
+    result = rag.sync_index(_config(index_oneshot=True))
+
+    assert result["added"] == 1
+    # Indexed as a chatless cli-scope session: visible to a cli search.
+    hits = rag.search("alpha", config=_config(index_oneshot=True), scope="cli")
+    assert any("indexed one-shot" in h["text"] for h in hits)
+
+
+def test_oneshot_chunks_are_pruned_when_the_flag_turns_off(embed) -> None:
+    _make_session("20261001_000220_shot", "oneshot")
+    _write_journal("20261001_000220_shot", [_msg("alpha was one-shot")])
+
+    rag.sync_index(_config(index_oneshot=True))
+    assert any("was one-shot" in t for t in _indexed_texts(_config()))
+
+    result = rag.sync_index(_config())
+    assert result["pruned"] >= 1
+    assert not any("was one-shot" in t for t in _indexed_texts(_config()))
+
+    # Steady state: the exclusion marker is not re-processed on every refresh.
+    again = rag.sync_index(_config())
+    assert again["pruned"] == 0
+    assert not any("was one-shot" in t for t in _indexed_texts(_config()))
+
+
+def test_oneshot_turns_retrieve_nothing_by_default(embed, live_config) -> None:
+    _make_session("20261001_000230_cli", "cli")
+    _write_journal("20261001_000230_cli", [_msg("alpha remembered fact")])
+    rag.sync_index(live_config)
+    _make_session("20261001_000231_shot", "oneshot")
+
+    db = SessionDB()
+    try:
+        assert (
+            rag.retrieve_for_turn(
+                _agent(session_id="20261001_000231_shot", _session_db=db), "alpha?"
+            )
+            == ""
+        )
+    finally:
+        db.close()
+
+
+def test_oneshot_retrieval_can_be_enabled(embed, monkeypatch) -> None:
+    full = _config(oneshot_retrieval=True)
+    original = rag.get_rag_config
+    monkeypatch.setattr(
+        rag, "get_rag_config", lambda config=None: original(full if config is None else config)
+    )
+    _make_session("20261001_000240_cli", "cli")
+    _write_journal("20261001_000240_cli", [_msg("alpha remembered fact")])
+    rag.sync_index(full)
+    _make_session("20261001_000241_shot", "oneshot")
+
+    db = SessionDB()
+    try:
+        block = rag.retrieve_for_turn(
+            _agent(session_id="20261001_000241_shot", _session_db=db), "alpha?"
+        )
+        assert "remembered fact" in block
+    finally:
+        db.close()
+
+
+def test_max_chunks_per_refresh_carries_the_rest_over(embed) -> None:
+    for i in range(5):
+        sid = f"20261001_0003{i:02d}_budg"
+        _make_session(sid, "cli")
+        _write_journal(sid, [_msg(f"alpha budget line {i}")])
+
+    first = rag.sync_index(_config(max_chunks_per_refresh=3))
+    assert first["added"] == 3
+
+    second = rag.sync_index(_config(max_chunks_per_refresh=3))
+    assert second["added"] == 2
+
+    assert len(_indexed_texts(_config())) == 5
+
+
+def test_max_chunk_chars_caps_the_embedded_text(embed, monkeypatch) -> None:
+    seen = []
+    monkeypatch.setattr(
+        rag, "embed_texts", lambda c, t, **k: seen.extend(t) or _fake_embed(c, t)
+    )
+    _make_session("20261001_000333_caps", "cli")
+    long_text = " ".join(f"alpha{i}paddingword" for i in range(200))
+    assert len(long_text) > 1200
+    _write_journal("20261001_000333_caps", [_msg(long_text)])
+
+    rag.sync_index(_config(max_chunk_chars=100))
+
+    assert seen and all(len(t) <= 100 for t in seen)
+    stored = _indexed_texts(_config(max_chunk_chars=100))
+    assert stored and all(len(t) <= 100 for t in stored)

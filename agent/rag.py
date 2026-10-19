@@ -35,6 +35,11 @@ outlives its session row (retention pruning keeps journals). Sessions whose
 origin cannot be established are not indexed (fail closed): a store that
 cannot answer is retried on the next sync, a row that is gone and was never
 resolved is recorded as an orphan and not re-read until the file changes.
+One-shot (-z) sessions (``source="oneshot"``) are not indexed by default
+and their turns retrieve nothing; ``index_oneshot`` / ``oneshot_retrieval``
+opt in, and with the flag off already-indexed one-shot chunks are pruned on
+the next sync. A single refresh embeds at most ``max_chunks_per_refresh``
+new chunks (newest journals first); the rest carry over.
 
 Retrieval happens per user turn in ``agent.turn_context`` and rides the
 API-copy sidecar (``api_content``), so the frozen system prompt and the prompt
@@ -127,6 +132,17 @@ def get_rag_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "search_timeout_seconds": float(section.get("search_timeout_seconds", 3.0)),
         "failure_cooldown_seconds": float(section.get("failure_cooldown_seconds", 60.0)),
         "reindex_interval_minutes": float(section.get("reindex_interval_minutes", 15)),
+        # -z one-shot runs record source="oneshot". By default they are
+        # neither indexed nor retrieved: they are disposable pipeline runs,
+        # not conversational memory.
+        "index_oneshot": bool(section.get("index_oneshot", False)),
+        "oneshot_retrieval": bool(section.get("oneshot_retrieval", False)),
+        # Throttling: a single refresh embeds at most this many new chunks
+        # (0 = no cap); the rest carry over to the next refresh.
+        "max_chunks_per_refresh": int(section.get("max_chunks_per_refresh", 200)),
+        # Cap the text embedded per chunk, in characters (0 = the chunker's
+        # own 1200-char limit only).
+        "max_chunk_chars": int(section.get("max_chunk_chars", 0)),
         "sources": section.get("sources") if isinstance(section.get("sources"), list) else [],
         "notes_dir": str(section.get("notes_dir") or "").strip(),
         "index_dir": str(section.get("index_dir") or "").strip(),
@@ -300,6 +316,8 @@ def resolve_session_identity(
     """Return ``(scope, chats)`` for a session, or ``None`` when unknown.
 
     * cli/tui sessions take the memory scope of their surface; no chat.
+    * one-shot (-z) sessions (``source="oneshot"``) are skipped by default;
+      with ``index_oneshot`` they take the cli scope, no chat.
     * messaging sessions take their scope plus ``<platform>:<chat_id>``.
     * cron runs (``cron_<job>_<stamp>``) take the scope and chats of the
       job's delivery targets, else of the chat that created the job, else
@@ -318,6 +336,10 @@ def resolve_session_identity(
     parent = row.get("parent_session_id")
     if source in _CLI_SOURCES:
         return (_memory_scope_for(source, config), [])
+    if source == "oneshot":
+        if not config.get("index_oneshot", False):
+            return None
+        return (_memory_scope_for("cli", config), [])
     if source in _GATEWAY_PLATFORMS:
         identity = chat_identity(source, row.get("chat_id"), row.get("user_id"))
         if identity:
@@ -403,13 +425,22 @@ def _embed(config: Dict[str, Any], texts: List[str], **kwargs) -> List[List[floa
 # ---------------------------------------------------------------------------
 
 
-def _chunk_text(text: str, limit: int = _CHUNK_CHARS, overlap: int = _CHUNK_OVERLAP) -> List[str]:
-    """Split long text on whitespace into overlapping chunks."""
+def _chunk_text(
+    text: str,
+    limit: int = _CHUNK_CHARS,
+    overlap: int = _CHUNK_OVERLAP,
+    max_chars: int = 0,
+) -> List[str]:
+    """Split long text on whitespace into overlapping chunks.
+
+    With ``max_chars`` > 0 every chunk is cut to that length: the stored
+    chunk text is always exactly the text that gets embedded.
+    """
     text = " ".join(str(text).split())
     if not text:
         return []
     if len(text) <= limit:
-        return [text]
+        return [text[:max_chars] if max_chars > 0 else text]
     chunks: List[str] = []
     start = 0
     while start < len(text):
@@ -422,7 +453,10 @@ def _chunk_text(text: str, limit: int = _CHUNK_CHARS, overlap: int = _CHUNK_OVER
         if end >= len(text):
             break
         start = max(end - overlap, start + 1)
-    return [c for c in chunks if c]
+    chunks = [c for c in chunks if c]
+    if max_chars > 0:
+        chunks = [c[:max_chars] for c in chunks if c[:max_chars]]
+    return chunks
 
 
 def _redact(text: str) -> str:
@@ -793,6 +827,23 @@ class IdentityUnavailable(RuntimeError):
     """The session store could not answer right now — retry next sync."""
 
 
+class _EmbedBudget:
+    """Number of chunks a single refresh may embed. ``limit=0``: unlimited."""
+
+    def __init__(self, limit: int):
+        self.limit = max(int(limit), 0)
+        self.used = 0
+
+    @property
+    def remaining(self) -> int:
+        if not self.limit:
+            return 2**31
+        return max(self.limit - self.used, 0)
+
+    def consume(self, count: int) -> None:
+        self.used += count
+
+
 def _stored_identity(entry: Dict[str, Any]) -> Optional[Tuple[str, List[str]]]:
     stored = entry.get("identity")
     if not isinstance(stored, dict):
@@ -810,6 +861,9 @@ def _index_journal(
     config: Dict[str, Any],
     display_name: str,
     identity: Callable[[str], Optional[Tuple[str, List[str]]]],
+    budget: Optional[_EmbedBudget] = None,
+    source_lookup: Optional[Callable[[str], Optional[str]]] = None,
+    is_excluded: Optional[Callable[[str], bool]] = None,
 ) -> Tuple[int, bool]:
     """Index new complete lines of one journal. Returns ``(added, skipped)``.
 
@@ -827,6 +881,10 @@ def _index_journal(
       — a persisted identity is used, else the journal is retried next sync
       with nothing recorded.
 
+    With a *budget*, a refresh embeds at most its remaining chunks: lines
+    that no longer fit are left for the next refresh (the byte offset only
+    advances over fully embedded lines, so nothing is skipped).
+
     Never indexed as shared without an identity (fail closed). Commits
     nothing until the batch is embedded; an embedding failure raises with
     the manifest and data files untouched for this journal.
@@ -839,7 +897,11 @@ def _index_journal(
     size = stat.st_size
     fingerprint = {"size": size, "mtime_ns": stat.st_mtime_ns}
     if entry.get("orphan") == fingerprint:
-        return 0, True
+        # Orphan markers stay put — except an excluded one-shot marker,
+        # which is re-checked so a flipped index_oneshot indexes the
+        # journal on the next sync.
+        if not entry.get("excluded") or is_excluded is None or is_excluded(path.stem):
+            return 0, True
     if size < offset:
         # Rewritten (or re-created) under the same name: start a new
         # generation so the old chunks drop out of search and get pruned.
@@ -872,8 +934,16 @@ def _index_journal(
     if resolved is None:
         resolved = stored
     if resolved is None:
+        excluded = is_excluded is not None and is_excluded(session_id)
         orphan_entry = dict(entry)
+        # A marker must never keep chunks live: drop the indexing state.
+        for key in ("offset", "generation", "chunks", "identity"):
+            orphan_entry.pop(key, None)
         orphan_entry["orphan"] = fingerprint
+        if excluded:
+            orphan_entry["excluded"] = "oneshot"
+        else:
+            orphan_entry.pop("excluded", None)
         writer.commit(
             [], [], lambda m: m["journals"].__setitem__(display_name, orphan_entry)
         )
@@ -888,47 +958,71 @@ def _index_journal(
     scope, chats = resolved
     pending_texts: List[str] = []
     pending_meta: List[Dict[str, Any]] = []
-    for line in complete.decode("utf-8", errors="replace").splitlines():
-        if not line.strip():
-            continue
-        try:
-            event = json.loads(line)
-        except Exception:
-            continue
-        if not isinstance(event, dict) or event.get("type") == "session":
-            continue
-        text = _journal_event_text(event)
-        if not text:
-            continue
-        for index, chunk in enumerate(_chunk_text(_redact(text))):
-            meta = {
-                "text": chunk,
-                "source": "journal",
-                "source_name": display_name,
-                "session": session_id,
-                "scope": scope,
-                "generation": generation,
-                "role": event.get("role"),
-                "tool": event.get("tool_name"),
-                "ts": event.get("ts"),
-                "chunk": index,
-            }
-            if chats:
-                meta["chats"] = list(chats)
-            pending_texts.append(chunk)
-            pending_meta.append(meta)
+    max_chars = int(config.get("max_chunk_chars") or 0)
+    consumed = 0  # bytes of `complete` fully embedded
+    lines = complete.split(b"\n")
+    # `complete` ends in its last newline: the trailing empty split element
+    # is that newline, not a line.
+    if lines[-1] == b"":
+        lines = lines[:-1]
+    for raw_line in lines:
+        line = raw_line.decode("utf-8", errors="replace")
+        if line.strip():
+            try:
+                event = json.loads(line)
+            except Exception:
+                event = None
+            if (
+                isinstance(event, dict)
+                and event.get("type") != "session"
+            ):
+                text = _journal_event_text(event)
+                if text:
+                    chunks = _chunk_text(_redact(text), max_chars=max_chars)
+                    if budget is not None and budget.remaining < len(chunks):
+                        # Budget exhausted: this line and the rest carry
+                        # over to the next refresh.
+                        break
+                    for index, chunk in enumerate(chunks):
+                        meta = {
+                            "text": chunk,
+                            "source": "journal",
+                            "source_name": display_name,
+                            "session": session_id,
+                            "scope": scope,
+                            "generation": generation,
+                            "role": event.get("role"),
+                            "tool": event.get("tool_name"),
+                            "ts": event.get("ts"),
+                            "chunk": index,
+                        }
+                        if chats:
+                            meta["chats"] = list(chats)
+                        pending_texts.append(chunk)
+                        pending_meta.append(meta)
+        consumed += len(raw_line) + 1  # the line and its newline
+    if budget is not None:
+        budget.consume(len(pending_meta))
     vectors = _embed(config, pending_texts) if pending_texts else []
-    # Only the complete lines are consumed: a partially written trailing line
-    # is picked up whole by the next sync.
+    # Only the fully embedded lines are consumed: a partially written
+    # trailing line, and lines left over the budget, are picked up by the
+    # next sync.
     same_generation = generation == int(entry.get("generation") or 1)
     previous_chunks = int(entry.get("chunks") or 0) if same_generation else 0
     new_entry = {
-        "offset": offset + len(complete),
+        "offset": offset + consumed,
         "generation": generation,
         "session": session_id,
         "chunks": previous_chunks + len(pending_meta),
         "identity": {"scope": scope, "chats": sorted(set(chats))},
     }
+    if source_lookup is not None:
+        try:
+            src = source_lookup(session_id)
+        except Exception:
+            src = None
+        if src:
+            new_entry["source"] = src
     writer.commit(
         pending_meta,
         vectors,
@@ -942,8 +1036,14 @@ def _index_source(
     writer: _IndexWriter,
     config: Dict[str, Any],
     scope: str,
+    budget: Optional[_EmbedBudget] = None,
 ) -> int:
-    """Chunk one note file, bumping its generation on change."""
+    """Chunk one note file, bumping its generation on change.
+
+    With a *budget*, a file whose chunks no longer fit the refresh's
+    remaining allowance is left for the next refresh (no partial commit:
+    a note is indexed whole or not at all).
+    """
     display_name = str(path)
     try:
         stat = path.stat()
@@ -961,9 +1061,13 @@ def _index_source(
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return 0
-    chunks = _chunk_text(_redact(text))
+    chunks = _chunk_text(_redact(text), max_chars=int(config.get("max_chunk_chars") or 0))
+    if budget is not None and budget.remaining < len(chunks):
+        return 0
     generation = int(entry.get("generation") or 0) + 1
     vectors = _embed(config, chunks) if chunks else []
+    if budget is not None:
+        budget.consume(len(chunks))
     metas = [
         {
             "text": chunk,
@@ -1121,12 +1225,42 @@ def _sync_locked(directory: Path, config: Dict[str, Any], *, rebuild: bool) -> D
             logger.debug("RAG index: identity lookup failed for %s", session_id, exc_info=True)
             raise IdentityUnavailable(str(exc)) from exc
 
+    def _source_lookup(session_id: str) -> Optional[str]:
+        if get_row is None:
+            return None
+        try:
+            row = get_row(session_id)
+        except Exception:
+            return None
+        if not row:
+            return None
+        return str(row.get("source") or "").strip().lower() or None
+
+    def _is_excluded(session_id: str) -> bool:
+        # A one-shot journal while index_oneshot is off.
+        return not config.get("index_oneshot", False) and _source_lookup(session_id) == "oneshot"
+
+    budget = _EmbedBudget(int(config.get("max_chunks_per_refresh") or 0))
+
     journals_dir = get_son_of_anton_home() / "journals"
     try:
         if journals_dir.is_dir():
-            for path in sorted(journals_dir.glob("*.jsonl")):
+            # Newest first: the per-refresh budget covers the freshest
+            # content; older journals carry over.
+            def _freshness(path: Path) -> Tuple[float, str]:
                 try:
-                    count, was_skipped = _index_journal(path, writer, config, path.name, _identity)
+                    return (path.stat().st_mtime, path.name)
+                except OSError:
+                    return (0.0, path.name)
+
+            for path in sorted(journals_dir.glob("*.jsonl"), key=_freshness, reverse=True):
+                try:
+                    count, was_skipped = _index_journal(
+                        path, writer, config, path.name, _identity,
+                        budget=budget,
+                        source_lookup=_source_lookup,
+                        is_excluded=_is_excluded,
+                    )
                 except FileNotFoundError:
                     continue
                 added += count
@@ -1157,13 +1291,13 @@ def _sync_locked(directory: Path, config: Dict[str, Any], *, rebuild: bool) -> D
                     scope = "shared"
                 expanded = Path(raw_path).expanduser()
                 configured_sources.add(str(expanded))
-                added += _index_source(expanded, writer, config, scope)
+                added += _index_source(expanded, writer, config, scope, budget=budget)
             # Discovered notes: notes/<scope>/... needs no config entry at all.
             root = notes_dir(config)
             if root.is_dir():
                 for note_path, note_scope in iter_note_files(root):
                     discovered_sources.add(str(note_path))
-                    added += _index_source(note_path, writer, config, note_scope)
+                    added += _index_source(note_path, writer, config, note_scope, budget=budget)
         except EmbeddingError as exc:
             error = str(exc)
 
@@ -1171,11 +1305,25 @@ def _sync_locked(directory: Path, config: Dict[str, Any], *, rebuild: bool) -> D
     # the notes tree, stops being searchable: prune its manifest entry so its
     # chunks are dead, then rewrite the data files without them. Note pruning
     # waits for a full pass — an aborted sync has not seen every source.
+    def _oneshot_excluded(entry: Dict[str, Any]) -> bool:
+        # One-shot chunks die when index_oneshot is off. The source is
+        # trusted from the manifest entry (persisted at index time) and,
+        # for entries written before that, from the live row. Orphan
+        # markers carry no chunks and are always kept.
+        if config.get("index_oneshot", False) or "orphan" in entry:
+            return False
+        if str(entry.get("source") or "").strip().lower() == "oneshot":
+            return True
+        session = str(entry.get("session") or "")
+        if session:
+            return _source_lookup(session) == "oneshot"
+        return False
+
     def _prune(m: Dict[str, Any]) -> None:
         m["journals"] = {
             name: entry
             for name, entry in m["journals"].items()
-            if (journals_dir / name).exists()
+            if (journals_dir / name).exists() and not _oneshot_excluded(entry)
         }
         if not error:
             m["sources"] = {
@@ -1453,6 +1601,19 @@ def _note_search_failure(exc: BaseException, config: Dict[str, Any]) -> None:
     )
 
 
+def _agent_session_is_oneshot(agent: Any) -> bool:
+    """True when the live session's row names ``source="oneshot"`` (-z run)."""
+    try:
+        session_id = str(getattr(agent, "session_id", "") or "")
+        db = getattr(agent, "_session_db", None)
+        if not session_id or db is None:
+            return False
+        row = db.get_session(session_id)
+        return bool(row) and str(row.get("source") or "").strip().lower() == "oneshot"
+    except Exception:
+        return False
+
+
 def retrieve_for_turn(agent: Any, query: str) -> str:
     """Search the index as the active session sees it. Never raises.
 
@@ -1460,11 +1621,17 @@ def retrieve_for_turn(agent: Any, query: str) -> str:
     starts a ``failure_cooldown_seconds`` window during which turns skip
     retrieval entirely (one WARNING per window), so a down endpoint costs one
     short stall, not one per turn.
+
+    One-shot (-z) sessions retrieve nothing by default: a disposable
+    pipeline run should not be steering itself on remembered conversations.
+    ``oneshot_retrieval`` lifts the gate.
     """
     config: Dict[str, Any] = {}
     try:
         config = get_rag_config()
         if not config.get("enabled"):
+            return ""
+        if not config.get("oneshot_retrieval", False) and _agent_session_is_oneshot(agent):
             return ""
         if time.monotonic() < _SEARCH_STATE.get("cooldown_until", 0.0):
             return ""
