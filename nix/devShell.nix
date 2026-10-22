@@ -11,6 +11,8 @@
         packages = [
           pkgs.uv
           pkgs.pre-commit
+          # programmable completion (compgen/complete) for tests/test_shell_completion.py
+          pkgs.bashInteractive
           package
         ]
         ++ package.passthru.devDeps;

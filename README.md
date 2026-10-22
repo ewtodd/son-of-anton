@@ -751,6 +751,10 @@ On the command line, `son-of-anton -c [name]` continues this directory's most
 recent session (see [Sessions](#sessions)); `son-of-anton problem create` builds
 a physics problem spec and `son-of-anton problem run` runs one.
 <!---->
+The Nix package installs bash, zsh and fish completion for `son-of-anton`,
+generated from the command tree at build time. Elsewhere,
+`son-of-anton completion [bash|zsh|fish]` prints the script.
+<!---->
 `/help` lists the rest.
 <!---->
 ## Development

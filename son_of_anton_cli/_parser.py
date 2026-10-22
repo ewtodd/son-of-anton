@@ -45,6 +45,7 @@ Examples:
     son-of-anton pause                  Engage the global emergency stop
     son-of-anton resume                 Clear the emergency stop
     son-of-anton problem create         Build a physics problem spec from a dataset
+    son-of-anton completion bash        Print a shell completion script
 
 For more help on a command:
     son-of-anton <command> --help

@@ -14,6 +14,7 @@ Usage:
     son-of-anton status              # Show status of all components
     son-of-anton pause / resume      # Engage / clear the global emergency stop
     son-of-anton problem create      # Build a physics problem spec from a dataset
+    son-of-anton completion bash     # Print a shell completion script
     son-of-anton --version           # Show version
 
 The fork ships no imperative installation surface. There is no `setup`,
@@ -197,6 +198,7 @@ from son_of_anton_cli.subcommands.config import build_config_parser
 from son_of_anton_cli.subcommands.rag import build_rag_parser
 from son_of_anton_cli.subcommands.mcp import build_mcp_parser
 from son_of_anton_cli.subcommands.problem import build_problem_parser
+from son_of_anton_cli.subcommands.completion import build_completion_parser
 from son_of_anton_cli.subcommands.nuke import build_nuke_parser
 
 
@@ -1230,6 +1232,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     # on. This list carried eleven commands the fork does not have.
     _SUBCOMMANDS = {
         "chat",
+        "completion",
         "config",
         "cron",
         "gateway",
@@ -1265,6 +1268,13 @@ def _coalesce_session_name_args(argv: list) -> list:
             result.append(token)
             i += 1
     return result
+
+
+def cmd_completion(args, parser=None):
+    """Print a shell completion script for the fully built parser."""
+    from son_of_anton_cli.completion import generate
+
+    print(generate(parser, getattr(args, "shell", "bash")))
 
 
 def cmd_problem(args, parser=None):
@@ -1628,21 +1638,13 @@ def _guard_son_of_anton_home_access() -> None:
         sys.exit(1)
 
 
-def main():
-    """Main entry point for son-of-anton CLI."""
-    _guard_son_of_anton_home_access()
+def build_parser():
+    """Build the complete argparse tree ``main()`` parses with.
 
-    # Cosmetic: make the process show up as 'son-of-anton' instead of 'python3.11'
-    # in ps/top/htop.  Non-fatal — just a nicer UX.
-    _set_process_title()
-
-    # Let child processes (and tools like huggingface_hub) detect they run
-    # under an AI agent harness.
-    _advertise_agent_env()
-
-    if _try_fast_chat_launch():
-        return
-
+    Also what ``son-of-anton completion`` walks: sessions and friends are
+    attached here, after ``_parser.py`` builds the root, so only the finished
+    tree is accurate. Returns ``(parser, subparsers)``.
+    """
     from son_of_anton_cli._parser import build_top_level_parser
 
     parser, subparsers, chat_parser = build_top_level_parser()
@@ -1688,6 +1690,7 @@ def main():
     # =========================================================================
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
     build_problem_parser(subparsers, cmd_problem=cmd_problem)
+    build_completion_parser(subparsers, parser, cmd_completion=cmd_completion)
 
     # =========================================================================
     # sessions command
@@ -2265,6 +2268,25 @@ def main():
         return _self().cmd_sessions(_args, sessions_parser=sessions_parser)
 
     sessions_parser.set_defaults(func=_dispatch_sessions)
+    return parser, subparsers
+
+
+def main():
+    """Main entry point for son-of-anton CLI."""
+    _guard_son_of_anton_home_access()
+
+    # Cosmetic: make the process show up as 'son-of-anton' instead of 'python3.11'
+    # in ps/top/htop.  Non-fatal — just a nicer UX.
+    _set_process_title()
+
+    # Let child processes (and tools like huggingface_hub) detect they run
+    # under an AI agent harness.
+    _advertise_agent_env()
+
+    if _try_fast_chat_launch():
+        return
+
+    parser, subparsers = build_parser()
 
     # NOTE: the `son-of-anton version` subcommand was removed — `son-of-anton --version`
     # / `-V` now carries the full output including update status.

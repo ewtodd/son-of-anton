@@ -114,6 +114,32 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p $out/share/son-of-anton $out/bin
     ln -s ${bundledLocales} $out/share/son-of-anton/locales
 
+    # Shell completions, generated from the live argparse tree at build time
+    # rather than checked in: a hand-maintained list goes stale the first time
+    # a subcommand is added, and this one cannot. Generated from the SEALED
+    # venv, not the wrapper, because the wrapper does not exist yet; the
+    # command tree is identical either way.
+    #
+    # HOME and SON_OF_ANTON_HOME are a scratch dir: the CLI must not create
+    # state outside the build sandbox. If generation fails or yields nothing,
+    # fail the build rather than ship a package whose completions vanished.
+    mkdir -p $out/share/bash-completion/completions \
+             $out/share/zsh/site-functions \
+             $out/share/fish/vendor_completions.d
+    export HOME=$(mktemp -d)
+    export SON_OF_ANTON_HOME=$HOME/.son-of-anton
+    ${sonOfAntonVenv}/bin/son-of-anton completion bash \
+      > $out/share/bash-completion/completions/son-of-anton
+    ${sonOfAntonVenv}/bin/son-of-anton completion zsh \
+      > $out/share/zsh/site-functions/_son-of-anton
+    ${sonOfAntonVenv}/bin/son-of-anton completion fish \
+      > $out/share/fish/vendor_completions.d/son-of-anton.fish
+    for f in $out/share/bash-completion/completions/son-of-anton \
+             $out/share/zsh/site-functions/_son-of-anton \
+             $out/share/fish/vendor_completions.d/son-of-anton.fish; do
+      test -s "$f" || { echo "empty completion script: $f" >&2; exit 1; }
+    done
+
     makeWrapper ${sonOfAntonVenv}/bin/son-of-anton $out/bin/son-of-anton \
       --suffix PATH : "${runtimePath}" \
       --set SON_OF_ANTON_BUNDLED_LOCALES $out/share/son-of-anton/locales \
