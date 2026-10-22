@@ -18,9 +18,10 @@
 # Built from Analysis-Utilities' OWN nixpkgs, not son-of-anton's. Three reasons,
 # all of them practical: its `pythonPackage` is built against that nixpkgs'
 # python3Packages, and mixing two nixpkgs in one `withPackages` env gives you
-# two incompatible interpreters; ROOT there is already built and cached, while
-# son-of-anton's pin would compile it (and scipy) from source; and the lab
-# stack should move with the lab's flake, not with the agent's.
+# two incompatible interpreters; ROOT is the flake's own `packages.root` (a
+# pinned ROOT master build), the one libanalysis-utils is linked against, so
+# PyROOT and the library never load two ROOTs; and the lab stack should move
+# with the lab's flake, not with the agent's.
 {
   system,
   analysis-utilities,
@@ -34,7 +35,7 @@ let
 
   utils = analysis-utilities.packages.${system}.default;
   utilsPython = analysis-utilities.packages.${system}.pythonPackage;
-  root = pkgs.root;
+  root = analysis-utilities.packages.${system}.root;
 
   pythonEnv = pkgs.python3.withPackages (
     ps:
