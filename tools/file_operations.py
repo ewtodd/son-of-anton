@@ -1204,15 +1204,17 @@ class ShellFileOperations:
         except ValueError:
             file_size = 0
 
-        # Images are never inlined — redirect to the vision tool
+        # Image metadata only — read_file_tool returns the pixels as a
+        # multimodal result; this path is a fallback for direct callers.
         if self._is_image(path):
             return ReadResult(
                 is_image=True,
                 is_binary=True,
                 file_size=file_size,
                 hint=(
-                    "Image file detected. Automatically redirected to vision_analyze tool. "
-                    "Use vision_analyze with this file path to inspect the image contents."
+                    "Image file detected. read_file returns the image to "
+                    "vision-capable models; text-only callers should use "
+                    "vision_analyze with this file path."
                 ),
             )
         

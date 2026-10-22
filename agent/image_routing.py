@@ -16,8 +16,10 @@ It reads ``agent.image_input_mode`` from config.toml (``auto`` | ``native``
 when config.toml declares the active model ``supports_vision``, and go through
 the text pipeline otherwise.
 
-``vision_analyze`` stays a tool in every session; the routing only affects
-*how user-attached images on the current turn* are presented to the main model.
+``vision_analyze`` stays a tool in every session; the routing controls how
+images are presented to the main model. That covers inbound user attachments
+and tool-result images (``read_file``, which the executor downgrades to a text
+summary in ``text`` mode).
 """
 
 from __future__ import annotations

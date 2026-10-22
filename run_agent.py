@@ -4545,9 +4545,8 @@ class AIAgent:
         Resolution order (see ``agent.image_routing._supports_vision_override``):
           1. ``model.supports_vision`` (top-level, single-model shortcut)
           2. ``providers.<provider>.models.<model>.supports_vision``
-          3. models.dev capability lookup
-        Custom/local models absent from models.dev would otherwise be
-        misclassified as non-vision and have their images stripped.
+        Custom/local models absent from config are treated as non-vision;
+        ``agent.image_input_mode = "native"`` forces native attachment instead.
         """
         try:
             from son_of_anton_cli.config import load_config
@@ -4578,13 +4577,13 @@ class AIAgent:
         return t
 
     def _prepare_messages_for_non_vision_model(self, api_messages: list) -> list:
-        """Strip native image parts when the active model lacks vision.
+        """Strip native image parts when the active model should not see pixels.
 
-        Runs on the chat.completions path. Vision-capable
-        models pass through unchanged (provider and any downstream translator
-        handle the image parts natively). Non-vision models get each image
-        replaced by a cached vision_analyze text description so the turn
-        doesn't fail with "model does not support image input".
+        Runs on the chat.completions path. Models routed to native images pass
+        through unchanged (provider and any downstream translator handle the
+        image parts natively). Text-mode models get each image replaced by a
+        cached vision_analyze text description so the turn doesn't fail with
+        "model does not support image input".
         """
         if not any(
             isinstance(msg, dict) and self._content_has_image_parts(msg.get("content"))
@@ -4592,7 +4591,7 @@ class AIAgent:
         ):
             return api_messages
 
-        if self._model_supports_vision():
+        if self._active_model_uses_native_images():
             return api_messages
 
         transformed = copy.deepcopy(api_messages)
@@ -4704,6 +4703,31 @@ class AIAgent:
             return suffix
         return "[A multimodal message was converted to text for Anthropic compatibility.]"
 
+    def _active_model_uses_native_images(self) -> bool:
+        """True when images should be sent to the active model as pixels.
+
+        Uses the same decision as inbound user images: ``agent.image_input_mode``
+        forces ``native`` or ``text``, and ``auto`` follows the model's declared
+        ``supports_vision`` capability. Covers user attachments and tool-result
+        images alike.
+        """
+        if not getattr(self, "_vision_supported", True):
+            # The provider already rejected images this turn; don't spend
+            # another round-trip rediscovering that.
+            return False
+        try:
+            from son_of_anton_cli.config import load_config
+            from agent.image_routing import decide_image_input_mode
+
+            cfg = load_config()
+            return decide_image_input_mode(
+                (getattr(self, "provider", "") or "").strip(),
+                (getattr(self, "model", "") or "").strip(),
+                cfg,
+            ) == "native"
+        except Exception:
+            return self._model_supports_vision()
+
     def _tool_result_content_for_active_model(self, tool_name: str, result: Any) -> Any:
         """Return the tool message content that is safe for the active model.
 
@@ -4720,7 +4744,7 @@ class AIAgent:
         if not self._content_has_image_parts(content):
             return content
 
-        if self._model_supports_vision():
+        if self._active_model_uses_native_images():
             # Vision-capable on paper — but if we've already learned in-session
             # that the endpoint rejects list-type tool content, short-circuit to
             # a text summary so we don't burn a round-trip relearning it.
@@ -5313,11 +5337,15 @@ class AIAgent:
         self,
         tool_name: str,
         function_args: dict,
-        function_result: str,
+        function_result: Any,
         *,
         failed: bool,
         tool_call_id: str = "",
-    ) -> str:
+    ) -> Any:
+        if not isinstance(function_result, str):
+            # Multimodal tool results (image content lists) have no single
+            # text body; loop and stall tracking is defined on strings only.
+            return function_result
         decision = self._tool_guardrails.after_call(
             tool_name,
             function_args,

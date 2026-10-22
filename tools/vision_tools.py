@@ -12,6 +12,7 @@ pre-analyze attached images; compaction's image-shrink recovery reuses
 import asyncio
 import base64
 import functools
+import io
 import json
 import logging
 import os
@@ -72,6 +73,10 @@ def _detect_image_mime_type_from_bytes(data: bytes) -> Optional[str]:
         return "image/bmp"
     if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "image/webp"
+    if header.startswith((b"II*\x00", b"MM\x00*")):
+        return "image/tiff"
+    if header.startswith(b"\x00\x00\x01\x00"):
+        return "image/x-icon"
     return None
 
 
@@ -608,6 +613,95 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
 
     # Shouldn't reach here, but fall back to full encode
     return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
+
+
+def image_bytes_to_vision_data_url(
+    data: bytes,
+    *,
+    max_base64_bytes: int = _RESIZE_TARGET_BYTES,
+    max_dimension: int = 2000,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Turn raw image bytes into a base64 data URL vision APIs accept.
+
+    Returns ``(data_url, mime, error)``. Formats outside the four every
+    provider accepts (PNG, JPEG, GIF, WebP) are converted to PNG first; SVG
+    goes through the system rasterizer. Images over the byte or pixel budget
+    are downscaled. ``error`` is a human-readable reason when no data URL
+    could be produced.
+    """
+    if not data:
+        return None, None, "the file is empty"
+
+    mime = _detect_image_mime_type_from_bytes(data)
+    if mime is None and b"<svg" in data[:4096].lower():
+        mime = "image/svg+xml"
+    if mime is None:
+        return None, None, "the file is not a recognized image format"
+
+    temp_paths: list[Path] = []
+    try:
+        if mime not in _SUPPORTED_MEDIA_TYPES:
+            suffix = ".svg" if mime == "image/svg+xml" else ".img"
+            with tempfile.NamedTemporaryFile(
+                prefix="read_image_", suffix=suffix, delete=False
+            ) as handle:
+                handle.write(data)
+                source_path = Path(handle.name)
+            temp_paths.append(source_path)
+            normalized_path, normalized_mime, error = _normalize_to_supported_image(
+                source_path, mime
+            )
+            if error or normalized_path is None or normalized_mime is None:
+                return None, None, error or f"could not convert {mime} to PNG"
+            if normalized_path != source_path:
+                temp_paths.append(normalized_path)
+            mime = normalized_mime
+            data = normalized_path.read_bytes()
+
+        needs_resize = (len(data) * 4) // 3 + 100 > max_base64_bytes
+        if not needs_resize:
+            try:
+                from PIL import Image as _PILImage
+
+                with _PILImage.open(io.BytesIO(data)) as img:
+                    needs_resize = max(img.size) > max_dimension
+            except Exception:
+                # Unreadable dimensions are not fatal here: the encoder below
+                # either produces a usable payload or the caller reports it.
+                pass
+
+        if needs_resize:
+            with tempfile.NamedTemporaryFile(
+                prefix="read_image_", suffix=".img", delete=False
+            ) as handle:
+                handle.write(data)
+                resize_path = Path(handle.name)
+            temp_paths.append(resize_path)
+            data_url = _resize_image_for_vision(
+                resize_path,
+                mime_type=mime,
+                max_base64_bytes=max_base64_bytes,
+                max_dimension=max_dimension,
+            )
+            if len(data_url) > max_base64_bytes:
+                return (
+                    None,
+                    None,
+                    f"the image is still too large after downscaling "
+                    f"({len(data_url):,} base64 bytes, limit {max_base64_bytes:,})",
+                )
+            # Re-encoding may have changed the format (GIF -> JPEG, etc.).
+            resized_mime = data_url.split(";", 1)[0].removeprefix("data:")
+            return data_url, resized_mime or mime, None
+
+        encoded = base64.b64encode(data).decode("ascii")
+        return f"data:{mime};base64,{encoded}", mime, None
+    finally:
+        for temp_path in temp_paths:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 async def vision_analyze_tool(

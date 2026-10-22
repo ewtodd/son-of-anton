@@ -283,9 +283,10 @@ DEFAULT_CONFIG = {
         #              (see run_agent._prepare_messages_for_api).
         #   "text"   — always pre-analyze with vision_analyze and prepend the
         #              description as text; the main model never sees pixels.
-        # Affects gateway platforms, the TUI, and CLI /attach.  vision_analyze
-        # remains available as a tool regardless of this setting — the routing
-        # only controls how inbound user images are presented.
+        # Affects gateway platforms, the TUI, CLI /attach, and tool-result
+        # images (e.g. read_file).  vision_analyze remains available as a tool
+        # regardless of this setting — the routing only controls how images
+        # are presented to the main model.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
 

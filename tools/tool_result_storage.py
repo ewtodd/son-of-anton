@@ -273,6 +273,11 @@ def enforce_turn_budget(
     total_size = 0
     for i, msg in enumerate(tool_messages):
         content = msg.get("content", "")
+        if not isinstance(content, str):
+            # Multimodal results (image content lists) have no text body to
+            # spill; the executor already skipped per-result persistence for
+            # them, and len()/substring checks below assume a string.
+            continue
         size = len(content)
         total_size += size
         if PERSISTED_OUTPUT_TAG not in content:

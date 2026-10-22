@@ -52,6 +52,13 @@ def _expand_tilde(path: str) -> str:
 # are a context-window hazard — the model should use offset+limit.
 _MAX_READ_CHARS = 100_000
 
+# Image formats read_file hands to a vision-capable model as tool-result
+# content instead of refusing as binary. SVG stays on the text path: its
+# source is readable, and rasterizing it is vision_analyze's job.
+_READABLE_IMAGE_EXTENSIONS = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".tif", ".tiff",
+})
+
 
 def _truncate_to_char_budget(content: str, max_chars: int) -> tuple[str, int, bool]:
     """Trim line-numbered ``read_file`` content to fit a char budget.
@@ -1332,8 +1339,64 @@ def _special_file_kind(path) -> str | None:
     return "a special (non-regular) file"
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
-    """Read a file with pagination and line numbers."""
+def _format_byte_size(size: int) -> str:
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size} bytes"
+
+
+def _read_image_for_model(path: Path, display_path: str, task_id: str) -> str | dict:
+    """Read one image as a multimodal tool result.
+
+    The envelope always carries the image; the executor downgrades it to
+    ``text_summary`` for text-only models, so the summary names vision_analyze
+    as the fallback. Returns a JSON error string when the file cannot be read
+    or decoded.
+    """
+    from tools.vision_tools import (
+        _VISION_MAX_DOWNLOAD_BYTES,
+        image_bytes_to_vision_data_url,
+    )
+
+    file_ops = _get_file_ops(task_id)
+    binary = file_ops.read_file_bytes(str(path), max_bytes=_VISION_MAX_DOWNLOAD_BYTES)
+    if binary.error:
+        return tool_error(f"Cannot read image '{display_path}': {binary.error}")
+    if not binary.base64_content:
+        return tool_error(f"Cannot read image '{display_path}': no data returned.")
+    try:
+        raw = base64.b64decode(binary.base64_content, validate=True)
+    except (ValueError, base64.binascii.Error):
+        return tool_error(f"Cannot read image '{display_path}': invalid image data.")
+
+    data_url, mime, error = image_bytes_to_vision_data_url(raw)
+    if error or data_url is None or mime is None:
+        return tool_error(
+            f"Cannot read image '{display_path}': "
+            f"{error or 'unsupported image format'}. Use terminal to inspect "
+            "it or vision_analyze to analyze it."
+        )
+
+    size = binary.file_size or len(raw)
+    summary = (
+        f"Read image '{display_path}' ({mime}, {_format_byte_size(size)}). "
+        "The image is attached to this result for vision-capable models. "
+        f"If you cannot see it, use vision_analyze with image_url='{display_path}'."
+    )
+    return {
+        "_multimodal": True,
+        "content": [
+            {"type": "text", "text": summary},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ],
+        "text_summary": summary,
+    }
+
+
+def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str | dict:
+    """Read a file with pagination and line numbers, or an image as content."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
 
@@ -1463,6 +1526,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 if result_dict["content"]:
                     result_dict["content"] = redact_sensitive_text(result_dict["content"], file_read=True)
                 return json.dumps(result_dict, ensure_ascii=False)
+
+        # ── Image files ───────────────────────────────────────────────
+        # Vision-capable models get the pixels as tool-result content; the
+        # executor replaces them with ``text_summary`` for text-only models.
+        if _resolved.suffix.lower() in _READABLE_IMAGE_EXTENSIONS:
+            block_error = get_read_block_error(str(_resolved))
+            if block_error:
+                return tool_error(block_error)
+            return _read_image_for_model(_resolved, path, task_id)
 
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O). Name what we know:
@@ -2313,7 +2385,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text; PDFs convert too, page by page; legacy Office (.doc/.ppt/.xls), OpenDocument, RTF, and EPUB convert only when the build includes the optional anydoc converter. PDF conversion reads the text layer only: scanned/image pages yield no text, and when many pages come back empty the output starts with an EXTRACTION COVERAGE WARNING listing the affected pages — follow its instructions (render pages with pdftoppm and inspect via vision_analyze, or OCR) instead of treating the extraction as complete. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
+    "description": "Read a file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Images (.png, .jpg, .jpeg, .gif, .webp, .bmp, .ico, .tif, .tiff) are returned as image content for vision-capable models; text-only models receive a text summary that points at vision_analyze. Output format for text: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text; PDFs convert too, page by page; legacy Office (.doc/.ppt/.xls), OpenDocument, RTF, and EPUB convert only when the build includes the optional anydoc converter. PDF conversion reads the text layer only: scanned/image pages yield no text, and when many pages come back empty the output starts with an EXTRACTION COVERAGE WARNING listing the affected pages — follow its instructions (render pages with pdftoppm and inspect via vision_analyze, or OCR) instead of treating the extraction as complete. Offset and limit apply to text files only.",
     "parameters": {
         "type": "object",
         "properties": {

@@ -586,6 +586,23 @@ def _rpc_server_loop(
                     "duration": round(call_duration, 2),
                 })
 
+                if isinstance(result, dict) and result.get("_multimodal") is True:
+                    # The RPC wire carries text and a sandbox script cannot use
+                    # image pixels. Keep read_file's dict contract with the
+                    # envelope's text summary and point at the direct tool.
+                    summary = str(
+                        result.get("text_summary") or "[image tool result]"
+                    )
+                    result = json.dumps({
+                        "content": summary,
+                        "total_lines": 0,
+                        "image": True,
+                        "note": (
+                            "execute_code cannot hand image pixels to the "
+                            "model; call read_file directly to view the image."
+                        ),
+                    })
+
                 conn.sendall((result + "\n").encode())
 
     except socket.timeout:
