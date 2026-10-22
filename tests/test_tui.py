@@ -133,11 +133,11 @@ def test_prompt_completes_slash_commands_and_q_quits() -> None:
             await pilot.press("/", "m", "o")
             await pilot.pause(0.2)
             assert app.query_one("#completer").display is True
-            assert "/model" in app._completion_cmds
-            first = app._completion_cmds[0]
+            offered = [c.display for c in app._completions.items]
+            assert "/model" in offered
             await pilot.press("tab")
             await pilot.pause(0.1)
-            assert prompt.text == first + " "
+            assert prompt.text == offered[0] + " "
             assert app.query_one("#completer").display is False
             prompt.text = ""
             await pilot.press("h", "i")
@@ -148,6 +148,129 @@ def test_prompt_completes_slash_commands_and_q_quits() -> None:
             await pilot.press("enter")
             await pilot.pause(0.3)
             assert not app.is_running, ":q did not quit the app"
+
+    asyncio.run(run())
+
+
+def _keys(text: str) -> list:
+    return ["space" if c == " " else c for c in text]
+
+
+def test_tab_never_leaves_the_prompt() -> None:
+    """Tab with nothing to complete used to move focus to the transcript and
+    swallow every key typed after it."""
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            prompt = app.query_one("#input")
+            prompt.focus()
+            await pilot.press(*_keys("/model qw"), "tab", "e", "n")
+            await pilot.pause(0.2)
+            assert app.focused is prompt
+            assert prompt.text == "/model qwen"
+            prompt.text = ""
+            await pilot.press(*_keys("hello"), "tab", "!")
+            await pilot.pause(0.2)
+            assert app.focused is prompt and prompt.text == "hello!"
+
+    asyncio.run(run())
+
+
+def test_prompt_completes_command_arguments() -> None:
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            prompt = app.query_one("#input")
+            completer = app.query_one("#completer")
+            prompt.focus()
+            await pilot.press(*_keys("/reasoning hi"))
+            await pilot.pause(0.2)
+            assert completer.display is True
+            assert "high" in [c.display for c in app._completions.items]
+            await pilot.press("tab")
+            await pilot.pause(0.2)
+            assert prompt.text == "/reasoning high "
+
+            # An empty argument opens nothing while typing — Enter must still
+            # send `/reasoning` — but Tab lists every choice.
+            prompt.text = ""
+            await pilot.press(*_keys("/reasoning "))
+            await pilot.pause(0.2)
+            assert completer.display is False
+            await pilot.press("tab")
+            await pilot.pause(0.2)
+            assert completer.display is True
+            first = app._completions.items[0].display
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert prompt.text == f"/reasoning {first} "
+
+    asyncio.run(run())
+
+
+def test_prompt_completes_at_references_and_paths(tmp_path, monkeypatch) -> None:
+    _textual()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "notes.txt").write_text("n\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            prompt = app.query_one("#input")
+            completer = app.query_one("#completer")
+            prompt.focus()
+            await pilot.press(*_keys("look at @"))
+            await pilot.pause(0.2)
+            assert completer.display is True
+            assert "@diff" in [c.display for c in app._completions.items]
+
+            prompt.text = ""
+            await pilot.press(*_keys("look at @file:no"))
+            await pilot.pause(0.2)
+            await pilot.press("enter")  # accepts the reference, does not send
+            await pilot.pause(0.2)
+            assert prompt.text == "look at @file:notes.txt "
+
+            # Plain paths complete on Tab only, keeping what follows the cursor.
+            prompt.text = ""
+            await pilot.press(*_keys("see ./no"))
+            await pilot.pause(0.2)
+            assert completer.display is False
+            await pilot.press("tab")
+            await pilot.pause(0.2)
+            assert prompt.text == "see ./notes.txt "
+
+    asyncio.run(run())
+
+
+def test_history_shows_as_ghost_text_and_right_takes_it() -> None:
+    _textual()
+
+    async def run() -> None:
+        app = _tui.SonOfAntonTUIApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+            prompt = app.query_one("#input")
+            prompt.focus()
+            prompt.prompt_history.record("explain the relay worker")
+            await pilot.press(*_keys("expl"))
+            await pilot.pause(0.2)
+            assert prompt.suggestion == "ain the relay worker"
+            await pilot.press("left")
+            await pilot.pause(0.1)
+            assert prompt.suggestion == "", "ghost text lives only at the end of the draft"
+            await pilot.press("end", "right")
+            await pilot.pause(0.2)
+            assert prompt.text == "explain the relay worker"
+            assert prompt.suggestion == ""
 
     asyncio.run(run())
 

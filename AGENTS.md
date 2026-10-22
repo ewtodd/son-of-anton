@@ -328,6 +328,11 @@ fallback: if Textual will not start, nothing interactive starts. Single-query mo
   session length — the marathon-session fix. Markdown renders through the
   `gfm-like` markdown-it preset in the fork's plain aesthetic (no syntax
   rainbow), with tables realigned by the shared `realign_markdown_tables`.
+- `son_of_anton_tui/completion.py` — what the prompt completes, kept pure (no
+  Textual): command names and arguments (`SUBCOMMANDS`, `/skin`, `/tools`),
+  `@` references (checked against `agent.context_references`' parser) and,
+  on Tab only, file paths. Tab never moves focus off the prompt; history shows
+  as ghost text (`PromptHistory.suggest`, → accepts).
 - `son_of_anton_tui/backend.py` — `TextualBackend(SonOfAntonCLI)`: owns the
   session state, routes slash commands to `process_command()`, and bridges the
   agent loop into the TUI. `_apply_tui_skin_style()` re-resolves the palette

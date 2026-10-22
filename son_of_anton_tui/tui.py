@@ -8,7 +8,9 @@ scrollback:
   * a multi-line prompt: Enter submits, Shift+Enter inserts a newline; messages
     submitted while a turn is running queue above the prompt, and ``/sendnow``
     redirects the live turn onto the oldest one; ``/sendall`` sends them all;
-  * slash commands autocomplete inline and ctrl+p opens a fuzzy palette;
+  * slash commands, their arguments and ``@`` references autocomplete inline,
+    Tab also completes file paths, history shows as ghost text, and ctrl+p
+    opens a fuzzy command palette;
   * the ASCII "SON OF ANTON" wordmark opens the session.
 
 The agent is the unchanged ``cli.SonOfAntonCLI`` loop, wrapped by
@@ -57,6 +59,7 @@ try:
     from textual.widgets.option_list import Option
 
     from son_of_anton_tui.feed import FeedStyle, VirtualFeed, note_width
+    from son_of_anton_tui import completion as _completion
 
     _TEXTUAL_AVAILABLE = True
 except Exception:  # pragma: no cover - import-time guard
@@ -378,6 +381,15 @@ class PromptHistory:
             return self._draft
         return self._entries[self._index]
 
+    def suggest(self, prefix: str) -> str:
+        """The rest of the newest one-line entry that extends ``prefix`` ('' if none)."""
+        if not prefix:
+            return ""
+        for entry in reversed(self._entries):
+            if len(entry) > len(prefix) and "\n" not in entry and entry.startswith(prefix):
+                return entry[len(prefix):]
+        return ""
+
 
 def is_available() -> bool:
     """True when Textual is installed (the ``tui`` extra is present)."""
@@ -428,7 +440,13 @@ if _TEXTUAL_AVAILABLE:
 
         ↑ / ↓ move the cursor through a multi-line draft and fall through to
         history recall once they run off the top or the bottom of it — the
-        shell behaviour the prompt_toolkit REPL used to give for free.
+        shell behaviour the prompt_toolkit REPL used to give for free.  So is
+        the ghost text: the rest of the newest matching history entry, taken
+        with →.
+
+        Tab never leaves the prompt.  TextArea's default ``tab_behavior`` moves
+        focus on to the transcript, which swallowed every key typed after a
+        Tab that had nothing to complete.
         """
 
         BINDINGS = [
@@ -446,7 +464,7 @@ if _TEXTUAL_AVAILABLE:
                 self.value = value
 
         class Complete(Message):
-            """Tab / Up / Down / Escape while the completion list is showing."""
+            """Tab, or Enter / Up / Down / Escape while the completion list is showing."""
 
             def __init__(self, action: str) -> None:
                 super().__init__()
@@ -474,16 +492,39 @@ if _TEXTUAL_AVAILABLE:
                 event.prevent_default()
                 self.insert("\n")
                 return
-            if self.completer_active and key in ("tab", "up", "down", "escape"):
+            if key == "tab":
                 event.stop()
                 event.prevent_default()
-                self.post_message(self.Complete({"tab": "accept", "up": "up", "down": "down", "escape": "close"}[key]))
+                self.post_message(self.Complete("accept" if self.completer_active else "tab"))
+                return
+            if self.completer_active and key in ("up", "down", "escape"):
+                event.stop()
+                event.prevent_default()
+                self.post_message(self.Complete({"up": "up", "down": "down", "escape": "close"}[key]))
                 return
             if key in ("up", "down") and self._recall(key):
                 event.stop()
                 event.prevent_default()
                 return
             await super()._on_key(event)
+
+        def update_suggestion(self) -> None:
+            self.suggestion = self._history_suggestion()
+
+        def _history_suggestion(self) -> str:
+            # Only at the very end of a one-line draft, and never over an open
+            # completion list (→ would take the ghost, Enter the list).
+            if self.prompt_history is None or self.completer_active:
+                return ""
+            text = self.text
+            if not text.strip() or "\n" in text or self.cursor_location != self.document.end:
+                return ""
+            return self.prompt_history.suggest(text)
+
+        def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+            # TextArea draws the ghost at the cursor, wherever it is: drop it
+            # as soon as the cursor leaves the end.
+            self.update_suggestion()
 
         def _recall(self, key: str) -> bool:
             """Swap the draft for a history entry; False leaves the key alone.
@@ -887,7 +928,13 @@ if _TEXTUAL_AVAILABLE:
             self._modal_open = False
             self._serviced: dict[str, Any] = {}  # attr -> the state object already shown
             self._spin = 0
-            self._completion_cmds: list[str] = []
+            # The list on show, the text before the cursor it was built for,
+            # and whether Tab opened it (then it keeps following the typing
+            # even for the Tab-only kinds, like paths).
+            self._completions: Optional[_completion.Completions] = None
+            self._completion_before = ""
+            self._completion_explicit = False
+            self._project_files = _completion.ProjectFiles(on_update=self._project_files_loaded)
             # Follow-ups typed while a turn is running, in arrival order. They
             # are dispatched after the turn unless /sendnow redirects the live
             # turn onto one of them first.
@@ -2348,7 +2395,9 @@ if _TEXTUAL_AVAILABLE:
                 self._busy = None
                 self._update_status()
 
-        # ---------------- slash completion ----------------
+        # ---------------- prompt completion ----------------
+        # What completes is son_of_anton_tui/completion.py; this half maps
+        # the cursor to offsets, draws the list and applies the choice.
         def _palette_entries(self) -> list:
             if self.backend is not None:
                 return self.backend.palette_entries()
@@ -2370,43 +2419,115 @@ if _TEXTUAL_AVAILABLE:
                 self._prompt.recalled = False
                 self._hide_completer()
                 return
-            text = self._prompt.text
-            if text.startswith("/") and "\n" not in text and " " not in text.strip():
-                self._show_completer(text.strip())
-            else:
-                self._hide_completer()
+            self._refresh_completer(explicit=self._completion_explicit)
 
-        def _show_completer(self, prefix: str) -> None:
-            q = prefix.lower()
-            matches = [(c, d) for c, _cat, d in self._palette_entries() if c.lower().startswith(q)]
-            if not matches or (len(matches) == 1 and matches[0][0].lower() == q):
+        def _text_before_cursor(self) -> str:
+            return self._prompt.get_text_range((0, 0), self._prompt.cursor_location)
+
+        def _completions_for(self, before: str, *, explicit: bool) -> Optional[_completion.Completions]:
+            try:
+                return _completion.complete(
+                    before,
+                    explicit=explicit,
+                    commands=self._palette_entries(),
+                    cwd=os.getcwd(),
+                    project_files=self._project_files,
+                )
+            except Exception:
+                logging.getLogger(__name__).debug("prompt completion failed", exc_info=True)
+                return None
+
+        def _refresh_completer(self, *, explicit: bool) -> None:
+            before = self._text_before_cursor()
+            comps = self._completions_for(before, explicit=explicit)
+            if comps is None:
                 self._hide_completer()
-                return
-            matches = matches[:40]
+            else:
+                self._show_completer(comps, before)
+
+        def _project_files_loaded(self, cwd: str) -> None:
+            """Called off-thread when the ``@`` file list lands: redraw an open ``@`` list."""
+
+            def _redraw() -> None:
+                before = self._text_before_cursor()
+                word = before.split()[-1] if before and not before[-1].isspace() else ""
+                if word.startswith("@"):
+                    self._refresh_completer(explicit=self._completion_explicit)
+
+            try:
+                self.call_from_thread(_redraw)
+            except Exception:
+                pass  # the app is gone or not running
+
+        def _show_completer(self, comps: "_completion.Completions", before: str) -> None:
+            self._completions = comps
+            self._completion_before = before
+            items = comps.items
             self._completer.clear_options()
-            self._completion_cmds = [c for c, _ in matches]
-            col = max(len(c) for c, _ in matches) + 2
+            col = min(max(len(c.display) for c in items) + 2, 48)
             room = max(20, self._feed_width() - col - 4)
-            for c, d in matches:
-                d = d.split(" (usage:")[0].strip()
+            for c in items:
+                d = c.meta
                 if len(d) > room:
                     d = d[: room - 1] + "…"
-                row = Text.assemble((c.ljust(col), "bold"), (d, "dim"))
+                row = Text.assemble((c.display.ljust(col), "bold"), (d, "dim"))
                 row.no_wrap = True
                 row.overflow = "ellipsis"
                 self._completer.add_option(Option(row))
             self._completer.highlighted = 0
             self._completer.display = True
             self._prompt.completer_active = True
+            self._prompt.suggestion = ""
 
         def _hide_completer(self) -> None:
             self._completer.display = False
             self._prompt.completer_active = False
-            self._completion_cmds = []
+            self._completions = None
+            self._completion_before = ""
+            self._completion_explicit = False
+            self._prompt.update_suggestion()
+
+        def _accept_completion(self, comps: "_completion.Completions", cand: "_completion.Candidate", before: str) -> None:
+            prompt = self._prompt
+            head = before[: comps.start]
+            start = (head.count("\n"), len(head) - (head.rfind("\n") + 1))
+            end = prompt.cursor_location
+            insert = _completion.insertion(cand, prompt.get_text_range(end, prompt.document.end))
+            # Hidden first: the edit's Changed re-opens the list where it
+            # should (inside an @file: directory), and only there.
+            self._hide_completer()
+            prompt.replace(insert, start, end, maintain_selection_offset=False)
+
+        def _tab_complete(self) -> None:
+            """Tab with no list: complete like a shell — one match fills in,
+            several extend to their common prefix and open the list."""
+            before = self._text_before_cursor()
+            comps = self._completions_for(before, explicit=True)
+            if comps is None:
+                return
+            if len(comps.items) == 1:
+                self._accept_completion(comps, comps.items[0], before)
+                return
+            self._completion_explicit = True
+            word = before[comps.start :]
+            common = os.path.commonprefix([c.insert for c in comps.items])
+            if len(common) > len(word):
+                head = before[: comps.start]
+                start = (head.count("\n"), len(head) - (head.rfind("\n") + 1))
+                # The Changed this edit posts redraws the (narrower) list.
+                self._prompt.replace(common, start, self._prompt.cursor_location, maintain_selection_offset=False)
+                return
+            self._show_completer(comps, before)
+
+        async def _submit_prompt(self) -> None:
+            await self._handle_submit(PromptArea.Submitted(self._prompt, self._prompt.text.rstrip("\n")))
 
         @on(PromptArea.Complete)
         async def _complete(self, event: PromptArea.Complete) -> None:
             action = event.action
+            if action == "tab":
+                self._tab_complete()
+                return
             if action == "close":
                 self._hide_completer()
                 return
@@ -2416,24 +2537,31 @@ if _TEXTUAL_AVAILABLE:
                 else:
                     self._completer.action_cursor_down()
                 return
-            idx = self._completer.highlighted or 0
-            if 0 <= idx < len(self._completion_cmds):
-                cmd = self._completion_cmds[idx]
-                if action == "accept-submit" and self._prompt.text.strip().lower() == cmd.lower():
-                    self._hide_completer()
-                    self._prompt.text = ""
-                    await self._submit_text(cmd)
-                    return
-                self._prompt.text = cmd + " "
-                self._prompt.move_cursor(self._prompt.document.end)
-            self._hide_completer()
+            await self._accept_highlighted(self._completer.highlighted or 0, submit=action == "accept-submit")
+
+        async def _accept_highlighted(self, idx: int, *, submit: bool = False) -> None:
+            before = self._text_before_cursor()
+            comps = self._completions
+            if comps is None or before != self._completion_before:
+                # The cursor moved since the list was drawn: rebuild for here.
+                comps, idx = self._completions_for(before, explicit=True), 0
+            if comps is None or not 0 <= idx < len(comps.items):
+                self._hide_completer()
+                if submit:
+                    await self._submit_prompt()
+                return
+            cand = comps.items[idx]
+            if submit and cand.insert.rstrip() == before[comps.start :].rstrip():
+                # Enter on what is already typed in full: send it.
+                self._hide_completer()
+                await self._submit_prompt()
+                return
+            self._accept_completion(comps, cand, before)
 
         @on(OptionList.OptionSelected, "#completer")
-        def _completer_clicked(self, event: OptionList.OptionSelected) -> None:
-            idx = event.option_index
-            if 0 <= idx < len(self._completion_cmds):
-                self._prefill_prompt(self._completion_cmds[idx])
-            self._hide_completer()
+        async def _completer_clicked(self, event: OptionList.OptionSelected) -> None:
+            await self._accept_highlighted(event.option_index)
+            self._prompt.focus()
 
         # ---------------- selection / clipboard ----------------
         def on_mouse_up(self, event: events.MouseUp) -> None:
