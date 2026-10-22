@@ -111,6 +111,7 @@ def _run_and_exit_oneshot(
     provider: object = None,
     toolsets: object = None,
     usage_file: object = None,
+    worktree: bool = False,
 ) -> None:
     try:
         from son_of_anton_cli.oneshot import run_oneshot
@@ -121,6 +122,7 @@ def _run_and_exit_oneshot(
             provider=provider,
             toolsets=toolsets,
             usage_file=usage_file,
+            worktree=worktree,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -150,6 +152,20 @@ def _run_and_exit_oneshot(
         # during best-effort cleanup must not fall back into interpreter
         # finalization, where the reported native SIGABRT occurs.
         _exit_after_oneshot(rc)
+
+
+def _run_and_exit_oneshot_args(args) -> None:
+    """``-z`` from parsed args. Both entry paths (the fast chat launch and the
+    full parser) dispatch here, so a flag cannot reach one and not the other —
+    ``-w`` once did exactly that and ran in the shared checkout."""
+    _run_and_exit_oneshot(
+        args.oneshot,
+        model=getattr(args, "model", None),
+        provider=getattr(args, "provider", None),
+        toolsets=getattr(args, "toolsets", None),
+        usage_file=getattr(args, "usage_file", None),
+        worktree=bool(getattr(args, "worktree", False)),
+    )
 
 
 def _project_root_str_fast() -> str:
@@ -1533,13 +1549,7 @@ def _try_fast_chat_launch() -> bool:
     _prepare_agent_startup(args)
 
     if getattr(args, "oneshot", None):
-        _run_and_exit_oneshot(
-            args.oneshot,
-            model=getattr(args, "model", None),
-            provider=getattr(args, "provider", None),
-            toolsets=getattr(args, "toolsets", None),
-            usage_file=getattr(args, "usage_file", None),
-        )
+        _run_and_exit_oneshot_args(args)
 
     if (args.resume or args.continue_last) and args.command is None:
         args.command = "chat"
@@ -2366,13 +2376,7 @@ def main():
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.
     if getattr(args, "oneshot", None):
-        _run_and_exit_oneshot(
-            args.oneshot,
-            model=getattr(args, "model", None),
-            provider=getattr(args, "provider", None),
-            toolsets=getattr(args, "toolsets", None),
-            usage_file=getattr(args, "usage_file", None),
-        )
+        _run_and_exit_oneshot_args(args)
 
     # Handle top-level --resume / --continue as shortcut to chat
     if (args.resume or args.continue_last) and args.command is None:

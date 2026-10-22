@@ -7,7 +7,10 @@ Toolsets = explicit --toolsets when provided, otherwise whatever the user has
 configured for "cli" in `son-of-anton tools`.
 Rules / memory / AGENTS.md = same as a normal chat turn.
 Approvals = auto-bypassed (SON_OF_ANTON_YOLO_MODE=1 is set for the call).
-Working directory = the user's CWD (AGENTS.md etc. resolve from there as usual).
+Working directory = the user's CWD (AGENTS.md etc. resolve from there as usual),
+or with -w/--worktree a fresh git worktree, created exactly as an interactive
+`son-of-anton -w` does; it is kept afterwards when the run left commits or
+uncommitted changes in it, and its path is reported on stderr.
 
 Model / provider selection mirrors `son-of-anton chat`:
     - Both optional. If omitted, use the user's configured default.
@@ -159,6 +162,7 @@ def run_oneshot(
     provider: Optional[str] = None,
     toolsets: object = None,
     usage_file: Optional[str] = None,
+    worktree: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -173,9 +177,22 @@ def run_oneshot(
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
             spend per invocation.
+        worktree: Run in a new git worktree of the current repository
+            (``-w``). If one cannot be created the prompt is not run at all:
+            running it in the shared checkout instead is what isolation was
+            asked to prevent.
 
     Returns the exit code.  The caller owns process termination.
     """
+    if worktree:
+        info = _enter_worktree()
+        if info is None:
+            return 2
+        try:
+            return run_oneshot(prompt, model=model, provider=provider, toolsets=toolsets, usage_file=usage_file)
+        finally:
+            _leave_worktree(info)
+
     # Silence every stdlib logger for the duration.  AIAgent, tools, and
     # provider adapters all log to stderr through the root logger; file
     # handlers added by setup_logging() keep working (they're attached to
@@ -293,6 +310,44 @@ def run_oneshot(
         return 1
 
     return 0
+
+
+def _enter_worktree() -> Optional[dict]:
+    """Create the run's worktree and point the tools at it (``TERMINAL_CWD``).
+
+    The same ``_setup_worktree`` an interactive ``-w`` session uses; its
+    progress lines go to stderr, because stdout carries only the response.
+    No background prune here: one-shot ends in ``os._exit``, which would kill
+    a pruner thread in the middle of a ``git worktree remove``.
+    """
+    import cli as _cli
+
+    with redirect_stdout(sys.stderr):
+        info = _cli._setup_worktree(sync_base=_cli.CLI_CONFIG.get("worktree_sync", True))
+    if info is None:
+        sys.stderr.write("son-of-anton -z: --worktree: no worktree could be created; the prompt was not run.\n")
+        sys.stderr.flush()
+        return None
+    os.environ["TERMINAL_CWD"] = info["path"]
+    return info
+
+
+def _leave_worktree(info: dict) -> None:
+    """Remove the run's worktree unless it holds work.
+
+    Called explicitly: one-shot exits through ``os._exit``, which skips the
+    ``atexit`` hook an interactive session cleans up with. Unpushed commits
+    keep the tree, and so do uncommitted changes — nobody has seen this
+    run's output yet.
+    """
+    try:
+        import cli as _cli
+
+        with redirect_stdout(sys.stderr):
+            _cli._cleanup_worktree(info, keep_dirty=True)
+    except Exception as exc:
+        sys.stderr.write(f"son-of-anton -z: worktree cleanup failed ({exc}); left at {info.get('path')}\n")
+    sys.stderr.flush()
 
 
 def _create_session_db_for_oneshot():

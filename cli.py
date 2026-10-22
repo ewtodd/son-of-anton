@@ -1832,13 +1832,17 @@ def _worktree_lock_is_live(repo_root: str, worktree_path: str, timeout: int = 10
     return None
 
 
-def _cleanup_worktree(info: Dict[str, str] = None) -> None:
+def _cleanup_worktree(info: Dict[str, str] = None, keep_dirty: bool = False) -> None:
     """Remove a worktree and its branch on exit.
 
     Preserves the worktree only if it has unpushed commits (real work
     that hasn't been pushed to any remote).  Uncommitted changes alone
     (untracked files, test artifacts) are not enough to keep it — agent
     work lives in commits/PRs, not the working tree.
+
+    ``keep_dirty`` keeps a tree with uncommitted changes too. A one-shot
+    (``-z -w``) run sets it: nobody watched that session, so its changes
+    have not been seen yet — removing them would discard the run's output.
     """
     global _active_worktree
     info = info or _active_worktree
@@ -1868,6 +1872,13 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
         else:
             _cprint(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
             print(f"  To clean up manually: git worktree remove --force {wt_path}")
+        _active_worktree = None
+        return
+
+    if keep_dirty and _worktree_is_dirty(wt_path, timeout=10):
+        _cprint(f"\n\033[33m⚠ Worktree has uncommitted changes, keeping: {wt_path}\033[0m")
+        print(f"  Branch: {branch}")
+        print(f"  To clean up manually: git worktree remove --force {wt_path}")
         _active_worktree = None
         return
 
