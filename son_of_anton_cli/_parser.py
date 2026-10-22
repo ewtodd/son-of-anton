@@ -79,7 +79,8 @@ def build_top_level_parser():
             "response text to stdout. No banner, no spinner, no tool "
             "previews, no session_id line. Tools, memory, rules, and "
             "AGENTS.md in the CWD are loaded as normal; approvals are "
-            "auto-bypassed. Intended for scripts / pipes."
+            "auto-bypassed. Intended for scripts / pipes. A run that fails or "
+            "stops early exits 2 with the reason on stderr and nothing on stdout."
         ),
     )
     parser.add_argument(

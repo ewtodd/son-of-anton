@@ -12,6 +12,10 @@ or with -w/--worktree a fresh git worktree, created exactly as an interactive
 `son-of-anton -w` does; it is kept afterwards when the run left commits or
 uncommitted changes in it, and its path is reported on stderr.
 
+Exit status: 0 = the run completed and its answer is on stdout; 1 = the agent
+crashed or produced nothing; 2 = a bad invocation, or the run failed or stopped
+early — the reason, and any text it produced, go to stderr, never stdout.
+
 Model / provider selection mirrors `son-of-anton chat`:
     - Both optional. If omitted, use the user's configured default.
     - If both given, pair them exactly as given.
@@ -284,7 +288,8 @@ def run_oneshot(
         real_stderr.flush()
         return 1
 
-    _write_usage_file(usage_file, result)
+    incomplete = _incomplete_reason(result)
+    _write_usage_file(usage_file, result, failure=incomplete)
 
     # Model text can contain lone UTF-16 surrogates (invalid in UTF-8). Writing
     # those to a real stdout TextIO raises UnicodeEncodeError and aborts with
@@ -295,14 +300,23 @@ def run_oneshot(
 
         response = _sanitize_surrogates(response)
 
+    if incomplete is not None:
+        # A failed or cut-short turn still carries text in final_response —
+        # the loop writes its error there for chat surfaces to display. On
+        # stdout it read as the answer: "HTTP 503: … is not loaded" printed
+        # and exited 0. stdout is for a completed run's answer only.
+        real_stderr.write(f"son-of-anton -z: the run did not complete: {incomplete}\n")
+        text = (response or "").strip()
+        if text and text != incomplete.strip():
+            real_stderr.write(text + "\n")
+        real_stderr.flush()
+        return 2
+
     if response:
         real_stdout.write(response)
         if not response.endswith("\n"):
             real_stdout.write("\n")
         real_stdout.flush()
-
-    if (result.get("failed") or result.get("partial")) and not (response or "").strip():
-        return 2
 
     if not (response or "").strip():
         real_stderr.write("son-of-anton -z: no final response was produced; treating the run as failed.\n")
@@ -310,6 +324,21 @@ def run_oneshot(
         return 1
 
     return 0
+
+
+def _incomplete_reason(result: dict) -> Optional[str]:
+    """Why the turn did not finish, or None when it completed.
+
+    ``failed`` (an API or provider error, a blocked request), ``partial`` (a
+    truncated or exhausted reply) and ``completed: False`` with text (the
+    iteration-cap summary) all end a turn early; only a completed turn's
+    final_response is an answer.
+    """
+    if result.get("failed") or result.get("partial"):
+        return str(result.get("error") or result.get("turn_exit_reason") or "the agent reported a failure")
+    if result.get("completed") is False and (result.get("final_response") or "").strip():
+        return str(result.get("turn_exit_reason") or "the run stopped before finishing")
+    return None
 
 
 def _enter_worktree() -> Optional[dict]:
