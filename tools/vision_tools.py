@@ -818,14 +818,15 @@ def check_vision_requirements() -> bool:
 VISION_ANALYZE_SCHEMA = {
     "name": "vision_analyze",
     "description": (
-        "Load an image into the conversation so you can see it. Accepts a "
-        "URL, local file path, or data URL. When your active model has "
-        "native vision, the image is attached to your context directly "
-        "and you read the pixels yourself on the next turn — call this "
-        "any time the user references an image (filepath in their message, "
-        "URL in tool output, screenshot from the browser, etc.). For "
-        "non-vision models, falls back to an auxiliary vision model that "
-        "returns a text description."
+        "Get a text description of an image by sending it to the "
+        "configured vision model. Accepts a URL, local file path, or "
+        "data: URL, plus an optional crop region. The image is sent to "
+        "auxiliary.vision (or the main endpoint when none is set) and you "
+        "receive a text analysis back; the raw image is not added to your "
+        "own context. Use this when you have a path or URL and need to "
+        "know what is in the image, including a zoomed crop of a region. "
+        "If an image is already attached to your conversation, read it "
+        "directly instead of calling this again."
     ),
     "parameters": {
         "type": "object",
