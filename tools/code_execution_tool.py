@@ -1336,28 +1336,16 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
     else:
         import_str = "..."
 
-    cwd_note = (
-        "Scripts run in the session's working directory with the active venv's python, "
-        "so project deps (pandas, etc.) and relative paths work like in terminal()."
-    )
-
     description = (
-        "Run a Python script that calls Son of Anton tools programmatically. "
-        "Use when you need 3+ tool calls with logic between them: "
-        "filtering/reducing large outputs before they enter context, "
-        "conditional branching, or loops (N pages/files, retry on failure). "
-        "Use normal tool calls for single calls, results you must reason "
-        "over in full, or anything needing user interaction.\n\n"
-        f"Available via `from son_of_anton_tools import ...`:\n\n"
-        f"{tool_lines}\n\n"
-        "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
-        "terminal() is foreground-only (no background or pty).\n\n"
-        f"{cwd_note}\n\n"
-        "Print your final result to stdout; stdlib (json, re, csv, datetime, ...) "
-        "is available for processing.\n\n"
-        "Built-in helpers (no import): json_parse(text) — tolerant json.loads for "
-        "terminal() output; shell_quote(s) — shlex.quote for dynamic shell args; "
-        "retry(fn, max_attempts=3, delay=2) — exponential backoff for transient failures."
+        "Run a Python script that calls Son of Anton tools, for 3+ calls with logic between "
+        "them: filtering large outputs before they reach your context, branching, or loops "
+        "over pages and files. Use plain tool calls for single calls, results you need to read "
+        "in full, or anything that needs the user.\n\n"
+        f"Available via `from son_of_anton_tools import ...`:\n{tool_lines}\n\n"
+        "Limits: 5 minutes, 50 KB of stdout, 50 tool calls; terminal() runs in the foreground "
+        "only. Scripts run in the session's working directory with its venv's python, and the "
+        "stdlib is available. Print the result to stdout. Helpers (no import): json_parse(text), "
+        "shell_quote(s), retry(fn, max_attempts=3, delay=2)."
     )
 
     return {

@@ -442,11 +442,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if active_profile == "default":
         post_workspace_parts.append(
             "Active Son of Anton profile: default. Other profiles (if any) live "
-            "under " + _root_str + "/profiles/<name>/. Each profile has its own "
-            "plugins/, cron/, and memories/ that affect a different "
-            "session than this one. Do not modify another profile's "
-            "plugins/cron/memories unless the user explicitly directs "
-            "you to."
+            "under " + _root_str + "/profiles/<name>/, each with its own cron/ "
+            "and memories/; don't modify those unless the user explicitly asks."
         )
     else:
         # A non-default name is only ever returned when the resolved home is
@@ -461,10 +458,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         post_workspace_parts.append(
             f"Active Son of Anton profile: {active_profile}. This session reads "
             f"and writes {profile_home}/. The default "
-            f"profile's data lives at {default_root}/plugins/, "
-            f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
-            f"different session run from a different shell. Do NOT modify "
-            f"another profile's plugins/cron/memories unless the user "
+            f"profile's data lives at {default_root}/cron/ and "
+            f"{default_root}/memories/ and belongs to a different session. Do NOT "
+            f"modify another profile's cron/memories unless the user "
             f"explicitly directs you to. The cross-profile write guard will "
             f"refuse such writes by default; pass cross_profile=True only "
             f"after explicit direction."

@@ -2799,46 +2799,22 @@ def _build_top_level_description() -> str:
     here, check it is not already stated in a parameter description.
     """
     return (
-        "Spawn subagents in isolated contexts; each gets its own conversation, "
-        "terminal session, and toolset, and only its final summary returns to "
-        "you. Provide 'goal' for a single task or 'tasks' for a parallel batch "
-        "(limits and nesting rules are in the parameter descriptions).\n\n"
-        "Runs in the background: dispatch returns immediately with live "
-        "transcript paths, and the completed result (one consolidated message "
-        "for a batch) re-enters the conversation on its own. Do NOT wait or "
-        "poll; continue other work.\n\n"
-        "LIVE ORCHESTRATION: while children run, this tool also controls "
-        "them — action='list' (live children + ids), action='steer' "
-        "(subagent_id + message, redirect without stopping), action='stop' "
-        "(subagent_id, end early; partial result still returns). Steer when "
-        "a live transcript shows a child drifting.\n\n"
-        "USE FOR: reasoning-heavy subtasks, work that would flood your context "
-        "with intermediate data, or independent parallel workstreams.\n"
-        "DO NOT USE FOR (use these instead):\n"
-        "- Mechanical multi-step work with no reasoning needed -> execute_code\n"
-        "- A single tool call -> call the tool directly\n"
-        "- Tasks needing user interaction -> subagents cannot ask questions\n"
-        "- Durable work that must survive this session -> cronjob or "
-        "terminal(background=True, notify_on_complete=True); /stop, /new, or "
-        "process exit discards running subagents.\n\n"
-        "RULES:\n"
-        "- Children know nothing of this conversation: pass everything needed "
-        "via 'context', including any required output language, tone, or "
-        "style (e.g. \"respond in Chinese\").\n"
-        "- Child summaries are SELF-REPORTS, not verified facts: a child "
-        "claiming \"uploaded successfully\" or \"file written\" may be wrong. "
-        "For external side effects (uploads, remote writes, publishing), "
-        "require a verifiable handle (URL, ID, absolute path) and verify it "
-        "yourself — fetch the URL, stat the file, read back the content — "
-        "before telling the user the operation succeeded.\n"
-        "- Leaf children (the default) cannot call delegate_task, clarify, "
-        "memory, send_message, or cronjob; orchestrators regain only "
-        "delegate_task.\n"
-        "- Children inherit the parent model and fallback chain unless pinned "
-        "globally via delegation.provider / delegation.model in config.toml. "
-        "Results are returned as an array, one entry per task."
+        "Run subagents in isolated contexts, each with its own conversation, terminal and "
+        "tools; only its final summary comes back to you. Give 'goal' for one task or 'tasks' "
+        "for a parallel batch. It runs in the background: the call returns at once and the "
+        "result (one message for a batch) arrives later, so keep working instead of waiting. "
+        "While children run, action='list', 'steer' and 'stop' control them.\n\n"
+        "Use it for reasoning-heavy subtasks, work that would flood your context, or "
+        "independent parallel work. Not for a single tool call, mechanical steps, anything "
+        "that needs the user (children can't ask questions), or work that must outlive this "
+        "session (stopping or restarting it discards running children).\n\n"
+        "Children know nothing of this conversation: put everything they need in 'context', "
+        "including the language and tone of the answer. Their summaries are self-reports: "
+        "before telling the user an upload, remote write or other side effect worked, check "
+        "the handle they return (URL, id, path) yourself. Default children cannot delegate, "
+        "ask the user, write memory, send messages or schedule jobs; orchestrators can also "
+        "delegate. Results come back as one entry per task."
     )
-
 
 def _build_tasks_param_description() -> str:
     """Compose the 'tasks' parameter description with current concurrency limit."""
@@ -2847,12 +2823,9 @@ def _build_tasks_param_description() -> str:
     except Exception:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
     return (
-        f"Batch mode: tasks to run in parallel (up to {max_children} for this "
-        f"user, set via delegation.max_concurrent_children). Each gets "
-        "its own subagent with isolated context and terminal session. "
-        "When provided, top-level goal/context/role are ignored."
+        f"Parallel batch of up to {max_children} tasks, each run by its own subagent. "
+        "When given, top-level goal, context and role are ignored."
     )
-
 
 def _build_dynamic_schema_overrides() -> dict:
     """Return per-call schema overrides reflecting current config.
@@ -2896,17 +2869,13 @@ DELEGATE_TASK_SCHEMA = {
             "goal": {
                 "type": "string",
                 "description": (
-                    "What the subagent should accomplish. Be specific and "
-                    "self-contained -- the subagent knows nothing about your "
-                    "conversation history."
+                    "What the subagent should accomplish, specific and self-contained."
                 ),
             },
             "context": {
                 "type": "string",
                 "description": (
-                    "Background information the subagent needs: file paths, "
-                    "error messages, project structure, constraints. The more "
-                    "specific you are, the better the subagent performs."
+                    "Everything it needs: paths, errors, constraints, the answer's language."
                 ),
             },
             "tasks": {
@@ -2922,19 +2891,12 @@ DELEGATE_TASK_SCHEMA = {
                         "role": {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
-                            "description": "Per-task role override. See top-level 'role' for semantics.",
+                            "description": "Overrides the top-level role for this task.",
                         },
                         "output_schema": {
                             "type": "object",
                             "description": (
-                                "Optional JSON Schema the subagent's final "
-                                "answer must validate against. The child is "
-                                "told the contract up front; the parent "
-                                "validates the final answer and allows one "
-                                "bounded correction retry. The result entry "
-                                "gains schema_valid (and schema_errors on "
-                                "final failure). Keep schemas forgiving: "
-                                "require only fields you will actually read."
+                                "Optional JSON Schema the answer must match; the child is told it and gets one retry, and the result gains schema_valid. Require only fields you will read."
                             ),
                         },
                     },
@@ -2949,63 +2911,38 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": (
-                    "Role of the child agent. 'leaf' (default) = focused "
-                    "worker, cannot delegate further. 'orchestrator' = can "
-                    "use delegate_task to spawn its own workers. Nesting is OFF for this user (max_spawn_depth=1); "
-                    "'orchestrator' is silently forced to 'leaf'. Raise "
-                    "delegation.max_spawn_depth in config.toml to enable."
+                    "'leaf' (default) cannot delegate; 'orchestrator' can spawn its own workers. Nesting is off here (max_spawn_depth=1), so 'orchestrator' acts as 'leaf'."
                 ),
             },
             "output_schema": {
                 "type": "object",
                 "description": (
-                    "Optional JSON Schema for the single-goal form — the "
-                    "subagent's final answer must validate against it "
-                    "(same semantics as tasks[].output_schema)."
+                    "Optional JSON Schema the single goal's answer must match, as tasks[].output_schema."
                 ),
             },
             "background": {
                 "type": "boolean",
                 "description": (
-                    "DEPRECATED / IGNORED. Top-level single and batch "
-                    "delegations run in the background automatically — you do "
-                    "not need to (and cannot) opt in or out. A single result or "
-                    "consolidated batch result re-enters the conversation when "
-                    "the work finishes; just continue working in the meantime. "
-                    "Setting this has no effect; the parameter remains only for "
-                    "backward compatibility."
+                    "Ignored: delegation always runs in the background."
                 ),
             },
             "action": {
                 "type": "string",
                 "enum": ["spawn", "list", "steer", "stop"],
                 "description": (
-                    "Default 'spawn' (omit for normal delegation). Live "
-                    "orchestration of running subagents: 'list' shows this "
-                    "conversation's live children (ids, goals, status, "
-                    "transcript paths); 'steer' queues course-correction text "
-                    "into one child (requires subagent_id + message) without "
-                    "stopping it; 'stop' ends one child early (requires "
-                    "subagent_id) — its partial result still returns as a "
-                    "completion message. Control actions return immediately; "
-                    "goal/tasks are ignored when action is not 'spawn'."
+                    "'spawn' (default), or for running children: 'list' (ids, goals, status), 'steer' (subagent_id + message, without stopping it) or 'stop' (subagent_id; its partial result still returns)."
                 ),
             },
             "subagent_id": {
                 "type": "string",
                 "description": (
-                    "Target for action='steer'/'stop'. Ids are returned in the "
-                    "spawn dispatch response (subagent_ids) and by "
-                    "action='list'."
+                    "Child to steer or stop, from the spawn response or list."
                 ),
             },
             "message": {
                 "type": "string",
                 "description": (
-                    "For action='steer': the course correction. Be directive "
-                    "and specific — the child sees it appended to its next "
-                    "tool result mid-run (e.g. \"Stop exploring X; focus on Y "
-                    "and return early results\")."
+                    "For steer: a specific, directive correction; the child sees it on its next tool result."
                 ),
             },
         },

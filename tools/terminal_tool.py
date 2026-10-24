@@ -796,16 +796,11 @@ from tools.environments.local import LocalEnvironment as _LocalEnvironment
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem, current working directory, and exported environment variables persist between calls.
+TERMINAL_TOOL_DESCRIPTION = """Run shell commands on Linux. The filesystem, working directory and exported variables persist between calls, so activate a virtualenv or export a variable once, not before every command.
 
-Do NOT use cat/head/tail (use read_file), grep/rg/find/ls (use search_files), sed/awk (use patch), or echo/heredoc file creation (use write_file). Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
-NEVER pipe a build/test command through tail/head/cat to shorten output (e.g. `cargo build | tail -20`): output is auto-truncated with the full text saved to a file, and the pipe makes exit_code report the LAST pipeline command's status (tail's 0), masking real failures. Run the command bare; the same applies to `cmd || echo failed`, which also masks the exit code.
-Environment state persists: activate a virtualenv or export variables once per session, not before every command.
+Prefer the file tools to cat/head/tail, grep/find/ls, sed/awk and echo-into-file; use the terminal for builds, installs, git, processes, scripts, network and package managers. Don't pipe a build or test through tail/head or add `|| echo`: the exit code then reports the last command, and long output is already truncated with the full text saved.
 
-Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds.
-Background: set background=true (returns a session_id). Pair with notify_on_complete=true for bounded tasks; leave silent only for servers/daemons that never exit. Never use nohup/setsid/trailing '&' — use background=true so Son of Anton tracks the process. After starting a server, verify readiness with a health check, then act in a separate call; no blind sleep loops. Manage with process(action="poll"/"wait").
-Working directory: use 'workdir' for per-command cwd. When a command changes the session cwd (cd, pushd), the result includes a "cwd" field — trust it instead of prefixing every command with 'cd'.
-PTY: set pty=true for interactive CLIs (they hang without it). Pipe git output to cat if it might page.
+A foreground command returns as soon as it finishes, so a generous timeout costs nothing. For long or endless commands use background=true (never nohup, setsid or a trailing '&'), with notify_on_complete for anything that finishes; after starting a server, check it with a request in a separate call instead of sleeping. A cd changes the session's working directory (the result shows it); use workdir for a single command. Use pty for interactive programs, and pipe git to cat if it might page.
 """
 
 # Global state for environment lifecycle management
@@ -2138,36 +2133,36 @@ TERMINAL_SCHEMA = {
         "properties": {
             "command": {
                 "type": "string",
-                "description": "The command to execute on the VM"
+                "description": "The shell command."
             },
             "background": {
                 "type": "boolean",
-                "description": "Run in the background, returning a session_id. Pair with notify_on_complete=true for anything with a defined end (tests, builds, deploys) — without it the process runs silently. Only servers/watchers/daemons that never exit should stay silent. Short commands: prefer foreground with a generous timeout.",
+                "description": "Run in the background and return a session_id. Add notify_on_complete for anything that ends; only servers and watchers stay silent.",
                 "default": False
             },
             "timeout": {
                 "type": "integer",
-                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. Foreground timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use background=true for longer commands.",
+                "description": f"Seconds to wait (default 180, foreground max {FOREGROUND_MAX_TIMEOUT}; longer needs background).",
                 "minimum": 1
             },
             "workdir": {
                 "type": "string",
-                "description": "Working directory for this command (absolute path). Defaults to the session working directory."
+                "description": "Absolute directory for this command; defaults to the session's."
             },
             "pty": {
                 "type": "boolean",
-                "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
+                "description": "Pseudo-terminal for interactive programs (local and SSH backends). Default false.",
                 "default": False
             },
             "notify_on_complete": {
                 "type": "boolean",
-                "description": "With background=true: get exactly one notification when the process exits. The right choice for nearly every bounded long task — set it and keep working. MUTUALLY EXCLUSIVE with watch_patterns (watch_patterns is dropped when both are set).",
+                "description": "With background: one notification when the process exits, so you can keep working. Not with watch_patterns.",
                 "default": False
             },
             "watch_patterns": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Strings to watch for in background output. ONLY for rare one-shot mid-process signals on processes that never exit (e.g. ['Application startup complete'] on a server). NOT for end-of-run markers (use notify_on_complete) and NOT for per-iteration patterns like 'ERROR' in loops — rate-limited to 1 notification/15s; repeated over-firing auto-disables it and falls back to notify-on-exit. When in doubt, use notify_on_complete. MUTUALLY EXCLUSIVE with notify_on_complete."
+                "description": "With background, for a process that never exits: notify when one of these strings appears, e.g. ['Application startup complete']. Not for end markers or repeating lines (one notification per 15 s at most). Not with notify_on_complete."
             }
         },
         "required": ["command"]

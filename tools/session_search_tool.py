@@ -1010,176 +1010,70 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
-        "Search past sessions stored in the local session DB, or scroll inside one. "
-        "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
-        "shape returns actual messages from the DB.\n\n"
-        "SOURCE-FIRST LIMIT\n\n"
-        "  This tool searches Son of Anton conversation history only. It is not evidence "
-        "about the current contents of external sources. If the user provided a "
-        "direct source such as a URL, phone number/contact, app/thread, file path, "
-        "account, website, or live system, inspect that original source before or "
-        "instead of session_search when accessible. Use session_search as secondary "
-        "context for what was previously said, not as primary proof of what the "
-        "source currently contains. If the original source is inaccessible, say so "
-        "and why before falling back to session history. Do not conclude 'not found' "
-        "or 'no prior correspondence' from session_search alone when a direct source "
-        "was provided.\n\n"
-        "FOUR CALLING SHAPES\n\n"
-        "  1) DISCOVERY — pass `query`:\n"
-        "     session_search(query=\"auth refactor\", limit=3)\n"
-        "     Runs FTS5, dedupes hits by session lineage, and returns the top N "
-        "sessions. Adaptive detail is the default: the top-ranked result carries "
-        "full context, while lower-ranked results stay compact. Pass `detail=\"full\"` "
-        "to fully hydrate every result. Every result carries:\n"
-        "       - session_id, title, when, source\n"
-        "       - snippet: FTS5-highlighted match excerpt\n"
-        "       - detail: `full` or `compact`\n"
-        "       - bookend_start/bookend_end: the first/last 3 user+assistant messages "
-        "for full results; empty lists for compact results\n"
-        "       - messages: ±5 messages around the FTS5 match for full results; only "
-        "the flagged anchor message for compact results\n"
-        "       - match_message_id, messages_before, messages_after\n"
-        "     The top result's bookends + window let you reconstruct goal → match → "
-        "resolution immediately. Scroll a compact result when another session looks "
-        "more promising.\n\n"
-        "  2) SCROLL — pass `session_id` + `around_message_id`:\n"
-        "     session_search(session_id=\"...\", around_message_id=12345, window=10)\n"
-        "     Returns a window of ±`window` messages centered on the anchor. No FTS5, "
-        "no bookends — just the slice. Use after a discovery call when you need more "
-        "context than the ±5 default window.\n"
-        "       - To scroll FORWARD: pass messages[-1].id back as around_message_id.\n"
-        "       - To scroll BACKWARD: pass messages[0].id back as around_message_id.\n"
-        "       - The boundary message appears in both windows — orientation marker.\n"
-        "       - When messages_before or messages_after is < window, you're at the "
-        "start or end of the session.\n\n"
-        "  3) READ — pass `session_id` only (no around_message_id):\n"
-        "     session_search(session_id=\"...\", profile=\"work\")\n"
-        "     Dumps the whole session by id (first 20 + last 10 messages when "
-        "large). This is how you resolve an `@session:<profile>/<id>` link the "
-        "user dropped into the chat: split the value on `/` into profile + id "
-        "and call session_search(session_id=id, profile=profile).\n\n"
-        "  4) BROWSE — no args:\n"
-        "     session_search()\n"
-        "     Returns recent sessions chronologically: titles, previews, timestamps. "
-        "Use when the user asks \"what was I working on\" without naming a topic.\n\n"
-        "LINKING THE USER TO A SESSION\n\n"
-        "  When you refer the user to a session, write its `link` value inline in "
-        "your reply — every result carries one, e.g. "
-        "`@session:default/20260722_204335_d62c16`. Copy it verbatim; do not "
-        "reformat it as a markdown link or wrap it in backticks. Son of Anton renders "
-        "it as a link showing the session's title, so the link IS the title: "
-        "use it as a noun mid-sentence (\"that's @session:default/... — want me "
-        "to pick it up?\"), never alone on its own line, and never alongside the "
-        "title, id, or date spelled out — that shows the user the same session "
-        "twice.\n\n"
-        "FTS5 SYNTAX\n\n"
-        "  AND is the default — multi-word queries require all terms. Use OR explicitly "
-        "for broader recall (`alpha OR beta OR gamma`), quoted phrases for exact match "
-        "(`\"docker networking\"`), boolean (`python NOT java`), or prefix wildcards "
-        "(`deploy*`).\n\n"
-        "WHEN TO USE\n\n"
-        "  Reach for this on questions about Son of Anton conversation history itself, such "
-        "as \"what did we do about X\", \"where did we leave Y\", or \"find the "
-        "session where Z\". If the user provided a direct source identifier, inspect "
-        "that source first when accessible; session_search can then supply historical "
-        "context. The session DB carries what was said when; external tools show "
-        "current source/world state."
+        "Search or read past son-of-anton conversations (full-text search over the session "
+        "store; returns the real messages). It only knows what was said here before: when the "
+        "user names a live source (a URL, file, contact, account or system), check that source "
+        "first, and don't conclude something doesn't exist from this search alone.\n\n"
+        "Shapes:\n"
+        "- query: find sessions. The best match comes with its opening and closing messages and "
+        "the messages around the hit; the others with just the matching message.\n"
+        "- session_id + around_message_id: read a window around one message. To scroll, pass the "
+        "window's last (forward) or first (backward) message id.\n"
+        "- session_id alone: read a whole session (the first 20 and last 10 messages if long). "
+        "Read an @session:<profile>/<id> link this way, with profile set.\n"
+        "- no arguments: list recent sessions.\n\n"
+        "Query words are ANDed; use OR, \"quoted phrases\", NOT and prefix* as needed. To point "
+        "the user at a session, write its link value (e.g. @session:default/20260722_204335_d62c16) "
+        "inline, unchanged, as a noun; it shows as the session's title, so don't also spell out "
+        "the title, id or date."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": (
-                    "Search query (discovery shape). Keywords, phrases, or boolean "
-                    "expressions to find in past sessions. Omit to browse recent "
-                    "sessions. Ignored when session_id + around_message_id are set "
-                    "(scroll shape)."
-                ),
+                "description": "Words or an FTS5 expression to search for. Omit to list recent sessions.",
             },
             "limit": {
                 "type": "integer",
-                "description": (
-                    "Discovery shape only. Max sessions to return (default 3, max 10). "
-                    "Bump to 5–10 when the topic likely spans several sessions and you "
-                    "want to pick the right one to scroll into."
-                ),
+                "description": "Sessions to return when searching (default 3, max 10).",
                 "default": 3,
             },
             "sort": {
                 "type": "string",
                 "enum": ["newest", "oldest"],
-                "description": (
-                    "Discovery shape only. Temporal bias on top of FTS5 ranking. Omit "
-                    "to keep relevance-only ordering (suitable for exploratory recall — "
-                    "\"what do we know about X\"). Set 'newest' for recency-shaped "
-                    "questions (\"where did we leave X\"). Set 'oldest' for "
-                    "origin-shaped questions (\"how did X start\"). Ignored in scroll "
-                    "and browse shapes."
-                ),
+                "description": "'newest' for where-did-we-leave-off questions, 'oldest' for how-did-it-start ones; omit to rank by relevance.",
             },
             "detail": {
                 "type": "string",
                 "enum": ["adaptive", "full"],
-                "description": (
-                    "Discovery shape only. 'adaptive' (default) fully hydrates the "
-                    "top-ranked result and returns only the exact anchor message for "
-                    "lower-ranked results. 'full' returns bookends and the complete "
-                    "anchored window for every result."
-                ),
+                "description": "'full' gives every result its context; the default 'adaptive' only the top one.",
                 "default": "adaptive",
             },
             "session_id": {
                 "type": "string",
-                "description": (
-                    "Scroll shape. Session to read inside. Use the session_id returned "
-                    "from a prior discovery call. Must be paired with "
-                    "around_message_id."
-                ),
+                "description": "Session to read, from a search result.",
             },
             "around_message_id": {
                 "type": "integer",
-                "description": (
-                    "Scroll shape. Message id to center the window on. From a discovery "
-                    "result use match_message_id, or any id seen in a prior window. To "
-                    "scroll forward pass the last window message's id; to scroll "
-                    "backward pass the first."
-                ),
+                "description": "Message id to center the window on, e.g. a result's match_message_id.",
             },
             "window": {
                 "type": "integer",
-                "description": (
-                    "Scroll shape only. Messages to return on each side of the anchor "
-                    "(anchor itself always included). Clamped to [1, 20]. Default 5."
-                ),
+                "description": "Messages on each side of the anchor (1-20, default 5).",
                 "default": 5,
             },
             "role_filter": {
                 "type": "string",
-                "description": (
-                    "Optional. Comma-separated roles to include. Discovery defaults to "
-                    "'user,assistant' (tool output is usually noise). Pass "
-                    "'user,assistant,tool' to include tool output (debugging tool "
-                    "behaviour) or 'tool' to search tool output only."
-                ),
+                "description": "Comma-separated roles to search; default 'user,assistant'. Add 'tool' to include tool output.",
             },
             "profile": {
                 "type": "string",
-                "description": (
-                    "Optional. Read sessions from another Son of Anton profile's database "
-                    "(read-only). Use when resolving an `@session:<profile>/<id>` link: "
-                    "pass the profile segment here with session_id as the id segment. "
-                    "Omit to use the current profile."
-                ),
+                "description": "Another profile whose sessions to read (read-only), for @session:<profile>/<id> links.",
             },
             "sources": {
                 "type": "string",
-                "description": (
-                    "Optional. Comma-separated session sources to restrict discovery and "
-                    "browse to (e.g. 'cli' for workstation sessions, 'signal', 'discord', "
-                    "'slack' for messaging, 'cron'). Keeps one surface's history from "
-                    "polluting another's recall. Omit to search across all sources."
-                ),
+                "description": "Comma-separated sources to limit to, e.g. 'signal', 'cli', 'cron'. Omit for all.",
             },
         },
         "required": [],
