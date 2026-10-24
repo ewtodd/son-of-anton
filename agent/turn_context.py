@@ -82,33 +82,64 @@ def compose_user_api_content(
     content: Any,
     user_context: str,
     rag_context: str = "",
+    sent_at: Optional[float] = None,
 ) -> Optional[str]:
     """Compose the API-bound content of the current turn's user message.
 
-    Sources: retrieval-augmented recall and the gateway's must-deliver notes.
-    Both are appended to the *API copy* of the user message only — the stored
-    content stays clean.
+    Sources: the message's send time (``sent_at``, an epoch, prefixed as
+    ``[Sat 2026-10-24 14:32 CDT]``), retrieval-augmented recall and the
+    gateway's must-deliver notes. All go into the *API copy* of the user
+    message only — the stored content stays clean.
 
     This is the single source of that composition. The prologue stamps the
     result onto the live message as ``api_content`` (persisted alongside the
     clean content) and the ``api_messages`` build in ``conversation_loop``
     sends the same helper's output, so the persisted sidecar can never drift
     from the bytes on the wire — which is the whole prompt-cache invariant:
-    what turn N sends must be what turn N+1 replays.
+    what turn N sends must be what turn N+1 replays. The send time is
+    rendered once, here, so a later zone change never rewrites history.
 
     Returns ``None`` when nothing is injected (multimodal/non-string content,
-    or no ephemeral context), meaning the message is sent as-is.
+    or no send time and no ephemeral context), meaning the message is sent
+    as-is.
     """
     if not isinstance(content, str):
         return None
+    if sent_at is not None:
+        from son_of_anton_time import format_sent_at
+
+        content = f"{format_sent_at(sent_at)} {content}"
     injections = []
     if rag_context:
         injections.append(rag_context)
     if user_context:
         injections.append(user_context)
     if not injections:
-        return None
+        return content if sent_at is not None else None
     return content + "\n\n" + "\n\n".join(injections)
+
+
+def message_sent_at(agent: Any, msg: Mapping[str, Any]) -> Optional[float]:
+    """Return the send time to show on a user message, or None when timestamps are off."""
+    if not getattr(agent, "_message_timestamps", False):
+        return None
+    ts = msg.get("timestamp")
+    return float(ts) if isinstance(ts, (int, float)) else None
+
+
+def prepend_sent_at_to_multimodal_content(content: Any, sent_at: Optional[float]) -> bool:
+    """Put the send time on a multimodal (list) user message as a leading text part.
+
+    The string sidecar can't carry it, so the part is durable content
+    (persisted and replayed as-is), like gateway notes on such messages.
+    Returns ``True`` when a part was inserted.
+    """
+    if sent_at is None or not isinstance(content, list):
+        return False
+    from son_of_anton_time import format_sent_at
+
+    content.insert(0, {"type": "text", "text": format_sent_at(sent_at)})
+    return True
 
 
 def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:
@@ -1298,10 +1329,13 @@ def build_turn_context(
         and messages[current_turn_user_idx].get("role") == "user"
     ):
         _turn_user_msg = messages[current_turn_user_idx]
+        _sent_at = message_sent_at(agent, _turn_user_msg)
+        prepend_sent_at_to_multimodal_content(_turn_user_msg.get("content"), _sent_at)
         _api_content = compose_user_api_content(
             _turn_user_msg.get("content", ""),
             user_context,
             getattr(agent, "_turn_rag_context", ""),
+            _sent_at,
         )
         if _api_content is not None and _api_content != _turn_user_msg.get("content"):
             _turn_user_msg["api_content"] = _api_content

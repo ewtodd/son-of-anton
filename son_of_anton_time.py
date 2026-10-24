@@ -126,3 +126,16 @@ def now() -> datetime:
     return datetime.now().astimezone()
 
 
+
+
+def format_sent_at(epoch: float) -> str:
+    """Render a message's send time as ``[Sat 2026-10-24 14:32 CDT]``.
+
+    Uses the same zone as ``now()``: the configured timezone, else the host's.
+    """
+    tz = get_timezone()
+    if tz is not None:
+        dt = datetime.fromtimestamp(epoch, tz)
+    else:
+        dt = datetime.fromtimestamp(epoch).astimezone()
+    return "[" + dt.strftime("%a %Y-%m-%d %H:%M %Z") + "]"

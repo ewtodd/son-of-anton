@@ -40,6 +40,7 @@ from agent.turn_context import (
     NothingToContinue,
     build_turn_context,
     compose_user_api_content,
+    message_sent_at,
     reanchor_current_turn_user_idx,
 )
 from agent.turn_retry_state import TurnRetryState
@@ -1507,6 +1508,7 @@ def run_conversation(
                         api_msg.get("content", ""),
                         _user_context,
                         getattr(agent, "_turn_rag_context", ""),
+                        message_sent_at(agent, msg),
                     )
                     if _composed is not None:
                         api_msg["content"] = _composed

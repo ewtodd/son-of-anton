@@ -296,7 +296,9 @@ def test_continuing_runs_the_same_turn_without_a_new_message(db, tmp_path, monke
     first, second = model.requests
     sent = [m for m in second["messages"] if m["role"] != "system"]
     assert [m["role"] for m in sent] == ["user", "assistant", "tool"], "no message was added"
-    assert sent[0]["content"] == "do the step"
+    first_user = next(m for m in first["messages"] if m["role"] == "user")
+    assert sent[0]["content"] == first_user["content"], "the turn's message is resent as first sent"
+    assert sent[0]["content"].endswith("do the step")
     assert second["messages"][0] == first["messages"][0], "the same stored system prompt"
     assert [t["function"]["name"] for t in second["tools"]] == [
         t["function"]["name"] for t in first["tools"]

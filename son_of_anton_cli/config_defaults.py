@@ -40,6 +40,10 @@ DEFAULT_CONFIG = {
         # positive integer to cap, or use "none"/"unlimited"/"inf"/0/-1 —
         # all normalized by son_of_anton_cli.config.resolve_turn_limit.
         "max_turns": None,
+        # Prefix each user message's API copy with the time it was sent, e.g.
+        # "[Sat 2026-10-24 14:32 CDT]", in the host's zone (or `timezone`).
+        # The system prompt only carries the date the conversation started.
+        "message_timestamps": True,
         # Optional wall-clock budget in seconds per conversation run.
         # null/absent = feature fully off (zero behavior change). When set,
         # the agent gets a one-time wrap-up notice at 80% elapsed and

@@ -830,6 +830,7 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+    agent._message_timestamps = bool((_agent_cfg.get("agent") or {}).get("message_timestamps", True))
 
     try:
         _mcp_section = _agent_cfg.get("mcp", {})
