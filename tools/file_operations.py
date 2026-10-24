@@ -662,6 +662,20 @@ def _pattern_has_regex_newline(pattern: str) -> bool:
     return "\n" in pattern or bool(_REGEX_NEWLINE_ESCAPE_RE.search(pattern))
 
 
+def _glob_style_literal(pattern: str) -> Optional[str]:
+    """Return the text of a glob-style content pattern such as ``*landlord*``.
+
+    A leading ``*`` is not a valid regex; models write ``*word*`` to mean
+    "contains word". Only patterns whose sole wildcards are a leading ``*``
+    and optional trailing ones qualify; anything else is left to rg as a
+    regex. Returns None when ``pattern`` does not qualify.
+    """
+    if not pattern.startswith("*"):
+        return None
+    core = pattern.strip("*")
+    return core if core and "*" not in core else None
+
+
 class ShellFileOperations:
     """File operations implemented via shell commands on a terminal environment.
 
@@ -2483,6 +2497,18 @@ class ShellFileOperations:
         """Search using ripgrep."""
         cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
 
+        # A glob-style "*word*" is a regex parse error in rg; search the word
+        # literally instead of burning a turn, and say so in the result.
+        glob_note = None
+        literal = _glob_style_literal(pattern)
+        if literal is not None:
+            glob_note = (
+                f"Pattern {pattern!r} looks like a glob, but content search takes a regex; "
+                f"searched for the literal text {literal!r} instead."
+            )
+            pattern = literal
+            cmd_parts.append("--fixed-strings")
+
         # Auto-multiline: a regex `\n` (or a literal newline in the pattern)
         # cannot match in rg's default line-oriented mode — it used to hard
         # error ("the literal \"\\n\" is not allowed") and burn a turn. When
@@ -2541,10 +2567,10 @@ class ShellFileOperations:
 
         # Parse the diagnostic-free payload so error text never becomes a match.
         stdout = payload
-        _ml_note = (
+        _ml_note = " ".join(n for n in (glob_note, (
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
-        ) if multiline else None
+        ) if multiline else None) if n) or None
         # Parse results based on output mode
         if output_mode == "files_only":
             all_files = [f for f in stdout.strip().split('\n') if f]
@@ -2573,6 +2599,7 @@ class ShellFileOperations:
                 total_count=sum(counts.values()),
                 truncated=bool(limit_reason),
                 limit_reason=limit_reason,
+                warning=_ml_note,
             )
         
         else:
