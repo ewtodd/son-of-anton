@@ -1890,6 +1890,14 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": 'tool',
     },
+    "WEB_EXTRACT_URL": {
+        "description": 'URL of the self-hosted page-extraction service behind web_extract (POST /extract)',
+        "prompt": 'Web extraction service URL (e.g. http://localhost:8890)',
+        "url": '',
+        "tools": ['web_extract'],
+        "password": False,
+        "category": 'tool',
+    },
     "GITHUB_TOKEN": {
         "description": 'GitHub token (authenticates GitHub release downloads; higher API rate limits)',
         "prompt": 'GitHub Token',

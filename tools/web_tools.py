@@ -1,11 +1,14 @@
-"""web_search and web_extract, backed by a self-hosted SearXNG instance.
+"""web_search through a self-hosted SearXNG instance, web_extract through a
+self-hosted page-extraction service.
 
 ``SEARXNG_URL`` (process env or the config-aware .env layer) points at the
-instance root or its ``/search`` endpoint. SearXNG aggregates search results
-but does not fetch pages, so ``web_extract`` validates and safety-checks its
-URLs and then reports that it cannot extract content.
+SearXNG root or its ``/search`` endpoint. ``WEB_EXTRACT_URL`` points at the
+extraction service, which answers ``POST /extract {"url": ...}`` with the
+page's title and markdown (headless-browser rendering, PDFs, text types).
 """
 
+import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -13,23 +16,36 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from son_of_anton_constants import get_son_of_anton_home
 from tools.registry import registry, tool_error
 from tools.url_safety import async_is_safe_url, normalize_url_for_request, sensitive_query_param_name
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_CHAR_LIMIT = 15000
+MIN_CHAR_LIMIT = 2000
+EXTRACT_TIMEOUT_S = 120
 
-def _searxng_url() -> str:
-    """Return SEARXNG_URL from the config-aware env, falling back to process env."""
+
+def _env_value(name: str) -> str:
+    """Return ``name`` from the config-aware env, falling back to process env."""
     try:
         from son_of_anton_cli.config import get_env_value
 
-        val = get_env_value("SEARXNG_URL")
+        val = get_env_value(name)
     except Exception:
         val = None
     if val is None:
-        val = os.getenv("SEARXNG_URL", "")
+        val = os.getenv(name, "")
     return (val or "").strip()
+
+
+def _searxng_url() -> str:
+    return _env_value("SEARXNG_URL")
+
+
+def _web_extract_service_url() -> str:
+    return _env_value("WEB_EXTRACT_URL").rstrip("/")
 
 
 def _searxng_search_url(base_url: str) -> str:
@@ -115,22 +131,73 @@ def _web_extract_url(value: Any) -> Optional[str]:
     return value or None
 
 
+def _char_budget(char_limit: Any) -> int:
+    try:
+        return max(int(char_limit), MIN_CHAR_LIMIT)
+    except (TypeError, ValueError):
+        return DEFAULT_CHAR_LIMIT
+
+
+def _fit_to_budget(url: str, content: str, char_limit: int) -> str:
+    """Return ``content`` whole when it fits ``char_limit``.
+
+    A longer page is saved whole under the home's cache, and a head+tail
+    window of about ``char_limit`` characters is returned; its footer names
+    the saved file and the line the omitted middle starts on.
+    """
+    if len(content) <= char_limit:
+        return content
+    path = get_son_of_anton_home() / "cache" / "web_extract" / f"{hashlib.sha256(url.encode()).hexdigest()[:16]}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    head = content[: int(char_limit * 0.7)]
+    tail = content[len(content) - int(char_limit * 0.3):]
+    omitted = len(content) - len(head) - len(tail)
+    middle_line = head.count("\n") + 1
+    return (
+        f"{head}\n\n[... {omitted} characters omitted ...]\n\n{tail}\n\n"
+        f"[Truncated: the page has {len(content)} characters. The full text is saved at {path}; "
+        f"the omitted part starts at line {middle_line} (read_file with offset={middle_line}).]"
+    )
+
+
+def _extract_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=EXTRACT_TIMEOUT_S)
+
+
+async def _extract_via_service(client: httpx.AsyncClient, service_url: str, url: str) -> Dict[str, Any]:
+    """POST one URL to the extraction service; returns its title, content and error."""
+    try:
+        resp = await client.post(f"{service_url}/extract", json={"url": url})
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPError as exc:
+        logger.warning("web_extract service error for %s: %s", url, exc)
+        return {"title": "", "content": "", "error": f"Extraction service unavailable ({exc.__class__.__name__})"}
+    except ValueError:
+        return {"title": "", "content": "", "error": "Extraction service returned invalid JSON"}
+    return {
+        "title": str(data.get("title") or ""),
+        "content": str(data.get("content") or ""),
+        "error": data.get("error") or None,
+    }
+
+
 async def web_extract_tool(
     urls: List[Any],
     format: str = None,
     char_limit: Optional[int] = None,
 ) -> str:
-    """Validate and safety-check URLs; SearXNG itself cannot extract pages.
+    """Extract pages through the WEB_EXTRACT_URL service.
 
-    URLs carrying embedded secrets are refused outright, private/internal
-    addresses are blocked per URL, and any URL that passes both gets the
-    search-only error.
+    URLs carrying embedded secrets are refused outright and private/internal
+    addresses are blocked per URL before anything is sent to the service;
+    the rest are extracted concurrently and fitted to the character budget.
     """
     from agent.redact import _PREFIX_RE
     from urllib.parse import unquote
 
     results: List[Dict[str, Any]] = []
-    any_safe = False
     for index, item in enumerate(urls):
         _url = _web_extract_url(item)
         if _url is None:
@@ -169,20 +236,23 @@ async def web_extract_tool(
 
     try:
         for result in results:
-            if result["error"] is not None:
-                continue
-            if await async_is_safe_url(result["url"]):
-                any_safe = True
-            else:
+            if result["error"] is None and not await async_is_safe_url(result["url"]):
                 result["error"] = "Blocked: URL targets a private or internal network address"
-        if any_safe:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": "SearXNG is a search-only backend and cannot extract URL content.",
-                },
-                ensure_ascii=False,
-            )
+        safe = [r for r in results if r["error"] is None]
+        if safe:
+            service_url = _web_extract_service_url()
+            if not service_url:
+                return tool_error("web_extract is not configured: WEB_EXTRACT_URL is unset")
+            budget = _char_budget(char_limit)
+            async with _extract_client() as client:
+                extracted = await asyncio.gather(
+                    *(_extract_via_service(client, service_url, r["url"]) for r in safe)
+                )
+            for result, page in zip(safe, extracted):
+                result["title"] = page["title"]
+                result["error"] = page["error"]
+                if not page["error"]:
+                    result["content"] = _fit_to_budget(result["url"], page["content"], budget)
         if not results:
             return tool_error("Content was inaccessible or not found")
         return json.dumps({"results": results}, indent=2, ensure_ascii=False)
@@ -192,8 +262,13 @@ async def web_extract_tool(
 
 
 def check_web_api_key() -> bool:
-    """Registry ``check_fn``: the web tools are offered when SEARXNG_URL is set."""
+    """Registry ``check_fn``: web_search is offered when SEARXNG_URL is set."""
     return bool(_searxng_url())
+
+
+def check_web_extract() -> bool:
+    """Registry ``check_fn``: web_extract is offered when WEB_EXTRACT_URL is set."""
+    return bool(_web_extract_service_url())
 
 
 WEB_SEARCH_SCHEMA = {
@@ -220,7 +295,7 @@ WEB_SEARCH_SCHEMA = {
 
 WEB_EXTRACT_SCHEMA = {
     "name": "web_extract",
-    "description": "Extract content from web page URLs. Returns clean page content in markdown/text (no LLM summarization — fast). Also works with PDF URLs (arxiv papers, documents) — pass the PDF link directly. Pages within the char budget (default 15000) return whole; larger pages return a head+tail window with a footer telling you the full text's saved file path and the read_file call to page through the omitted middle. Inline images appear as [IMAGE: alt] placeholders; real image URLs are kept as links. If a URL fails or times out, use the browser tool instead.",
+    "description": "Extract content from web page URLs. Returns clean page content in markdown/text (no LLM summarization — fast). Also works with PDF URLs (arxiv papers, documents) — pass the PDF link directly. Pages within the char budget (default 15000) return whole; larger pages return a head+tail window with a footer telling you the full text's saved file path and the read_file call to page through the omitted middle. Pages are rendered in a browser first, so script-built pages work too. Inline images appear as [IMAGE: alt] placeholders; link targets are left out. Sites that block automated readers return an error.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -259,8 +334,8 @@ registry.register(
         "markdown",
         char_limit=args.get("char_limit"),
     ),
-    check_fn=check_web_api_key,
-    requires_env=["SEARXNG_URL"],
+    check_fn=check_web_extract,
+    requires_env=["WEB_EXTRACT_URL"],
     is_async=True,
     emoji="📄",
     max_result_size_chars=100_000,

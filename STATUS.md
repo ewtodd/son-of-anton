@@ -44,11 +44,10 @@ Nix only. MIT.
    son-of-anton` in /etc/nixos, commit `flake.lock`, then `nrs`. Check one relay
    round trip with `/approve` from the phone, `/handoff`, and a `--pickup` of
    a running worker.
-2. **`web_extract` cannot work with SearXNG.** It is offered to the model but
-   always answers that SearXNG is search-only. Either give it a real fetch
-   path (maitred's `fetch` MCP server, or a small httpx + HTML-to-text
-   extractor) or drop the tool. Dropping it changes every session's tool list
-   once.
+2. **`web_extract` goes through a page-extraction service.** It posts each URL
+   to `WEB_EXTRACT_URL` (the Crawl4AI service on mu, `/etc/nixos`
+   `modules/services/web-extract`) and is offered only when that is set. Open:
+   sites that wall off headless browsers (eBay search) answer with an error.
 3. **The relay is advisory.** A single_user chat keeps its own terminal, file
    and code tools; only the relay tool's description keeps project work out of
    the chat. On 2026-10-16 a four-hour Remix-MUSIC-Sim build ran entirely in
