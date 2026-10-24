@@ -1213,7 +1213,11 @@ def memory_tool(
         result = concrete.remove(target, old_text)
 
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(
+            f"Unknown action '{action}'. Use add, replace or remove, or an 'operations' array. "
+            "There is no read action: the saved entries are already in your system prompt.",
+            success=False,
+        )
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -1317,7 +1321,9 @@ MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
         "Save durable facts to persistent memory that survive across sessions. Memory is "
-        "injected into every future turn, so keep entries compact and high-signal.\n\n"
+        "injected into every future turn, so keep entries compact and high-signal. This tool "
+        "only writes: there is no read action, because the saved entries are already in "
+        "your system prompt.\n\n"
         "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
         "{action, content?, old_text?}). The batch applies atomically and the char limit is "
         "checked only on the FINAL result — so a single call can remove/replace stale entries "
