@@ -1431,7 +1431,7 @@ Scheduling from cron-run sessions is disabled by default and enabled via cron.al
             },
             "schedule": {
                 "type": "string",
-                "description": "REQUIRED for action=create. For create/update: '30m', 'every 2h', '0 9 * * *', or ISO timestamp. Examples: '30m' (every 30 minutes), 'every 2h' (every 2 hours), '0 9 * * *' (daily at 9am), '2026-06-01T09:00:00' (one-shot). You MUST include this field when action=create."
+                "description": "REQUIRED for action=create. One of: a delay ('30m' = once, 30 minutes from now), an interval ('every 2h' repeats), a cron expression ('0 9 * * *' repeats daily at 9am) or a timestamp ('2026-06-01T09:00:00' = once). A timestamp without a UTC offset is local time in the timezone your system prompt shows: write the time the user said, do not convert it to UTC. Use a repeating form only when the user asks for a repeat. You MUST include this field when action=create."
             },
             "name": {
                 "type": "string",
