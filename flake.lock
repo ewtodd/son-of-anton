@@ -8,11 +8,11 @@
         "root-src": "root-src"
       },
       "locked": {
-        "lastModified": 1792702408,
-        "narHash": "sha256-uPz3CCSq4rgflUEO4I/D31dlUqKUoGExPQg7AQih7nE=",
+        "lastModified": 1792894075,
+        "narHash": "sha256-4O1lZG7fmSeAoZ0YOKPFfYxPbG0fC/BHyrUuqsNlfhQ=",
         "owner": "ewtodd",
         "repo": "Analysis-Utilities",
-        "rev": "da6489d00bd8f1c0d39879fdbe7cdd1270e7ed7e",
+        "rev": "f0f7d40d9b94b50a34ff69e2c5a17cc8282df225",
         "type": "github"
       },
       "original": {

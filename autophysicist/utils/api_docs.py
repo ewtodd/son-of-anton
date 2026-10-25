@@ -363,7 +363,7 @@ class ApiDocsToolset:
                         "lab's C++ Analysis-Utilities library, grouped by "
                         "header. These are reached from Python through PyROOT "
                         "after analysis_utilities.load_cpp_library(), e.g. "
-                        "ROOT.WaveformProcessingUtils. Call this before "
+                        "ROOT.PulseIntegralProcessor. Call this before "
                         "writing code against the library, then "
                         f"{READ_TOOL} for the exact declaration. Headers: "
                         + ", ".join(headers)
@@ -404,7 +404,7 @@ class ApiDocsToolset:
                                 "items": {"type": "string"},
                                 "description": (
                                     "Symbol names, e.g. "
-                                    "['WaveformProcessingUtils', "
+                                    "['PulseIntegralProcessor', "
                                     "'FileProcessingConfig']."
                                 ),
                             }

@@ -92,7 +92,7 @@ RAW WAVEFORMS. If the data card says a trace is a raw digitizer waveform, it
 sits on a DC baseline and the pulse goes NEGATIVE. Integrating those samples as
 they come off disk gives you a number dominated by the baseline offset, a
 meaningless tail-to-total ratio, and results that look entirely plausible and
-are wrong. Do not hand-roll the correction; WaveformProcessingUtils does it,
+are wrong. Do not hand-roll the correction; PulseIntegralProcessor does it,
 and it is what the lab's published numbers were produced with:
 
     from analysis_utilities import load_cpp_library
@@ -101,23 +101,27 @@ and it is what the lab's published numbers were produced with:
     cfg = ROOT.FileProcessingConfig()
     cfg.polarity = -1            # negative-going pulses; +1 if positive
     cfg.num_samples_baseline = 10   # pre-trigger samples averaged for baseline
-    cfg.pre_gate, cfg.short_gate, cfg.long_gate = 10, 10, 200
     cfg.max_events = 50000
-    proc = ROOT.WaveformProcessingUtils(cfg)
+    gates = ROOT.PulseIntegralSettings()
+    gates.pre_gate, gates.short_gate, gates.long_gate = 10, 10, 200
+    proc = ROOT.PulseIntegralProcessor(cfg, gates)
 
     proc.ProcessFile(in_path, out_name)  # whole file -> a features TTree
 
 `ProcessFile` is the entry point. It reads TTree `Data_R`, branch `Samples`,
 from *in_path*, and writes `<root_files_dir>/<out_name>.root` holding TTree
 `features` with branches pulse_height, trigger_position, short_integral,
-long_integral, timestamp — plus `Samples`, the baseline-subtracted and
-polarity-corrected trace, when cfg.store_waveforms. Read it straight back with
-`load_tree_data(..., tree_name="features")`.
+long_integral, timestamp, channel, board, digitizer_energy, flags and
+baseline_rms — plus `Samples`, the baseline-subtracted and polarity-corrected
+trace, when cfg.store_waveforms. Read it straight back with
+`load_tree_data(..., tree_name="features")`. For several files,
+`proc.ProcessFilesParallel(in_paths, out_names, n_workers)` gives each worker
+its own copy of `proc`.
 
-DO NOT call `proc.ProcessWaveform(samples)`. Despite the name it is an internal
-step of ProcessFile, not a one-waveform helper: it ends by filling the output
-TTree, which only ProcessFile creates, so the first waveform that passes cuts
-segfaults and takes the whole script down with it.
+There is no one-waveform call: the pipeline steps are private. To process
+records that do not come from a file, derive from `ROOT.WaveformSource`
+(`Open`, `Next`, `Close`) and pass an instance to
+`proc.ProcessSource(source, out_name)`.
 
 short_integral / long_integral is the charge-comparison PSD ratio, computed off
 the baseline-subtracted, polarity-corrected trace. `proc.GetStats()` returns a

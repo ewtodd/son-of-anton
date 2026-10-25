@@ -310,6 +310,7 @@ def test_the_notes_warn_about_raw_waveforms() -> None:
 
     note = " ".join(notes_for({"analysis_utilities": "26.8.27"}).split())
     assert "goes NEGATIVE" in note
-    assert "WaveformProcessingUtils" in note
+    assert "ROOT.PulseIntegralProcessor(cfg, gates)" in note
+    assert "ROOT.PulseIntegralSettings()" in note
     assert "cfg.polarity" in note
     assert "ProcessingStats" in note
