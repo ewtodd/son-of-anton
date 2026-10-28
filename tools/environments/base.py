@@ -970,20 +970,16 @@ class BaseEnvironment(ABC):
         the patch engine, code-execution RPC reads, log reads — MUST leave
         it False: truncating those corrupts data, not just display.
         """
-        exec_command, sudo_stdin = self._prepare_command(command)
+        # Bare `sudo` words become `sudo -n` (fail fast rather than block on a
+        # password prompt the agent can never answer).
+        from tools.terminal_tool import _transform_sudo_command
+
+        exec_command = _transform_sudo_command(command)
         # Guard against the `A && B &` subshell-wait trap.
         from tools.terminal_tool import _rewrite_compound_background
         exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
         effective_cwd = cwd or self.cwd
-
-        # Merge sudo stdin with caller stdin
-        if sudo_stdin is not None and stdin_data is not None:
-            effective_stdin = sudo_stdin + stdin_data
-        elif sudo_stdin is not None:
-            effective_stdin = sudo_stdin
-        else:
-            effective_stdin = stdin_data
 
         wrapped = self._wrap_command(exec_command, effective_cwd)
 
@@ -992,7 +988,7 @@ class BaseEnvironment(ABC):
         login = not self._snapshot_ready and not self._prefer_nonlogin
 
         proc = self._run_bash(
-            wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
+            wrapped, login=login, timeout=effective_timeout, stdin_data=stdin_data
         )
         result = self._wait_for_process(
             proc, timeout=effective_timeout, bounded_capture=bounded_capture
@@ -1010,9 +1006,3 @@ class BaseEnvironment(ABC):
             self.cleanup()
         except Exception:
             pass
-
-    def _prepare_command(self, command: str) -> tuple[str, str | None]:
-        """Transform sudo commands if SUDO_PASSWORD is available."""
-        from tools.terminal_tool import _transform_sudo_command
-
-        return _transform_sudo_command(command)

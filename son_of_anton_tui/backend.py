@@ -272,8 +272,6 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
-        self._sudo_state = None
-        self._sudo_deadline = 0
         self._approval_state = None
         self._approval_deadline = 0
         self._approval_lock = threading.Lock()
@@ -358,7 +356,6 @@ class TextualBackend(RelayHostMixin, SonOfAntonCLI):
 
         # Drop callbacks so a reused thread can't reach a disposed instance.
         for setter in (
-            "set_sudo_password_callback",
             "set_approval_callback",
         ):
             try:

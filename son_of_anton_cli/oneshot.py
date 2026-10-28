@@ -479,8 +479,6 @@ def _run_agent(
             #   - clarify  → returns a synthetic "pick a default" instruction
             #                so the agent continues instead of stalling on
             #                the tool's built-in "not available" error
-            #   - sudo password prompt → terminal_tool gates on
-            #                SON_OF_ANTON_INTERACTIVE which we never set
             #   - dangerous-command approval → bypassed via SON_OF_ANTON_YOLO_MODE=1
             clarify_callback=_oneshot_clarify_callback,
         )

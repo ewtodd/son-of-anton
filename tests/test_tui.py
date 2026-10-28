@@ -1014,7 +1014,6 @@ def test_app_runs_a_turn_and_answers_the_backend_modals(backend) -> None:
         seen["approval"] = b._approval_callback("rm -rf /tmp/x", "Recursive delete")
         b._on_tool_progress("tool.completed", function_name="terminal", duration=0.2, result="done")
         seen["clarify"] = b._clarify_callback("Which flavour?", ["vanilla", "chocolate"])
-        seen["sudo"] = b._sudo_password_callback()
         print("a bare print from the worker")
         b._stream_delta(f"All done: **{seen['clarify']}**\n")
         b._flush_stream()
@@ -1043,12 +1042,10 @@ def test_app_runs_a_turn_and_answers_the_backend_modals(backend) -> None:
             await pilot.press("2")  # allow for this session
             assert await wait_for(pilot, lambda: isinstance(app.screen, _tui.ChoiceModal) and "input" in app.screen._title), "clarify modal never opened"
             await pilot.press("down", "enter")  # chocolate
-            assert await wait_for(pilot, lambda: isinstance(app.screen, _tui.TextModal)), "sudo modal never opened"
-            await pilot.press("escape")
             assert await wait_for(pilot, lambda: app._busy is None), "turn never finished"
             await pilot.pause(0.3)
 
-            assert seen == {"approval": "session", "clarify": "chocolate", "sudo": ""}
+            assert seen == {"approval": "session", "clarify": "chocolate"}
             feed = app.query_one("#feed")
             kinds = [b.kind for b in feed._blocks]
             assert "user" in kinds and "reasoning" in kinds and "tool" in kinds

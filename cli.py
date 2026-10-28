@@ -376,8 +376,6 @@ def load_cli_config() -> Dict[str, Any]:
         "home_mode": "TERMINAL_HOME_MODE",
         "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-        # Sudo support
-        "sudo_password": "SUDO_PASSWORD",
     }
     
     # Bridge config → env vars for terminal_tool. TERMINAL_CWD is force-exported
@@ -632,12 +630,6 @@ def _cleanup_all_terminals(*args, **kwargs):
     from tools.terminal_tool import cleanup_all_environments
 
     return cleanup_all_environments(*args, **kwargs)
-
-
-def set_sudo_password_callback(*args, **kwargs):
-    from tools.terminal_tool import set_sudo_password_callback as _set_sudo_password_callback
-
-    return _set_sudo_password_callback(*args, **kwargs)
 
 
 def set_approval_callback(*args, **kwargs):
@@ -3691,8 +3683,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
-        self._sudo_state = None
-        self._sudo_deadline = 0
         self._approval_state = None
         self._approval_deadline = 0
         self._approval_lock = threading.Lock()
@@ -4445,7 +4435,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Install tool callbacks that need the live prompt UI."""
         if getattr(self, "_tool_callbacks_installed", False):
             return
-        set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
         self._tool_callbacks_installed = True
 
@@ -8920,54 +8909,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
         return {"answers": partial, "timed_out": True}
 
-    def _sudo_password_callback(self) -> str:
-        """
-        Prompt for sudo password through the prompt_toolkit UI.
-        
-        Called from the agent thread when a sudo command is encountered.
-        Uses the same clarify-style mechanism: sets UI state, waits on a
-        queue for the user's response via the Enter key binding.
-        """
-        import time as _time
-
-        timeout = 45
-        response_queue = queue.Queue()
-
-        self._capture_modal_input_snapshot()
-        self._sudo_state = {
-            "response_queue": response_queue,
-        }
-        self._sudo_deadline = _time.monotonic() + timeout
-
-        # Modal prompt — paint immediately, bypassing the throttle/resize guard
-        # so the prompt can't be dropped and time out unseen (#41098).
-        self._paint_now()
-
-        while True:
-            try:
-                result = response_queue.get(timeout=1)
-                self._sudo_state = None
-                self._sudo_deadline = 0
-                self._restore_modal_input_snapshot()
-                self._paint_now()
-                if result:
-                    _cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
-                else:
-                    _cprint(f"\n{_DIM}  ⏭ Skipped{_RST}")
-                return result
-            except queue.Empty:
-                remaining = self._sudo_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
-                self._paint_now()
-
-        self._sudo_state = None
-        self._sudo_deadline = 0
-        self._restore_modal_input_snapshot()
-        self._paint_now()
-        _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
-        return ""
-
     def _approval_callback(self, command: str, description: str,
                            *, allow_permanent: bool = True,
                            smart_denied: bool = False) -> str:
@@ -9128,14 +9069,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 pass
             self._clarify_state = None
             self._clarify_freetext = False
-        if self._sudo_state:
-            try:
-                self._sudo_state["response_queue"].put("")
-            except Exception:
-                pass
-            self._sudo_state = None
-            self._sudo_deadline = 0
-            self._restore_modal_input_snapshot()
 
 
     def chat(self, message, images: list = None, *, continue_turn: bool = False) -> Optional[str]:
@@ -9339,7 +9272,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # in terminal_tool is populated for this thread.  The main thread
                 # registration (run() line ~9046) is invisible here because
                 # _callback_tls is threading.local().
-                set_sudo_password_callback(self._sudo_password_callback)
                 set_approval_callback(self._approval_callback)
                 # Bind this turn's approval session key into the contextvar so
                 # ``tools.approval.is_current_session_yolo_enabled()`` resolves
@@ -9417,7 +9349,6 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # Clear thread-local callbacks so a reused thread doesn't
                     # hold stale references to a disposed CLI instance.
                     try:
-                        set_sudo_password_callback(None)
                         set_approval_callback(None)
                     except Exception:
                         pass
@@ -9962,7 +9893,7 @@ def main(
     global _active_worktree
 
     # Signal to terminal_tool that we're in interactive mode
-    # This enables interactive sudo password prompts with timeout
+    # This enables interactive dangerous-command approval prompts
     os.environ["SON_OF_ANTON_INTERACTIVE"] = "1"
 
     # ── Git worktree isolation (#652) ──

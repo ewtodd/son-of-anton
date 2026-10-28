@@ -25,11 +25,8 @@ import re
 import time
 import threading
 import atexit
-import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-
-from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -49,79 +46,20 @@ from tools.shell_heredoc import strip_inert_heredoc_bodies
 FOREGROUND_MAX_TIMEOUT = 600
 
 
-# Interactive sudo password cache.
-#
-# Scope the cache to the active session when a session key is available, then
-# fall back to callback identity (CLI interactive callbacks), then the
-# current thread. This prevents one interactive session from reusing another
-# session's cached sudo password inside the same long-lived process.
-_sudo_password_cache: dict[str, str] = {}
-_sudo_password_cache_lock = threading.Lock()
-
-# Optional UI callbacks for the approval and sudo password prompts. When set,
-# these are called instead of the default /dev/tty reader; the CLI registers
-# them so prompts route through its UI. Stored in thread-local state so
-# concurrent worker threads don't stomp on each other's callbacks. Gateway
-# mode resolves approvals via the per-session queue in tools.approval, not
-# through these callbacks.
+# Thread-local UI callback for the dangerous-command approval prompt. When
+# set, it is called instead of the default /dev/tty reader; the CLI registers
+# it so prompts route through its UI. Gateway mode resolves approvals via the
+# per-session queue in tools.approval, not through this callback.
 _callback_tls = threading.local()
-
-
-def _get_sudo_password_callback():
-    return getattr(_callback_tls, "sudo_password", None)
 
 
 def _get_approval_callback():
     return getattr(_callback_tls, "approval", None)
 
 
-def set_sudo_password_callback(cb):
-    """Register a callback for sudo password prompts (used by CLI). Per-thread."""
-    _callback_tls.sudo_password = cb
-
-
 def set_approval_callback(cb):
     """Register a callback for dangerous command approval prompts. Per-thread."""
     _callback_tls.approval = cb
-
-
-def _get_sudo_password_cache_scope() -> str:
-    """Return the cache scope for interactive sudo passwords."""
-    try:
-        from gateway.session_context import get_session_env
-
-        session_key = get_session_env("SON_OF_ANTON_SESSION_KEY", "")
-    except Exception:
-        session_key = os.getenv("SON_OF_ANTON_SESSION_KEY", "")
-    if session_key:
-        return f"session:{session_key}"
-
-    callback = _get_sudo_password_callback()
-    if callback is not None:
-        owner = getattr(callback, "__self__", None)
-        func = getattr(callback, "__func__", None)
-        if owner is not None and func is not None:
-            return f"callback-owner:{id(owner)}:{id(func)}"
-        return f"callback:{id(callback)}"
-
-    return f"thread:{threading.get_ident()}"
-
-
-def _get_cached_sudo_password() -> str:
-    """Return the cached sudo password for the current scope."""
-    scope = _get_sudo_password_cache_scope()
-    with _sudo_password_cache_lock:
-        return _sudo_password_cache.get(scope, "")
-
-
-def _set_cached_sudo_password(password: str) -> None:
-    """Persist a sudo password for the current scope."""
-    scope = _get_sudo_password_cache_scope()
-    with _sudo_password_cache_lock:
-        if password:
-            _sudo_password_cache[scope] = password
-        else:
-            _sudo_password_cache.pop(scope, None)
 
 
 # =============================================================================
@@ -184,178 +122,33 @@ def _validate_workdir(workdir: str) -> str | None:
 
 def _handle_sudo_failure(output: str, env_type: str) -> str:
     """
-    Check for sudo failure and add helpful message for messaging contexts.
-    
-    Returns enhanced output if sudo failed in messaging context, else original.
+    Detect a sudo command that failed for lack of a password and append
+    guidance to hand the privileged work to the user.
+
+    The agent never holds the user's sudo password (no configured secret, no
+    interactive prompt, no session cache), so ``sudo`` always fails fast on
+    hosts without passwordless sudoers. The recovery path is a script the
+    user runs themselves.
     """
-    is_gateway = env_var_enabled("SON_OF_ANTON_GATEWAY_SESSION")
-    
-    if not is_gateway:
-        return output
-    
-    # Check for sudo failure indicators
-    sudo_failures = [
+    sudo_failures = (
         "sudo: a password is required",
         "sudo: no tty present",
         "sudo: a terminal is required",
-    ]
-    
-    for failure in sudo_failures:
-        if failure in output:
-            from son_of_anton_constants import display_son_of_anton_home as _dhh
-            return output + f"\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to {_dhh()}/.env on the agent machine."
-    
-    return output
-
-
-# sudo -S rejects a bad cached/interactive password with these messages.
-_SUDO_WRONG_PASSWORD_MARKERS = (
-    "sudo: authentication failed",
-    "sudo: incorrect password attempt",
-    "sudo: maximum 3 incorrect authentication attempts",
-    "sudo: 3 incorrect password attempts",
-)
-
-
-def _sudo_wrong_password_failure(output: str) -> bool:
-    """Return True when sudo rejected a piped password."""
-    if not output:
-        return False
+        "sudo: authentication failed",
+        "sudo: incorrect password attempt",
+    )
     lowered = output.lower()
-    return any(marker in lowered for marker in _SUDO_WRONG_PASSWORD_MARKERS)
+    if not any(failure in lowered for failure in sudo_failures):
+        return output
 
-
-def _invalidate_cached_sudo_on_auth_failure(
-    command: str | None, output: str
-) -> bool:
-    """Drop a session-cached sudo password after sudo rejects it.
-
-    Env-configured ``SUDO_PASSWORD`` is left alone — that is an explicit
-    operator choice, not an interactive cache entry.
-    """
-    if "SUDO_PASSWORD" in os.environ:
-        return False
-    if not _sudo_wrong_password_failure(output):
-        return False
-    if _count_real_sudo_invocations(command or "") == 0:
-        return False
-    if not _get_cached_sudo_password():
-        return False
-    _set_cached_sudo_password("")
-    return True
-
-
-def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
-    """
-    Prompt user for sudo password with timeout.
-    
-    Returns the password if entered, or empty string if:
-    - User presses Enter without input (skip)
-    - Timeout expires (45s default)
-    - Any error occurs
-    
-    Only works in interactive mode (SON_OF_ANTON_INTERACTIVE=1).
-    If a _sudo_password_callback is registered (by the CLI), delegates to it
-    so the prompt integrates with the CLI's UI.  Otherwise reads directly
-    from /dev/tty with echo disabled.
-    """
-    import sys
-    
-    # Use the registered callback when available
-    _sudo_cb = _get_sudo_password_callback()
-    if _sudo_cb is not None:
-        try:
-            return _sudo_cb() or ""
-        except Exception:
-            return ""
-
-    result = {"password": None, "done": False}
-    
-    def read_password_thread():
-        """Read password with echo disabled from /dev/tty."""
-        tty_fd = None
-        old_attrs = None
-        try:
-            import termios
-            tty_fd = os.open("/dev/tty", os.O_RDONLY)
-            old_attrs = termios.tcgetattr(tty_fd)
-            new_attrs = termios.tcgetattr(tty_fd)
-            new_attrs[3] = new_attrs[3] & ~termios.ECHO
-            termios.tcsetattr(tty_fd, termios.TCSAFLUSH, new_attrs)
-            chars = []
-            while True:
-                b = os.read(tty_fd, 1)
-                if not b or b in {b"\n", b"\r"}:
-                    break
-                chars.append(b)
-            result["password"] = b"".join(chars).decode("utf-8", errors="replace")
-        except (EOFError, KeyboardInterrupt, OSError):
-            result["password"] = ""
-        except Exception:
-            result["password"] = ""
-        finally:
-            if tty_fd is not None and old_attrs is not None:
-                try:
-                    import termios as _termios
-                    _termios.tcsetattr(tty_fd, _termios.TCSAFLUSH, old_attrs)
-                except Exception as e:
-                    logger.debug("Failed to restore terminal attributes: %s", e)
-            if tty_fd is not None:
-                try:
-                    os.close(tty_fd)
-                except Exception as e:
-                    logger.debug("Failed to close tty fd: %s", e)
-            result["done"] = True
-    
-    try:
-        os.environ["SON_OF_ANTON_SPINNER_PAUSE"] = "1"
-        time.sleep(0.2)
-        
-        print()
-        print("┌" + "─" * 58 + "┐")
-        print("│  🔐 SUDO PASSWORD REQUIRED" + " " * 30 + "│")
-        print("├" + "─" * 58 + "┤")
-        print("│  Enter password below (input is hidden), or:            │")
-        print("│    • Press Enter to skip (command fails gracefully)     │")
-        print(f"│    • Wait {timeout_seconds}s to auto-skip" + " " * 27 + "│")
-        print("└" + "─" * 58 + "┘")
-        print()
-        print("  Password (hidden): ", end="", flush=True)
-        
-        password_thread = threading.Thread(target=read_password_thread, daemon=True)
-        password_thread.start()
-        password_thread.join(timeout=timeout_seconds)
-        
-        if result["done"]:
-            password = result["password"] or ""
-            print()  # newline after hidden input
-            if password:
-                print("  ✓ Password received (cached for this session)")
-            else:
-                print("  ⏭ Skipped - continuing without sudo")
-            print()
-            sys.stdout.flush()
-            return password
-        else:
-            print("\n  ⏱ Timeout - continuing without sudo")
-            print("    (Press Enter to dismiss)")
-            print()
-            sys.stdout.flush()
-            return ""
-            
-    except (EOFError, KeyboardInterrupt):
-        print()
-        print("  ⏭ Cancelled - continuing without sudo")
-        print()
-        sys.stdout.flush()
-        return ""
-    except Exception as e:
-        print(f"\n  [sudo prompt error: {e}] - continuing without sudo\n")
-        sys.stdout.flush()
-        return ""
-    finally:
-        if "SON_OF_ANTON_SPINNER_PAUSE" in os.environ:
-            del os.environ["SON_OF_ANTON_SPINNER_PAUSE"]
+    return output + (
+        "\n\n🔒 Sudo needs the user's password, which the agent never holds or "
+        "asks for. Instead: write the commands that need root to a script file "
+        "(e.g. with write_file, a small bash script), then tell the user to run "
+        "it themselves with `sudo bash /path/script.sh` in their own terminal. "
+        "Wait for the user to run it and share the output before treating the "
+        "work as done."
+    )
 
 def _safe_command_preview(command: Any, limit: int = 200) -> str:
     """Return a log-safe preview for possibly-invalid command values."""
@@ -415,6 +208,12 @@ def _read_shell_token(command: str, start: int) -> tuple[str, int]:
 def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
     """Rewrite only real unquoted sudo command words, not plain text mentions.
 
+    Every real invocation becomes ``sudo -n``: non-interactive. Passwordless
+    (NOPASSWD) hosts run the command normally; hosts that need a password
+    fail fast with "sudo: a password is required" instead of blocking on an
+    interactive prompt the agent can never answer (the agent never holds the
+    user's password).
+
     Returns the rewritten command and the number of sudo invocations rewritten.
     """
     out: list[str] = []
@@ -462,7 +261,7 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
 
         token, next_i = _read_shell_token(command, i)
         if command_start and token == "sudo":
-            out.append("sudo -S -p ''")
+            out.append("sudo -n")
             sudo_count += 1
         else:
             out.append(token)
@@ -476,81 +275,23 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
     return "".join(out), sudo_count
 
 
-def _count_real_sudo_invocations(command: str) -> int:
-    """Return how many real sudo command words appear in *command*.
-
-    Lightweight scan that reuses the same tokeniser as
-    ``_rewrite_real_sudo_invocations`` but skips the string-building, so it
-    is cheap to call from the result-processing path.
+def _transform_sudo_command(command: str) -> str:
     """
-    count = 0
-    i = 0
-    n = len(command)
-    command_start = True
+    Make every real sudo invocation in *command* non-interactive.
 
-    while i < n:
-        ch = command[i]
+    Bare ``sudo`` words are rewritten to ``sudo -n`` so sudo never blocks
+    waiting for a password the agent cannot and must not provide. On
+    passwordless (NOPASSWD) hosts the command then runs normally; anywhere
+    else it fails fast with "sudo: a password is required" and the
+    result-processing path appends guidance to hand the work to the user as
+    a script.
 
-        if ch.isspace():
-            if ch == "\n":
-                command_start = True
-            i += 1
-            continue
-
-        if ch == "#" and command_start:
-            comment_end = command.find("\n", i)
-            if comment_end == -1:
-                break
-            i = comment_end
-            continue
-
-        if command.startswith("&&", i) or command.startswith("||", i) or command.startswith(";;", i):
-            i += 2
-            command_start = True
-            continue
-
-        if ch in ";|&(":
-            i += 1
-            command_start = True
-            continue
-
-        if ch == ")":
-            i += 1
-            command_start = False
-            continue
-
-        token, next_i = _read_shell_token(command, i)
-        if command_start and token == "sudo":
-            count += 1
-
-        if command_start and _looks_like_env_assignment(token):
-            command_start = True
-        else:
-            command_start = False
-        i = next_i
-
-    return count
-
-
-def _sudo_nopasswd_works() -> bool:
-    """Return True when local sudo currently works without prompting.
-
-    Re-probes every call (no process-level cache) so an expired sudo
-    timestamp cannot make a later command silently block waiting for a
-    password.
+    Returns the transformed command (or the original when unchanged).
     """
-    try:
-        probe = subprocess.run(
-            ["sudo", "-n", "true"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=3,
-            check=False,
-        )
-        return probe.returncode == 0
-    except Exception:
-        return False
+    transformed, sudo_count = _rewrite_real_sudo_invocations(command)
+    if sudo_count == 0:
+        return command
+    return transformed
 
 
 def _rewrite_compound_background(command: str) -> str:
@@ -716,79 +457,6 @@ def _rewrite_compound_background(command: str) -> str:
         result = prefix + "{ " + middle + "& }" + suffix
 
     return result
-
-
-def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None]:
-    """
-    Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
-
-
-    Returns:
-        (transformed_command, sudo_stdin) where:
-        - transformed_command has every bare ``sudo`` replaced with
-          ``sudo -S -p ''`` so sudo reads its password from stdin.
-        - sudo_stdin is the password string with a trailing newline that the
-          caller must prepend to the process's stdin stream.  sudo -S reads
-          exactly one line (the password) and passes the rest of stdin to the
-          child command, so prepending is safe even when the caller also has
-          its own stdin_data to pipe.
-        - If no password is available, sudo_stdin is None and the command is
-          returned unchanged so it fails gracefully with
-          "sudo: a password is required".
-
-    The caller prepends sudo_stdin to its stdin_data and passes the merged
-    bytes to Popen's stdin pipe.
-
-    If SUDO_PASSWORD is not set and an interactive UI is available
-    (SON_OF_ANTON_INTERACTIVE=1 or a registered sudo password callback):
-      Prompts user for password with 45s timeout, caches for session.
-
-    If SUDO_PASSWORD is not set and NOT interactive:
-      Command runs as-is (fails gracefully with "sudo: a password is required").
-    """
-    if command is None:
-        return None, None
-    transformed, sudo_count = _rewrite_real_sudo_invocations(command)
-    if sudo_count == 0:
-        return command, None
-
-    try:
-        from agent.secret_scope import get_secret
-
-        _configured_password = get_secret("SUDO_PASSWORD")
-    except Exception:
-        _configured_password = os.environ.get("SUDO_PASSWORD")
-    has_configured_password = _configured_password is not None
-    sudo_password = (
-        _configured_password
-        if has_configured_password
-        else _get_cached_sudo_password()
-    )
-
-    # Local hosts with sudoers NOPASSWD should not be forced through the
-    # interactive Son of Anton password prompt or the sudo -S password-pipe path.
-    # Re-probes every call (no process-lifetime
-    # cache) so an expired sudo timestamp doesn't make a later command block
-    # silently without Son of Anton prompting.
-    if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
-        return command, None
-
-    has_sudo_prompt_callback = _get_sudo_password_callback() is not None
-    should_prompt_for_sudo = (
-        env_var_enabled("SON_OF_ANTON_INTERACTIVE") or has_sudo_prompt_callback
-    )
-    if not has_configured_password and not sudo_password and should_prompt_for_sudo:
-        sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
-        if sudo_password:
-            _set_cached_sudo_password(sudo_password)
-
-    if has_configured_password or sudo_password:
-        # Trailing newline is required: sudo -S reads one line per invocation.
-        # Compound commands (`sudo a && sudo b`) need one password line each.
-        password_line = sudo_password + "\n"
-        return transformed, password_line * sudo_count
-
-    return command, None
 
 
 # Environment classes now live in tools/environments/
@@ -1946,21 +1614,10 @@ def terminal_tool(
             spill_total_chars = result.get("output_total_chars")
             spill_file_path = result.get("full_output_path")
 
-            # Add helpful message for sudo failures in messaging context
+            # Sudo needs a password the agent never holds — append the
+            # script-for-the-user guidance whenever a sudo command failed
+            # for lack of one.
             output = _handle_sudo_failure(output, env_type)
-
-            sudo_auth_failed = _sudo_wrong_password_failure(output)
-            sudo_cache_cleared = _invalidate_cached_sudo_on_auth_failure(
-                command, output
-            )
-            if sudo_cache_cleared:
-                has_sudo_prompt_callback = _get_sudo_password_callback() is not None
-                if has_sudo_prompt_callback or env_var_enabled("SON_OF_ANTON_INTERACTIVE"):
-                    output += (
-                        "\n\n⚠️ Sudo authentication failed — cached password "
-                        "cleared. You will be prompted again on the next sudo "
-                        "command."
-                    )
 
             # Truncate output if too long, keeping both head and tail
             from tools.tool_output_limits import get_max_bytes
@@ -2093,10 +1750,6 @@ def terminal_tool(
                 result_dict["exit_code_meaning"] = exit_note
             if failure_hint:
                 result_dict["hint"] = failure_hint
-            if sudo_auth_failed:
-                result_dict["sudo_auth_failed"] = True
-            if sudo_cache_cleared:
-                result_dict["sudo_cache_cleared"] = True
 
             return json.dumps(result_dict, ensure_ascii=False)
 

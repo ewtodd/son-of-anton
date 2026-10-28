@@ -1225,8 +1225,9 @@ DEFAULT_CONFIG = {
     #   approve — auto-approve all dangerous commands in cron jobs
     #
     # single_query_mode — what to do when a single-query (-q) session hits a
-    # dangerous command. -q runs export SON_OF_ANTON_INTERACTIVE=1 (for interactive
-    # sudo prompts) but have NO user waiting to answer approval prompts — an
+    # dangerous command. -q runs export SON_OF_ANTON_INTERACTIVE=1 (for the
+    # interactive approval gate) but has NO user waiting to answer approval
+    # prompts — an
     # unanswered prompt just waits the full timeout then fails closed, so the
     # agent is forced to work around the block (often via execute_code). This
     # setting makes that intent explicit:
@@ -1908,13 +1909,6 @@ OPTIONAL_ENV_VARS = {
         "url": 'https://github.com/settings/tokens',
         "password": True,
         "category": 'tool',
-    },
-    "SUDO_PASSWORD": {
-        "description": 'Sudo password for terminal commands requiring root access; set to an explicit empty string to try empty without prompting',
-        "prompt": 'Sudo password',
-        "url": None,
-        "password": True,
-        "category": 'setting',
     },
     "SON_OF_ANTON_PREFILL_MESSAGES_FILE": {
         "description": 'Path to JSON file with ephemeral prefill messages for few-shot priming',

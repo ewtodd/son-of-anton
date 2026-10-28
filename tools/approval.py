@@ -98,8 +98,8 @@ def _is_single_query_approval_context() -> bool:
     """True when the current approval decision is from a single-query (-q) session.
 
     ``son-of-anton chat -q "..."`` runs one turn and exits with no user waiting to
-    answer approval prompts, but it still exports ``SON_OF_ANTON_INTERACTIVE=1`` so
-    interactive sudo password prompts can be driven from stdin. Without an
+    answer approval prompts, but it still exports ``SON_OF_ANTON_INTERACTIVE=1``
+    for the interactive approval gate. Without an
     explicit marker, ``_is_interactive_cli()`` would report True and the gate
     would wait the full approval timeout for a human who never comes — failing
     closed after 300s and forcing the agent to work around the block (often
@@ -373,31 +373,30 @@ HARDLINE_PATTERNS_COMPILED = [
 # =========================================================================
 # Sudo stdin guard — block password guessing via "sudo -S"
 # =========================================================================
-# When SUDO_PASSWORD is not configured, any explicit "sudo -S" in the
-# command is the LLM piping a guessed password via stdin.  This is a
-# brute-force attack vector: the model iterates through candidate
-# passwords, inspects sudo's "Sorry, try again" output, and refines.
-# Treat this as an unconditional block — there is never a legitimate
-# reason for the agent to pipe passwords to sudo -S when no password
-# has been configured.
+# Any explicit "sudo -S" in the command is the LLM piping a guessed password
+# via stdin.  This is a brute-force attack vector: the model iterates through
+# candidate passwords, inspects sudo's "Sorry, try again" output, and refines.
+# There is never a legitimate reason for the agent to pipe a password to
+# sudo — the agent never holds the user's sudo password (no configured
+# secret, no interactive prompt), and root work goes through a script the
+# user runs themselves.
 _SUDO_STDIN_RE = re.compile(
     r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b',
     re.IGNORECASE)
 
 
 def _check_sudo_stdin_guard(command: str) -> tuple:
-    """Detect ``sudo -S`` (stdin password) without configured SUDO_PASSWORD.
+    """Detect ``sudo -S`` (stdin password) directly after the sudo word.
 
-    When SUDO_PASSWORD is set, ``_transform_sudo_command`` injects ``-S``
-    internally — that path is legitimate and handled elsewhere.  This guard
-    only fires when SUDO_PASSWORD is *not* set, meaning the LLM explicitly
-    wrote ``sudo -S`` to pipe a guessed password.
+    Every ``sudo -S`` is the LLM piping a guessed password.  The internal
+    command path never injects ``-S`` (bare ``sudo`` becomes ``sudo -n``),
+    so nothing legitimate can trip this guard.  ``-S`` in other flag
+    positions (``sudo -n -S``) is caught separately by the dangerous-pattern
+    gating's short/combined-flag form.
 
     Returns:
         (is_blocked: bool, description: str | None)
     """
-    if "SUDO_PASSWORD" in os.environ:
-        return (False, None)
     normalized = _normalize_command_for_detection(command).lower()
     if _SUDO_STDIN_RE.search(normalized):
         return (True, "sudo password guessing via stdin (sudo -S)")
@@ -519,9 +518,9 @@ def _sudo_stdin_block_result(description: str) -> dict:
         "message": (
             f"BLOCKED: {description}. "
             "Do not pipe passwords to 'sudo -S' — this is a brute-force "
-            "attack vector. Set SUDO_PASSWORD in your .env file if the "
-            "agent needs passwordless sudo, or run the sudo command "
-            "manually in your own terminal."
+            "attack vector. The agent never holds the sudo password: "
+            "if root is genuinely required, write the commands to a script "
+            "and ask the user to run it with sudo in their own terminal."
         ),
     }
 
@@ -750,9 +749,10 @@ DANGEROUS_PATTERNS = [
     # interaction are those reading the password from stdin (-S/--stdin)
     # or via an askpass helper (-A/--askpass). The shell-launch (-s) and
     # list-privileges (-a) flags are also gated since they are
-    # privilege-relevant invocations the agent can chain after acquiring
-    # the password (e.g. read SUDO_PASSWORD from .env -> sudo -S -s ->
-    # root shell). Plain `sudo cmd` (no flag) is TTY-bound and excluded.
+    # privilege-relevant invocations the agent can chain once a password
+    # has been obtained in some other way (e.g. `sudo -s` -> root shell).
+    # Plain `sudo cmd` (no flag) is TTY-bound and excluded; the terminal
+    # environment rewrites it to `sudo -n` (fail fast) at execution time.
     # `_normalize_command_for_detection` lowercases input before pattern
     # matching, so case variants of S/s and A/a collapse — both forms
     # are gated below. Lazy `[^;|&\n]*?` allows flag arguments (e.g.
@@ -3801,8 +3801,9 @@ def check_all_command_guards(command: str, env_type: str,
 
     # == Sudo stdin guard ==
     # Like the hardline floor above, this is unconditional: there is never a
-    # legitimate reason for the agent to pipe passwords to sudo -S when no
-    # SUDO_PASSWORD has been configured.  This must fire BEFORE the yolo
+    # legitimate reason for the agent to pipe a password to sudo -S — the
+    # agent never holds the user's sudo password, and root work goes through
+    # a script the user runs themselves.  This must fire BEFORE the yolo
     # check so even yolo/smart approval/mode=off cannot bypass it.
     is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
     if is_sudo_guess:

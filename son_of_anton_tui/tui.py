@@ -1757,7 +1757,6 @@ if _TEXTUAL_AVAILABLE:
                 return
             for attr, opener in (
                 ("_approval_state", self._open_approval),
-                ("_sudo_state", self._open_sudo),
                 ("_clarify_state", self._open_clarify),
                 ("_slash_confirm_state", self._open_slash_confirm),
                 ("_tui_text_prompt_state", self._open_text_prompt),
@@ -1782,8 +1781,8 @@ if _TEXTUAL_AVAILABLE:
                 return
 
         # Prompts another surface can answer first: the relay chat (approval,
-        # clarify) or an interrupt (all three).
-        _ANSWERABLE_ELSEWHERE = ("_approval_state", "_clarify_state", "_sudo_state")
+        # clarify) or an interrupt (both).
+        _ANSWERABLE_ELSEWHERE = ("_approval_state", "_clarify_state")
 
         def _dismiss_answered_modal(self) -> None:
             """Take down a modal whose prompt was answered somewhere else.
@@ -1840,16 +1839,6 @@ if _TEXTUAL_AVAILABLE:
             def _answer(result: Any) -> None:
                 if self.backend._approval_state is state:
                     state["response_queue"].put(result or "deny")
-
-            self._push(screen, _answer)
-
-        def _open_sudo(self, state: dict) -> None:
-            screen = TextModal("sudo password", "password (Enter to skip)", password=True,
-                               detail="The command needs sudo. The password is cached for this session and never shown to the model.")
-
-            def _answer(result: Any) -> None:
-                if self.backend._sudo_state is state:
-                    state["response_queue"].put(result or "")
 
             self._push(screen, _answer)
 

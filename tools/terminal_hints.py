@@ -120,8 +120,10 @@ def _hint_permission_denied(command: str, output: str) -> Optional[str]:
         return None
     return (
         "Permission denied. Check ownership/mode of the target path "
-        "(`ls -la`); prefer a user-writable location. Only escalate to sudo "
-        "if the task genuinely requires it."
+        "(`ls -la`); prefer a user-writable location. If root privileges are "
+        "genuinely required, prepare a script with the needed commands and "
+        "ask the user to run it with sudo themselves — the agent never holds "
+        "the sudo password."
     )
 
 

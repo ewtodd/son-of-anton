@@ -984,7 +984,7 @@ class CLICommandsMixin:
         When it completes, prints the result to the CLI without modifying
         the active session's conversation history.
         """
-        from cli import AIAgent, ChatConsole, _accent_hex, _cprint, _maybe_remap_for_light_mode, _render_final_assistant_content, set_approval_callback, set_sudo_password_callback
+        from cli import AIAgent, ChatConsole, _accent_hex, _cprint, _maybe_remap_for_light_mode, _render_final_assistant_content, set_approval_callback
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
             _cprint("  Usage: /background <prompt>")
@@ -1009,7 +1009,6 @@ class CLICommandsMixin:
         turn_route = self._resolve_turn_agent_config(prompt)
 
         def run_background():
-            set_sudo_password_callback(self._sudo_password_callback)
             set_approval_callback(self._approval_callback)
             try:
                 bg_agent = AIAgent(
@@ -1088,7 +1087,6 @@ class CLICommandsMixin:
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
             finally:
                 try:
-                    set_sudo_password_callback(None)
                     set_approval_callback(None)
                 except Exception:
                     pass

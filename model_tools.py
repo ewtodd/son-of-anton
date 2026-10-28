@@ -158,7 +158,7 @@ def _run_async(coro):
                 worker_loop.close()
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        # Carry the active profile + approval/sudo callbacks into the worker so
+        # Carry the active profile + approval callback into the worker so
         # async tools resolve get_son_of_anton_home() under the active profile.
         from tools.thread_context import propagate_context_to_thread
 

@@ -106,9 +106,6 @@ def show_status(args):
         print(f"  SSH Host:     {ssh_host or '(not set)'}")
         print(f"  SSH User:     {ssh_user or '(not set)'}")
 
-    sudo_password = os.getenv("SUDO_PASSWORD", "")
-    print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
-
     # =========================================================================
     # Messaging
     # =========================================================================
