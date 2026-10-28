@@ -941,3 +941,165 @@ def test_max_chunk_chars_caps_the_embedded_text(embed, monkeypatch) -> None:
     assert seen and all(len(t) <= 100 for t in seen)
     stored = _indexed_texts(_config(max_chunk_chars=100))
     assert stored and all(len(t) <= 100 for t in stored)
+
+
+# ---------------------------------------------------------------------------
+# Task prompts, per-model min_score, compaction-aware exclusion
+# ---------------------------------------------------------------------------
+
+GEMMA = "embed/embeddinggemma-2"
+DOC_PROMPT = "title: none | text: "
+QUERY_PROMPT = "task: search result | query: "
+
+
+def _recording_embed(monkeypatch) -> list:
+    seen: list = []
+
+    def _record(config, texts, **kwargs):
+        seen.extend(texts)
+        return _fake_embed(config, texts)
+
+    monkeypatch.setattr(rag, "embed_texts", _record)
+    rag._SEARCH_STATE["cooldown_until"] = 0.0
+    return seen
+
+
+def _manifest(config) -> dict:
+    return json.loads((rag.index_dir(config) / "manifest.json").read_text(encoding="utf-8"))
+
+
+def test_prompt_defaults_follow_the_model_and_explicit_values_win() -> None:
+    gemma = rag.get_rag_config(_config(model=GEMMA.upper()))
+    assert (gemma["document_prompt"], gemma["query_prompt"]) == (DOC_PROMPT, QUERY_PROMPT)
+    bge = rag.get_rag_config(_config(model="bge-m3"))
+    assert (bge["document_prompt"], bge["query_prompt"]) == ("", "")
+    off = rag.get_rag_config(_config(model=GEMMA, document_prompt="", query_prompt=""))
+    assert (off["document_prompt"], off["query_prompt"]) == ("", "")
+    custom = rag.get_rag_config(_config(model="bge-m3", query_prompt="q: "))
+    assert custom["query_prompt"] == "q: " and custom["document_prompt"] == ""
+
+
+def test_min_score_defaults_per_model_and_explicit_value_wins() -> None:
+    assert rag.get_rag_config(_config(model="bge-m3"))["min_score"] == 0.5
+    assert rag.get_rag_config(_config(model=GEMMA))["min_score"] == 0.65
+    assert rag.get_rag_config(_config(model=GEMMA, min_score=0.4))["min_score"] == 0.4
+    assert rag.get_rag_config(_config(model="bge-m3", min_score=0.7))["min_score"] == 0.7
+
+
+def test_prompts_reach_the_embedder_for_documents_and_queries(monkeypatch) -> None:
+    seen = _recording_embed(monkeypatch)
+    config = _config(model=GEMMA, min_score=0.0)
+    _make_session("20261001_000300_p", "cli")
+    _write_journal("20261001_000300_p", [_msg("alpha prompted fact")])
+    rag.sync_index(config)
+    assert seen and all(t.startswith(DOC_PROMPT) for t in seen)
+    # The stored chunk is the bare text; the prompt is only on the wire.
+    assert all(not t.startswith(DOC_PROMPT) for t in _indexed_texts(config))
+
+    seen.clear()
+    assert rag.search("alpha", config=config, scope="cli")
+    assert seen == [QUERY_PROMPT + "alpha"]
+
+
+def test_no_prompt_is_sent_when_the_model_takes_none(monkeypatch) -> None:
+    seen = _recording_embed(monkeypatch)
+    _make_session("20261001_000301_p", "cli")
+    _write_journal("20261001_000301_p", [_msg("alpha plain fact")])
+    rag.sync_index(_config())
+    rag.search("alpha", config=_config(), scope="cli", min_score=0.0)
+    assert seen and not any("title:" in t or "task:" in t for t in seen)
+
+
+def test_prompt_change_rebuilds_and_records_the_prompts(embed) -> None:
+    _make_session("20261001_000302_p", "cli")
+    _write_journal("20261001_000302_p", [_msg("alpha rebuilt fact")])
+    rag.sync_index(_config(model=GEMMA))
+    assert _manifest(_config())["document_prompt"] == DOC_PROMPT
+    assert _manifest(_config())["query_prompt"] == QUERY_PROMPT
+
+    # Same prompts again: extended, not rebuilt (nothing re-embedded).
+    assert rag.sync_index(_config(model=GEMMA))["added"] == 0
+
+    result = rag.sync_index(_config(model=GEMMA, document_prompt="doc: "))
+    assert result["ok"] and result["added"] >= 1
+    assert _manifest(_config())["document_prompt"] == "doc: "
+    assert sum("alpha rebuilt fact" in t for t in _indexed_texts(_config())) == 1
+
+    result = rag.sync_index(_config(model=GEMMA, document_prompt="doc: ", query_prompt="q: "))
+    assert result["added"] >= 1
+
+
+def test_manifest_without_prompt_keys_rebuilds_once_when_prompts_turn_on(embed) -> None:
+    _make_session("20261001_000303_p", "cli")
+    _write_journal("20261001_000303_p", [_msg("alpha old manifest fact")])
+    off = _config(model=GEMMA, document_prompt="", query_prompt="")
+    rag.sync_index(off)
+    path = rag.index_dir(off) / "manifest.json"
+    old = _manifest(off)
+    del old["document_prompt"], old["query_prompt"]
+    path.write_text(json.dumps(old), encoding="utf-8")
+
+    # Still no prompts: the old manifest is not a change.
+    assert rag.sync_index(off)["added"] == 0
+
+    on = _config(model=GEMMA)
+    assert rag.sync_index(on)["added"] >= 1
+    assert rag.sync_index(on)["added"] == 0
+
+
+def test_compacted_away_chunks_of_the_live_session_are_retrievable(embed, live_config) -> None:
+    sid = "20261001_000310_live"
+    other = "20261001_000311_other"
+    _make_session(sid, "cli")
+    _make_session(other, "cli")
+    db = SessionDB()
+    try:
+        db.append_messages_batch(sid, [
+            {"role": "user", "content": "alpha compacted-away", "timestamp": 100.0},
+            {"role": "assistant", "content": "alpha also-compacted", "timestamp": 200.0},
+        ])
+        db.archive_and_compact(sid, [
+            {"role": "user", "content": "summary", "timestamp": 4000.0},
+            {"role": "user", "content": "alpha still-live", "timestamp": 5000.0},
+        ])
+        events = [
+            {"type": "message", "role": "user", "content": "alpha compacted-away", "ts": 100.0},
+            {"type": "message", "role": "user", "content": "alpha still-live", "ts": 5000.0},
+        ]
+        _write_journal(sid, events)
+        _write_journal(other, [_msg("alpha elsewhere")])
+        rag.sync_index(live_config)
+
+        block = rag.retrieve_for_turn(_agent(session_id=sid, _session_db=db), "alpha?")
+        assert "compacted-away" in block
+        assert "still-live" not in block
+        assert "elsewhere" in block
+    finally:
+        db.close()
+
+
+def test_whole_live_session_stays_excluded_when_the_context_start_is_unknown(
+    embed, live_config
+) -> None:
+    sid = "20261001_000312_live"
+    _make_session(sid, "cli")
+    _write_journal(sid, [{"type": "message", "role": "user", "content": "alpha unflushed", "ts": 100.0}])
+    rag.sync_index(live_config)
+
+    class _BrokenDB:
+        def get_earliest_active_message_ts(self, session_id):
+            raise RuntimeError("db down")
+
+        def get_session_family_ids(self, session_id):
+            return [session_id]
+
+        def get_session(self, session_id):
+            return None
+
+    db = SessionDB()  # a live session with no active rows has no boundary either
+    try:
+        for session_db in (db, _BrokenDB(), None):
+            block = rag.retrieve_for_turn(_agent(session_id=sid, _session_db=session_db), "alpha?")
+            assert "unflushed" not in block
+    finally:
+        db.close()

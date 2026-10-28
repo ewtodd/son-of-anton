@@ -8194,6 +8194,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchone()
         return int(row[0]) if row else 0
 
+    def get_earliest_active_message_ts(self, session_id: str) -> Optional[float]:
+        """Timestamp of the oldest message still in the session's live context.
+
+        In-place compaction archives the summarized rows (``active = 0``), so
+        the oldest ``active = 1`` row is where the live context begins. ``None``
+        for an unknown or empty session, or when no active row has a timestamp.
+        """
+        if not session_id:
+            return None
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                "SELECT MIN(timestamp) FROM messages "
+                "WHERE session_id = ? AND active = 1 AND timestamp IS NOT NULL",
+                (session_id,),
+            ).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+
     def get_transcript_mark(self, session_id: str) -> Optional[Tuple[str, str, int, int]]:
         """Fingerprint of a session's durable transcript, for spotting other writers.
 

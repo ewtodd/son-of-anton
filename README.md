@@ -199,6 +199,14 @@ api_key_env = "BIFROST_SOA_VK"
 top_k = 5
 ```
 
+EmbeddingGemma 2 (`model = "embed/embeddinggemma-2"`) is trained with task
+prompts. `query_prompt` and `document_prompt` are prepended to queries and to
+chunks as they are sent to the endpoint (the stored text is unchanged); when
+the model name contains `embeddinggemma` they default to the model card's
+retrieval pair, otherwise to nothing, and an explicit value (`""` included)
+wins. `min_score` also follows the model (0.5; 0.65 for EmbeddingGemma, whose
+scores run higher), unless set. Changing a prompt rebuilds the index.
+
 Notes need no file list. Drop a markdown file under
 `~/.son-of-anton/notes/<scope>/` — `shared`, `cli`, or `gateway` — and it is
 discovered and indexed with that scope; a directory symlink works too, so
@@ -213,8 +221,8 @@ job is needed. `son-of-anton rag index` forces a sync now, and `--rebuild`
 re-embeds from scratch. A sync embeds new complete journal lines
 (incremental by byte offset) and changed note files, commits each file on its
 own (a crash or endpoint failure loses only the batch in flight), and drops
-deleted sessions and notes from the index. Changing the embedding `model`
-rebuilds the index automatically. A single refresh embeds at most
+deleted sessions and notes from the index. Changing the embedding `model`,
+or the prompts below, rebuilds the index automatically. A single refresh embeds at most
 `max_chunks_per_refresh` new chunks (default 200; `0` uncapped) — a fresh
 install with a big journal backlog drains over several refreshes, newest
 first — and `max_chunk_chars` (default `0`, off) cuts every chunk to that
@@ -229,7 +237,7 @@ the next refresh) and a one-shot turn retrieves nothing
 (`oneshot_retrieval`, default off).
 
 Retrieval happens per user turn: the closest chunks above `min_score`
-(default 0.5) are appended to that turn's API copy only — never to the stored
+(default 0.5, or 0.65 for EmbeddingGemma) are appended to that turn's API copy only — never to the stored
 transcript or the frozen system prompt — so the prompt cache is preserved.
 The block is framed as reference data, not instructions, and secrets are
 redacted before anything is embedded. Visibility follows the memory scopes,
@@ -239,8 +247,9 @@ CLI and shared content, never a chat; subagents and cron runs inherit the
 origin of their parent session or delivery target (a cron job that delivers
 nowhere takes the chat it was created in, or the CLI scope when it was made
 outside a chat), and a session whose origin cannot be established is not
-indexed. The current conversation is never
-recalled to itself. The query embedding has a short timeout
+indexed. The live part of the current
+conversation is never recalled to itself; history compacted away from it is
+recalled like any other session. The query embedding has a short timeout
 (`search_timeout_seconds`, 3s); after a failure, retrieval pauses for
 `failure_cooldown_seconds` so a down endpoint does not stall every turn.
 Journals, including the reasoning and tool detail the transcript clips, are

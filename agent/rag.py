@@ -1,7 +1,7 @@
 """Retrieval-augmented recall over session journals and configured notes.
 
 The index is local and rebuild-free: embeddings come from an OpenAI-compatible
-``/v1/embeddings`` endpoint (Bifrost -> llama.cpp bge-m3 by default), vectors
+``/v1/embeddings`` endpoint (Bifrost -> llama.cpp bge-m3 by default; EmbeddingGemma 2 works too), vectors
 are appended as float32, and search is a scope-filtered cosine scan in pure
 Python (the sealed venv has no numpy, and the corpus is small).
 
@@ -15,8 +15,9 @@ On-disk layout (``FORMAT_VERSION`` 2), all under ``index_dir()``:
 
 * ``manifest.json`` is the commit point. It names the current data files
   (``chunks.<epoch>.jsonl`` / ``vectors.<epoch>.f32``), the committed chunk
-  count and chunks byte length, the embedding model and vector width, and the
-  per-journal / per-note offsets and generations. It is replaced atomically.
+  count and chunks byte length, the embedding model, the document and query
+  prompts it was built with and the vector width, and the per-journal /
+  per-note offsets and generations. It is replaced atomically.
 * Data files are append-only. A commit appends chunks + vectors, then writes
   the manifest. Bytes past the manifest's committed lengths (a crash mid
   commit) are ignored by readers and truncated by the next sync, so a crash
@@ -40,6 +41,27 @@ and their turns retrieve nothing; ``index_oneshot`` / ``oneshot_retrieval``
 opt in, and with the flag off already-indexed one-shot chunks are pruned on
 the next sync. A single refresh embeds at most ``max_chunks_per_refresh``
 new chunks (newest journals first); the rest carry over.
+
+Task prompts. Some embedding models are trained with prompts and score
+poorly without them. ``memory.rag.document_prompt`` is prepended to every
+chunk and ``memory.rag.query_prompt`` to every query *as sent to the
+endpoint*; the stored chunk text is unchanged. Both default by model name:
+EmbeddingGemma (``"embeddinggemma"`` in the name, any case) gets its model
+card's retrieval pair (``title: none | text: `` / ``task: search result |
+query: ``), everything else (bge-m3) gets none; an explicit value, ``""``
+included, wins. The manifest records the prompts, and a change rebuilds the
+index like a model change does; a manifest from before the prompts existed
+counts as built with none. ``memory.rag.min_score`` likewise defaults by
+model (0.5; 0.65 for EmbeddingGemma, whose cosines run higher); an explicit
+value wins.
+
+The live session never recalls its own context: its family (ancestors and
+descendants) is excluded, and for the live session itself only the chunks
+from the start of the live context on. Gateway sessions compact in place
+(summarized rows stay in state.db with ``active = 0``), so what was compacted
+away is neither in context nor excluded, and is retrievable again. The start
+is the oldest active message's timestamp; when it cannot be determined, the
+whole session is excluded.
 
 Retrieval happens per user turn in ``agent.turn_context`` and rides the
 API-copy sidecar (``api_content``), so the frozen system prompt and the prompt
@@ -98,6 +120,42 @@ class EmbeddingError(RuntimeError):
     """The embeddings endpoint failed or returned something unusable."""
 
 
+# EmbeddingGemma is trained with task prompts; the model card's retrieval pair.
+_EMBEDDINGGEMMA_DOCUMENT_PROMPT = "title: none | text: "
+_EMBEDDINGGEMMA_QUERY_PROMPT = "task: search result | query: "
+
+
+def _is_embeddinggemma(model: str) -> bool:
+    return "embeddinggemma" in str(model or "").lower()
+
+
+def _default_prompts(model: str) -> Tuple[str, str]:
+    """``(document_prompt, query_prompt)`` for *model*; bge-m3 takes none."""
+    if _is_embeddinggemma(model):
+        return _EMBEDDINGGEMMA_DOCUMENT_PROMPT, _EMBEDDINGGEMMA_QUERY_PROMPT
+    return "", ""
+
+
+def _prompt_setting(section: Dict[str, Any], key: str, default: str) -> str:
+    value = section.get(key)
+    return default if value is None else str(value)
+
+
+def _default_min_score(model: str) -> float:
+    if _is_embeddinggemma(model):
+        # EmbeddingGemma 2 cosines run high and bunched. Measured on 600 live
+        # chunks re-embedded both ways: with no prompts an unrelated query's
+        # median was 0.61 (p90 0.65) and 99% of chunks cleared 0.5, so that
+        # floor filtered nothing; the true matches for a topical query sat at
+        # 0.74-0.77. With the retrieval prompts the bulk drops ~0.06 (medians
+        # 0.52-0.59, p90 0.56-0.64) while true matches stay at 0.69-0.76, so
+        # ~0.65 keeps the matches and drops the bulk.
+        return 0.65
+    # bge-m3 dense cosine: unrelated passages sit around 0.3-0.45 and
+    # topical matches from ~0.55 up, so 0.5 keeps noise out of the turn.
+    return 0.5
+
+
 def get_rag_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Return the normalized ``memory.rag`` section with defaults applied.
 
@@ -119,16 +177,23 @@ def get_rag_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     memory_scope = section.get("memory_scope")
     if memory_scope is None and isinstance(mem, dict):
         memory_scope = mem.get("scope")
+    model = str(section.get("model") or "bge-m3").strip()
+    prompts = _default_prompts(model)
     return {
         "enabled": bool(section.get("enabled", False)),
         "base_url": str(section.get("base_url") or "").strip().rstrip("/"),
         "api_key": str(section.get("api_key") or "").strip(),
         "api_key_env": str(section.get("api_key_env") or "").strip(),
-        "model": str(section.get("model") or "bge-m3").strip(),
+        "model": model,
         "top_k": int(section.get("top_k", 5)),
-        # bge-m3 dense cosine: unrelated passages sit around 0.3-0.45 and
-        # topical matches from ~0.55 up, so 0.5 keeps noise out of the turn.
-        "min_score": float(section.get("min_score", 0.5)),
+        # The task prompts the model was trained with, prepended to what is
+        # sent to the endpoint (never to the stored chunk text). An explicit
+        # value wins, "" included.
+        "document_prompt": _prompt_setting(section, "document_prompt", prompts[0]),
+        "query_prompt": _prompt_setting(section, "query_prompt", prompts[1]),
+        "min_score": float(section["min_score"])
+        if section.get("min_score") is not None
+        else _default_min_score(model),
         "search_timeout_seconds": float(section.get("search_timeout_seconds", 3.0)),
         "failure_cooldown_seconds": float(section.get("failure_cooldown_seconds", 60.0)),
         "reindex_interval_minutes": float(section.get("reindex_interval_minutes", 15)),
@@ -405,6 +470,17 @@ def embed_texts(
     return vectors
 
 
+def _embed_documents(config: Dict[str, Any], texts: List[str], **kwargs) -> List[List[float]]:
+    """Embed chunk texts with the document prompt (the stored text is unchanged)."""
+    prompt = str(config.get("document_prompt") or "")
+    return _embed(config, [prompt + t for t in texts] if prompt else texts, **kwargs)
+
+
+def _embed_query(config: Dict[str, Any], query: str, **kwargs) -> List[float]:
+    prompt = str(config.get("query_prompt") or "")
+    return _embed(config, [prompt + query], **kwargs)[0]
+
+
 def _embed(config: Dict[str, Any], texts: List[str], **kwargs) -> List[List[float]]:
     """Call ``embed_texts`` (looked up at call time so tests can stub it)."""
     try:
@@ -602,6 +678,13 @@ def _rebuild_reason(
     count = int(manifest.get("count") or 0)
     if stored and count > 0 and stored != wanted:
         return f"embedding model changed from {stored!r} to {wanted!r}"
+    if count > 0:
+        # A manifest from before the prompts existed was built with none.
+        for key, label in (("document_prompt", "document"), ("query_prompt", "query")):
+            built = str(manifest.get(key) or "")
+            wanted_prompt = str(config.get(key) or "")
+            if built != wanted_prompt:
+                return f"{label} prompt changed from {built!r} to {wanted_prompt!r}"
     committed = (
         (str(manifest.get("chunks_file") or ""), int(manifest.get("chunks_bytes") or 0)),
         (str(manifest.get("vectors_file") or ""), count * int(manifest.get("dim") or 0) * 4),
@@ -1003,7 +1086,7 @@ def _index_journal(
         consumed += len(raw_line) + 1  # the line and its newline
     if budget is not None:
         budget.consume(len(pending_meta))
-    vectors = _embed(config, pending_texts) if pending_texts else []
+    vectors = _embed_documents(config, pending_texts) if pending_texts else []
     # Only the fully embedded lines are consumed: a partially written
     # trailing line, and lines left over the budget, are picked up by the
     # next sync.
@@ -1065,7 +1148,7 @@ def _index_source(
     if budget is not None and budget.remaining < len(chunks):
         return 0
     generation = int(entry.get("generation") or 0) + 1
-    vectors = _embed(config, chunks) if chunks else []
+    vectors = _embed_documents(config, chunks) if chunks else []
     if budget is not None:
         budget.consume(len(chunks))
     metas = [
@@ -1197,6 +1280,8 @@ def _sync_locked(directory: Path, config: Dict[str, Any], *, rebuild: bool) -> D
         for key, value in _empty_manifest().items():
             manifest.setdefault(key, value)
     manifest["model"] = str(config.get("model") or "bge-m3")
+    manifest["document_prompt"] = str(config.get("document_prompt") or "")
+    manifest["query_prompt"] = str(config.get("query_prompt") or "")
     writer = _IndexWriter(directory, manifest)
 
     added = 0
@@ -1440,11 +1525,16 @@ def search(
     scope: str = "shared",
     chat: Optional[str] = None,
     exclude_sessions: Iterable[str] = (),
+    exclude_from: Optional[Dict[str, float]] = None,
     top_k: Optional[int] = None,
     min_score: Optional[float] = None,
     timeout: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Return the closest indexed chunks visible from ``(scope, chat)``.
+
+    ``exclude_sessions`` hides those sessions' chunks entirely;
+    ``exclude_from`` maps a session to a timestamp and hides only its chunks
+    from that moment on (a chunk without a timestamp is hidden too).
 
     Raises ``EmbeddingError`` when the query cannot be embedded.
     """
@@ -1456,6 +1546,7 @@ def search(
         return []
     manifest = index.manifest
     excluded = {str(s) for s in exclude_sessions if s}
+    excluded_from = {str(k): float(v) for k, v in (exclude_from or {}).items()}
     journals_dir = get_son_of_anton_home() / "journals"
     journal_present: Dict[str, bool] = {}
     candidates = []
@@ -1467,6 +1558,13 @@ def search(
         if chunk.get("source") == "journal":
             if chunk.get("session") in excluded:
                 continue
+            boundary = excluded_from.get(str(chunk.get("session")))
+            if boundary is not None:
+                try:
+                    if float(chunk.get("ts")) >= boundary:
+                        continue
+                except (TypeError, ValueError):
+                    continue
             name = str(chunk.get("source_name") or "")
             if name not in journal_present:
                 # Deleted since the last sync: invisible now, pruned next sync.
@@ -1478,14 +1576,18 @@ def search(
         return []
     if timeout is None:
         timeout = float(config.get("search_timeout_seconds") or 3.0)
-    query_vector = _embed(config, [query], timeout=timeout)[0]
+    query_vector = _embed_query(config, query, timeout=timeout)
     dim = index.dim
     if len(query_vector) != dim:
         raise EmbeddingError(
             f"query embedding width {len(query_vector)} does not match the index ({dim}); "
             "the embedding model changed — the next sync rebuilds"
         )
-    threshold = float(config.get("min_score", 0.5) if min_score is None else min_score)
+    threshold = float(
+        config.get("min_score", _default_min_score(str(config.get("model") or "bge-m3")))
+        if min_score is None
+        else min_score
+    )
     query_norm = math.sqrt(sum(v * v for v in query_vector)) or 1.0
     flat = index.flat
     scored = []
@@ -1593,6 +1695,29 @@ def _session_family(agent: Any) -> List[str]:
     return sorted(family)
 
 
+def _live_context_start(agent: Any) -> Optional[float]:
+    """Timestamp at which the live session's context begins, or ``None``.
+
+    Gateway sessions compact in place: the summarized rows stay in state.db
+    with ``active = 0`` and only the ``active = 1`` rows are what the model
+    sees, so the oldest active row marks the start of the live context. The
+    DB is the source of truth: the agent's in-memory history is not keyed by
+    time and its re-stamped rows would not say where the context begins.
+    ``None`` when it cannot be determined; callers then exclude the whole
+    session.
+    """
+    try:
+        session_id = str(getattr(agent, "session_id", "") or "")
+        db = getattr(agent, "_session_db", None)
+        if not session_id or db is None:
+            return None
+        start = db.get_earliest_active_message_ts(session_id)
+        return float(start) if start is not None else None
+    except Exception:
+        logger.debug("RAG live-context start lookup failed", exc_info=True)
+        return None
+
+
 def _note_search_failure(exc: BaseException, config: Dict[str, Any]) -> None:
     cooldown = max(float(config.get("failure_cooldown_seconds") or 0.0), 0.0)
     _SEARCH_STATE["cooldown_until"] = time.monotonic() + cooldown
@@ -1636,12 +1761,21 @@ def retrieve_for_turn(agent: Any, query: str) -> str:
         if time.monotonic() < _SEARCH_STATE.get("cooldown_until", 0.0):
             return ""
         scope, chat = _agent_identity(agent, config)
+        family = _session_family(agent)
+        live_id = str(getattr(agent, "session_id", "") or "")
+        # The live session's compacted-away history is in neither the context
+        # nor (before this) retrievable: only its live part is excluded.
+        start = _live_context_start(agent) if live_id else None
+        exclude_from = {live_id: start} if start is not None else None
+        if exclude_from:
+            family = [s for s in family if s != live_id]
         results = search(
             query,
             config=config,
             scope=scope,
             chat=chat,
-            exclude_sessions=_session_family(agent),
+            exclude_sessions=family,
+            exclude_from=exclude_from,
         )
         return format_recalled_context(results)
     except Exception as exc:

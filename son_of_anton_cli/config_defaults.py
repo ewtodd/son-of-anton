@@ -1122,10 +1122,15 @@ DEFAULT_CONFIG = {
             "api_key_env": "BIFROST_SOA_VK",
             "model": "bge-m3",
             "top_k": 5,
-            # Cosine floor. bge-m3 puts unrelated passages around 0.3-0.45
-            # and topical matches from ~0.55 up; 0.5 keeps an off-topic turn
-            # from carrying five irrelevant chunks.
-            "min_score": 0.5,
+            # Cosine floor, deliberately not set here: the default follows
+            # the model (0.5 for bge-m3, 0.65 for EmbeddingGemma) and a
+            # value in this table would override that. Set min_score to pin it.
+            #
+            # Task prompts sent with each text (the stored text is unchanged).
+            # Not set here either: EmbeddingGemma ("embeddinggemma" in the
+            # model name) defaults to its model card's retrieval prompts,
+            # other models to none. Set document_prompt / query_prompt to
+            # override; "" forces none. Changing them rebuilds the index.
             # Per-turn query embedding runs before the first model call, so
             # it gets a short timeout; after a failure, retrieval is skipped
             # for failure_cooldown_seconds (one WARNING per window).
