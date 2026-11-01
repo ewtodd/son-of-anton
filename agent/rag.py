@@ -2007,6 +2007,12 @@ def _agent_session_is_oneshot(agent: Any) -> bool:
         return False
 
 
+def _index_has_facts(config: Dict[str, Any]) -> bool:
+    """Whether the committed index holds any fact (manifest stat-cached, cheap)."""
+    index = _load_index(config)
+    return bool(index is not None and index.chunks and index.manifest.get("facts"))
+
+
 def retrieve_for_turn(agent: Any, query: str) -> str:
     """Search the index as the active session sees it. Never raises.
 
@@ -2036,6 +2042,12 @@ def retrieve_for_turn(agent: Any, query: str) -> str:
         except Exception as exc:
             _note_search_failure(exc, config)
             results = keyword_facts(query, scope)
+        else:
+            if not _index_has_facts(config):
+                # An empty, old-format or half-rebuilt index holds no facts,
+                # and search returns before it ever asks the embedder, so the
+                # failure path above never runs: recall them by keyword.
+                results = keyword_facts(query, scope) + results
         return format_recalled_context(results)
     except Exception as exc:
         _note_search_failure(exc, config)

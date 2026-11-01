@@ -159,6 +159,27 @@ def test_embedder_down_falls_back_to_keywords_over_visible_facts(embed, monkeypa
     assert rag.retrieve_for_turn(_agent(), "") == ""
 
 
+def test_keyword_fallback_covers_an_index_that_holds_no_facts(embed) -> None:
+    _write_facts("common", [("nas", "the backup server hostname is unholy")])
+    # No index at all (fresh install, or an old format awaiting its rebuild).
+    assert "[fact nas]" in rag.retrieve_for_turn(_agent(), "backup server hostname")
+    # An index that holds notes but no facts yet (a rebuild cut short).
+    notes = get_son_of_anton_home() / "notes"
+    notes.mkdir(parents=True, exist_ok=True)
+    (notes / "printer.md").write_text("the printer is a brother laser", encoding="utf-8")
+    facts_file = get_son_of_anton_home() / "memories" / "facts.toml"
+    hidden = facts_file.with_name("facts.toml.hidden")
+    facts_file.rename(hidden)
+    rag.sync_index(embed)
+    hidden.rename(facts_file)
+    assert not rag._index_has_facts(rag.get_rag_config())
+    block = rag.retrieve_for_turn(_agent(), "backup server hostname")
+    assert "[fact nas]" in block
+    # Once the facts are indexed, recall goes through the embeddings again.
+    rag.sync_index(embed)
+    assert rag._index_has_facts(rag.get_rag_config())
+
+
 def test_keyword_fallback_works_with_no_index_and_during_cooldown(embed) -> None:
     _write_facts("common", [("nas", "the backup server hostname is unholy")])
     rag._SEARCH_STATE["cooldown_until"] = 10**12
