@@ -611,8 +611,37 @@ process-local. For work that must survive process restart, use `cronjob` or
 
 There is no background review fork. The one that ran after every few turns was removed
 (2026-10-15) with `/refine` and the skill curator. The agent saves memory itself, with the
-`memory` tool, when something is worth keeping; `memory.write_approval` makes those writes
-wait for `/memory approve` (inline prompt in the interactive CLI).
+`memory` tool, when something is worth keeping (see "Memory and recall").
+
+## Memory and recall
+
+Redesigned 2026-11-01: the old capped MEMORY.md/USER.md stores filled up, the model evicted
+standing rules to make room, and RAG injected mostly old tool output.
+
+- **Two kinds**, files under `$SON_OF_ANTON_HOME/memories/` (TOML, entries addressed by id):
+  - **rules** (`rules.toml`): standing instructions, rendered into the system prompt at
+    agent init (frozen for the session). EVERY rule change needs the user's approval,
+    whatever `memory.write_approval` says. Full (`memory.rules_char_limit`) means refuse,
+    never evict. Nix creates the file from the module's `memoryRules` option and merges it
+    by id on each activation (`nix/rules_merge.py`, three-way like `config_merge.py`).
+  - **facts** (`facts.toml`, `facts.gateway.toml`): knowledge that matters only when its
+    topic comes up. Never in the system prompt; retrieved per turn. The agent writes them
+    freely (`memory.write_approval` gates them); near-duplicates are refused with the
+    existing id.
+- **Two scopes**: `common` (every session) and `gateway` (personal, Signal and
+  Signal-bound cron only). `normalize_memory_scope` maps the legacy `shared`/`cli` names to
+  `common`. A session's scope comes from `resolve_memory_scope` (cron: where the job
+  delivers, via `agent.rag._cron_identity`). The terminal never sees gateway memory.
+- **Recall** (`agent/rag.py`, optional, `memory.rag`): the index holds facts, notes
+  (`notes/<scope>/**`) and conversation text (user turns and final assistant replies, no
+  tool output or reasoning). Each turn injects only facts and notes, on the persisted
+  `api_content` sidecar (cache-safe); when the embedder is down, facts fall back to keyword
+  matching. Transcripts are searched only through `session_search`, which also matches by
+  meaning.
+- **The wall**: `session_search` never lets a common caller find, list, read or scroll a
+  gateway or chat-stamped session (`identity_readable_from` / `SessionWall` in
+  `agent/rag.py`, one rule). A walled session reads as not found.
+- The legacy MEMORY*.md / USER*.md files are neither read nor written.
 
 ## Cron (scheduled jobs)
 
@@ -626,7 +655,7 @@ one with skills and no prompt fails with an error in its run output.
 Hardening invariants: 3-minute hard interrupt on cron sessions; catchup window half the
 period clamped to 120s–2h; 120s grace for one-shot jobs; file lock at
 `~/.son-of-anton/cron/.tick.lock`; cron agents load and may update persistent memory like any other agent
-(`skip_memory=False`).
+(`skip_memory=False`), in the scope of where the job delivers.
 
 ## Important Policies
 

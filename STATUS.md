@@ -34,7 +34,9 @@ Nix only. MIT.
   - the relay (`relay` tool, `/handoff`, `/pickup`);
   - durable approvals;
   - MCP (HTTP with Bearer headers, stdio via socat) and `mcp serve`;
-  - built-in memory with scopes, plus RAG over journals and notes;
+  - built-in memory as approved rules and retrieved facts (scopes common and
+    gateway), RAG recall of facts and notes, and `session_search` walled so
+    the terminal never reads Signal conversations;
   - cron, delegation and `execute_code`;
   - physics.
 
@@ -51,16 +53,22 @@ Nix only. MIT.
 3. **The relay is advisory.** A single_user chat keeps its own terminal, file
    and code tools; only the relay tool's description keeps project work out of
    the chat. On 2026-10-16 a four-hour Remix-MUSIC-Sim build ran entirely in
-   the chat. Plan: no file/terminal/code tools for single_user chats. A relay
-   for shared groups needs its own design: who may drive workers and approve.
+   the chat. Decided 2026-11-01, not built: every instance's chat becomes
+   "fiona" (the model on host fiona, always on), relay-only on every instance
+   with notes-only file tools, workers on son-of-anton models with hours
+   (ricky and markets 20-7). On shared instances a chat must see and drive
+   only its own workers, and `session_search` must not let one chat read
+   another's sessions (today any Signal caller reads every session).
 4. **v's laptop has no web search.** It used the removed keyless ring.
    maitred serves SearXNG over `/mcp`, but granting it to the shared
    son-of-anton key would duplicate the tools on e-desktop.
 5. **One coder per workspace is not enforced.** Nothing keeps two workers, or
    a worker and a TUI, out of the same directory. Needs a workspace-keyed
    lease.
-6. **RAG search is a pure-Python cosine scan.** Fine for hundreds of chunks;
-   add a prefilter or candidate cap if journals reach tens of thousands.
+6. **RAG search is a pure-Python cosine scan.** Per-turn recall scans only
+   facts and notes (hundreds of chunks); conversation chunks are scanned only
+   by `session_search`. Add a candidate cap if journals reach tens of
+   thousands of chunks.
 7. **Physics run issues from the YAP calibration run**
    (`workspace-soa/runs/20261002_153415_*`):
    - no durable output across 2 iterations;
@@ -81,7 +89,9 @@ Nix only. MIT.
     fronts the models and the bge-m3 embeddings;
   - signal-cli also runs on mu (`SIGNAL_HTTP_URL`);
   - SearXNG is on mu, port 8888.
-- **RAG notes** go in `~/.son-of-anton/notes/<shared|cli|gateway>/`; dropping a
-  markdown file there is the whole registration step.
+- **RAG notes** go in `~/.son-of-anton/notes/` (root and `notes/cli/` are
+  common, `notes/gateway/` is personal); dropping a markdown file there is the
+  whole registration step. Embeddings come from EmbeddingGemma 2 on fiona's
+  eklow, through maitred.
 - **Upstream refs:** hermes-agent v0.20.5 (`fcbd1076a9`), physics-intern
   (`5553bb6`).
