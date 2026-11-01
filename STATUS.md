@@ -61,7 +61,7 @@ Nix only. MIT.
    another's sessions (today any Signal caller reads every session).
 4. **v's laptop has no web search.** It used the removed keyless ring.
    maitred serves SearXNG over `/mcp`, but granting it to the shared
-   son-of-anton key would duplicate the tools on e-desktop.
+   son-of-anton key would duplicate the tools on e-workstation.
 5. **One coder per workspace is not enforced.** Nothing keeps two workers, or
    a worker and a TUI, out of the same directory. Needs a workspace-keyed
    lease.

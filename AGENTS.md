@@ -461,11 +461,12 @@ a known limitation, not a bug.
 
 ## Deployment (the owner's instances)
 
-- e-desktop's instances are built from `/etc/nixos`'s `son-of-anton` input;
-  merging to `main` deploys nothing until that input is updated and e-desktop
-  is rebuilt with `nrs` (see /etc/nixos/AGENTS.md). Those installs are
+- e-workstation's instances (the host was e-desktop until 2026-11-01) are built
+  from `/etc/nixos`'s `son-of-anton` input; merging to `main` deploys nothing until
+  that input is updated and e-workstation is rebuilt with `nrs` (see
+  /etc/nixos/AGENTS.md). Those installs are
   Nix-managed with `pruneUnmanagedSettings`: `config set` refuses, and settings
-  live in /etc/nixos/hosts/e-desktop/configuration.nix.
+  live in /etc/nixos/hosts/e-workstation/configuration.nix.
 
 ---
 
