@@ -239,16 +239,56 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               enable = true;
               settings.model.default = "auto";
               environmentFiles = [ "/run/agenix/check-env" ];
+              memoryRules = [
+                {
+                  id = "check-rule";
+                  text = "Ask before deleting mail.";
+                }
+              ];
             };
             activation = eval.config.home.activation.son-of-antonAgentSetup.data;
           in
           assert lib.hasInfix "--state /home/son-of-anton-check/.son-of-anton/.nix-managed.json" activation;
           assert lib.hasInfix "/run/agenix/check-env" activation;
+          assert lib.hasInfix "memories/.nix-rules.json" activation;
           assert eval.config.home.sessionVariables.SON_OF_ANTON_HOME
             == "/home/son-of-anton-check/.son-of-anton";
 
           pkgs.runCommand "son-of-anton-home-manager-module" { } ''
             echo "PASS: Home Manager module activation and environment are correct"
+            mkdir -p $out
+          '';
+
+        # ── The memoryRules seed ─────────────────────────────────────────
+        # The merge script runs from the store the way activation runs it:
+        # it creates rules.toml and its state file, and a second run with
+        # nothing changed leaves both as they were.
+        rules-seed =
+          let
+            script = pkgs.callPackage ./rulesMergeScript.nix { };
+            declared = (pkgs.formats.toml { }).generate "rules-declared.toml" {
+              rule = [
+                {
+                  id = "check-rule";
+                  text = "Ask before deleting mail.";
+                  scope = "common";
+                  source = "user";
+                }
+              ];
+            };
+          in
+          pkgs.runCommand "son-of-anton-rules-seed" { } ''
+            set -euo pipefail
+            mkdir -p mem
+            ${script} ${declared} mem/rules.toml --state mem/.nix-rules.json
+            grep -q 'id = "check-rule"' mem/rules.toml \
+              || (echo "FAIL: rule not seeded"; exit 1)
+            test -f mem/.nix-rules.json
+            cp mem/rules.toml before.toml
+            ${script} ${declared} mem/rules.toml --state mem/.nix-rules.json
+            cmp before.toml mem/rules.toml \
+              || (echo "FAIL: second run changed rules.toml"; exit 1)
+            echo "PASS: memoryRules seed creates and re-merges rules.toml"
             mkdir -p $out
           '';
 

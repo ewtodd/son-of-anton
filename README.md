@@ -185,7 +185,9 @@ The active scope follows the surface — Signal → `gateway`, anything else
 its job delivers. `memory.scope` pins it for a non-standard surface, and the
 `memory` tool takes an optional `scope`, so one surface can file an entry for
 another. A terminal session therefore carries no personal context. You can edit
-the files directly (a file that fails to parse is never overwritten). The old `MEMORY*.md` / `USER*.md` files are
+the files directly (a file that fails to parse is never overwritten). On NixOS and Home Manager,
+`services.son-of-anton.memoryRules` seeds `rules.toml` (a three-way merge by id
+that never clobbers what you or the agent changed). The old `MEMORY*.md` / `USER*.md` files are
 no longer read or written. Nothing reviews conversations in the background to add to them: an entry exists because the agent (or you)
 decided it was worth keeping.
 <!---->

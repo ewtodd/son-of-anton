@@ -91,6 +91,66 @@ let
         '';
       };
 
+      memoryRules = mkOption {
+        type = types.listOf (
+          types.submodule {
+            options = {
+              id = mkOption {
+                type = types.strMatching "[a-z0-9][a-z0-9-]*";
+                description = "Stable id. The agent and the user address the rule by it.";
+              };
+              text = mkOption {
+                type = types.str;
+                description = "The rule, phrased as an instruction.";
+              };
+              why = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = "Why the rule exists (shown beside it in the prompt).";
+              };
+              scope = mkOption {
+                type = types.enum [
+                  "common"
+                  "gateway"
+                ];
+                default = "common";
+                description = "`common` is in every session; `gateway` only in Signal sessions.";
+              };
+              source = mkOption {
+                type = types.enum [
+                  "user"
+                  "agent"
+                ];
+                default = "user";
+                description = "Who the rule is attributed to.";
+              };
+            };
+          }
+        );
+        default = [ ];
+        description = ''
+          Standing rules seeded into `memories/rules.toml`. Nix CREATES the file;
+          it then stays mutable (the agent adds rules with the user's approval
+          and the user edits it by hand). Activation merges these in three-way
+          by id against `memories/.nix-rules.json`, which records what the
+          previous activation wrote: a declared rule that is missing is added,
+          one whose on-disk copy is still what Nix wrote follows the declared
+          value, and one that was changed on disk since is kept and reported.
+          A rule no longer declared is removed only if it is still what Nix
+          wrote. Rules Nix never declared are untouched; nothing is removed on
+          the first run. See nix/rules_merge.py.
+        '';
+        example = literalExpression ''
+          [
+            {
+              id = "never-delete-proton-mail";
+              text = "Never delete Proton mail.";
+              why = "Mail is not recoverable.";
+            }
+          ]
+        '';
+      };
+
       pruneUnmanagedSettings = mkOption {
         type = types.bool;
         default = false;
@@ -174,6 +234,10 @@ let
         lib.recursiveUpdate { terminal.cwd = workingDirectory; } cfg.settings
       );
       mergeScript = pkgs.callPackage ./configMergeScript.nix { };
+      rules = (pkgs.formats.toml { }).generate "son-of-anton-rules.toml" {
+        rule = map (lib.filterAttrs (_: v: v != null)) cfg.memoryRules;
+      };
+      rulesMergeScript = pkgs.callPackage ./rulesMergeScript.nix { };
     };
 
   # ── How .env is built ───────────────────────────────────────────────────
@@ -288,6 +352,19 @@ let
       ${lib.optionalString (
         owner != null
       ) "${run}chown ${owner} ${son-of-antonHome}/config.toml ${son-of-antonHome}/.nix-managed.json"}
+
+      # memories/rules.toml: seed the declared standing rules. Same idea as the
+      # config merge: Nix creates the file, it stays mutable, and the state
+      # file next to it records what Nix wrote so a rule retired in Nix goes
+      # away only if nobody has touched it since. Created files get the
+      # state-file mode and owner like the other files here.
+      ${run}${configFiles.rulesMergeScript} ${configFiles.rules} ${son-of-antonHome}/memories/rules.toml --state ${son-of-antonHome}/memories/.nix-rules.json
+      for _f in ${son-of-antonHome}/memories/rules.toml ${son-of-antonHome}/memories/.nix-rules.json; do
+        if [ -e "$_f" ]; then
+          ${run}chmod ${modes.config} "$_f"
+          ${lib.optionalString (owner != null) "${run}chown ${owner} \"$_f\""}
+        fi
+      done
 
       # The managed-mode marker. It makes an interactive shell also refuse to
       # change the configuration that Nix owns.
