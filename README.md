@@ -158,29 +158,36 @@ comes from [goluckyryan/letsClaw](https://github.com/goluckyryan/letsClaw).
 <!---->
 ## Memory
 <!---->
-Two built-in stores persist across sessions: `MEMORY.md` (the agent's notes —
-environment facts, conventions, lessons) and `USER.md` (who the user is). They
-are injected into the system prompt when a session starts and frozen for the
-life of that session, so mid-session writes never invalidate the prompt cache.
+Built-in memory persists across sessions in two kinds, in TOML files under
+`~/.son-of-anton/memories/`:
 <!---->
-Both stores are scoped:
+- **Rules** (`rules.toml`): the user's standing instructions and core context.
+  They are in the system prompt, capped by `memory.rules_char_limit`, and every
+  add, change or removal needs your approval whatever `memory.write_approval`
+  says (inline in the TUI, or `/memory pending|approve|reject` elsewhere). A full
+  store refuses a new rule; it never evicts one.
+- **Facts** (`facts.toml`, `facts.gateway.toml`): knowledge that matters only when
+  its topic comes up. They are not in the system prompt. The agent writes them
+  freely (subject to `memory.write_approval`), each at most
+  `memory.fact_char_limit` characters.
 <!---->
-| Scope | Files | Visible from |
+The rules are rendered into the system prompt when a session starts and frozen
+for its life, so mid-session writes never invalidate the prompt cache. Entries
+are addressed by id, never by substring. Both kinds are scoped:
+<!---->
+| Scope | Rules and facts | Visible from |
 |---|---|---|
-| `common` | `MEMORY.md`, `USER.md` | every session |
-| `gateway` | `MEMORY.gateway.md`, `USER.gateway.md` | Signal (and Signal-bound cron) |
+| `common` | rules with `scope = "common"`, `facts.toml` | every session |
+| `gateway` | rules with `scope = "gateway"`, `facts.gateway.toml` | Signal (and Signal-bound cron) |
 <!---->
 The active scope follows the surface — Signal → `gateway`, anything else
 (terminal, sub-agents, unknown front-ends) → `common`; a cron run follows where
 its job delivers. `memory.scope` pins it for a non-standard surface, and the
-`memory` tool takes an optional `scope`, so one surface can file a fact for
-another. A terminal session therefore carries no personal context; the gateway
-carries common plus personal. Each store has its own `memory.memory_char_limit`
-and `memory.user_char_limit` budget, writes can require approval
-(`memory.write_approval`). The files live in `~/.son-of-anton/memories/`; the agent
-edits them through the `memory` tool, and you can edit them directly. Nothing
-reviews conversations in the background to add to them: an entry exists because
-the agent (or you) decided it was worth keeping.
+`memory` tool takes an optional `scope`, so one surface can file an entry for
+another. A terminal session therefore carries no personal context. You can edit
+the files directly (a file that fails to parse is never overwritten). The old `MEMORY*.md` / `USER*.md` files are
+no longer read or written. Nothing reviews conversations in the background to add to them: an entry exists because the agent (or you)
+decided it was worth keeping.
 <!---->
 ### Retrieval (optional)
 <!---->

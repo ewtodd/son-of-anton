@@ -17,7 +17,7 @@ Three tiers are joined with ``\\n\\n``:
 * ``context``  — caller-supplied ``system_message`` plus context files
   (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``,
   plus the session's coding-workspace snapshot.
-* ``volatile`` — memory snapshot, USER.md profile, external memory
+* ``volatile`` — standing-rules snapshot, external memory
   provider block, timestamp/session/model/provider line.
 
 Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
@@ -34,7 +34,6 @@ from agent.prompt_builder import (
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     SON_OF_ANTON_AGENT_HELP_GUIDANCE,
     MEMORY_GUIDANCE,
-    USER_PROFILE_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE,
     PLATFORM_HINTS,
@@ -253,21 +252,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
-    # MEMORY_GUIDANCE instructs the model to save facts to the built-in
-    # MEMORY.md/USER.md stores. With both disabled in config no store is built,
-    # so the guidance would steer the model at a tool whose every call returns
-    # "Memory is not available". Defaults to True for the rare code paths that
-    # build an agent view without going through agent_init.
-    # When only the user profile store is enabled, the narrower
-    # USER_PROFILE_GUIDANCE is injected instead — the full block instructs the
-    # model to write notes to a MEMORY.md store that does not exist.
-    _mem_enabled = getattr(agent, "_memory_enabled", True)
-    _profile_enabled = getattr(agent, "_user_profile_enabled", True)
+    # MEMORY_GUIDANCE steers the model at the built-in rules/facts stores. With
+    # memory disabled in config no store is built, so the guidance would point at
+    # a tool whose every call returns "Memory is not available". Defaults to True
+    # for the rare code paths that build an agent view without going through
+    # agent_init.
     if "memory" in agent.valid_tool_names:
-        if _mem_enabled:
+        if getattr(agent, "_memory_enabled", True):
             tool_guidance.append(MEMORY_GUIDANCE)
-        elif _profile_enabled:
-            tool_guidance.append(USER_PROFILE_GUIDANCE)
     if "session_search" in agent.valid_tool_names:
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if tool_guidance:
@@ -511,14 +503,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     volatile_parts: List[str] = []
     if agent._memory_store:
         if agent._memory_enabled:
-            mem_block = agent._memory_store.format_for_system_prompt("memory")
-            if mem_block:
-                volatile_parts.append(mem_block)
-        # USER.md is always included when enabled.
-        if agent._user_profile_enabled:
-            user_block = agent._memory_store.format_for_system_prompt("user")
-            if user_block:
-                volatile_parts.append(user_block)
+            rules_block = agent._memory_store.format_for_system_prompt()
+            if rules_block:
+                volatile_parts.append(rules_block)
 
     from son_of_anton_time import get_timezone as _son_of_anton_tz, now as _son_of_anton_now
     now = _son_of_anton_now()

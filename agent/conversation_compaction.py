@@ -213,69 +213,55 @@ CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE = (
 # same constants the emission sites use) through the gateway noise filter.
 
 
-def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[Tuple[str, str]]:
-    """Return the built-in memory text that can affect a system prompt.
+def _builtin_memory_prompt_snapshot(agent: Any) -> Optional[str]:
+    """Return the rules block that can affect a system prompt.
 
-    ``MemoryStore`` freezes this text until ``load_from_disk()``.  Rendering
-    the frozen blocks after that reload lets compaction retain the exact
-    cached system prompt when it already embeds the current memory (see
+    ``ScopedMemoryStore`` freezes this text until ``load_from_disk()``.  Rendering
+    the frozen block after that reload lets compaction retain the exact cached
+    system prompt when it already embeds the current rules (see
     :func:`_cached_prompt_reflects_builtin_memory`).  An unreadable snapshot
     returns ``None`` so callers take the conservative rebuild path.
     """
     store = getattr(agent, "_memory_store", None)
     if store is None:
-        return "", ""
+        return ""
     try:
-        memory = (
-            store.format_for_system_prompt("memory") or ""
-            if getattr(agent, "_memory_enabled", False)
-            else ""
-        )
-        user = (
-            store.format_for_system_prompt("user") or ""
-            if getattr(agent, "_user_profile_enabled", False)
-            else ""
-        )
+        if not getattr(agent, "_memory_enabled", False):
+            return ""
+        return store.format_for_system_prompt() or ""
     except Exception:
         return None
-    return memory, user
 
 
 def _cached_prompt_reflects_builtin_memory(agent: Any, cached_prompt: str) -> bool:
-    """Whether the cached system prompt already embeds current built-in memory.
+    """Whether the cached system prompt already embeds the current rules block.
 
-    The retention fast path must NOT compare the memory snapshot before vs
-    after the disk reload: on fresh-agent surfaces (gateway, TUI) the cached
-    prompt is restored from the session DB and can predate mid-session memory
-    writes that the fresh ``MemoryStore`` already picked up at init — the
-    snapshot is then identical on both sides of the reload while the prompt
-    itself is stale, and retaining it would latch old memory for the life of
-    the session (and re-persist it via ``update_system_prompt``).
+    The retention fast path must NOT compare the snapshot before vs after the
+    disk reload: on fresh-agent surfaces (gateway, TUI) the cached prompt is
+    restored from the session DB and can predate mid-session rule changes that
+    the fresh store already picked up at init — the snapshot is then identical
+    on both sides of the reload while the prompt itself is stale, and retaining
+    it would latch old rules for the life of the session.
 
-    Instead, verify the CURRENT (post-reload) rendered blocks appear verbatim
-    in the cached prompt, and that no leftover block header remains for a
-    target whose entries have since been emptied or disabled.
+    Instead, verify the CURRENT (post-reload) rendered block appears verbatim
+    in the cached prompt, and that no leftover block header remains once the
+    rules have been emptied or disabled.
     """
-    snapshot = _builtin_memory_prompt_snapshot(agent)
-    if snapshot is None:
+    block = _builtin_memory_prompt_snapshot(agent)
+    if block is None:
         return False
     try:
-        from tools.memory_tool import MEMORY_BLOCK_HEADERS
+        from tools.memory_tool import RULES_BLOCK_HEADER
     except Exception:
         return False
-    for target, block in zip(("memory", "user"), snapshot):
-        block = block.strip()
-        if block:
-            # build_system_prompt_parts embeds the stripped block verbatim;
-            # the rendered text includes the usage header, so any entry
-            # change (or char-count change) breaks containment → rebuild.
-            if block not in cached_prompt:
-                return False
-        elif MEMORY_BLOCK_HEADERS[target] in cached_prompt:
-            # The prompt still carries a block for a target that is now
-            # empty/disabled — stale; rebuild.
-            return False
-    return True
+    block = block.strip()
+    if block:
+        # build_system_prompt_parts embeds the stripped block verbatim; the
+        # rendered text includes the usage header, so any rule change (or
+        # char-count change) breaks containment → rebuild.
+        return block in cached_prompt
+    # The prompt still carries a block that is now empty/disabled — stale.
+    return RULES_BLOCK_HEADER not in cached_prompt
 
 
 _COMPACTOR_ATTEMPT_STATE_FIELDS = (

@@ -1,67 +1,66 @@
 #!/usr/bin/env python3
 """
-Memory Tool Module - Persistent Curated Memory
+Memory Tool Module - rules and facts
 
-Provides bounded, file-backed memory that persists across sessions. Two stores:
-  - MEMORY.md: agent's personal notes and observations (environment facts, project
-    conventions, tool quirks, things learned)
-  - USER.md: what the agent knows about the user (preferences, communication style,
-    expectations, workflow habits)
+Built-in memory is split by job, in TOML files under ``$SON_OF_ANTON_HOME/memories``:
 
-Both are injected into the system prompt as a frozen snapshot at session start.
-Mid-session writes update files on disk immediately (durable) but do NOT change
-the system prompt -- this preserves the prefix cache for the entire session.
-The snapshot refreshes on the next session start.
+  * **Rules** (``rules.toml``, ``[[rule]]`` tables): standing instructions and core
+    context that must hold every turn. They are rendered into the system prompt,
+    capped (``memory.rules_char_limit``), and EVERY change needs the user's
+    approval regardless of ``memory.write_approval``. A full store refuses; it
+    never evicts.
+  * **Facts** (``facts.toml`` / ``facts.gateway.toml``, ``[[fact]]`` tables):
+    knowledge that matters only when its topic comes up. Not in the system prompt
+    (retrieval brings them in per turn). The agent writes them freely, subject to
+    ``memory.write_approval`` like any memory write.
 
-Entry delimiter: § (section sign). Entries can be multiline.
-Character limits (not tokens) because char counts are model-independent.
+The rendered rules are a frozen snapshot taken at ``load_from_disk()``: mid-session
+writes update the files at once but never change the live prompt, which keeps the
+prefix cache stable. Compaction's rebuild path reloads it.
 
-Design:
-- Single `memory` tool with action parameter: add, replace, remove
-- replace/remove use short unique substring matching (not full text or IDs)
-- Behavioral guidance lives in the tool schema description
-- Frozen snapshot pattern: system prompt is stable, tool responses show live state
+Entries are addressed by a generated id, never by substring. Users hand-edit these
+files, so a file that fails to parse is never overwritten (writes refuse) and renders
+nothing; unknown keys inside an entry survive a rewrite. The legacy ``MEMORY*.md`` /
+``USER*.md`` files are no longer read or written.
 """
 
-import copy
+import datetime
 import fcntl
 import json
 import logging
-import time
+import re
+import tomllib
 from contextlib import contextmanager
-from contextvars import ContextVar
 from pathlib import Path
-from son_of_anton_constants import get_son_of_anton_home
+from son_of_anton_constants import display_son_of_anton_home, get_son_of_anton_home
 from typing import Dict, Any, List, Optional, Tuple
 
-from utils import atomic_write_text, is_truthy_value
+from utils import atomic_write_text, dump_toml, is_truthy_value
 from tools.registry import no_cache_check_fn, registry, tool_error
 
 logger = logging.getLogger(__name__)
 
-# One tool-definition pass must use one config decision for both availability
-# and the dynamic target schema. ContextVar keeps concurrent session builds
-# isolated while allowing the check_fn result to flow to the immediately
-# following dynamic_schema_overrides call in ToolRegistry.get_definitions().
-_memory_surface_flags: ContextVar[Optional[Tuple[bool, bool]]] = ContextVar(
-    "memory_surface_flags", default=None
-)
+DEFAULT_RULES_CHAR_LIMIT = 4000
+DEFAULT_FACT_CHAR_LIMIT = 400
+
+# Facts this similar (token-set Jaccard) are refused as duplicates.
+FACT_SIMILARITY_THRESHOLD = 0.8
+
+KINDS: Tuple[str, ...] = ("rule", "fact")
+ACTIONS: Tuple[str, ...] = ("add", "replace", "remove")
+
+RULES_FILENAME = "rules.toml"
+
 
 def get_memory_dir() -> Path:
     """Return the memories directory (resolved per call, honoring home overrides)."""
     return get_son_of_anton_home() / "memories"
 
-# Stable header prefixes for the system-prompt memory blocks rendered by
-# MemoryStore._render_block. Exported so compaction's prompt-retention check
-# (agent/conversation_compaction.py) can detect a leftover block for a
-# target whose entries have since been emptied — keep in lockstep with
-# _render_block below.
-MEMORY_BLOCK_HEADERS = {
-    "memory": "MEMORY (your personal notes)",
-    "user": "USER PROFILE (who the user is)",
-}
 
-ENTRY_DELIMITER = "\n§\n"
+# Stable header prefix of the rules block in the system prompt. Exported so
+# compaction's prompt-retention check can detect a leftover block after the rules
+# were emptied -- keep in lockstep with ScopedMemoryStore._render.
+RULES_BLOCK_HEADER = "STANDING RULES (from the user)"
 
 # Built-in memory scopes. The session's scope is active; "common" is visible
 # from every session regardless of front-end. Scope is what keeps a coding
@@ -88,17 +87,9 @@ def normalize_memory_scope(name: object) -> Optional[str]:
     return _SCOPE_ALIASES.get(name.strip().lower())
 
 
-def _memory_filename(target: str, scope: str) -> str:
-    """Return the on-disk filename for a (target, scope) pair.
-
-    The common store keeps the historical unsuffixed names so existing
-    installs keep working; gateway gets a ``.gateway`` suffix. Legacy
-    ``*.cli.md`` files are never read or written.
-    """
-    stem = "USER" if target == "user" else "MEMORY"
-    if scope == "common":
-        return f"{stem}.md"
-    return f"{stem}.{scope}.md"
+def facts_filename(scope: str) -> str:
+    """Facts file for a scope: ``facts.toml`` (common) or ``facts.<scope>.toml``."""
+    return "facts.toml" if scope == "common" else f"facts.{scope}.toml"
 
 
 def resolve_memory_scope(
@@ -136,18 +127,15 @@ def resolve_memory_scope(
     return "common"
 
 
-
 # ---------------------------------------------------------------------------
 # Memory content scanning — lightweight check for injection/exfiltration
 # in content that gets injected into the system prompt.
 #
 # Patterns live in ``tools/threat_patterns.py`` — the single source of truth
 # shared with the context-file scanner and the tool-result delimiter system.
-# Memory uses the "strict" scope (broadest pattern set) because:
-#  - memory entries are user-curated; the user can rewrite a flagged entry
-#  - memory enters the system prompt as a FROZEN snapshot, so a poisoned
-#    entry persists for the entire session and across sessions until
-#    explicitly removed.
+# Memory uses the "strict" scope (broadest pattern set) because rules enter the
+# system prompt as a FROZEN snapshot, so a poisoned entry persists for the
+# entire session and across sessions until explicitly removed.
 # ---------------------------------------------------------------------------
 
 from tools.threat_patterns import first_threat_message as _first_threat_message
@@ -158,929 +146,462 @@ def _scan_memory_content(content: str) -> Optional[str]:
     return _first_threat_message(content, scope="strict")
 
 
-def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
-    """Build the error dict returned when external drift is detected.
+# ---------------------------------------------------------------------------
+# Pure helpers
+# ---------------------------------------------------------------------------
 
-    The on-disk memory file contains content that wouldn't round-trip
-    through the tool's parser/serializer — flushing would discard the
-    appended/edited content from a patch tool, shell append, manual edit,
-    or sister-session write. We refuse the mutation, point the operator at
-    the .bak.<ts> snapshot we took, and tell them what to do next.
+_SLUG_MAX = 32
+
+
+def make_entry_id(text: str, taken: set, fallback: str = "entry") -> str:
+    """Short slug of *text*, uniquified against *taken* with -2, -3, ...
+
+    Stable once written: an entry's id never changes when its text is replaced.
     """
-    return {
-        "success": False,
-        "error": (
-            f"Refusing to write {path.name}: file on disk has content that "
-            f"wouldn't round-trip through the memory tool (likely added by "
-            f"the patch tool, a shell append, a manual edit, or a "
-            f"concurrent session). A snapshot was saved to {bak_path}. "
-            f"Resolve the drift first — either rewrite the file as a clean "
-            f"§-delimited list of entries, or move the extra content out — "
-            f"then retry. This guard exists to prevent silent data loss "
-            f"(issue #26045)."
-        ),
-        "drift_backup": bak_path,
-        "remediation": (
-            "Open the .bak file, integrate the missing entries into the "
-            "memory tool one at a time via memory(action=add, content=...), "
-            "then remove or rewrite the original file to a clean state."
-        ),
-    }
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    slug = ""
+    for word in words[:6]:
+        candidate = f"{slug}-{word}" if slug else word
+        if len(candidate) > _SLUG_MAX:
+            break
+        slug = candidate
+    slug = slug or (words[0][:_SLUG_MAX] if words else fallback)
+    candidate, n = slug, 2
+    while candidate in taken:
+        candidate = f"{slug}-{n}"
+        n += 1
+    return candidate
 
 
-# Sentinel returned by ``_reload_target`` when the target file EXISTS but could
-# not be read. Distinct from a drift-backup path (``str``) and from a clean
-# reload (``None``): the caller must abort the mutation rather than persist over
-# an unreadable file.
-_READ_FAILED = object()
+def _tokens(text: str) -> frozenset:
+    return frozenset(re.findall(r"[a-z0-9]+", text.lower()))
 
 
-def _read_failed_error(path: "Path") -> Dict[str, Any]:
-    """Build the error dict returned when the on-disk memory file is unreadable.
+def find_similar_facts(text: str, facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Existing facts near-identical to *text* (normalized token-set Jaccard).
 
-    A file that exists but cannot be read is NOT an empty store. Reading it as
-    ``[]`` and then persisting would rewrite the whole file from an empty entry
-    list — wiping the user's memory. We refuse the write so nothing is lost.
+    The one place duplicate detection lives; swap this body for an embedding
+    similarity later without touching callers.
     """
-    return {
-        "success": False,
-        "error": (
-            f"Refusing to write {path.name}: the file exists on disk but could "
-            f"not be read right now (temporarily locked by another program, a "
-            f"permission change, invalid/corrupt text encoding, or a filesystem "
-            f"error). Treating an unreadable file as empty and saving would wipe "
-            f"existing memory, so the write is refused. Nothing was changed — "
-            f"retry in a moment."
-        ),
-    }
+    mine = _tokens(text)
+    if not mine:
+        return []
+    similar = []
+    for fact in facts:
+        theirs = _tokens(str(fact.get("text", "")))
+        if not theirs:
+            continue
+        if len(mine & theirs) / len(mine | theirs) >= FACT_SIMILARITY_THRESHOLD:
+            similar.append(fact)
+    return similar
 
 
-class MemoryStore:
+def render_rule_line(rule: Dict[str, Any]) -> str:
+    """``- [id] text (why)`` -- the one shape of a rule in the prompt."""
+    why = str(rule.get("why") or "").strip()
+    suffix = f" ({why})" if why else ""
+    return f"- [{rule['id']}] {rule['text']}{suffix}"
+
+
+def _rules_size(rules: List[Dict[str, Any]]) -> int:
+    """Rendered size of *rules*: their lines, newline-joined."""
+    return sum(len(render_rule_line(r)) + 1 for r in rules)
+
+
+def _entry_scope(entry: Dict[str, Any], default: str = "common") -> Optional[str]:
+    """Scope of a rules.toml entry; None when it names an unknown scope."""
+    raw = entry.get("scope")
+    if raw is None:
+        return default
+    return normalize_memory_scope(raw)
+
+
+def _read_entries(path: Path, key: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Read ``[[key]]`` tables from *path*: ``(entries, error)``.
+
+    A missing file is ``([], None)``. Anything that exists but cannot be taken
+    as a clean list of entries (unreadable, invalid UTF-8 or TOML, wrong shape,
+    an entry with no id/text) is an error: callers must refuse to write rather
+    than rewrite a file they could not understand.
     """
-    Bounded curated memory with file persistence. One instance per AIAgent.
+    if not path.exists():
+        return [], None
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+        return [], f"{path.name} could not be parsed ({e})"
+    raw = data.get(key, [])
+    if not isinstance(raw, list) or not all(isinstance(e, dict) for e in raw):
+        return [], f"{path.name}: '{key}' must be an array of tables"
+    seen = set()
+    for i, entry in enumerate(raw, 1):
+        if not isinstance(entry.get("id"), str) or not entry["id"].strip():
+            return [], f"{path.name}: [[{key}]] entry {i} has no id"
+        if not isinstance(entry.get("text"), str) or not entry["text"].strip():
+            return [], f"{path.name}: entry '{entry['id']}' has no text"
+        if entry["id"] in seen:
+            return [], f"{path.name}: duplicate id '{entry['id']}'"
+        seen.add(entry["id"])
+    return raw, None
 
-    Maintains two parallel states:
-      - _system_prompt_snapshot: frozen at load time, used for system prompt injection.
-        Never mutated mid-session. Keeps prefix cache stable.
-      - memory_entries / user_entries: live state, mutated by tool calls, persisted to disk.
-        Tool responses always reflect this live state.
-    """
 
-    # After this many failed consolidation attempts (overflow / zero-match) in
-    # ONE turn, stop instructing the model to "retry in this turn" and return a
-    # terminal "save skipped" result so a fragile replace/add can't loop the
-    # turn to budget exhaustion and suppress the user's reply.
-    _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
-
-    def __init__(
-        self,
-        memory_char_limit: int = 2200,
-        user_char_limit: int = 1375,
-        *,
-        memory_enabled: bool = True,
-        user_profile_enabled: bool = True,
-        scope: str = "common",
-    ):
-        if scope not in MEMORY_SCOPES:
-            raise ValueError(
-                f"Unknown memory scope {scope!r}; expected one of {MEMORY_SCOPES}."
-            )
-        self.scope = scope
-        self.memory_entries: List[str] = []
-        self.user_entries: List[str] = []
-        self.memory_char_limit = memory_char_limit
-        self.user_char_limit = user_char_limit
-        self.memory_enabled = memory_enabled
-        self.user_profile_enabled = user_profile_enabled
-        # Frozen snapshot for system prompt -- set once at load_from_disk()
-        self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
-        # Per-turn counter of failed at-capacity consolidation attempts; reset
-        # at each turn boundary by reset_consolidation_failures().
-        self._consolidation_failures = 0
-
-    def target_enabled(self, target: str) -> bool:
-        """Return whether this session's selected built-in store is writable."""
-        return self.user_profile_enabled if target == "user" else self.memory_enabled
-
-    def reset_consolidation_failures(self) -> None:
-        """Reset the per-turn consolidation-failure counter (call at turn start)."""
-        self._consolidation_failures = 0
-
-    def _consolidation_failure(self, response: Dict[str, Any]) -> Dict[str, Any]:
-        """Count an at-capacity consolidation failure and degrade gracefully.
-
-        Under the per-turn cap, return ``response`` unchanged (it already tells
-        the model how to self-correct + retry in this turn). Once the cap is
-        exceeded, drop the retry instruction and return a TERMINAL result so the
-        model stops looping memory calls and proceeds to answer the user — a
-        failed memory side effect must never block the turn's reply.
-        """
-        self._consolidation_failures += 1
-        if self._consolidation_failures <= self._MAX_CONSOLIDATION_FAILURES_PER_TURN:
-            return response
-        return {
-            "success": False,
-            "done": True,
-            "error": (
-                f"Memory consolidation failed {self._consolidation_failures} times "
-                "this turn. Stop retrying memory calls — leave memory unchanged for "
-                "now and continue with your reply to the user. The fact can be saved "
-                "in a later turn."
-            ),
-        }
-
-    def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
-
-        The frozen snapshot is what enters the system prompt. We scan each
-        entry for injection/promptware patterns at snapshot-build time —
-        ANY hit replaces the entry text in the snapshot with a placeholder
-        like ``[BLOCKED: …]``, so a poisoned-on-disk memory file (supply
-        chain, compromised tool, sister-session write) cannot inject into
-        the system prompt.
-
-        The live ``memory_entries`` / ``user_entries`` lists keep the
-        original text so the user can still see and remove poisoned entries —
-        silently dropping them would hide the attack from the user.
-
-        Scanning is deterministic from disk bytes, so the snapshot remains
-        stable for the entire session (prefix-cache invariant holds).
-        """
-        mem_dir = get_memory_dir()
-        mem_dir.mkdir(parents=True, exist_ok=True)
-
-        memory_path = self._path_for("memory")
-        user_path = self._path_for("user")
-        self.memory_entries = self._read_file(memory_path)
-        self.user_entries = self._read_file(user_path)
-
-        # Deduplicate entries (preserves order, keeps first occurrence)
-        self.memory_entries = list(dict.fromkeys(self.memory_entries))
-        self.user_entries = list(dict.fromkeys(self.user_entries))
-
-        # Sanitize entries for the system-prompt snapshot only.  Live state
-        # (memory_entries / user_entries) keeps the raw text so the user
-        # can see + remove poisoned entries via the memory tool.
-        sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, memory_path.name)
-        sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, user_path.name)
-
-        # Capture frozen snapshot for system prompt injection
-        self._system_prompt_snapshot = {
-            "memory": self._render_block("memory", sanitized_memory),
-            "user": self._render_block("user", sanitized_user),
-        }
-
-    @staticmethod
-    def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
-        """Return ``entries`` with any threat-matching entry replaced by a placeholder.
-
-        Each entry is scanned with the shared threat-pattern library at the
-        ``"strict"`` scope (same as memory writes).  On match, the entry is
-        replaced in the returned list with ``"[BLOCKED: <filename> entry
-        contained threat pattern: <ids>. Removed from system prompt.]"`` —
-        the placeholder enters the snapshot, the original entry stays in
-        live state for the user to inspect and delete.
-
-        Empty or already-block-marker entries pass through unchanged.
-        """
-        from tools.threat_patterns import scan_for_threats
-
-        sanitized: List[str] = []
-        for entry in entries:
-            if not entry or entry.startswith("[BLOCKED:"):
-                sanitized.append(entry)
-                continue
-            findings = scan_for_threats(entry, scope="strict")
-            if findings:
-                logger.warning(
-                    "Memory entry from %s blocked at load time: %s",
-                    filename, ", ".join(findings),
-                )
-                sanitized.append(
-                    f"[BLOCKED: {filename} entry contained threat pattern(s): "
-                    f"{', '.join(findings)}. Removed from system prompt; "
-                    f"use memory(action=remove) "
-                    f"to delete the original.]"
-                )
-            else:
-                sanitized.append(entry)
-        return sanitized
-
-    @staticmethod
-    @contextmanager
-    def _file_lock(path: Path):
-        """Acquire an exclusive file lock for read-modify-write safety.
-
-        Uses a separate .lock file so the memory file itself can still be
-        atomically replaced via os.replace().
-        """
-        lock_path = path.with_suffix(path.suffix + ".lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = open(lock_path, "a+", encoding="utf-8")
+@contextmanager
+def _file_lock(path: Path):
+    """Exclusive lock around a read-modify-write of *path* (separate .lock file)."""
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            yield
-        finally:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
-            fd.close()
-
-    def _path_for(self, target: str) -> Path:
-        return get_memory_dir() / _memory_filename(target, self.scope)
-
-    def _reload_target(self, target: str, *, skip_drift: bool = False):
-        """Re-read entries from disk into in-memory state.
-
-        Called under file lock to get the latest state before mutating.
-        Returns the backup path if external drift was detected (the on-disk
-        file contains content that wouldn't round-trip through our
-        parser/serializer, OR an entry larger than the store's char limit).
-        When drift is detected the caller must abort the mutation —
-        flushing would discard the un-roundtrippable content.
-        Returns ``None`` on clean reload.
-
-        Returns the ``_READ_FAILED`` sentinel when the file EXISTS but could not
-        be read. The caller MUST abort: the on-disk entries are unknown, so
-        overwriting from an assumed-empty view would wipe them. This is the real
-        exposure behind ``add`` — it skips the drift guard because appending is
-        safe, but that reasoning only holds when the reload actually saw the
-        file. A failed read reported as ``[]`` turned ``add`` into a full-file
-        rewrite down to a single entry.
-
-        When *skip_drift* is True the round-trip / entry-size check is
-        bypassed.  Used by the ``add`` action which appends without
-        rewriting, so existing content is never clobbered.
-        """
-        path = self._path_for(target)
-        raw, read_ok = self._read_raw_checked(path)
-        if not read_ok:
-            # Leave in-memory entries untouched and tell the caller to abort;
-            # persisting over an unreadable file would destroy it.
-            return _READ_FAILED
-        # Derive BOTH the drift check and the entry parse from the same raw
-        # snapshot. The drift guard used to re-read the file itself and treat
-        # a failed second read as "no drift" — so a read failure between the
-        # checked reload and the drift check let replace/remove/apply_batch
-        # rewrite the file from a stale view, silently discarding whatever an
-        # external writer had just added. One read, one snapshot, no window.
-        bak = None if skip_drift else self._detect_external_drift(target, raw)
-        fresh = self._parse_entries(raw)
-        fresh = list(dict.fromkeys(fresh))  # deduplicate
-        self._set_entries(target, fresh)
-        return bak
-
-    def save_to_disk(self, target: str):
-        """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
-
-    def _entries_for(self, target: str) -> List[str]:
-        if target == "user":
-            return self.user_entries
-        return self.memory_entries
-
-    def _set_entries(self, target: str, entries: List[str]):
-        if target == "user":
-            self.user_entries = entries
-        else:
-            self.memory_entries = entries
-
-    def _char_count(self, target: str) -> int:
-        entries = self._entries_for(target)
-        if not entries:
-            return 0
-        return len(ENTRY_DELIMITER.join(entries))
-
-    def _char_limit(self, target: str) -> int:
-        if target == "user":
-            return self.user_char_limit
-        return self.memory_char_limit
-
-    def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
-        content = content.strip()
-        if not content:
-            return {"success": False, "error": "Content cannot be empty."}
-
-        # Scan for injection/exfiltration before accepting
-        scan_error = _scan_memory_content(content)
-        if scan_error:
-            return {"success": False, "error": scan_error}
-
-        with self._file_lock(self._path_for(target)):
-            # Re-read from disk under lock to pick up writes from other sessions.
-            # For add (append-only), we skip the drift guard — appending never
-            # clobbers existing content, so round-trip mismatches from prior
-            # tool-written entries in the same session are harmless.  The drift
-            # guard remains active for replace/remove where full-file rewrite
-            # would discard un-roundtrippable content.
-            #
-            # But "append never clobbers" only holds when the reload actually
-            # read the file. add rewrites the WHOLE file from the parsed
-            # entries, so a file that exists but read as empty (transient lock,
-            # permission blip, I/O error) would be rewritten down to just the
-            # new entry — wiping every prior memory. Refuse instead.
-            if self._reload_target(target, skip_drift=True) is _READ_FAILED:
-                return _read_failed_error(self._path_for(target))
-
-            entries = self._entries_for(target)
-            limit = self._char_limit(target)
-
-            # Reject exact duplicates
-            if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
-
-            # Calculate what the new total would be
-            new_entries = entries + [content]
-            new_total = len(ENTRY_DELIMITER.join(new_entries))
-
-            if new_total > limit:
-                current = self._char_count(target)
-                return self._consolidation_failure({
-                    "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Consolidate now: use 'replace' to merge overlapping entries into "
-                        f"shorter ones or 'remove' stale or less important entries (see "
-                        f"current_entries below), then retry this add — all in this turn."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                })
-
-            entries.append(content)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
-
-        return self._success_response(target, "Entry added.")
-
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
-        """Find entry containing old_text substring, replace it with new_content."""
-        old_text = old_text.strip()
-        new_content = new_content.strip()
-        if not old_text:
-            return {"success": False, "error": "old_text cannot be empty."}
-        if not new_content:
-            return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
-
-        # Scan replacement content for injection/exfiltration
-        scan_error = _scan_memory_content(new_content)
-        if scan_error:
-            return {"success": False, "error": scan_error}
-
-        with self._file_lock(self._path_for(target)):
-            bak = self._reload_target(target)
-            if bak is _READ_FAILED:
-                return _read_failed_error(self._path_for(target))
-            if bak:
-                return _drift_error(self._path_for(target), bak)
-
-            entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
-
-            if not matches:
-                return self._consolidation_failure({
-                    "success": False,
-                    "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to replace.",
-                    "current_entries": entries,
-                })
-
-            if len(matches) > 1:
-                # If all matches are identical (exact duplicates), operate on the first one
-                unique_texts = {e for _, e in matches}
-                if len(unique_texts) > 1:
-                    previews = self._previews([e for _, e in matches])
-                    return {
-                        "success": False,
-                        "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                        "matches": previews,
-                    }
-                # All identical -- safe to replace just the first
-
-            idx = matches[0][0]
-            limit = self._char_limit(target)
-
-            # Check that replacement doesn't blow the budget
-            test_entries = entries.copy()
-            test_entries[idx] = new_content
-            new_total = len(ENTRY_DELIMITER.join(test_entries))
-
-            if new_total > limit:
-                current = self._char_count(target)
-                return self._consolidation_failure({
-                    "success": False,
-                    "error": (
-                        f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content, or 'remove' other stale or less important "
-                        f"entries to make room (see current_entries below), then retry — all "
-                        f"in this turn."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                })
-
-            entries[idx] = new_content
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
-
-        return self._success_response(target, "Entry replaced.")
-
-    def remove(self, target: str, old_text: str) -> Dict[str, Any]:
-        """Remove the entry containing old_text substring."""
-        old_text = old_text.strip()
-        if not old_text:
-            return {"success": False, "error": "old_text cannot be empty."}
-
-        with self._file_lock(self._path_for(target)):
-            bak = self._reload_target(target)
-            if bak is _READ_FAILED:
-                return _read_failed_error(self._path_for(target))
-            if bak:
-                return _drift_error(self._path_for(target), bak)
-
-            entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
-
-            if not matches:
-                return self._consolidation_failure({
-                    "success": False,
-                    "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to remove.",
-                    "current_entries": entries,
-                })
-
-            if len(matches) > 1:
-                # If all matches are identical (exact duplicates), remove the first one
-                unique_texts = {e for _, e in matches}
-                if len(unique_texts) > 1:
-                    previews = self._previews([e for _, e in matches])
-                    return {
-                        "success": False,
-                        "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                        "matches": previews,
-                    }
-                # All identical -- safe to remove just the first
-
-            idx = matches[0][0]
-            entries.pop(idx)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
-
-        return self._success_response(target, "Entry removed.")
-
-    def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Apply a sequence of add/replace/remove ops to one target atomically.
-
-        All operations are validated and applied against the FINAL budget --
-        intermediate overflow is irrelevant. This lets the model free space
-        (remove/replace) and add new entries in a SINGLE tool call instead of
-        the multi-turn consolidate-then-retry dance that re-sends the whole
-        conversation context several times.
-
-        Semantics: all-or-nothing. If any op is malformed, doesn't match, or
-        the net result would exceed the char limit, NOTHING is written and an
-        error is returned describing the first failure plus the live state.
-        """
-        if not operations:
-            return {"success": False, "error": "operations list is empty."}
-
-        # Scan every add/replace content for injection/exfil BEFORE touching
-        # disk -- a single poisoned op rejects the whole batch.
-        for i, op in enumerate(operations):
-            act = (op or {}).get("action")
-            new_content = (op or {}).get("content")
-            if act in {"add", "replace"} and new_content:
-                scan_error = _scan_memory_content(new_content)
-                if scan_error:
-                    return {"success": False, "error": f"Operation {i + 1}: {scan_error}"}
-
-        with self._file_lock(self._path_for(target)):
-            bak = self._reload_target(target)
-            if bak is _READ_FAILED:
-                return _read_failed_error(self._path_for(target))
-            if bak:
-                return _drift_error(self._path_for(target), bak)
-
-            # Work on a copy; only commit if the whole batch validates.
-            working: List[str] = list(self._entries_for(target))
-            limit = self._char_limit(target)
-
-            for i, op in enumerate(operations):
-                op = op or {}
-                act = op.get("action")
-                content = (op.get("content") or op.get("new_text") or "").strip()
-                old_text = (op.get("old_text") or "").strip()
-                pos = f"Operation {i + 1} ({act or 'unknown'})"
-
-                if act == "add":
-                    if not content:
-                        return self._batch_error(target, f"{pos}: content is required.")
-                    if content in working:
-                        continue  # idempotent -- skip duplicate, don't fail the batch
-                    working.append(content)
-
-                elif act == "replace":
-                    if not old_text:
-                        return self._batch_error(target, f"{pos}: old_text is required.")
-                    if not content:
-                        return self._batch_error(
-                            target,
-                            f"{pos}: content is required (use action='remove' to delete).",
-                        )
-                    matches = [j for j, e in enumerate(working) if old_text in e]
-                    if not matches:
-                        return self._batch_error(target, f"{pos}: no entry matched '{old_text}'.")
-                    if len({working[j] for j in matches}) > 1:
-                        return self._batch_error(
-                            target,
-                            f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.",
-                        )
-                    working[matches[0]] = content
-
-                elif act == "remove":
-                    if not old_text:
-                        return self._batch_error(target, f"{pos}: old_text is required.")
-                    matches = [j for j, e in enumerate(working) if old_text in e]
-                    if not matches:
-                        return self._batch_error(target, f"{pos}: no entry matched '{old_text}'.")
-                    if len({working[j] for j in matches}) > 1:
-                        return self._batch_error(
-                            target,
-                            f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.",
-                        )
-                    working.pop(matches[0])
-
-                else:
-                    return self._batch_error(
-                        target,
-                        f"{pos}: unknown action. Use add, replace, or remove.",
-                    )
-
-            # Budget check against the FINAL state only.
-            new_total = len(ENTRY_DELIMITER.join(working)) if working else 0
-            if new_total > limit:
-                current = self._char_count(target)
-                return self._consolidation_failure({
-                    "success": False,
-                    "error": (
-                        f"After applying all {len(operations)} operations, memory would be at "
-                        f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
-                        f"entries in the same batch (see current_entries below), then retry."
-                    ),
-                    "current_entries": self._entries_for(target),
-                    "usage": f"{current:,}/{limit:,}",
-                })
-
-            # Commit.
-            self._set_entries(target, working)
-            self.save_to_disk(target)
-
-        return self._success_response(target, f"Applied {len(operations)} operation(s).")
-
-    def _batch_error(self, target: str, message: str) -> Dict[str, Any]:
-        """Build a batch-abort error that reports live (uncommitted) state."""
-        current = self._char_count(target)
-        limit = self._char_limit(target)
-        return self._consolidation_failure({
-            "success": False,
-            "error": message + " No operations were applied (batch is all-or-nothing).",
-            "current_entries": self._entries_for(target),
-            "usage": f"{current:,}/{limit:,}",
-        })
-
-    def format_for_system_prompt(self, target: str) -> Optional[str]:
-        """
-        Return the frozen snapshot for system prompt injection.
-
-        This returns the state captured at load_from_disk() time, NOT the live
-        state. Mid-session writes do not affect this. This keeps the system
-        prompt stable across all turns, preserving the prefix cache.
-
-        Returns None if the snapshot is empty (no entries at load time).
-        """
-        block = self._system_prompt_snapshot.get(target, "")
-        return block if block else None
-
-    # -- Internal helpers --
-
-    @staticmethod
-    def _previews(entries: List[str], width: int = 80) -> List[str]:
-        """Truncated one-line previews of entries for error feedback."""
-        return [e[:width] + ("..." if len(e) > width else "") for e in entries]
-
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
-        # A successful write means the consolidation loop made progress, so the
-        # per-turn failure budget resets (the cap counts consecutive failures,
-        # not lifetime ones within a turn).
-        self._consolidation_failures = 0
-        entries = self._entries_for(target)
-        current = self._char_count(target)
-        limit = self._char_limit(target)
-        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
-
-        # The success response is intentionally TERMINAL: it confirms the write
-        # landed and tells the model to stop. We do NOT echo the full entries
-        # list here -- dumping it invites the model to "find more to fix" and
-        # re-issue the same operations (observed thrash: the correct batch on
-        # call 1, then 5 redundant repeats). Entries are only shown on the
-        # error/over-budget paths, where the model genuinely needs them to
-        # decide what to consolidate.
-        resp = {
-            "success": True,
-            "done": True,
-            "target": target,
-            "usage": f"{pct}% — {current:,}/{limit:,} chars",
-            "entry_count": len(entries),
-        }
-        if message:
-            resp["message"] = message
-        resp["note"] = "Write saved. This update is complete — do not repeat it."
-        return resp
-
-    def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
-        if not entries:
-            return ""
-
-        limit = self._char_limit(target)
-        content = ENTRY_DELIMITER.join(entries)
-        current = len(content)
-        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
-
-        title = MEMORY_BLOCK_HEADERS["user" if target == "user" else "memory"]
-        scope_suffix = "" if self.scope == "common" else f" [scope: {self.scope}]"
-        header = f"{title}{scope_suffix} [{pct}% — {current:,}/{limit:,} chars]"
-
-        separator = "═" * 46
-        return f"{separator}\n{header}\n{separator}\n{content}"
-
-    @staticmethod
-    def _read_raw_checked(path: Path) -> Tuple[str, bool]:
-        """Read a memory file's raw text, distinguishing unreadable from empty.
-
-        Returns ``(raw, read_ok)``. ``read_ok`` is False ONLY when the file
-        EXISTS but could not be read — an absent file is a clean ``("", True)``.
-        Invalid UTF-8 counts as unreadable too: the bytes on disk hold content
-        we cannot faithfully round-trip, so a rewrite would corrupt or discard
-        it just like a failed read. Read-modify-write callers must treat
-        ``read_ok=False`` as "abort" rather than "empty store", or a transient
-        read failure would let them persist over — and wipe — the on-disk
-        memory.
-
-        No file locking needed: _write_file uses atomic rename, so readers
-        always see either the previous complete file or the new complete file.
-        """
-        if not path.exists():
-            return "", True
-        try:
-            # utf-8-sig strips a leading UTF-8 BOM (plain utf-8 would glue
-            # U+FEFF to the first entry and break its matching/dedup).
-            # Decode errors stay STRICT on purpose: errors="replace" would
-            # hand read-modify-write callers a lossy view that a subsequent
-            # save persists over the real bytes — the wipe class documented
-            # above. Undecodable bytes must surface as read_ok=False.
-            return path.read_text(encoding="utf-8-sig"), True
-        except (OSError, IOError, UnicodeDecodeError):
-            return "", False
-
-    @staticmethod
-    def _parse_entries(raw: str) -> List[str]:
-        """Split raw memory-file text into stripped, non-empty entries."""
-        if not raw.strip():
-            return []
-        # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
-        # alone would incorrectly split entries that contain "§" in their content.
-        entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
-        return [e for e in entries if e]
-
-    @staticmethod
-    def _read_file(path: Path) -> List[str]:
-        """Read a memory file and split into entries (empty list on any error).
-
-        Only for read-only callers (``load_from_disk``): a failed read
-        degrading to ``[]`` is harmless when nothing is written back.
-        Read-modify-write paths use ``_read_raw_checked`` so they can refuse
-        to overwrite an unreadable file — see ``_reload_target``.
-        """
-        raw, read_ok = MemoryStore._read_raw_checked(path)
-        return MemoryStore._parse_entries(raw) if read_ok else []
-
-    def _detect_external_drift(self, target: str, raw: str) -> Optional[str]:
-        """Return a backup-path string if on-disk content shows external drift.
-
-        *raw* is the file content already read by the caller's checked read
-        (``_read_raw_checked``). Drift detection MUST operate on that same
-        snapshot — an earlier version re-read the file here and treated a
-        failed second read as "no drift", which let a mutation proceed from a
-        stale first snapshot and rewrite away content an external writer added
-        between the two reads.
-
-        The memory file is supposed to be a list of small entries the tool
-        wrote, joined by §. Detect drift via two signals:
-
-        1. Round-trip mismatch — re-parsing and re-serializing the file
-           doesn't produce identical bytes (rare; would catch oddly-encoded
-           delimiters).
-        2. Entry-size overflow — any single parsed entry exceeds the
-           store's whole-file char limit. The tool budgets the ENTIRE store
-           against that limit; no single tool-written entry can exceed it.
-           When we see one entry larger than the limit, an external writer
-           (patch tool, shell append, manual edit, sister session) appended
-           free-form content into what the tool will treat as one entry.
-           Flushing would then truncate that entry to the model's new
-           content, discarding the appended bytes.
-
-        Returns the absolute path of the .bak file when drift was found and
-        backed up; returns None when the file looks tool-shaped.
-
-        Note: this is an INSTANCE method (not static) because we need the
-        per-target char_limit for signal #2.
-        """
-        path = self._path_for(target)
-        if not raw.strip():
-            return None
-
-        parsed = [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
-        roundtrip = ENTRY_DELIMITER.join(parsed)
-
-        char_limit = self._char_limit(target)
-        max_entry_len = max((len(e) for e in parsed), default=0)
-
-        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
-        if not drift_detected:
-            return None
-
-        # Drift confirmed — snapshot the file so the operator can recover
-        # whatever the external writer added, then return the .bak path so
-        # the caller can refuse the mutation.
-        ts = int(time.time())
-        bak_path = path.with_suffix(path.suffix + f".bak.{ts}")
-        try:
-            bak_path.write_text(raw, encoding="utf-8")
+            fcntl.flock(fd, fcntl.LOCK_UN)
         except (OSError, IOError):
-            return str(bak_path) + " (BACKUP FAILED — file unchanged on disk)"
-        return str(bak_path)
+            pass
+        fd.close()
 
-    @staticmethod
-    def _write_file(path: Path, entries: List[str]):
-        """Write entries to a memory file using atomic temp-file + rename.
 
-        Previous implementation used open("w") + flock, but "w" truncates the
-        file *before* the lock is acquired, creating a race window where
-        concurrent readers see an empty file. Atomic rename avoids this:
-        readers always see either the old complete file or the new one.
-        """
-        content = ENTRY_DELIMITER.join(entries) if entries else ""
-        try:
-            atomic_write_text(path, content, tmp_prefix=".mem_")
-        except (OSError, IOError) as e:
-            raise RuntimeError(f"Failed to write memory file {path}: {e}")
+def _write_entries(path: Path, key: str, entries: List[Dict[str, Any]]) -> None:
+    try:
+        atomic_write_text(path, dump_toml({key: entries}), tmp_prefix=".mem_")
+    except (OSError, IOError) as e:
+        raise RuntimeError(f"Failed to write memory file {path}: {e}")
+
+
+def _fail(message: str, **extra: Any) -> Dict[str, Any]:
+    return {"success": False, "error": message, **extra}
+
+
+# ---------------------------------------------------------------------------
+# The store
+# ---------------------------------------------------------------------------
 
 
 class ScopedMemoryStore:
-    """Scope-aware facade over one MemoryStore per built-in scope.
+    """Rules and facts for one session.
 
-    ``active_scope`` is the session's scope; rendering and default writes use
-    it together with the always-visible common store. An explicit ``scope``
-    selects any store, which is how one surface files a fact for another
-    (e.g. the TUI saving a personal detail to the gateway store).
+    ``active_scope`` is the session's scope: common rules always render, gateway
+    rules only when it is ``gateway``. An explicit ``scope`` on a write selects
+    any store, which is how one surface files something for another.
     """
 
     def __init__(
         self,
         active_scope: str = "common",
         *,
-        memory_char_limit: int = 2200,
-        user_char_limit: int = 1375,
+        rules_char_limit: int = DEFAULT_RULES_CHAR_LIMIT,
+        fact_char_limit: int = DEFAULT_FACT_CHAR_LIMIT,
         memory_enabled: bool = True,
-        user_profile_enabled: bool = True,
     ):
         self.active_scope = normalize_memory_scope(active_scope) or "common"
-        self._stores = {
-            scope: MemoryStore(
-                memory_char_limit=memory_char_limit,
-                user_char_limit=user_char_limit,
-                memory_enabled=memory_enabled,
-                user_profile_enabled=user_profile_enabled,
-                scope=scope,
-            )
-            for scope in MEMORY_SCOPES
-        }
+        self.rules_char_limit = int(rules_char_limit)
+        self.fact_char_limit = int(fact_char_limit)
+        self.memory_enabled = memory_enabled
+        self._snapshot: str = ""
 
-    @property
-    def active(self) -> MemoryStore:
-        return self._stores[self.active_scope]
+    # -- scope helpers ------------------------------------------------------
 
-    def visible_stores(self) -> List[MemoryStore]:
-        """Stores whose entries render in this session (common first)."""
-        stores = [self._stores["common"]]
-        if self.active_scope != "common":
-            stores.append(self.active)
-        return stores
+    def visible_scopes(self) -> List[str]:
+        return ["common"] if self.active_scope == "common" else ["common", self.active_scope]
 
-    def for_scope(self, scope: Optional[str]) -> MemoryStore:
-        """Resolve a tool-supplied scope; None/''/'current' picks the active one."""
+    def resolve_scope(self, scope: Optional[str]) -> str:
+        """Tool-supplied scope -> canonical; None/''/'current' is the active one."""
         if scope is None:
-            return self.active
+            return self.active_scope
         name = str(scope).strip().lower()
         if name in {"", "current", "session"}:
-            return self.active
+            return self.active_scope
         canonical = normalize_memory_scope(name)
-        store = self._stores.get(canonical) if canonical else None
-        if store is None:
+        if canonical is None:
             raise KeyError(scope)
-        return store
+        return canonical
+
+    def _path(self, kind: str, scope: str) -> Path:
+        name = RULES_FILENAME if kind == "rule" else facts_filename(scope)
+        return get_memory_dir() / name
+
+    # -- the frozen prompt snapshot -----------------------------------------
 
     def load_from_disk(self) -> None:
-        for store in self._stores.values():
-            store.load_from_disk()
+        """Capture the rules block for the system prompt.
 
-    def target_enabled(self, target: str) -> bool:
-        return any(store.target_enabled(target) for store in self.visible_stores())
+        Each rule is scanned for injection patterns; a hit replaces its text in
+        the SNAPSHOT with a placeholder (the file keeps the original so the user
+        can see and remove it). Deterministic from disk bytes, so the snapshot is
+        stable for the session. Facts are never rendered.
+        """
+        self._snapshot = self._render()
 
-    def reset_consolidation_failures(self) -> None:
-        for store in self._stores.values():
-            store.reset_consolidation_failures()
+    def format_for_system_prompt(self) -> Optional[str]:
+        return self._snapshot or None
 
-    def format_for_system_prompt(self, target: str) -> Optional[str]:
-        blocks = [
-            store.format_for_system_prompt(target)
-            for store in self.visible_stores()
-        ]
-        blocks = [block for block in blocks if block]
-        return "\n\n".join(blocks) if blocks else None
+    def _render(self) -> str:
+        from tools.threat_patterns import scan_for_threats
+
+        path = self._path("rule", "common")
+        rules, error = _read_entries(path, "rule")
+        if error:
+            logger.warning("Memory rules not rendered: %s", error)
+            return ""
+        by_scope: Dict[str, List[str]] = {s: [] for s in self.visible_scopes()}
+        for rule in rules:
+            scope = _entry_scope(rule)
+            if scope is None:
+                logger.warning(
+                    "Rule '%s' in %s names unknown scope %r; not rendered",
+                    rule["id"], path.name, rule.get("scope"),
+                )
+                continue
+            if scope not in by_scope:
+                continue
+            findings = scan_for_threats(f"{rule['text']} {rule.get('why', '')}", scope="strict")
+            if findings:
+                logger.warning(
+                    "Rule '%s' blocked at load time: %s", rule["id"], ", ".join(findings)
+                )
+                line = (
+                    f"- [{rule['id']}] [BLOCKED: rule contained threat pattern(s): "
+                    f"{', '.join(findings)}. Removed from system prompt.]"
+                )
+            else:
+                line = render_rule_line(rule)
+            by_scope[scope].append(line)
+        if not any(by_scope.values()):
+            return ""
+        used = _rules_size(rules)
+        limit = self.rules_char_limit
+        pct = min(100, int(used / limit * 100)) if limit > 0 else 0
+        header = f"{RULES_BLOCK_HEADER} [{pct}% — {used:,}/{limit:,} chars]"
+        separator = "═" * 46
+        parts = [f"{separator}\n{header}\n{separator}"]
+        for scope in self.visible_scopes():
+            if not by_scope[scope]:
+                continue
+            if scope != "common":
+                parts.append(f"[scope: {scope}]")
+            parts.append("\n".join(by_scope[scope]))
+        return "\n".join(parts)
+
+    # -- mutations ------------------------------------------------------------
+
+    def _list_ids(self, entries: List[Dict[str, Any]], scopes: List[str], kind: str) -> List[str]:
+        if kind == "fact":
+            return [e["id"] for e in entries]
+        return [e["id"] for e in entries if _entry_scope(e) in scopes]
+
+    def apply(
+        self,
+        kind: str,
+        action: str,
+        *,
+        id: Optional[str] = None,
+        text: Optional[str] = None,
+        why: Optional[str] = None,
+        scope: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """Validate and (unless *dry_run*) perform one change.
+
+        Validation runs under the file lock against the freshly-read file, so a
+        dry run and the real write apply the same checks. Never overwrites a file
+        that failed to parse.
+        """
+        if kind not in KINDS:
+            return _fail(f"Invalid kind '{kind}'. Use 'rule' or 'fact'.")
+        if action not in ACTIONS:
+            return _fail(
+                f"Unknown action '{action}'. Use add, replace or remove. There is no "
+                "read action: rules are already in your system prompt and relevant "
+                "facts arrive with the turn."
+            )
+        if not self.memory_enabled:
+            return _fail("Built-in memory is disabled in memory config.")
+        try:
+            dest = self.resolve_scope(scope)
+        except KeyError:
+            return _fail(
+                f"Unknown memory scope '{scope}'. Use one of: {', '.join(MEMORY_SCOPES)}."
+            )
+        id = (id or "").strip() or None
+        if kind == "rule":
+            text = " ".join(text.split()) if text else text
+            why = " ".join(why.split()) if why else why
+        else:
+            text = text.strip() if text else text
+        why = why if kind == "rule" else None
+
+        if action in {"add", "replace"}:
+            if not text:
+                return _fail(f"'text' is required for '{action}'.")
+            for field in (text, why):
+                if field:
+                    blocked = _scan_memory_content(field)
+                    if blocked:
+                        return _fail(blocked)
+        if action in {"replace", "remove"} and not id:
+            return _fail(f"'id' is required for '{action}'.")
+
+        path = self._path(kind, dest)
+        key = kind
+        with _file_lock(path):
+            entries, error = _read_entries(path, key)
+            if error:
+                return _fail(
+                    f"Refusing to write {path.name}: {error}. The file is left exactly as "
+                    "it is -- the user must fix it by hand, then retry."
+                )
+            if action == "add":
+                result = self._add(kind, entries, dest, text, why, path)
+            else:
+                result = self._change(kind, action, entries, dest, id, text, why, path)
+            if "entries" not in result:
+                return result
+            new_entries = result.pop("entries")
+            if not dry_run:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _write_entries(path, key, new_entries)
+        result["success"] = True
+        result["kind"] = kind
+        result["scope"] = result.pop("scope", dest)
+        if kind == "rule":
+            result["usage"] = f"{_rules_size(new_entries):,}/{self.rules_char_limit:,} chars"
+        if dry_run:
+            result["dry_run"] = True
+        return result
+
+    def _add(self, kind, entries, dest, text, why, path) -> Dict[str, Any]:
+        if kind == "fact":
+            if len(text) > self.fact_char_limit:
+                return _fail(
+                    f"Fact is {len(text)} chars; the limit is {self.fact_char_limit}. Split it "
+                    "into several facts, or put the details in a note under notes/ and save a "
+                    "pointer fact."
+                )
+            similar = find_similar_facts(text, entries)
+            if similar:
+                return _fail(
+                    "A near-identical fact already exists; use action='replace' with its id "
+                    "instead of adding.",
+                    similar=[{"id": f["id"], "text": f["text"]} for f in similar],
+                )
+        taken = {e["id"] for e in entries}
+        new: Dict[str, Any] = {"id": make_entry_id(text, taken, kind), "text": text}
+        if kind == "rule":
+            if why:
+                new["why"] = why
+            new["scope"] = dest
+        new["source"] = "agent"
+        new["added"] = datetime.date.today()
+        new_entries = entries + [new]
+        if kind == "rule":
+            refusal = self._cap_refusal(entries, new_entries)
+            if refusal:
+                return refusal
+        return {"id": new["id"], "entries": new_entries}
+
+    def _change(self, kind, action, entries, dest, id, text, why, path) -> Dict[str, Any]:
+        # Rules live in one file shared by both scopes, so an id is found among
+        # the scopes this session can see (or the one named explicitly).
+        scopes = [dest] if dest != self.active_scope else self.visible_scopes()
+        in_scope = self._list_ids(entries, scopes, kind)
+        target = next((e for e in entries if e["id"] == id and e["id"] in in_scope), None)
+        if target is None:
+            where = f" in scope {'/'.join(scopes)}" if kind == "rule" else f" in {path.name}"
+            return _fail(
+                f"No {kind} with id '{id}'{where}.",
+                ids=in_scope,
+            )
+        if kind == "rule":
+            dest = _entry_scope(target) or dest
+        if action == "remove":
+            return {"id": id, "scope": dest, "entries": [e for e in entries if e is not target]}
+        if kind == "fact" and len(text) > self.fact_char_limit:
+            return _fail(
+                f"Fact is {len(text)} chars; the limit is {self.fact_char_limit}. Split it "
+                "into several facts, or put the details in a note under notes/ and save a "
+                "pointer fact."
+            )
+        updated = dict(target)
+        updated["text"] = text
+        if kind == "rule" and why is not None:
+            if why:
+                updated["why"] = why
+            else:
+                updated.pop("why", None)
+        new_entries = [updated if e is target else e for e in entries]
+        if kind == "rule":
+            refusal = self._cap_refusal(entries, new_entries)
+            if refusal:
+                return refusal
+        return {"id": id, "scope": dest, "entries": new_entries}
+
+    def _cap_refusal(self, before, after) -> Optional[Dict[str, Any]]:
+        """Refuse a rules change that ends over the cap (and grew the store)."""
+        new_total, old_total = _rules_size(after), _rules_size(before)
+        if new_total > self.rules_char_limit and new_total > old_total:
+            return _fail(
+                f"The rules store is full: this change makes it {new_total:,} chars; the cap "
+                f"is {self.rules_char_limit:,}. Nothing was changed and nothing is removed "
+                "automatically. Tell the user it is full and ask which existing rule they "
+                "want to retire (or to shorten); do not pick one yourself."
+            )
+        return None
+
+    def usage(self) -> str:
+        rules, error = _read_entries(self._path("rule", "common"), "rule")
+        return f"{_rules_size(rules):,}/{self.rules_char_limit:,} chars" if not error else "unreadable"
 
 
 def load_on_disk_store() -> "ScopedMemoryStore":
-    """Build a fresh on-disk :class:`ScopedMemoryStore`, honoring configured char limits.
+    """Build a fresh on-disk :class:`ScopedMemoryStore`, honoring configured limits.
 
-    Approved writes route to the store named by the staged payload's
-    ``scope`` (the active scope is ``common`` when there is no live agent).
-
-    Use this from any context that has no live agent (the messaging gateway,
-    the CLI ``/memory`` handler) but still needs to read or apply approved
-    memory writes. Mirrors how the live agent constructs its store
-    in ``agent/agent_init.py`` — including the user's ``memory.memory_char_limit``
-    / ``memory.user_char_limit`` overrides — so an approval applied without a live
-    agent enforces the SAME caps as one applied with one.
-
-    Falls back to the built-in defaults if config can't be loaded, so this can
-    never raise on a missing/unreadable config.
+    Approved writes route to the store named by the staged payload's ``scope``
+    (the active scope is ``common`` when there is no live agent). Use this from
+    any context that has no live agent (the messaging gateway, the CLI
+    ``/memory`` handler); it applies the SAME caps as ``agent/agent_init.py``.
+    Falls back to the built-in defaults if config can't be loaded.
     """
-    memory_char_limit = 2200
-    user_char_limit = 1375
-    memory_enabled = True
-    user_profile_enabled = True
+    limits = {}
+    enabled = True
     try:
         from son_of_anton_cli.config import load_config
 
         config = load_config() or {}
-        mem_cfg = get_builtin_memory_config(config)
-        memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
-        memory_char_limit = int(mem_cfg.get("memory_char_limit", memory_char_limit))
-        user_char_limit = int(mem_cfg.get("user_char_limit", user_char_limit))
+        limits = _store_limits(get_builtin_memory_config(config))
+        enabled = builtin_memory_enabled(config)
     except Exception:
         pass  # config optional — fall back to defaults rather than break /memory
-
-    store = ScopedMemoryStore(
-        active_scope="common",
-        memory_char_limit=memory_char_limit,
-        user_char_limit=user_char_limit,
-        memory_enabled=memory_enabled,
-        user_profile_enabled=user_profile_enabled,
-    )
+    store = ScopedMemoryStore(active_scope="common", memory_enabled=enabled, **limits)
     store.load_from_disk()
     return store
 
 
-def _store_label(target: str, scope: Optional[str]) -> str:
-    label = "user profile" if target == "user" else "memory"
-    return f"{label} ({scope})" if scope and scope != "common" else label
+def _store_limits(section: Dict[str, Any]) -> Dict[str, int]:
+    """``memory.rules_char_limit`` / ``memory.fact_char_limit`` as constructor kwargs."""
+    return {
+        "rules_char_limit": int(section.get("rules_char_limit", DEFAULT_RULES_CHAR_LIMIT)),
+        "fact_char_limit": int(section.get("fact_char_limit", DEFAULT_FACT_CHAR_LIMIT)),
+    }
 
 
-def _write_gate(summary: str, detail: str, payload: Dict[str, Any],
-                scope: Optional[str]) -> Optional[str]:
-    """Evaluate the memory write gate for one write (or one whole batch).
+def _write_gate(summary: str, detail: str, payload: Dict[str, Any], *, force: bool) -> Optional[str]:
+    """Evaluate the approval gate for one write.
 
     Returns a JSON tool-result string when the write should NOT proceed
-    (blocked or staged for approval), or None when the caller should perform
-    the real write.
+    (denied or staged), or None when the caller should perform it. *force*
+    makes the gate apply whatever ``memory.write_approval`` says (rules).
     """
     from tools import write_approval as wa
 
-    decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
+    decision = wa.evaluate_gate(
+        wa.MEMORY, inline_summary=summary, inline_detail=detail, force=force
+    )
     if decision.allow:
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
-    if scope:
-        payload["scope"] = scope
-    record = wa.stage_write(
-        wa.MEMORY, payload,
-        summary=f"{summary}: {detail[:120]}",
-    )
+    record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}")
     return json.dumps(
         {"success": True, "staged": True, "pending_id": record["id"],
          "message": decision.message},
@@ -1088,165 +609,71 @@ def _write_gate(summary: str, detail: str, payload: Dict[str, Any],
     )
 
 
-def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> str:
-    """Build a recoverable error for a replace/remove call without ``old_text``.
-
-    Some structured-output clients omit the optional ``old_text`` field (it
-    can't be schema-required without a top-level combinator), so instead of a
-    dead-end "old_text is required" this returns the current entry inventory
-    plus a retry instruction. Mirrors the batch path's ``_batch_error`` shape.
-    """
-    entries = store._entries_for(target)
-    current = store._char_count(target)
-    limit = store._char_limit(target)
-    return json.dumps(
-        {
-            "success": False,
-            "error": (
-                f"'{action}' needs old_text -- a short unique substring of the entry "
-                f"to {action}. None was provided. Reissue the {action} with old_text "
-                f"set to part of one of the current_entries below."
-            ),
-            "current_entries": entries,
-            "usage": f"{current:,}/{limit:,}",
-        },
-        ensure_ascii=False,
-    )
-
-
 def memory_tool(
+    kind: str = None,
     action: str = None,
-    target: str = "memory",
-    content: str = None,
-    old_text: str = None,
-    new_text: str = None,
-    operations: Optional[List[Dict[str, Any]]] = None,
+    id: str = None,
+    text: str = None,
+    why: str = None,
     scope: str = None,
     store: Optional[Any] = None,
 ) -> str:
-    """
-    Single entry point for the memory tool. Dispatches to MemoryStore methods.
+    """Single entry point for the memory tool. Returns a JSON string.
 
-    Two shapes:
-      - Single op: action + (content / old_text).
-      - Batch:     operations=[{action, content?, old_text?}, ...] applied
-                   atomically against the final char budget in ONE call.
-
-    ``new_text`` is accepted as an alias for ``content`` on both shapes. The
-    replace/remove ops target by ``old_text`` and supply the replacement via
-    ``content``; callers naturally reach for ``new_text`` to mirror
-    ``old_text`` (it's the patch tool's ``old_string``/``new_string`` shape),
-    which silently left ``content`` empty and errored. Coalescing here removes
-    that trap.
-
-    ``scope`` selects one of the :class:`ScopedMemoryStore`'s stores
-    (``common`` or ``gateway``; ``shared``/``cli`` are aliases of common); omitted/null/``current`` writes to
-    the session's active scope.
-
-    Returns JSON string with results.
+    The change is validated first (a dry run against the file as it is now), so
+    an invalid write is rejected immediately rather than staged. Rule writes then
+    ALWAYS go through the approval gate; fact writes go through it when
+    ``memory.write_approval`` is on.
     """
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
-    # Resolve the destination store once, before the gate, so an unknown
-    # scope fails loudly instead of staging an unroutable write.
-    try:
-        concrete = store.for_scope(scope)
-    except KeyError:
-        return tool_error(
-            f"Unknown memory scope '{scope}'. Use one of: {', '.join(MEMORY_SCOPES)}.",
-            success=False,
-        )
-    resolved_scope = concrete.scope
-
-    # Accept new_text as an alias for content (single-op path). See docstring.
-    if content is None and new_text is not None:
-        content = new_text
-
-    # Some strict providers fill optional schema fields with JSON null rather
-    # than omitting them.  Treat ``target: null`` as omitted so memory writes
-    # still use the documented default store instead of failing validation.
-    if target is None:
-        target = "memory"
-
-    target_error = _memory_target_error(concrete, target)
-    if target_error is not None:
-        return json.dumps(target_error)
-
-    # --- Batch path -------------------------------------------------------
-    if operations:
-        if not isinstance(operations, list):
-            return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        detail_lines = []
-        for op in operations:
-            op = op or {}
-            act = op.get("action", "?")
-            _op_content = op.get("content") or op.get("new_text") or ""
-            if act == "remove":
-                detail_lines.append(f"- remove: {op.get('old_text', '')}")
-            elif act == "replace":
-                detail_lines.append(f"- replace: {op.get('old_text', '')} -> {_op_content}")
-            else:
-                detail_lines.append(f"- {act}: {_op_content}")
-        gate_result = _write_gate(
-            f"apply {len(operations)} op(s) to {_store_label(target, resolved_scope)}",
-            "\n".join(detail_lines),
-            {"action": "batch", "target": target, "operations": operations},
-            resolved_scope,
-        )
-        if gate_result is not None:
-            return gate_result
-        result = concrete.apply_batch(target, operations)
-        return json.dumps(result, ensure_ascii=False)
-
-    # --- Single-op path ---------------------------------------------------
-    # Validate required params BEFORE the gate so an invalid write is rejected
-    # immediately instead of being staged and only failing at approve time.
-    if action == "add" and not content:
-        return tool_error("Content is required for 'add' action.", success=False)
-    if action == "replace" and (not old_text or not content):
-        missing = "old_text" if not old_text else "content"
-        if not old_text:
-            return _missing_old_text_error(concrete, target, "replace")
-        return tool_error(f"{missing} is required for 'replace' action.", success=False)
-    if action == "remove" and not old_text:
-        return _missing_old_text_error(concrete, target, "remove")
-
-    # Approval gate: when on, stages the write (background/gateway) or prompts
-    # inline (interactive CLI); when off (default) passes straight through.
-    if action in {"add", "replace", "remove"}:
-        label = _store_label(target, resolved_scope)
-        if action == "add":
-            summary, detail = f"add to {label}", content or ""
-        elif action == "replace":
-            summary, detail = f"replace in {label}", f"old: {old_text}\nnew: {content}"
-        else:
-            summary, detail = f"remove from {label}", old_text or ""
-        gate_result = _write_gate(
-            summary, detail,
-            {"action": action, "target": target, "content": content, "old_text": old_text},
-            resolved_scope,
-        )
-        if gate_result is not None:
-            return gate_result
+    kind = (kind or "").strip().lower() if isinstance(kind, str) else kind
+    action = (action or "").strip().lower() if isinstance(action, str) else action
+    checked = store.apply(kind, action, id=id, text=text, why=why, scope=scope, dry_run=True)
+    if not checked.get("success"):
+        return json.dumps(checked, ensure_ascii=False)
+    dest = checked["scope"]
 
     if action == "add":
-        result = concrete.add(target, content)
-
+        summary, detail = f"add {kind} ({dest})", text or ""
     elif action == "replace":
-        result = concrete.replace(target, old_text, content)
-
-    elif action == "remove":
-        result = concrete.remove(target, old_text)
-
+        summary, detail = f"replace {kind} '{id}' ({dest})", text or ""
     else:
-        return tool_error(
-            f"Unknown action '{action}'. Use add, replace or remove, or an 'operations' array. "
-            "There is no read action: the saved entries are already in your system prompt.",
-            success=False,
-        )
+        summary, detail = f"remove {kind} '{id}' ({dest})", id or ""
+    if kind == "rule" and why and action != "remove":
+        detail = f"{detail}\nwhy: {why}"
+    payload = {"kind": kind, "action": action, "id": id, "text": text, "why": why, "scope": dest}
+    gated = _write_gate(summary, detail, payload, force=(kind == "rule"))
+    if gated is not None:
+        return gated
 
+    result = store.apply(kind, action, id=id, text=text, why=why, scope=scope)
+    if result.get("success"):
+        result["note"] = "Saved. This update is complete — do not repeat it."
     return json.dumps(result, ensure_ascii=False)
+
+
+def apply_memory_pending(payload: Dict[str, Any], store: "ScopedMemoryStore") -> Dict[str, Any]:
+    """Replay a staged memory write directly against the store, bypassing the
+    gate (the user just approved it). Called by the /memory approve handler.
+
+    A payload in the pre-redesign shape (target/content/old_text/operations) is
+    rejected: it cannot be mapped onto rules and facts.
+    """
+    if "kind" not in payload or any(k in payload for k in ("target", "content", "old_text", "operations")):
+        return _fail(
+            "This staged write predates the rules/facts memory format and cannot be "
+            "applied. Reject it and have the agent save it again."
+        )
+    return store.apply(
+        payload.get("kind"),
+        payload.get("action"),
+        id=payload.get("id"),
+        text=payload.get("text"),
+        why=payload.get("why"),
+        scope=payload.get("scope"),
+    )
 
 
 def get_builtin_memory_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1270,184 +697,56 @@ def get_builtin_memory_config(config: Optional[Dict[str, Any]] = None) -> Dict[s
     return section if isinstance(section, dict) else {}
 
 
-def get_builtin_memory_store_flags(config: Optional[Dict[str, Any]] = None) -> Tuple[bool, bool]:
-    """Return ``(memory_enabled, user_profile_enabled)`` from resolved config."""
-    section = get_builtin_memory_config(config)
-    return (
-        is_truthy_value(section.get("memory_enabled"), default=True),
-        is_truthy_value(section.get("user_profile_enabled"), default=True),
-    )
+def builtin_memory_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+    """``memory.memory_enabled`` from resolved config (default on)."""
+    return is_truthy_value(get_builtin_memory_config(config).get("memory_enabled"), default=True)
 
 
 @no_cache_check_fn
 def check_memory_requirements() -> bool:
-    """Snapshot store flags and report whether the built-in tool is available."""
-    _memory_surface_flags.set(None)
-    flags = get_builtin_memory_store_flags()
-    _memory_surface_flags.set(flags)
-    return flags[0] or flags[1]
-
-
-def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str, Any]]:
-    """Return a shared validation error for an invalid or disabled target."""
-    if target not in {"memory", "user"}:
-        from tools.registry import _bound_error_text
-
-        return {
-            "success": False,
-            "error": _bound_error_text(
-                f"Invalid memory target '{target}'. Use 'memory' or 'user'."
-            ),
-        }
-    if store.target_enabled(target):
-        return None
-    label = "USER.md" if target == "user" else "MEMORY.md"
-    return {
-        "success": False,
-        "error": f"Built-in {label} writes are disabled in memory config.",
-        "target": target,
-    }
-
-
-def apply_memory_pending(payload: Dict[str, Any], store: "ScopedMemoryStore") -> Dict[str, Any]:
-    """Replay a staged memory write directly against the store, bypassing the
-    write gate. Called by the /memory approve handler.
-
-    A staged payload's ``scope`` selects its destination store; payloads
-    without one land in the active scope.
-
-    Returns the store's result dict.
-    """
-    try:
-        concrete = store.for_scope(payload.get("scope"))
-    except KeyError:
-        return {
-            "success": False,
-            "error": f"Unknown staged memory scope '{payload.get('scope')}'.",
-        }
-    action = payload.get("action")
-    target = payload.get("target", "memory")
-    target_error = _memory_target_error(concrete, target)
-    if target_error is not None:
-        return target_error
-    content = payload.get("content") or ""
-    old_text = payload.get("old_text") or ""
-    if action == "batch":
-        return concrete.apply_batch(target, payload.get("operations") or [])
-    if action == "add":
-        return concrete.add(target, content)
-    if action == "replace":
-        return concrete.replace(target, old_text, content)
-    if action == "remove":
-        return concrete.remove(target, old_text)
-    return {"success": False, "error": f"Unknown staged action '{action}'."}
-
+    """Report whether the built-in memory tool is available (config-backed, uncached)."""
+    return builtin_memory_enabled()
 
 
 MEMORY_SCHEMA = {
     "name": "memory",
     "description": (
-        "Save durable facts to memory, which is shown at the start of every session; keep "
-        "entries short. This tool only writes: there is no read action, because the saved "
-        "entries are already in your system prompt.\n\n"
-        "Make all changes in one call with 'operations': they apply together and the size "
-        "limit is checked on the result, so removing stale entries can make room for new ones. "
-        "Use the single action/content/old_text fields for one change. If an add is rejected "
-        "as full, retry as one batch that also removes or shortens stale entries.\n\n"
-        "Save without being asked when the user states a preference, correction or personal "
-        "detail, or you learn a stable fact about their setup. Skip trivia, things easy to look "
-        "up again, raw data and task progress.\n\n"
-        "target: 'user' is who the user is (name, preferences, style); 'memory' is your own "
-        "notes (environment, conventions, lessons)."
+        "Save to memory. A rule (kind='rule') is a standing instruction or core context that must "
+        "hold every turn: rules sit in your system prompt, are capped, and every change needs the "
+        "user's approval. A fact (kind='fact') is knowledge that matters only when its topic comes "
+        "up (hosts, IPs, quirks, procedures, personal details): saved freely, kept out of the "
+        "prompt, and relevant facts arrive with the turn, so there is no read action.\n"
+        "replace and remove address an entry by id; add returns the id. A full rules store refuses: "
+        "ask the user which rule to retire. Skip task progress and anything stale within a week. "
+        f"Files: {display_son_of_anton_home()}/memories/rules.toml, facts.toml, facts.gateway.toml."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {
+            "kind": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "For a single change; omit when using operations."
+                "enum": list(KINDS),
+                "description": "'rule' (standing, approved by the user) or 'fact' (looked up when relevant).",
             },
-            "target": {
+            "action": {"type": "string", "enum": list(ACTIONS)},
+            "id": {"type": "string", "description": "Entry id, for replace and remove."},
+            "text": {
                 "type": "string",
-                "enum": ["memory", "user"],
-                "description": "'user' for the user's profile, 'memory' for your notes."
+                "description": "Rule: an instruction. Fact: a declarative statement. For add and replace.",
             },
+            "why": {"type": "string", "description": "Rules only: the reason, optional."},
             "scope": {
                 "type": "string",
                 "enum": ["current", "common", "gateway"],
                 "description": (
                     "Omit for this session's own. 'common': every session. "
                     "'gateway': personal, never shown in the terminal."
-                )
-            },
-            "content": {
-                "type": "string",
-                "description": "Entry text, for add and replace ('new_text' also works)."
-            },
-            "old_text": {
-                "type": "string",
-                "description": "Required for replace and remove: a short unique substring of the entry."
-            },
-            "new_text": {
-                "type": "string",
-                "description": "Alias for content; content wins if both are set."
-            },
-            "operations": {
-                "type": "array",
-                "description": "Several changes applied together, each {action, content?, old_text?}.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "action": {"type": "string", "enum": ["add", "replace", "remove"]},
-                        "content": {"type": "string", "description": "Entry text for add/replace."},
-                        "new_text": {"type": "string", "description": "Alias for content."},
-                        "old_text": {"type": "string", "description": "Substring of the entry for replace/remove."},
-                    },
-                    "required": ["action"],
-                },
+                ),
             },
         },
-        "required": ["target"],
+        "required": ["kind", "action"],
     },
 }
-
-
-def _build_memory_schema_overrides() -> Dict[str, Any]:
-    """Narrow the advertised target surface using the availability snapshot."""
-    flags = _memory_surface_flags.get()
-    _memory_surface_flags.set(None)
-    if flags is None:
-        flags = get_builtin_memory_store_flags()
-    memory_enabled, user_profile_enabled = flags
-    targets = []
-    if memory_enabled:
-        targets.append("memory")
-    if user_profile_enabled:
-        targets.append("user")
-
-    parameters = copy.deepcopy(MEMORY_SCHEMA["parameters"])
-    target_schema = parameters["properties"]["target"]
-    target_schema["enum"] = targets
-
-    description = MEMORY_SCHEMA["description"]
-    if targets == ["memory"]:
-        target_schema["description"] = "The enabled built-in store: 'memory' for personal notes."
-        description = description.replace(
-            "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-            "notes (environment, conventions, tool quirks, lessons).",
-            "TARGET: only 'memory' is enabled for personal notes (environment, conventions, "
-            "tool quirks, lessons).",
-        )
-    elif targets == ["user"]:
-        target_schema["description"] = "The enabled built-in store: 'user' for user profile."
-        description = description.replace(
-            "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
-            "notes (environment, conventions, tool quirks, lessons).",
-            "TARGET: only 'user' is enabled for user profile facts (name, role, preferences, style).",
-        )
-
-    return {"description": description, "parameters": parameters}
 
 
 registry.register(
@@ -1455,15 +754,13 @@ registry.register(
     toolset="memory",
     schema=MEMORY_SCHEMA,
     handler=lambda args, **kw: memory_tool(
-        action=args.get("action", ""),
-        target=args.get("target", "memory"),
-        content=args.get("content"),
-        old_text=args.get("old_text"),
-        new_text=args.get("new_text"),
-        operations=args.get("operations"),
+        kind=args.get("kind"),
+        action=args.get("action"),
+        id=args.get("id"),
+        text=args.get("text"),
+        why=args.get("why"),
         scope=args.get("scope"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
-    dynamic_schema_overrides=_build_memory_schema_overrides,
 )

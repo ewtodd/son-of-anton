@@ -1085,7 +1085,6 @@ DEFAULT_CONFIG = {
     # Persistent memory -- bounded curated memory injected into system prompt
     "memory": {
         "memory_enabled": True,
-        "user_profile_enabled": True,
         # Built-in memory scope override. Empty = auto by session platform:
         # signal -> gateway, everything else (terminal, cron, subagents) ->
         # common. Pin it ("common" or "gateway") when a front-end should see a
@@ -1104,8 +1103,12 @@ DEFAULT_CONFIG = {
         #                     /memory reject <id>.
         # To disable memory entirely, use memory_enabled: false instead.
         "write_approval": False,
-        "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
-        "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Standing rules (always in the system prompt; every change needs the
+        # user's approval whatever write_approval says). The cap is on the rendered
+        # rules of the whole file; a full store refuses, it never evicts.
+        "rules_char_limit": 4000,
+        # Longest single fact (facts are retrieved per turn, not in the prompt).
+        "fact_char_limit": 400,
         # Retrieval-augmented recall (optional). Indexes session journals and
         # configured note files with an OpenAI-compatible embeddings endpoint
         # and injects the closest chunks into each turn's API copy. The system

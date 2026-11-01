@@ -1521,15 +1521,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
         elif function_name == "memory":
             def _execute(next_args: dict) -> Any:
-                target = next_args.get("target", "memory")
-                operations = next_args.get("operations")
                 from tools.memory_tool import memory_tool as _memory_tool
                 result = _memory_tool(
+                    kind=next_args.get("kind"),
                     action=next_args.get("action"),
-                    target=target,
-                    content=next_args.get("content"),
-                    old_text=next_args.get("old_text"),
-                    operations=operations,
+                    id=next_args.get("id"),
+                    text=next_args.get("text"),
+                    why=next_args.get("why"),
                     scope=next_args.get("scope"),
                     store=agent._memory_store,
                 )

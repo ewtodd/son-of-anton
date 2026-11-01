@@ -1812,7 +1812,7 @@ def _strip_default_values(
 
     Keys in *preserve_keys* (explicitly present in the user's raw config,
     before any normalisation) are always kept even when they equal the
-    default, so user-set values such as ``memory.user_char_limit: 2200``
+    default, so user-set values such as ``memory.rules_char_limit: 2200``
     survive a ``save_config`` round-trip.
 
     Nested dicts whose every child is stripped are removed entirely so

@@ -138,7 +138,7 @@ SUMMARY_PREFIX = (
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
     "summary; do not re-surface it in later turns. "
-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "IMPORTANT: Your standing rules (persistent memory) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
     "None of the above restricts HOW you work: your tools remain fully "
@@ -438,7 +438,7 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
     "summary; do not re-surface it in later turns. "
-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "IMPORTANT: Your standing rules (persistent memory) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
     "None of the above restricts HOW you work: your tools remain fully "
@@ -471,7 +471,7 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
     "summary; do not re-surface it in later turns. "
-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "IMPORTANT: Your standing rules (persistent memory) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
     "None of the above restricts HOW you work: your tools remain fully "
@@ -504,7 +504,7 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
     "summary; do not re-surface it in later turns. "
-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "IMPORTANT: Your standing rules (persistent memory) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
     "The current session state (files, config, etc.) may reflect work "
@@ -529,7 +529,7 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
     "summary; do not re-surface it in later turns. "
-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "IMPORTANT: Your standing rules (persistent memory) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
     "The current session state (files, config, etc.) may reflect work "
@@ -7078,7 +7078,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             msg = _fresh_compaction_message_copy(messages[i])
             if i == 0 and msg.get("role") == "system":
                 existing = msg.get("content")
-                _compaction_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Your persistent memory (MEMORY.md, USER.md) remains fully authoritative regardless of compaction.]"
+                _compaction_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Your standing rules (persistent memory) remains fully authoritative regardless of compaction.]"
                 if _compaction_note not in _content_text_for_contains(existing):
                     msg["content"] = _append_text_to_content(
                         existing,

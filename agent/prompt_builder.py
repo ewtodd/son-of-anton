@@ -147,29 +147,15 @@ SON_OF_ANTON_AGENT_HELP_GUIDANCE = (
 )
 
 MEMORY_GUIDANCE = (
-    "You have persistent memory across sessions, shown at the start of every session, so "
-    "keep it to facts that will still matter. The most valuable entries stop the user having "
-    "to correct or remind you again: preferences and recurring corrections before procedures. "
+    "You have persistent memory across sessions, in two kinds. Rules are the user's standing "
+    "instructions and core context; they are in your system prompt and the user approves every "
+    "change. Phrase a rule as an instruction ('Ask before deleting mail'), save one only when the "
+    "user states or repeats a standing preference or correction, and never retire or reword one "
+    "on your own. Facts are knowledge that matters only when its topic comes up (hosts, quirks, "
+    "procedures, personal details); phrase each as a declarative statement ('The NAS is at "
+    "10.0.0.5'), save them without being asked, and keep each short and self-contained.\n"
     "Don't save task progress, outcomes, PR or issue numbers, commit SHAs or anything stale "
-    "within a week; session_search recalls those from past transcripts.\n"
-    "Write entries as facts, not instructions to yourself ('User prefers concise responses', "
-    "not 'Always respond concisely'): an imperative is re-read later as a directive and can "
-    "override what the user asks now."
-)
-
-USER_PROFILE_GUIDANCE = (
-    "You have a persistent user profile across sessions. Save durable facts about "
-    "the user with the memory tool (target='user'): name, role, preferences, "
-    "corrections, and communication style. The profile is injected into every turn, "
-    "so keep it compact and focused on facts that will still matter later.\n"
-    "The built-in memory notes store is disabled — write only to the user profile "
-    "(target='user'), never target='memory'.\n"
-    "Prioritize what reduces future user steering — the most valuable entry is one "
-    "that prevents the user from having to correct or remind you again.\n"
-    "Write entries as declarative facts, not instructions to yourself. "
-    "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
-    "Imperative phrasing gets re-read as a directive in later sessions and can "
-    "cause repeated work or override the user's current request."
+    "within a week; session_search recalls those from past transcripts."
 )
 
 SESSION_SEARCH_GUIDANCE = (

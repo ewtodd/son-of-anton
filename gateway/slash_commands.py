@@ -2689,7 +2689,7 @@ class GatewaySlashCommandsMixin:
             self._evict_cached_agent(session_key)
 
         # Apply approved writes against a fresh on-disk store (the gateway has
-        # no long-lived agent; the store persists to the same MEMORY/USER.md).
+        # no long-lived agent; the store persists to the same rules/facts files).
         # load_on_disk_store() honors the user's configured char limits.
         store = load_on_disk_store()
 

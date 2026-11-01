@@ -9,104 +9,118 @@ where they were staged. Legacy names (``shared``, ``cli``) read as ``common``.
 from __future__ import annotations
 
 import json
+import tomllib
 
 import pytest
 
 from son_of_anton_constants import get_son_of_anton_home
 from tools.memory_tool import (
     MEMORY_SCOPES,
-    MemoryStore,
     ScopedMemoryStore,
     apply_memory_pending,
     memory_tool,
     normalize_memory_scope,
     resolve_memory_scope,
 )
+from utils import dump_toml
 
-DELIMITER = "\n§\n"
 
-
-def _write_entries(filename: str, entries: list) -> None:
+def _memories():
     directory = get_son_of_anton_home() / "memories"
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / filename).write_text(DELIMITER.join(entries), encoding="utf-8")
+    return directory
 
 
-def _read_entries(filename: str) -> list:
-    path = get_son_of_anton_home() / "memories" / filename
+def _write_rules(rules: list) -> None:
+    (_memories() / "rules.toml").write_text(dump_toml({"rule": rules}), encoding="utf-8")
+
+
+def _read(filename: str, key: str) -> list:
+    path = _memories() / filename
     if not path.exists():
         return []
-    return [e for e in path.read_text(encoding="utf-8").split(DELIMITER) if e]
+    return tomllib.loads(path.read_text(encoding="utf-8")).get(key, [])
 
 
-def test_terminal_session_reads_common_but_not_gateway_entries() -> None:
-    _write_entries("MEMORY.md", ["common deploy fact"])
-    _write_entries("MEMORY.gateway.md", ["personal food fact"])
-    store = ScopedMemoryStore(active_scope="common")
+def _texts(filename: str, key: str) -> list:
+    return [e["text"] for e in _read(filename, key)]
+
+
+def _store(scope: str) -> ScopedMemoryStore:
+    store = ScopedMemoryStore(active_scope=scope)
     store.load_from_disk()
-    block = store.format_for_system_prompt("memory") or ""
-    assert "common deploy fact" in block
-    assert "personal food fact" not in block
+    return store
+
+
+def test_terminal_session_reads_common_but_not_gateway_rules() -> None:
+    _write_rules(
+        [
+            {"id": "deploy", "text": "common deploy rule", "scope": "common"},
+            {"id": "food", "text": "personal food rule", "scope": "gateway"},
+        ]
+    )
+    block = _store("common").format_for_system_prompt() or ""
+    assert "common deploy rule" in block
+    assert "personal food rule" not in block
     assert "[scope:" not in block
 
 
-def test_gateway_session_reads_common_and_gateway_entries() -> None:
-    _write_entries("MEMORY.md", ["common deploy fact"])
-    _write_entries("MEMORY.gateway.md", ["personal food fact"])
-    store = ScopedMemoryStore(active_scope="gateway")
-    store.load_from_disk()
-    block = store.format_for_system_prompt("memory") or ""
-    assert "common deploy fact" in block
-    assert "personal food fact" in block
+def test_gateway_session_reads_common_and_gateway_rules() -> None:
+    _write_rules(
+        [
+            {"id": "deploy", "text": "common deploy rule", "scope": "common"},
+            {"id": "food", "text": "personal food rule", "scope": "gateway"},
+        ]
+    )
+    block = _store("gateway").format_for_system_prompt() or ""
+    assert "common deploy rule" in block
+    assert "personal food rule" in block
     assert block.count("[scope: gateway]") == 1
 
 
-def test_default_write_lands_in_the_active_scope() -> None:
-    store = ScopedMemoryStore(active_scope="gateway")
-    store.load_from_disk()
+def test_a_rule_without_a_scope_is_common_and_an_unknown_scope_renders_nowhere() -> None:
+    _write_rules(
+        [
+            {"id": "bare", "text": "no scope given"},
+            {"id": "typo", "text": "mistyped scope", "scope": "gatway"},
+        ]
+    )
+    for scope in ("common", "gateway"):
+        block = _store(scope).format_for_system_prompt() or ""
+        assert "no scope given" in block
+        assert "mistyped scope" not in block
+
+
+def test_default_fact_write_lands_in_the_active_scope() -> None:
+    store = _store("gateway")
     result = json.loads(
-        memory_tool(action="add", target="memory", content="personal fact", store=store)
+        memory_tool(kind="fact", action="add", text="personal fact", store=store)
     )
     assert result.get("success")
-    assert "personal fact" in _read_entries("MEMORY.gateway.md")
-    assert "personal fact" not in _read_entries("MEMORY.md")
+    assert _texts("facts.gateway.toml", "fact") == ["personal fact"]
+    assert _read("facts.toml", "fact") == []
 
 
 @pytest.mark.parametrize("name", ["common", "shared", "cli", " Common "])
 def test_common_aliases_write_to_the_common_store(name) -> None:
-    store = ScopedMemoryStore(active_scope="gateway")
-    store.load_from_disk()
+    store = _store("gateway")
     result = json.loads(
-        memory_tool(
-            action="add",
-            target="memory",
-            content="everywhere fact",
-            scope=name,
-            store=store,
-        )
+        memory_tool(kind="fact", action="add", text="everywhere fact", scope=name, store=store)
     )
     assert result.get("success")
-    assert "everywhere fact" in _read_entries("MEMORY.md")
-    assert "everywhere fact" not in _read_entries("MEMORY.gateway.md")
-    assert _read_entries("MEMORY.cli.md") == []
+    assert _texts("facts.toml", "fact") == ["everywhere fact"]
+    assert _read("facts.gateway.toml", "fact") == []
 
 
 def test_unknown_scope_is_rejected_before_any_write() -> None:
-    store = ScopedMemoryStore(active_scope="common")
-    store.load_from_disk()
+    store = _store("common")
     result = json.loads(
-        memory_tool(
-            action="add",
-            target="memory",
-            content="nowhere fact",
-            scope="nowhere",
-            store=store,
-        )
+        memory_tool(kind="fact", action="add", text="nowhere fact", scope="nowhere", store=store)
     )
     assert result.get("success") is False
     error = result.get("error", "")
     assert "nowhere" in error and "common" in error and "gateway" in error
-    assert _read_entries("MEMORY.md") == []
+    assert not (_memories() / "facts.toml").exists()
 
 
 def test_normalization_maps_aliases_and_rejects_unknown() -> None:
@@ -120,19 +134,17 @@ def test_normalization_maps_aliases_and_rejects_unknown() -> None:
 
 @pytest.mark.parametrize("scope", ["gateway", "cli", "shared", "common"])
 def test_staged_payload_routes_by_scope(scope) -> None:
-    store = ScopedMemoryStore(active_scope="common")
-    store.load_from_disk()
+    store = _store("common")
     result = apply_memory_pending(
-        {"action": "add", "target": "memory", "content": "staged fact", "scope": scope},
-        store,
+        {"kind": "fact", "action": "add", "text": "staged fact", "scope": scope}, store
     )
     assert result.get("success")
     if scope == "gateway":
-        assert "staged fact" in _read_entries("MEMORY.gateway.md")
-        assert _read_entries("MEMORY.md") == []
+        assert _texts("facts.gateway.toml", "fact") == ["staged fact"]
+        assert _read("facts.toml", "fact") == []
     else:
-        assert "staged fact" in _read_entries("MEMORY.md")
-        assert _read_entries("MEMORY.gateway.md") == []
+        assert _texts("facts.toml", "fact") == ["staged fact"]
+        assert _read("facts.gateway.toml", "fact") == []
 
 
 def test_scope_mapping_and_config_override() -> None:
@@ -146,19 +158,23 @@ def test_scope_mapping_and_config_override() -> None:
     assert resolve_memory_scope("signal", {"memory": {"scope": "bogus"}}) == "gateway"
 
 
-def test_legacy_cli_files_are_neither_rendered_nor_touched() -> None:
-    _write_entries("MEMORY.cli.md", ["old terminal fact"])
-    _write_entries("USER.cli.md", ["old terminal user fact"])
-    store = ScopedMemoryStore(active_scope="common")
-    store.load_from_disk()
-    block = store.format_for_system_prompt("memory") or ""
-    assert "old terminal fact" not in block
+def test_legacy_markdown_files_are_neither_rendered_nor_touched() -> None:
+    legacy = {
+        "MEMORY.md": "old note",
+        "USER.md": "old profile",
+        "MEMORY.gateway.md": "old gateway note",
+        "MEMORY.cli.md": "old terminal note",
+    }
+    for name, body in legacy.items():
+        (_memories() / name).write_text(body, encoding="utf-8")
+    store = _store("gateway")
+    assert store.format_for_system_prompt() is None
     result = json.loads(
-        memory_tool(action="add", target="memory", content="new common fact", store=store)
+        memory_tool(kind="fact", action="add", text="new common fact", store=store, scope="common")
     )
     assert result.get("success")
-    assert _read_entries("MEMORY.cli.md") == ["old terminal fact"]
-    assert _read_entries("USER.cli.md") == ["old terminal user fact"]
+    for name, body in legacy.items():
+        assert (_memories() / name).read_text(encoding="utf-8") == body
 
 
 def _agent(platform: str):
@@ -184,24 +200,19 @@ def _agent(platform: str):
 
 
 def test_agents_render_by_platform(son_of_anton_home) -> None:
-    _write_entries("MEMORY.md", ["common deploy fact"])
-    _write_entries("MEMORY.gateway.md", ["personal food fact"])
-    _write_entries("MEMORY.cli.md", ["legacy terminal fact"])
+    _write_rules(
+        [
+            {"id": "deploy", "text": "common deploy rule", "scope": "common"},
+            {"id": "food", "text": "personal food rule", "scope": "gateway"},
+        ]
+    )
     cli = _agent("cli")
-    cli_block = cli._memory_store.format_for_system_prompt("memory") or ""
+    cli_block = cli._memory_store.format_for_system_prompt() or ""
     assert cli._memory_scope == "common"
-    assert "common deploy fact" in cli_block
-    assert "personal food fact" not in cli_block
-    assert "legacy terminal fact" not in cli_block
+    assert "common deploy rule" in cli_block
+    assert "personal food rule" not in cli_block
     signal = _agent("signal")
-    signal_block = signal._memory_store.format_for_system_prompt("memory") or ""
+    signal_block = signal._memory_store.format_for_system_prompt() or ""
     assert signal._memory_scope == "gateway"
-    assert "common deploy fact" in signal_block
-    assert "personal food fact" in signal_block
-    assert "legacy terminal fact" not in signal_block
-
-
-def test_plain_store_keeps_the_legacy_paths() -> None:
-    store = MemoryStore()
-    assert store._path_for("memory").name == "MEMORY.md"
-    assert store._path_for("user").name == "USER.md"
+    assert "common deploy rule" in signal_block
+    assert "personal food rule" in signal_block

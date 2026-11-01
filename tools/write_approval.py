@@ -3,7 +3,7 @@
 
 Memory gate
 -----------
-The agent writes MEMORY.md / USER.md, small (~200 char) declarative entries
+The agent writes rules.toml / facts*.toml, small entries (rule changes are always gated)
 that survive across sessions. ``memory.write_approval`` gates those writes:
 
   * ``false`` (default) — write freely (the pre-gate behaviour)
@@ -322,7 +322,7 @@ class GateDecision:
 
 
 def evaluate_gate(subsystem: str, *, inline_summary: str = "",
-                  inline_detail: str = "") -> GateDecision:
+                  inline_detail: str = "", force: bool = False) -> GateDecision:
     """Decide what to do with a pending write for ``subsystem`` (``memory``).
 
     Args:
@@ -331,6 +331,8 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
             header.
         inline_detail: full content shown in the inline prompt (memory entries
             are small enough to show in full).
+        force: apply the gate whatever `<subsystem>.write_approval` says. Used for
+            memory rules, which never land without the user's approval.
 
     Decision matrix:
         gate off (default)              → allow (writes flow freely)
@@ -341,7 +343,7 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     delays a write for approval, never silently refuses it. ``blocked`` is
     still produced when the user *actively denies* an inline prompt.
     """
-    if not write_approval_enabled(subsystem):
+    if not force and not write_approval_enabled(subsystem):
         return GateDecision(allow=True)
 
     # If an interactive approval channel exists (a CLI approval callback
@@ -359,10 +361,15 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
             )
         # granted is None → prompt failed; fall through to staging.
 
+    why = (
+        "this change always needs the user's approval"
+        if force and not write_approval_enabled(subsystem)
+        else f"{subsystem}.write_approval is on"
+    )
     return GateDecision(
         stage=True,
         message=(
-            f"Staged for approval ({subsystem}.write_approval is on). "
+            f"Staged for approval ({why}). "
             f"Not yet saved — review with /{subsystem} pending."
         ),
     )

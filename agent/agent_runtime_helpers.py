@@ -1466,11 +1466,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     if function_name == "memory":
         from tools.memory_tool import memory_tool as _memory_tool
         return _memory_tool(
+            kind=function_args.get("kind"),
             action=function_args.get("action"),
-            target=function_args.get("target", "memory"),
-            content=function_args.get("content"),
-            old_text=function_args.get("old_text"),
-            operations=function_args.get("operations"),
+            id=function_args.get("id"),
+            text=function_args.get("text"),
+            why=function_args.get("why"),
             scope=function_args.get("scope"),
             store=agent._memory_store,
         )

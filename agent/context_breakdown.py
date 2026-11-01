@@ -58,20 +58,14 @@ def _split_tools(tools: Sequence[dict]) -> Tuple[List[dict], List[dict], List[di
     return builtin, mcp, subagent
 
 
-def _memory_blocks(agent: Any) -> Tuple[str, str]:
-    memory_block = ""
-    user_block = ""
+def _memory_blocks(agent: Any) -> str:
     store = getattr(agent, "_memory_store", None)
-    if store is None:
-        return memory_block, user_block
+    if store is None or not getattr(agent, "_memory_enabled", True):
+        return ""
     try:
-        if getattr(agent, "_memory_enabled", True):
-            memory_block = store.format_for_system_prompt("memory") or ""
-        if getattr(agent, "_user_profile_enabled", True):
-            user_block = store.format_for_system_prompt("user") or ""
+        return store.format_for_system_prompt() or ""
     except Exception:
-        pass
-    return memory_block, user_block
+        return ""
 
 
 def _strip_blocks(text: str, *blocks: str) -> str:
@@ -95,11 +89,11 @@ def compute_session_context_breakdown(
     context = parts.get("context", "") or ""
     volatile = parts.get("volatile", "") or ""
 
-    memory_block, user_block = _memory_blocks(agent)
-    memory_text = "\n\n".join(part for part in (memory_block, user_block) if part).strip()
+    memory_block = _memory_blocks(agent)
+    memory_text = memory_block.strip()
 
     system_core = stable.strip()
-    system_tail = _strip_blocks(volatile, memory_block, user_block)
+    system_tail = _strip_blocks(volatile, memory_block)
     system_prompt_text = "\n\n".join(part for part in (system_core, system_tail) if part).strip()
 
     tools = list(getattr(agent, "tools", None) or [])

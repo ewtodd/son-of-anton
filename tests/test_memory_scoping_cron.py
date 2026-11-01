@@ -79,8 +79,11 @@ def test_cron_agent_init_loads_gateway_memory(son_of_anton_home) -> None:
     )
     memories = get_son_of_anton_home() / "memories"
     memories.mkdir(parents=True, exist_ok=True)
-    (memories / "MEMORY.gateway.md").write_text("call the owner by first name", encoding="utf-8")
-    (memories / "MEMORY.cli.md").write_text("terminal-only fact", encoding="utf-8")
+    (memories / "rules.toml").write_text(
+        '[[rule]]\nid = "first-name"\ntext = "call the owner by first name"\nscope = "gateway"\n'
+        '[[rule]]\nid = "common-one"\ntext = "common rule"\nscope = "common"\n',
+        encoding="utf-8",
+    )
     sid = _cron_session(deliver="signal:+15551230000")
     agent = AIAgent(
         base_url="http://127.0.0.1:9/v1",
@@ -94,6 +97,6 @@ def test_cron_agent_init_loads_gateway_memory(son_of_anton_home) -> None:
         skip_context_files=True,
     )
     assert agent._memory_scope == "gateway"
-    block = agent._memory_store.format_for_system_prompt("memory") or ""
+    block = agent._memory_store.format_for_system_prompt() or ""
     assert "call the owner by first name" in block
-    assert "terminal-only fact" not in block
+    assert "common rule" in block

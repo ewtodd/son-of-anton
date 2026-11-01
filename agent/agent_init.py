@@ -856,16 +856,15 @@ def init_agent(
     # broad pseudo-public config object on the agent instance.
     agent._aux_compaction_context_length_config = None
 
-    # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
+    # Persistent memory (rules.toml rules in the prompt; facts retrieved per turn) -- loaded from disk
     agent._memory_store = None
     agent._memory_scope = "common"
     agent._memory_enabled = False
-    agent._user_profile_enabled = False
     # skip_memory=True skips the external memory *provider*. Flush/background
     # agents can still pass enabled_toolsets=["memory"] so the built-in file
     # store exists and the memory tool does not fail with store=None (#65429).
     # A toolset on disabled_toolsets is not a request: a caller that denylists
-    # memory while its default toolset still names it must not get MEMORY.md
+    # memory while its default toolset still names it must not get the rules
     # loaded by an enabled-only check. (Cron agents now run with
     # skip_memory=False and take the normal path here.)
     _enabled_toolsets = agent.enabled_toolsets or []
@@ -876,15 +875,14 @@ def init_agent(
     if not skip_memory or _memory_toolset_requested:
         try:
             from tools.memory_tool import (
+                _store_limits,
+                builtin_memory_enabled,
                 get_builtin_memory_config,
-                get_builtin_memory_store_flags,
             )
 
             mem_config = get_builtin_memory_config(_agent_cfg)
-            agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(
-                _agent_cfg
-            )
-            if agent._memory_enabled or agent._user_profile_enabled:
+            agent._memory_enabled = builtin_memory_enabled(_agent_cfg)
+            if agent._memory_enabled:
                 from tools.memory_tool import ScopedMemoryStore, resolve_memory_scope
 
                 agent._memory_scope = resolve_memory_scope(
@@ -894,10 +892,8 @@ def init_agent(
                 )
                 agent._memory_store = ScopedMemoryStore(
                     active_scope=agent._memory_scope,
-                    memory_char_limit=mem_config.get("memory_char_limit", 2200),
-                    user_char_limit=mem_config.get("user_char_limit", 1375),
                     memory_enabled=agent._memory_enabled,
-                    user_profile_enabled=agent._user_profile_enabled,
+                    **_store_limits(mem_config),
                 )
                 agent._memory_store.load_from_disk()
         except Exception:

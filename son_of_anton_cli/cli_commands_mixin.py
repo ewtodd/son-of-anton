@@ -955,8 +955,8 @@ class CLICommandsMixin:
             # No live agent store (e.g. /memory approve invoked from the Desktop
             # GUI, or any context without an active agent). Apply against a freshly
             # loaded on-disk store, mirroring the gateway path
-            # (gateway/slash_commands.py): it persists to the same MEMORY/USER.md
-            # and creates MEMORY.md on the first approved write. Without this the
+            # (gateway/slash_commands.py): it persists to the same rules/facts files
+            # and creates them on the first approved write. Without this the
             # shared handler returns "memory store unavailable". See #46783.
             # load_on_disk_store() honors the user's configured char limits, so
             # an approval here enforces the same caps as the live agent would.
