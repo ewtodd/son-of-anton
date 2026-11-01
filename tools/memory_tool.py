@@ -87,14 +87,20 @@ def _memory_filename(target: str, scope: str) -> str:
 def resolve_memory_scope(
     platform: object,
     config: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
 ) -> str:
     """Map a session's platform to its built-in memory scope.
 
     Explicit ``memory.scope`` in config wins (operators pin known surfaces,
     e.g. a cron worker that should read the workstation notes). Otherwise
     cli gets the workstation scope, messaging platforms get the personal
-    gateway scope, and anything else (cron, delegates, unknown front-ends)
-    sees only the shared store.
+    gateway scope, and anything else (delegates, unknown front-ends) sees
+    only the shared store.
+
+    A cron run (platform ``cron`` plus a ``cron_<job>_<stamp>`` *session_id*)
+    takes the scope RAG places the same session in (``agent.rag._cron_identity``):
+    where its job delivers, else the chat that created it, else cli. A job
+    that is gone or unresolvable gets the shared store (fail closed).
     """
     section = get_builtin_memory_config(config)
     override = section.get("scope")
@@ -107,6 +113,15 @@ def resolve_memory_scope(
         return "cli"
     if name in _GATEWAY_PLATFORMS:
         return "gateway"
+    if name == "cron" and session_id:
+        try:
+            from agent.rag import _cron_identity
+
+            identity = _cron_identity(session_id, {})
+        except Exception:
+            identity = None
+        if identity is not None and identity[0] in MEMORY_SCOPES:
+            return identity[0]
     return "shared"
 
 

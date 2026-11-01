@@ -888,7 +888,9 @@ def init_agent(
                 from tools.memory_tool import ScopedMemoryStore, resolve_memory_scope
 
                 agent._memory_scope = resolve_memory_scope(
-                    getattr(agent, "platform", ""), _agent_cfg
+                    getattr(agent, "platform", ""),
+                    _agent_cfg,
+                    session_id=getattr(agent, "session_id", None),
                 )
                 agent._memory_store = ScopedMemoryStore(
                     active_scope=agent._memory_scope,

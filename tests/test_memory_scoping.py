@@ -119,7 +119,8 @@ def test_approved_write_routes_by_staged_scope() -> None:
 def test_scope_mapping_and_config_override() -> None:
     assert resolve_memory_scope("cli") == "cli"
     assert resolve_memory_scope("signal") == "gateway"
-    # Unknown front-ends (cron, delegates, removed platforms) get the shared store.
+    # Unknown front-ends (delegates, removed platforms) get the shared store; a
+    # cron run with no session to place it does too (test_memory_scoping_cron.py).
     assert resolve_memory_scope("cron") == "shared"
     assert resolve_memory_scope("discord") == "shared"
     assert resolve_memory_scope("cron", {"memory": {"scope": "cli"}}) == "cli"
