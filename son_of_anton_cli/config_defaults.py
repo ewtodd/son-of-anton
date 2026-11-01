@@ -1106,7 +1106,7 @@ DEFAULT_CONFIG = {
         # Standing rules (always in the system prompt; every change needs the
         # user's approval whatever write_approval says). The cap is on the rendered
         # rules of the whole file; a full store refuses, it never evicts.
-        "rules_char_limit": 4000,
+        "rules_char_limit": 6000,
         # Longest single fact (facts are retrieved per turn, not in the prompt).
         "fact_char_limit": 400,
         # Retrieval-augmented recall (optional). Indexes session journals and

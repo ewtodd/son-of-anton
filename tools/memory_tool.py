@@ -40,7 +40,7 @@ from tools.registry import no_cache_check_fn, registry, tool_error
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_RULES_CHAR_LIMIT = 4000
+DEFAULT_RULES_CHAR_LIMIT = 6000
 DEFAULT_FACT_CHAR_LIMIT = 400
 
 # Facts this similar (token-set Jaccard) are refused as duplicates.
