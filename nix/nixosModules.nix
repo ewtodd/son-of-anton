@@ -348,6 +348,16 @@
             in
             [
               {
+                assertion = lib.all (i: !(i.memoryRules != [ ] && i.memoryRulesFile != null)) (
+                  lib.attrValues enabledInstances
+                );
+                message = ''
+                  An instance sets both memoryRules and memoryRulesFile. Use one:
+                  memoryRules declares rules in Nix (they land in the public Nix
+                  store); memoryRulesFile reads them from a runtime path.
+                '';
+              }
+              {
                 assertion = (lib.length users) == (lib.length (lib.unique users));
                 message = ''
                   Two son-of-anton instances share a Unix user.

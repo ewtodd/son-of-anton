@@ -77,6 +77,18 @@
 
       config = lib.mkIf cfg.enable (
         lib.mkMerge [
+          {
+            assertions = [
+              {
+                assertion = !(cfg.memoryRules != [ ] && cfg.memoryRulesFile != null);
+                message = ''
+                  services.son-of-anton sets both memoryRules and memoryRulesFile.
+                  Use one: memoryRules declares rules in Nix (they land in the
+                  public Nix store); memoryRulesFile reads them from a runtime path.
+                '';
+              }
+            ];
+          }
           # ── Packages and interactive-shell environment ─────────────────
           (lib.mkIf cfg.installPackage {
             home.packages = [ (common.effectivePackage cfg) ] ++ cfg.extraPackages;

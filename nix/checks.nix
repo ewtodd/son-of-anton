@@ -259,6 +259,54 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             mkdir -p $out
           '';
 
+        # ── memoryRulesFile ──────────────────────────────────────────────
+        # The activation names the runtime path and carries no rule text (the
+        # text would be in the store); setting both options fails an assertion
+        # in both modules.
+        rules-file =
+          let
+            secretText = "ZZ-secret-standing-rule-text";
+            fileEval = evalHomeModule {
+              enable = true;
+              memoryRulesFile = "/run/agenix/check-rules";
+            };
+            activation = fileEval.config.home.activation.son-of-antonAgentSetup.data;
+            failed = eval: lib.filter (a: !a.assertion) eval.config.assertions;
+            bothHome = evalHomeModule {
+              enable = true;
+              memoryRulesFile = "/run/agenix/check-rules";
+              memoryRules = [
+                {
+                  id = "x";
+                  text = secretText;
+                }
+              ];
+            };
+            bothNixos = evalNixosModule {
+              main = {
+                enable = true;
+                memoryRulesFile = "/run/agenix/check-rules";
+                memoryRules = [
+                  {
+                    id = "x";
+                    text = secretText;
+                  }
+                ];
+              };
+            };
+            mentions = eval: lib.any (a: lib.hasInfix "memoryRulesFile" a.message) (failed eval);
+          in
+          assert lib.hasInfix "memories/rules.toml" activation;
+          assert lib.hasInfix "/run/agenix/check-rules" activation;
+          assert !(lib.hasInfix "son-of-anton-rules.toml" activation);
+          assert failed fileEval == [ ];
+          assert !(builtins.tryEval bothHome.config.home.activationPackage.drvPath).success;
+          assert mentions bothNixos;
+          pkgs.runCommand "son-of-anton-rules-file" { } ''
+            echo "PASS: memoryRulesFile is referenced by path; both options is refused"
+            mkdir -p $out
+          '';
+
         # ── The memoryRules seed ─────────────────────────────────────────
         # The merge script runs from the store the way activation runs it:
         # it creates rules.toml and its state file, and a second run with

@@ -1,4 +1,4 @@
-"""Seed memories/rules.toml from the Nix-declared `memoryRules`.
+"""Seed memories/rules.toml from the Nix-declared `memoryRules` (or `memoryRulesFile`).
 
 Nix CREATES the file; after that it stays mutable (the agent adds rules, with
 the user's approval, and the user edits it by hand). So the merge is three-way
@@ -25,6 +25,7 @@ import argparse
 import copy
 import json
 import os
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -129,6 +130,57 @@ def merge_rules(
     return result, state, report
 
 
+ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+SCOPES = ("common", "gateway")
+SOURCES = ("user", "agent")
+ENTRY_KEYS = {"id", "text", "why", "scope", "source"}
+
+
+def validate_declared(data: object) -> list[dict]:
+    """The declared rules from a parsed file, or ``ValueError`` naming the problem.
+
+    The declared input can be a runtime file (an agenix secret) that Nix never
+    type-checked, so the shape Nix options enforce is enforced here. Defaults
+    (scope common, source user) are applied to the returned copies.
+    """
+    if not isinstance(data, dict) or "rule" not in data:
+        raise ValueError("no [[rule]] tables")
+    rules = data["rule"]
+    if not isinstance(rules, list):
+        raise ValueError("`rule` is not an array of tables")
+    out: list[dict] = []
+    seen: set[str] = set()
+    for n, entry in enumerate(rules, 1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"rule #{n} is not a table")
+        rid = entry.get("id")
+        label = f"rule #{n}" + (f" ({rid})" if isinstance(rid, str) else "")
+        if not isinstance(rid, str) or not ID_RE.fullmatch(rid):
+            raise ValueError(f"{label}: id must match [a-z0-9][a-z0-9-]*")
+        if rid in seen:
+            raise ValueError(f"{label}: duplicate id")
+        seen.add(rid)
+        text = entry.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"{label}: text must be a non-empty string")
+        if "why" in entry and not isinstance(entry["why"], str):
+            raise ValueError(f"{label}: why must be a string")
+        scope = entry.get("scope", "common")
+        if scope not in SCOPES:
+            raise ValueError(f"{label}: scope must be one of {', '.join(SCOPES)}")
+        source = entry.get("source", "user")
+        if source not in SOURCES:
+            raise ValueError(f"{label}: source must be one of {', '.join(SOURCES)}")
+        unknown = set(entry) - ENTRY_KEYS
+        if unknown:
+            raise ValueError(f"{label}: unknown key(s) {', '.join(sorted(unknown))}")
+        clean = {"id": rid, "text": text, "scope": scope, "source": source}
+        if entry.get("why"):
+            clean["why"] = entry["why"]
+        out.append(clean)
+    return out
+
+
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -146,7 +198,20 @@ def main() -> int:
     parser.add_argument("--state", type=Path, required=True, help="What Nix last wrote (JSON).")
     args = parser.parse_args()
 
-    declared = tomllib.loads(args.nix_rules.read_text(encoding="utf-8")).get("rule", [])
+    # A declared file that is missing, unreadable or invalid changes NOTHING:
+    # it must never read as "Nix declares no rules", which would retire every
+    # rule Nix wrote.
+    try:
+        declared = validate_declared(
+            tomllib.loads(args.nix_rules.read_text(encoding="utf-8"))
+        )
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, ValueError) as e:
+        print(
+            f"rules.toml: left untouched — declared rules file {args.nix_rules} "
+            f"is unusable ({e}).",
+            file=sys.stderr,
+        )
+        return 0
     state = load_state(args.state)
     exists = args.rules_path.exists()
     on_disk: list = []

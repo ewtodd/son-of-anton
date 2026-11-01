@@ -167,3 +167,86 @@ def test_main_never_overwrites_a_file_that_does_not_parse(rm, tmp_path) -> None:
 def test_main_with_nothing_declared_and_no_history_creates_nothing(rm, tmp_path) -> None:
     rules_path, state_path = run_main(rm, tmp_path, [])
     assert not rules_path.exists() and not state_path.exists()
+
+
+# -- a declared file that is not trustworthy changes nothing ----------------------
+
+
+def run_file(rm, tmp_path, value):
+    """Seed a good state, then run main against *value*; return the files before/after."""
+    run_main(rm, tmp_path, [rule("a"), rule("b", "Other.")])
+    rules_path = tmp_path / "memories" / "rules.toml"
+    state_path = tmp_path / "memories" / ".nix-rules.json"
+    before = (rules_path.read_bytes(), state_path.read_bytes())
+    nix = tmp_path / "bad.toml"
+    if isinstance(value, bytes):
+        nix.write_bytes(value)
+    elif value is not None:
+        nix.write_text(value, encoding="utf-8")
+    saved = sys.argv
+    sys.argv = ["rules_merge", str(nix), str(rules_path), "--state", str(state_path)]
+    try:
+        assert rm.main() == 0
+    finally:
+        sys.argv = saved
+    return before, (rules_path.read_bytes(), state_path.read_bytes())
+
+
+GOOD = '[[rule]]\nid = "a"\ntext = "Keep answers short."\n'
+BAD_DECLARED = {
+    "missing": None,
+    "unparseable": "[[rule]\nid = ",
+    "not utf8": b"\xff\xfe\x00",
+    "empty file": "",
+    "rule not a list": 'rule = "x"\n',
+    "bad id": '[[rule]]\nid = "Bad_ID"\ntext = "t"\n',
+    "no id": '[[rule]]\ntext = "t"\n',
+    "empty text": '[[rule]]\nid = "a"\ntext = "  "\n',
+    "text not string": '[[rule]]\nid = "a"\ntext = 3\n',
+    "why not string": '[[rule]]\nid = "a"\ntext = "t"\nwhy = 3\n',
+    "bad scope": '[[rule]]\nid = "a"\ntext = "t"\nscope = "everywhere"\n',
+    "bad source": '[[rule]]\nid = "a"\ntext = "t"\nsource = "bot"\n',
+    "duplicate ids": GOOD + GOOD,
+    "one bad among good": GOOD + '[[rule]]\nid = "c"\ntext = ""\n',
+}
+
+
+@pytest.mark.parametrize("kind", list(BAD_DECLARED))
+def test_an_unusable_declared_file_changes_nothing(rm, tmp_path, capsys, kind) -> None:
+    before, after = run_file(rm, tmp_path, BAD_DECLARED[kind])
+    assert after == before, "rules.toml and the state file stay byte-identical"
+    assert "left untouched" in capsys.readouterr().err
+
+
+def test_a_valid_runtime_file_matches_the_equivalent_list(rm, tmp_path) -> None:
+    text = (
+        '[[rule]]\nid = "a"\ntext = "Keep answers short."\n\n'
+        '[[rule]]\nid = "b"\ntext = "Other."\nwhy = "because"\n'
+        'scope = "gateway"\nsource = "agent"\n'
+    )
+    from_file = tmp_path / "file"
+    from_list = tmp_path / "list"
+    (from_file / "memories").mkdir(parents=True)
+    from_list.mkdir()
+    (from_file / "declared.toml").write_text(text, encoding="utf-8")
+    saved = sys.argv
+    sys.argv = [
+        "rules_merge",
+        str(from_file / "declared.toml"),
+        str(from_file / "memories" / "rules.toml"),
+        "--state",
+        str(from_file / "memories" / ".nix-rules.json"),
+    ]
+    try:
+        assert rm.main() == 0
+    finally:
+        sys.argv = saved
+    run_main(
+        rm,
+        from_list,
+        [rule("a"), rule("b", "Other.", why="because", scope="gateway", source="agent")],
+    )
+    for name in ("rules.toml", ".nix-rules.json"):
+        assert (from_file / "memories" / name).read_text(encoding="utf-8") == (
+            from_list / "memories" / name
+        ).read_text(encoding="utf-8")

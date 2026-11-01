@@ -151,6 +151,23 @@ let
         '';
       };
 
+      memoryRulesFile = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "/run/agenix/son-of-anton-rules";
+        description = ''
+          Runtime path of a TOML file of `[[rule]]` tables (id, text, optional
+          why, scope `common`|`gateway` default `common`, source `user`|`agent`
+          default `user`), merged into `memories/rules.toml` exactly like
+          `memoryRules`. For rules that must not go in a public repo or the Nix
+          store, e.g. an agenix or sops secret: only this path string is in the
+          activation script, never the contents. Mutually exclusive with
+          `memoryRules`. The merge validates the file itself; if it is missing,
+          unreadable, unparseable or has an invalid entry, activation warns and
+          changes nothing (rules.toml and its state file stay as they are).
+        '';
+      };
+
       pruneUnmanagedSettings = mkOption {
         type = types.bool;
         default = false;
@@ -234,9 +251,16 @@ let
         lib.recursiveUpdate { terminal.cwd = workingDirectory; } cfg.settings
       );
       mergeScript = pkgs.callPackage ./configMergeScript.nix { };
-      rules = (pkgs.formats.toml { }).generate "son-of-anton-rules.toml" {
-        rule = map (lib.filterAttrs (_: v: v != null)) cfg.memoryRules;
-      };
+      # The declared input of the rules merge: a runtime path when
+      # memoryRulesFile is set (the path string only; the file is never read
+      # at evaluation), else the store file generated from memoryRules.
+      rulesDeclared =
+        if cfg.memoryRulesFile != null then
+          lib.escapeShellArg cfg.memoryRulesFile
+        else
+          "${(pkgs.formats.toml { }).generate "son-of-anton-rules.toml" {
+            rule = map (lib.filterAttrs (_: v: v != null)) cfg.memoryRules;
+          }}";
       rulesMergeScript = pkgs.callPackage ./rulesMergeScript.nix { };
     };
 
@@ -358,7 +382,7 @@ let
       # file next to it records what Nix wrote so a rule retired in Nix goes
       # away only if nobody has touched it since. Created files get the
       # state-file mode and owner like the other files here.
-      ${run}${configFiles.rulesMergeScript} ${configFiles.rules} ${son-of-antonHome}/memories/rules.toml --state ${son-of-antonHome}/memories/.nix-rules.json
+      ${run}${configFiles.rulesMergeScript} ${configFiles.rulesDeclared} ${son-of-antonHome}/memories/rules.toml --state ${son-of-antonHome}/memories/.nix-rules.json
       for _f in ${son-of-antonHome}/memories/rules.toml ${son-of-antonHome}/memories/.nix-rules.json; do
         if [ -e "$_f" ]; then
           ${run}chmod ${modes.config} "$_f"

@@ -624,6 +624,9 @@ standing rules to make room, and RAG injected mostly old tool output.
     whatever `memory.write_approval` says. Full (`memory.rules_char_limit`) means refuse,
     never evict. Nix creates the file from the module's `memoryRules` option and merges it
     by id on each activation (`nix/rules_merge.py`, three-way like `config_merge.py`).
+    For rules that must not go in a public repo or the Nix store (e.g. an agenix secret),
+    `memoryRulesFile` takes a runtime path to the same `[[rule]]` TOML; the merge validates it
+    and changes nothing if it is missing or invalid.
   - **facts** (`facts.toml`, `facts.gateway.toml`): knowledge that matters only when its
     topic comes up. Never in the system prompt; retrieved per turn. The agent writes them
     freely (`memory.write_approval` gates them); near-duplicates are refused with the
