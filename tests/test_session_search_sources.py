@@ -19,9 +19,9 @@ from son_of_anton_state import SessionDB
 from tools.session_search_tool import _list_recent_sessions, session_search
 
 
-def _make_session(session_id: str, source: str, *, token: str) -> None:
+def _make_session(session_id: str, source: str, *, token: str = "x", **kwargs) -> None:
     db = SessionDB()
-    db.create_session(session_id=session_id, source=source)
+    db.create_session(session_id=session_id, source=source, **kwargs)
     db.append_message(
         session_id=session_id,
         role="user",
@@ -43,11 +43,20 @@ def test_browse_filters_to_named_sources(tmp_path) -> None:
     assert listed == {"20261001_000101_aaaaaa"}
 
 
+# A Signal session may read every surface (the wall only stops the terminal).
+CALLER = "20261001_000999_caller"
+
+
+def _signal_caller() -> str:
+    _make_session(CALLER, "signal", chat_id="groupA")
+    return CALLER
+
+
 def test_browse_without_sources_returns_all_surfaces(tmp_path) -> None:
     _make_session("20261001_000201_dddddd", "cli", token="cli-d")
-    _make_session("20261001_000202_eeeeee", "telegram", token="tgm-e")
+    _make_session("20261001_000202_eeeeee", "signal", token="sig-e", chat_id="groupB")
 
-    out = session_search()
+    out = session_search(current_session_id=_signal_caller())
     payload = json.loads(out)
     listed = {s["session_id"] for s in payload.get("results", [])}
     assert listed == {"20261001_000201_dddddd", "20261001_000202_eeeeee"}
@@ -68,10 +77,12 @@ def test_discovery_filters_to_named_sources(tmp_path) -> None:
 
 def test_discovery_multi_source_filter(tmp_path) -> None:
     _make_session("20261001_000401_hhhhhh", "cli", token="waveform-peak")
-    _make_session("20261001_000402_iiiiii", "telegram", token="waveform-peak")
+    _make_session("20261001_000402_iiiiii", "signal", token="waveform-peak", chat_id="groupB")
     _make_session("20261001_000403_jjjjjj", "slack", token="waveform-peak")
 
-    out = session_search(query="waveform-peak", sources="cli,telegram")
+    out = session_search(
+        query="waveform-peak", sources="cli,signal", current_session_id=_signal_caller()
+    )
     payload = json.loads(out)
     found = {r["session_id"] for r in payload.get("results", [])}
     assert "20261001_000401_hhhhhh" in found

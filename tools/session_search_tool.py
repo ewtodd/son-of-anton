@@ -29,6 +29,7 @@ No LLM calls anywhere — every shape returns actual messages from the DB.
 
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional, Union
 
 from son_of_anton_state_common import _RESET_END_REASONS
@@ -53,6 +54,13 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # interactive matches buried under a wall of cron hits, so this is well above
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
+
+# Most FTS pages a walled caller scans while looking for readable rows.
+_WALLED_SCAN_PAGES = 10
+
+# Journal chunks fetched by the semantic half of discovery before they are
+# reduced to sessions.
+_SEMANTIC_HITS = 20
 
 # Raw FTS rows are only a discovery-plan input. The final response hydrates
 # its own anchored message window and bookends after lineage deduplication.
@@ -332,7 +340,9 @@ def _session_link(session_id: str, profile: str = None) -> str:
     return f"@session:{name}/{session_id}" if name else f"@session:{session_id}"
 
 
-def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
+def _read_session(
+    db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None, wall=None
+) -> str:
     """Read shape: dump a whole session by id (head + tail when large).
 
     Serves the linked-session case — the user dropped an @session reference and
@@ -345,7 +355,8 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
     except Exception as e:
         logging.debug("get_session failed for %s: %s", session_id, e, exc_info=True)
         meta = {}
-    if not meta:
+    # A walled-off session answers exactly like a missing one.
+    if not meta or (wall is not None and not wall.allows(session_id)):
         return tool_error(f"session_id not found: {session_id}", success=False)
 
     try:
@@ -384,7 +395,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_prof
 
 def _list_recent_sessions(
     db, limit: int, current_session_id: str = None, link_profile: str = None,
-    sources: Optional[List[str]] = None,
+    sources: Optional[List[str]] = None, wall=None,
 ) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
@@ -393,7 +404,8 @@ def _list_recent_sessions(
         # children, and /new-reset children are admitted, while
         # delegation/compaction children are hidden — trust the query.
         sessions = db.list_sessions_rich(
-            limit=limit + 15,
+            # A walled caller skips rows it may not see, so it scans further.
+            limit=limit + (15 if wall is None or wall.caller_scope == "gateway" else 200),
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             sources=list(sources) if sources else None,
             order_by_last_active=True,
@@ -408,6 +420,8 @@ def _list_recent_sessions(
         for s in sessions:
             sid = s.get("id", "")
             if sid == current_session_id:
+                continue
+            if wall is not None and not wall.allows(sid):
                 continue
             # Compaction continuation: the root's original turns were
             # summarised into the live child, so hide the root. /new-reset
@@ -446,6 +460,7 @@ def _scroll(
     around_message_id: int,
     window: int = 5,
     current_session_id: str = None,
+    wall=None,
 ) -> str:
     """Scroll shape: return a window of messages centered on an anchor.
 
@@ -479,6 +494,12 @@ def _scroll(
     owning_session_id = (
         anchor_state.get("session_id") if anchor_state is not None else None
     )
+    if wall is not None and (
+        not wall.allows(session_id)
+        or (owning_session_id and not wall.allows(owning_session_id))
+    ):
+        # Walled off: indistinguishable from a session that does not exist.
+        return tool_error(f"session_id not found: {session_id}", success=False)
 
     if current_session_id:
         anchor_session_id = owning_session_id or session_id
@@ -587,6 +608,7 @@ def _title_match_result(
     query: str,
     current_lineage_root: Optional[str],
     sources: Optional[List[str]] = None,
+    wall=None,
 ) -> Optional[Dict[str, Any]]:
     """Return a discovery-shaped result when the query matches a session title."""
     title_query = _normalize_title_query(query)
@@ -600,6 +622,8 @@ def _title_match_result(
         return None
     if not session_id:
         return None
+    if wall is not None and not wall.allows(session_id):
+        return None
 
     lineage_root = _resolve_lineage(db, session_id)
     if current_lineage_root and lineage_root == current_lineage_root:
@@ -608,8 +632,13 @@ def _title_match_result(
         if not _session_left_live_context(db, session_id):
             return None
 
+    root_visible = wall is None or wall.allows(lineage_root)
     try:
-        session_meta = db.get_session(lineage_root) or db.get_session(session_id) or {}
+        session_meta = (
+            (db.get_session(lineage_root) if root_visible else None)
+            or db.get_session(session_id)
+            or {}
+        )
     except Exception:
         logging.debug("get_session failed for title match %s", session_id, exc_info=True)
         session_meta = {}
@@ -651,9 +680,92 @@ def _title_match_result(
         "detail": "full",
         "_lineage_root": lineage_root,
     }
-    if lineage_root and lineage_root != session_id:
+    if lineage_root and lineage_root != session_id and root_visible:
         entry["parent_session_id"] = lineage_root
     return entry
+
+
+def _locate_message(db, session_id: str, role: str, text: str) -> Optional[Dict[str, Any]]:
+    """The stored message a journal chunk came from (first of its text)."""
+    probe = " ".join(text.split())[:120]
+    if not probe:
+        return None
+    try:
+        rows = db.get_messages(session_id)
+    except Exception:
+        return None
+    for m in rows:
+        content = m.get("content")
+        if m.get("role") == role and isinstance(content, str) and probe in " ".join(content.split()):
+            return m
+    return None
+
+
+def _semantic_rows(
+    db,
+    query: str,
+    role_list: List[str],
+    source_filter: Optional[List[str]],
+    wall,
+) -> List[Dict[str, Any]]:
+    """Journal chunks closest in meaning to *query*, shaped like FTS rows.
+
+    Empty when recall is off or the embedder does not answer. Only sessions
+    the wall allows are returned (the chunk stamp pre-filters, then the live
+    session identity decides).
+    """
+    try:
+        from agent import rag
+
+        config = rag.get_rag_config()
+        if not config.get("enabled") or not config.get("base_url"):
+            return []
+        if time.monotonic() < rag._SEARCH_STATE.get("cooldown_until", 0.0):
+            return []
+        try:
+            hits = rag.search(
+                query,
+                config=config,
+                scope=wall.caller_scope,
+                top_k=_SEMANTIC_HITS,
+                kinds=("journal",),
+                visible=wall.chunk_allowed,
+            )
+        except Exception as exc:
+            rag._note_search_failure(exc, config)
+            return []
+        rows: List[Dict[str, Any]] = []
+        seen = set()
+        for hit in hits:
+            sid = str(hit.get("session") or "")
+            role = str(hit.get("role") or "")
+            if not sid or sid in seen or role not in role_list or not wall.allows(sid):
+                continue
+            meta = db.get_session(sid) or {}
+            source = meta.get("source") or ""
+            if not meta or source in _HIDDEN_SESSION_SOURCES:
+                continue
+            if source_filter and source not in source_filter:
+                continue
+            text = str(hit.get("text") or "")
+            body = text.split(": ", 1)[1] if ": " in text else text
+            message = _locate_message(db, sid, role, body)
+            if message is None:
+                continue
+            seen.add(sid)
+            rows.append({
+                "id": message.get("id"),
+                "session_id": sid,
+                "role": role,
+                "snippet": body[:300],
+                "source": source,
+                "model": meta.get("model"),
+                "session_started": meta.get("started_at"),
+            })
+        return rows
+    except Exception:
+        logging.debug("semantic session search failed", exc_info=True)
+        return []
 
 
 def _discover(
@@ -666,26 +778,43 @@ def _discover(
     current_session_id: str = None,
     link_profile: str = None,
     sources: Optional[List[str]] = None,
+    wall=None,
 ) -> str:
-    """Discovery shape: FTS5 plus adaptive or full result hydration."""
+    """Discovery shape: FTS5 (merged with semantic hits when recall is on),
+    then adaptive or full result hydration."""
     role_list = role_filter if role_filter else ["user", "assistant"]
     source_filter = list(sources) if sources else None
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
-    title_result = _title_match_result(db, query, current_lineage_root, sources=source_filter)
+    title_result = _title_match_result(
+        db, query, current_lineage_root, sources=source_filter, wall=wall
+    )
 
     try:
-        raw_results = db.search_messages(
-            query=query,
-            role_filter=role_list,
-            exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            source_filter=source_filter,
-            limit=_DISCOVER_SCAN_LIMIT,  # widen so dedup-by-lineage can find
-            # distinct sessions AND so interactive matches buried under a wall
-            # of cron rows are still in hand for the demotion pass below.
-            offset=0,
-            sort=sort,
-            fields=_DISCOVER_SEARCH_FIELDS,
-        )
+        raw_results = []
+        offset = 0
+        # A walled caller drops rows it may not read, so it pages on until it
+        # has a full scan of readable rows (or the matches or the page cap run out).
+        for _page in range(_WALLED_SCAN_PAGES if wall is not None else 1):
+            page = db.search_messages(
+                query=query,
+                role_filter=role_list,
+                exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+                source_filter=source_filter,
+                limit=_DISCOVER_SCAN_LIMIT,  # widen so dedup-by-lineage can find
+                # distinct sessions AND so interactive matches buried under a wall
+                # of cron rows are still in hand for the demotion pass below.
+                offset=offset,
+                sort=sort,
+                fields=_DISCOVER_SEARCH_FIELDS,
+            )
+            if wall is not None:
+                page_rows = [r for r in page if wall.allows(r.get("session_id"))]
+            else:
+                page_rows = page
+            raw_results += page_rows
+            if len(page) < _DISCOVER_SCAN_LIMIT or len(raw_results) >= _DISCOVER_SCAN_LIMIT:
+                break
+            offset += _DISCOVER_SCAN_LIMIT
     except Exception as e:
         logging.error("FTS5 search failed: %s", e, exc_info=True)
         return tool_error(f"Search failed: {e}", success=False)
@@ -694,6 +823,8 @@ def _discover(
     # high-volume cron corpus can't starve the user's own sessions out of the
     # top `limit` results. Stable — preserves BM25/recency order
     # within each class.
+    if wall is not None:
+        raw_results += _semantic_rows(db, query, role_list, source_filter, wall)
     raw_results = _order_for_recall(raw_results)
 
     if not raw_results and not title_result:
@@ -773,8 +904,9 @@ def _discover(
             logging.warning("get_anchored_view failed for %s/%s: %s", hit_sid, msg_id, e, exc_info=True)
             continue
 
+        root_visible = wall is None or wall.allows(lineage_root)
         try:
-            session_meta = db.get_session(lineage_root) or {}
+            session_meta = (db.get_session(lineage_root) if root_visible else None) or {}
         except Exception:
             session_meta = {}
 
@@ -820,7 +952,7 @@ def _discover(
             "messages_after": view.get("messages_after", 0),
             "detail": result_detail,
         }
-        if lineage_root and lineage_root != hit_sid:
+        if lineage_root and lineage_root != hit_sid and root_visible:
             entry["parent_session_id"] = lineage_root
         results.append(entry)
 
@@ -873,6 +1005,11 @@ def _session_search_impl(
     # Session ids never contain "/", so a slash unambiguously means profile/id —
     # always strip the prefix off the id, and adopt the embedded profile only
     # when one wasn't passed explicitly.
+    from agent.rag import SessionWall
+
+    # The terminal never reads a Signal conversation: one wall, every shape.
+    wall = SessionWall(db, current_session_id)
+
     if isinstance(session_id, str) and "/" in session_id:
         emb_profile, _, emb_id = session_id.partition("/")
         if emb_id:
@@ -888,11 +1025,12 @@ def _session_search_impl(
             around_message_id=around_message_id,
             window=window,
             current_session_id=current_session_id,
+            wall=wall,
         )
 
     # Read shape: a session_id with no anchor → dump the whole session.
     if isinstance(session_id, str) and session_id.strip():
-        return _read_session(db, session_id.strip(), link_profile=profile)
+        return _read_session(db, session_id.strip(), link_profile=profile, wall=wall)
 
     # Limit clamp [1, 10]
     if not isinstance(limit, int):
@@ -912,7 +1050,8 @@ def _session_search_impl(
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
         return _list_recent_sessions(
-            db, limit, current_session_id, link_profile=profile, sources=source_list
+            db, limit, current_session_id, link_profile=profile, sources=source_list,
+            wall=wall,
         )
 
     # Parse role_filter
@@ -943,6 +1082,7 @@ def _session_search_impl(
         current_session_id=current_session_id,
         link_profile=profile,
         sources=source_list,
+        wall=wall,
     )
 
 
@@ -1011,7 +1151,7 @@ SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
         "Search or read past son-of-anton conversations (full-text search over the session "
-        "store; returns the real messages). It only knows what was said here before: when the "
+        "store, plus meaning-based matching when recall is enabled; returns the real messages). It only knows what was said here before: when the "
         "user names a live source (a URL, file, contact, account or system), check that source "
         "first, and don't conclude something doesn't exist from this search alone.\n\n"
         "Shapes:\n"

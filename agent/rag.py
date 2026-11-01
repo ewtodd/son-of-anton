@@ -2041,3 +2041,67 @@ def retrieve_for_turn(agent: Any, query: str) -> str:
         _note_search_failure(exc, config)
         return ""
 
+
+# ---------------------------------------------------------------------------
+# The session_search wall
+# ---------------------------------------------------------------------------
+
+
+def identity_readable_from(caller_scope: str, identity: Optional[Tuple[str, List[str]]]) -> bool:
+    """The one rule for what a session's transcript may be read from.
+
+    A ``gateway`` caller reads everything. A ``common`` caller (terminal,
+    relay worker, common cron, their subagents) reads only sessions whose
+    identity resolved to ``common`` with no chat; a gateway or chat-stamped
+    session, and one whose identity cannot be resolved, is walled off.
+    """
+    if caller_scope == "gateway":
+        return True
+    return identity is not None and identity[0] == "common" and not identity[1]
+
+
+class SessionWall:
+    """Answers ``allows(session_id)`` for one session_search caller.
+
+    Both sides resolve through ``resolve_session_identity`` -- the code that
+    scopes RAG chunks. The caller is resolved from its own session row; an
+    unresolvable caller is ``common``. A one-shot (-z) target is terminal-made
+    and counts as common. Any failure to resolve hides the target.
+    """
+
+    def __init__(self, db: Any, current_session_id: Optional[str]):
+        self._config = get_rag_config()
+        self._get_row = _session_row_getter(db)
+        self._cache: Dict[str, bool] = {}
+        self.caller_scope = "common"
+        if current_session_id:
+            try:
+                resolved = resolve_session_identity(
+                    str(current_session_id), self._get_row, self._config
+                )
+                if resolved is not None:
+                    self.caller_scope = _norm_scope(resolved[0]) or "common"
+            except Exception:
+                logger.debug("session_search caller identity failed", exc_info=True)
+
+    def allows(self, session_id: Optional[str]) -> bool:
+        if self.caller_scope == "gateway":
+            return True
+        sid = str(session_id or "")
+        if not sid:
+            return False
+        if sid not in self._cache:
+            try:
+                identity = resolve_session_identity(
+                    sid, self._get_row, dict(self._config, index_oneshot=True)
+                )
+            except Exception:
+                identity = None
+            self._cache[sid] = identity_readable_from(self.caller_scope, identity)
+        return self._cache[sid]
+
+    def chunk_allowed(self, chunk: Dict[str, Any]) -> bool:
+        """Chunk-level pre-filter; ``allows`` is still checked on the session."""
+        if self.caller_scope == "gateway":
+            return True
+        return _norm_scope(chunk.get("scope")) == "common" and not chunk.get("chats")
