@@ -59,6 +59,15 @@ def _make_session(session_id: str, source: str, **kwargs) -> None:
     db.close()
 
 
+def _write_facts(scope: str, facts: list) -> None:
+    from tools.memory_tool import facts_filename, get_memory_dir
+
+    path = get_memory_dir() / facts_filename(scope)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "".join(f'[[fact]]\nid = "{i}"\ntext = "{t}"\n\n' for i, t in facts)
+    path.write_text(body, encoding="utf-8")
+
+
 def _indexed_texts(config) -> list:
     index = rag._load_index(rag.coerce_rag_config(config))
     return [chunk["text"] for chunk in index.chunks] if index else []
@@ -83,19 +92,18 @@ def test_chunk_text_caps_and_overlaps() -> None:
     assert all(len(chunk) <= 200 for chunk in chunks)
 
 
-def test_journal_event_text_carries_reasoning_and_tools() -> None:
-    text = rag._journal_event_text(
-        {
-            "role": "assistant",
-            "content": "done",
-            "tool_name": "read_file",
-            "reasoning_content": "checked it",
-        }
+def test_only_conversation_text_is_indexed_from_a_journal() -> None:
+    text = rag._journal_event_text
+    assert "hello" in text({"role": "user", "content": "hello"})
+    assert "done" in text({"role": "assistant", "content": "done"})
+    # Tool results, tool-call narration, tool-call JSON and reasoning-only rows.
+    assert text({"role": "tool", "tool_name": "read_file", "content": "source"}) == ""
+    assert text({"role": "assistant", "content": "let me look",
+                 "tool_calls": [{"function": {"name": "x"}}]}) == ""
+    assert text({"role": "assistant", "content": "", "reasoning_content": "thinking"}) == ""
+    assert "thinking" not in text(
+        {"role": "assistant", "content": "done", "reasoning_content": "thinking"}
     )
-    assert "assistant:" in text
-    assert "read_file" in text
-    assert "done" in text
-    assert "checked it" in text
 
 
 def test_secrets_are_redacted_before_embedding_and_storage(embed, monkeypatch) -> None:
@@ -566,27 +574,6 @@ def live_config(monkeypatch):
     return full
 
 
-def test_retrieval_excludes_the_live_session_and_its_family(embed, live_config) -> None:
-    for sid, parent in (
-        ("20261001_000110_old", None),
-        ("20261001_000111_live", None),
-        ("20261001_000112_child", "20261001_000111_live"),
-    ):
-        _make_session(sid, "cli", **({"parent_session_id": parent} if parent else {}))
-        _write_journal(sid, [_msg(f"alpha from {sid[-5:]}")])
-    rag.sync_index(live_config)
-
-    db = SessionDB()
-    try:
-        block = rag.retrieve_for_turn(
-            _agent(session_id="20261001_000111_live", _session_db=db), "alpha?"
-        )
-    finally:
-        db.close()
-    assert "from 0_old" in block
-    assert "_live" not in block and "child" not in block
-
-
 def test_subagent_retrieves_with_its_parents_chat(embed, live_config) -> None:
     _make_session("20261001_000120_chat", "signal", chat_id="G1")
     _make_session("20261001_000121_other", "signal", chat_id="G2")
@@ -619,8 +606,7 @@ def test_recalled_block_is_framed_as_data_and_cannot_close_its_fence() -> None:
 
 
 def test_search_timeout_and_failure_cooldown(embed, live_config, monkeypatch, caplog) -> None:
-    _make_session("20261001_000130_t", "cli")
-    _write_journal("20261001_000130_t", [_msg("alpha timeout")])
+    _write_facts("common", [("nas", "alpha timeout fact")])
     rag.sync_index(live_config)
 
     calls = []
@@ -632,8 +618,11 @@ def test_search_timeout_and_failure_cooldown(embed, live_config, monkeypatch, ca
     monkeypatch.setattr(rag, "embed_texts", _down)
     agent = _agent(session_id="someone-else")
     with caplog.at_level(logging.WARNING, logger="agent.rag"):
-        assert rag.retrieve_for_turn(agent, "alpha?") == ""
-        assert rag.retrieve_for_turn(agent, "alpha?") == ""
+        # The embedder is down: the keyword fallback still finds the fact, and
+        # only the first turn pays for the failed request.
+        first = rag.retrieve_for_turn(agent, "what is the alpha timeout?")
+        second = rag.retrieve_for_turn(agent, "what is the alpha timeout?")
+    assert "[fact nas] alpha timeout fact" in first and first == second
     assert calls == [rag.coerce_rag_config(live_config)["search_timeout_seconds"]]
     assert calls[0] <= 10
     assert sum("RAG retrieval failed" in r.message for r in caplog.records) == 1
@@ -773,8 +762,7 @@ def test_compose_user_api_content_includes_rag_block() -> None:
 
 def test_recalled_api_content_is_persisted_and_replayed_byte_identically(embed, live_config) -> None:
     """Turn N's injected bytes are what turn N+1 replays, even after the index moves on."""
-    _make_session("20261001_000170_src", "cli")
-    _write_journal("20261001_000170_src", [_msg("alpha recall source")])
+    _write_facts("common", [("src", "alpha recall source")])
     rag.sync_index(live_config)
 
     sid = "20261001_000171_conv"
@@ -788,7 +776,7 @@ def test_recalled_api_content_is_persisted_and_replayed_byte_identically(embed, 
         db.append_message(sid, "user", "alpha?", api_content=sent)
         db.append_message(sid, "assistant", "ok")
         # The index changes before the next turn; replay must not.
-        _append_journal("20261001_000170_src", json.dumps(_msg("alpha newer fact")) + "\n")
+        _write_facts("common", [("src", "alpha recall source"), ("new", "alpha newer fact")])
         rag.sync_index(live_config)
         history = db.get_messages_as_conversation(sid)
     finally:
@@ -896,8 +884,7 @@ def test_oneshot_retrieval_can_be_enabled(embed, monkeypatch) -> None:
     monkeypatch.setattr(
         rag, "get_rag_config", lambda config=None: original(full if config is None else config)
     )
-    _make_session("20261001_000240_cli", "cli")
-    _write_journal("20261001_000240_cli", [_msg("alpha remembered fact")])
+    _write_facts("common", [("one", "alpha remembered fact")])
     rag.sync_index(full)
     _make_session("20261001_000241_shot", "oneshot")
 
@@ -1047,59 +1034,4 @@ def test_manifest_without_prompt_keys_rebuilds_once_when_prompts_turn_on(embed) 
     assert rag.sync_index(on)["added"] == 0
 
 
-def test_compacted_away_chunks_of_the_live_session_are_retrievable(embed, live_config) -> None:
-    sid = "20261001_000310_live"
-    other = "20261001_000311_other"
-    _make_session(sid, "cli")
-    _make_session(other, "cli")
-    db = SessionDB()
-    try:
-        db.append_messages_batch(sid, [
-            {"role": "user", "content": "alpha compacted-away", "timestamp": 100.0},
-            {"role": "assistant", "content": "alpha also-compacted", "timestamp": 200.0},
-        ])
-        db.archive_and_compact(sid, [
-            {"role": "user", "content": "summary", "timestamp": 4000.0},
-            {"role": "user", "content": "alpha still-live", "timestamp": 5000.0},
-        ])
-        events = [
-            {"type": "message", "role": "user", "content": "alpha compacted-away", "ts": 100.0},
-            {"type": "message", "role": "user", "content": "alpha still-live", "ts": 5000.0},
-        ]
-        _write_journal(sid, events)
-        _write_journal(other, [_msg("alpha elsewhere")])
-        rag.sync_index(live_config)
 
-        block = rag.retrieve_for_turn(_agent(session_id=sid, _session_db=db), "alpha?")
-        assert "compacted-away" in block
-        assert "still-live" not in block
-        assert "elsewhere" in block
-    finally:
-        db.close()
-
-
-def test_whole_live_session_stays_excluded_when_the_context_start_is_unknown(
-    embed, live_config
-) -> None:
-    sid = "20261001_000312_live"
-    _make_session(sid, "cli")
-    _write_journal(sid, [{"type": "message", "role": "user", "content": "alpha unflushed", "ts": 100.0}])
-    rag.sync_index(live_config)
-
-    class _BrokenDB:
-        def get_earliest_active_message_ts(self, session_id):
-            raise RuntimeError("db down")
-
-        def get_session_family_ids(self, session_id):
-            return [session_id]
-
-        def get_session(self, session_id):
-            return None
-
-    db = SessionDB()  # a live session with no active rows has no boundary either
-    try:
-        for session_db in (db, _BrokenDB(), None):
-            block = rag.retrieve_for_turn(_agent(session_id=sid, _session_db=session_db), "alpha?")
-            assert "unflushed" not in block
-    finally:
-        db.close()

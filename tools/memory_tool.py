@@ -45,6 +45,9 @@ DEFAULT_FACT_CHAR_LIMIT = 400
 
 # Facts this similar (token-set Jaccard) are refused as duplicates.
 FACT_SIMILARITY_THRESHOLD = 0.8
+# With the embeddings endpoint answering, the cosine at which a new fact is
+# refused as a duplicate of an indexed one.
+FACT_EMBEDDING_THRESHOLD = 0.92
 
 KINDS: Tuple[str, ...] = ("rule", "fact")
 ACTIONS: Tuple[str, ...] = ("add", "replace", "remove")
@@ -177,12 +180,7 @@ def _tokens(text: str) -> frozenset:
     return frozenset(re.findall(r"[a-z0-9]+", text.lower()))
 
 
-def find_similar_facts(text: str, facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Existing facts near-identical to *text* (normalized token-set Jaccard).
-
-    The one place duplicate detection lives; swap this body for an embedding
-    similarity later without touching callers.
-    """
+def _lexical_similar(text: str, facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     mine = _tokens(text)
     if not mine:
         return []
@@ -194,6 +192,39 @@ def find_similar_facts(text: str, facts: List[Dict[str, Any]]) -> List[Dict[str,
         if len(mine & theirs) / len(mine | theirs) >= FACT_SIMILARITY_THRESHOLD:
             similar.append(fact)
     return similar
+
+
+def find_similar_facts(
+    text: str, facts: List[Dict[str, Any]], scope: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Existing facts near-identical to *text*.
+
+    The one place duplicate detection lives. With a *scope* and the RAG index
+    answering, facts that are indexed are compared by embedding (cosine >=
+    ``FACT_EMBEDDING_THRESHOLD``); every fact the index does not cover, and
+    every fact when it cannot answer (RAG off, endpoint down or slow), is
+    compared by normalized token-set Jaccard.
+    """
+    lexical_pool = facts
+    semantic: List[Dict[str, Any]] = []
+    if scope is not None:
+        try:
+            from agent.rag import similar_indexed_facts
+
+            answer = similar_indexed_facts(text, scope, facts, FACT_EMBEDDING_THRESHOLD)
+        except Exception:
+            logger.debug("semantic duplicate check failed", exc_info=True)
+            answer = None
+        if answer is not None:
+            semantic, covered = answer
+            lexical_pool = [f for f in facts if f["id"] not in covered]
+    found = {f["id"] for f in semantic}
+    return semantic + [f for f in _lexical_similar(text, lexical_pool) if f["id"] not in found]
+
+
+def read_facts(scope: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """The facts file of *scope* as ``(entries, error)``; the one reader RAG uses."""
+    return _read_entries(get_memory_dir() / facts_filename(scope), "fact")
 
 
 def render_rule_line(rule: Dict[str, Any]) -> str:
@@ -267,6 +298,19 @@ def _write_entries(path: Path, key: str, entries: List[Dict[str, Any]]) -> None:
         atomic_write_text(path, dump_toml({key: entries}), tmp_prefix=".mem_")
     except (OSError, IOError) as e:
         raise RuntimeError(f"Failed to write memory file {path}: {e}")
+
+
+def _kick_fact_index() -> None:
+    """Index the facts files in the background so a change is retrievable soon.
+
+    A no-op when RAG is off; never blocks and never raises.
+    """
+    try:
+        from agent.rag import refresh_facts_async
+
+        refresh_facts_async()
+    except Exception:
+        logger.debug("fact index refresh not started", exc_info=True)
 
 
 def _fail(message: str, **extra: Any) -> Dict[str, Any]:
@@ -461,6 +505,8 @@ class ScopedMemoryStore:
             if not dry_run:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 _write_entries(path, key, new_entries)
+                if kind == "fact":
+                    _kick_fact_index()
         result["success"] = True
         result["kind"] = kind
         result["scope"] = result.pop("scope", dest)
@@ -478,7 +524,7 @@ class ScopedMemoryStore:
                     "into several facts, or put the details in a note under notes/ and save a "
                     "pointer fact."
                 )
-            similar = find_similar_facts(text, entries)
+            similar = find_similar_facts(text, entries, dest)
             if similar:
                 return _fail(
                     "A near-identical fact already exists; use action='replace' with its id "
