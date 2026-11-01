@@ -219,7 +219,6 @@ def get_rag_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 # is indexed with that scope, so adding a note is a file drop, not a config
 # edit. Explicit ``sources`` entries stay for files that live elsewhere.
 _NOTE_SUFFIXES = frozenset({".md", ".markdown", ".txt"})
-_NOTE_SCOPES = frozenset({"shared", "cli", "gateway"})
 
 
 def notes_dir(config: Optional[Dict[str, Any]] = None) -> Path:
@@ -235,7 +234,7 @@ def iter_note_files(root: Path):
 
     The first directory segment names the scope (``notes/cli/...``,
     ``notes/gateway/...``); anything else, including files at the root, is
-    ``shared``. Directory symlinks are followed (the legacy food/horror logs)
+    ``common``. Directory symlinks are followed (the legacy food/horror logs)
     with a realpath guard against loops.
     """
     seen_dirs = set()
@@ -250,7 +249,7 @@ def iter_note_files(root: Path):
         except ValueError:
             relative = Path("")
         top = relative.parts[0] if relative.parts else ""
-        scope = top if top in _NOTE_SCOPES else "shared"
+        scope = _norm_scope(top) or "common"
         for name in sorted(filenames):
             if Path(name).suffix.lower() in _NOTE_SUFFIXES:
                 yield Path(dirpath) / name, scope
@@ -294,6 +293,13 @@ def _resolve_api_key(config: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # Session identity: memory scope + chat
 # ---------------------------------------------------------------------------
+
+
+def _norm_scope(name: Any) -> Optional[str]:
+    """Canonical scope (common/gateway) for any name an index or config carries."""
+    from tools.memory_tool import normalize_memory_scope
+
+    return normalize_memory_scope(name)
 
 
 def _memory_scope_for(platform: str, config: Dict[str, Any]) -> str:
@@ -931,9 +937,9 @@ def _stored_identity(entry: Dict[str, Any]) -> Optional[Tuple[str, List[str]]]:
     stored = entry.get("identity")
     if not isinstance(stored, dict):
         return None
-    scope = stored.get("scope")
+    scope = _norm_scope(stored.get("scope"))
     chats = stored.get("chats")
-    if not isinstance(scope, str) or not scope or not isinstance(chats, list):
+    if not scope or not isinstance(chats, list):
         return None
     return (scope, [str(chat) for chat in chats])
 
@@ -1137,7 +1143,7 @@ def _index_source(
     if (
         entry.get("mtime") == stat.st_mtime
         and entry.get("size") == stat.st_size
-        and entry.get("scope", scope) == scope
+        and _norm_scope(entry.get("scope", scope)) == scope
     ):
         return 0
     try:
@@ -1365,15 +1371,13 @@ def _sync_locked(directory: Path, config: Dict[str, Any], *, rebuild: bool) -> D
         try:
             for source in config.get("sources") or []:
                 if isinstance(source, str):
-                    source = {"path": source, "scope": "shared"}
+                    source = {"path": source, "scope": "common"}
                 if not isinstance(source, dict):
                     continue
                 raw_path = str(source.get("path") or "").strip()
                 if not raw_path:
                     continue
-                scope = str(source.get("scope") or "shared").strip().lower()
-                if scope not in _NOTE_SCOPES:
-                    scope = "shared"
+                scope = _norm_scope(source.get("scope")) or "common"
                 expanded = Path(raw_path).expanduser()
                 configured_sources.add(str(expanded))
                 added += _index_source(expanded, writer, config, scope, budget=budget)
@@ -1510,19 +1514,23 @@ def chunk_visible(chunk: Dict[str, Any], scope: str, chat: Optional[str]) -> boo
     A chunk stamped with ``chats`` came from a messaging conversation and is
     visible only from one of those chats — never from a CLI session, never
     from another chat. Everything else is visible when its scope is
-    ``shared`` or the retriever's own.
+    ``common`` (after normalizing legacy ``shared``/``cli`` stamps) or the
+    retriever's own. An unknown stamp is visible to no one.
     """
     chats = chunk.get("chats")
     if chats:
         return chat is not None and chat in chats
-    return chunk.get("scope") in {"shared", scope}
+    stamp = _norm_scope(chunk.get("scope"))
+    if stamp is None:
+        return False
+    return stamp == "common" or stamp == _norm_scope(scope)
 
 
 def search(
     query: str,
     *,
     config: Optional[Dict[str, Any]] = None,
-    scope: str = "shared",
+    scope: str = "common",
     chat: Optional[str] = None,
     exclude_sessions: Iterable[str] = (),
     exclude_from: Optional[Dict[str, float]] = None,
@@ -1641,7 +1649,7 @@ def _agent_identity(agent: Any, config: Dict[str, Any]) -> Tuple[str, Optional[s
 
     cli/tui and messaging agents know their origin directly. Subagents, cron
     runs, and anything else resolve through the session store exactly as the
-    indexer does; an unresolvable agent retrieves as ``shared`` with no chat,
+    indexer does; an unresolvable agent retrieves as ``common`` with no chat,
     which sees no conversation chunks from any chat.
     """
     platform = str(getattr(agent, "platform", "") or "").strip().lower()
@@ -1656,7 +1664,7 @@ def _agent_identity(agent: Any, config: Dict[str, Any]) -> Tuple[str, Optional[s
     cached = getattr(agent, "_rag_identity_cache", None)
     if isinstance(cached, tuple) and len(cached) == 2 and cached[0] == session_id:
         return cached[1]
-    identity: Tuple[str, Optional[str]] = ("shared", None)
+    identity: Tuple[str, Optional[str]] = ("common", None)
     db = getattr(agent, "_session_db", None)
     try:
         if db is not None:

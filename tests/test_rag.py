@@ -327,10 +327,10 @@ def test_gateway_chats_are_isolated_from_each_other_and_from_cli(embed) -> None:
         return " | ".join(h["text"] for h in rag.search("alpha", config=_config(), top_k=10, **kwargs))
 
     in_a = texts(scope="gateway", chat=rag.chat_identity("signal", "groupA"))
-    assert "chat A" in in_a and "chat B" not in in_a and "workstation" not in in_a
+    assert "chat A" in in_a and "chat B" not in in_a and "workstation" in in_a  # common is visible
     in_b = texts(scope="gateway", chat=rag.chat_identity("signal", "chanB"))
     assert "chat B" in in_b and "chat A" not in in_b
-    from_cli = texts(scope="cli")
+    from_cli = texts(scope="common")
     assert "workstation" in from_cli and "chat" not in from_cli
     # A gateway agent with no identifiable chat sees no conversation chunks.
     assert "chat" not in texts(scope="gateway", chat=None)
@@ -338,9 +338,9 @@ def test_gateway_chats_are_isolated_from_each_other_and_from_cli(embed) -> None:
 
 def test_notes_tree_is_discovered_by_scope(embed) -> None:
     notes = get_son_of_anton_home() / "notes"
-    (notes / "cli").mkdir(parents=True)
+    (notes / "common").mkdir(parents=True)
     (notes / "gateway").mkdir(parents=True)
-    (notes / "cli" / "work.md").write_text("alpha workstation note", encoding="utf-8")
+    (notes / "common" / "work.md").write_text("alpha workstation note", encoding="utf-8")
     (notes / "gateway" / "personal.md").write_text("alpha personal note", encoding="utf-8")
     config = _config()
     assert rag.sync_index(config)["added"] >= 2
@@ -351,7 +351,7 @@ def test_notes_tree_is_discovered_by_scope(embed) -> None:
     gateway_hits = rag.search("alpha", config=config, scope="gateway", chat="signal:any")
     assert any("personal" in h["text"] for h in gateway_hits)
 
-    (notes / "cli" / "more.md").write_text("gamma extra note", encoding="utf-8")
+    (notes / "common" / "more.md").write_text("gamma extra note", encoding="utf-8")
     assert rag.sync_index(config)["added"] >= 1
 
 
@@ -380,11 +380,11 @@ def _identity(session_id, config=None):
 def test_scope_follows_the_memory_tool_including_a_pin() -> None:
     _make_session("20261001_000080_tui", "tui")
     _make_session("20261001_000081_sig", "signal", chat_id="c1")
-    assert _identity("20261001_000080_tui") == ("cli", [])
+    assert _identity("20261001_000080_tui") == ("common", [])
     assert _identity("20261001_000081_sig") == ("gateway", ["signal:c1"])
-    pinned = {"memory": {"scope": "shared", "rag": _config()["memory"]["rag"]}}
+    pinned = {"memory": {"scope": "cli", "rag": _config()["memory"]["rag"]}}
     # The pin moves the scope, but the chat stamp still isolates the chat.
-    assert _identity("20261001_000081_sig", pinned) == ("shared", ["signal:c1"])
+    assert _identity("20261001_000081_sig", pinned) == ("common", ["signal:c1"])
 
 
 def test_subagents_inherit_their_parent_session_identity() -> None:
@@ -460,7 +460,7 @@ def test_auto_pruned_sessions_keep_their_journal_and_stay_searchable(embed, tmp_
     rag.sync_index(_config(), rebuild=True)
     hits = {h["text"] for h in rag.search("alpha", config=_config(), scope="cli")}
     assert hits == {"user: alpha long ago", "user: alpha appended later"}
-    assert rag.search("alpha", config=_config(), scope="gateway") == []
+    assert {h["text"] for h in rag.search("alpha", config=_config(), scope="gateway")} == hits
 
 
 def test_only_explicit_deletion_removes_journals(tmp_path) -> None:
@@ -540,7 +540,7 @@ def test_cron_sessions_take_the_scope_of_their_delivery_target(monkeypatch) -> N
     assert _identity("cron_abc123def456_20261001_120000") == ("gateway", ["signal:+1555"])
     # Delivering nowhere is never "shared": it is the creating chat's, or the CLI's.
     assert _identity("cron_0000origin00_20261001_120000") == ("gateway", ["signal:chanX"])
-    assert _identity("cron_000000local0_20261001_120000") == ("cli", [])
+    assert _identity("cron_000000local0_20261001_120000") == ("common", [])
     assert _identity("cron_000nochat000_20261001_120000") is None
     # The job is gone: unknown, not shared.
     assert _identity("cron_deadbeef0000_20261001_120000") is None
@@ -835,12 +835,12 @@ def test_oneshot_journals_are_not_indexed_by_default(embed) -> None:
     assert not any("one-shot content" in t for t in texts)
 
 
-def test_oneshot_identity_fails_closed_and_resolves_as_cli_when_enabled() -> None:
+def test_oneshot_identity_fails_closed_and_resolves_as_common_when_enabled() -> None:
     row = {"source": "oneshot"}
     off = rag.coerce_rag_config(_config())
     assert rag.resolve_session_identity("20261001_000202", lambda sid: row, off) is None
     on = rag.coerce_rag_config(_config(index_oneshot=True))
-    assert rag.resolve_session_identity("20261001_000202", lambda sid: row, on) == ("cli", [])
+    assert rag.resolve_session_identity("20261001_000202", lambda sid: row, on) == ("common", [])
 
 
 def test_oneshot_indexing_when_enabled(embed) -> None:

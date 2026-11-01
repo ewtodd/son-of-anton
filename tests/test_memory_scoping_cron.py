@@ -1,8 +1,8 @@
 """A cron run takes the memory scope of where its job delivers.
 
 Mirrors RAG's placement of the same session (``agent.rag._cron_identity``):
-delivery target's platform, else the creating chat, else cli; a job that is
-gone fails closed to the shared store.
+delivery target's platform, else the creating chat, else common; a job that is
+gone reads as common.
 """
 
 from __future__ import annotations
@@ -32,25 +32,25 @@ def test_local_job_with_signal_origin_is_gateway() -> None:
     assert _scope(_cron_session(deliver="local", origin=SIGNAL_ORIGIN)) == "gateway"
 
 
-def test_local_job_without_origin_is_cli() -> None:
-    assert _scope(_cron_session(deliver="local")) == "cli"
+def test_local_job_without_origin_is_common() -> None:
+    assert _scope(_cron_session(deliver="local")) == "common"
 
 
-def test_missing_job_or_unplaceable_session_is_shared() -> None:
-    assert _scope("cron_deadbeef0000_20260101_080000") == "shared"
-    assert _scope("not-a-cron-session") == "shared"
-    assert resolve_memory_scope("cron") == "shared"
+def test_missing_job_or_unplaceable_session_is_common() -> None:
+    assert _scope("cron_deadbeef0000_20260101_080000") == "common"
+    assert _scope("not-a-cron-session") == "common"
+    assert resolve_memory_scope("cron") == "common"
 
 
 def test_config_pin_wins() -> None:
     sid = _cron_session(deliver="signal:+15551230000")
-    assert _scope(sid, {"memory": {"scope": "cli"}}) == "cli"
+    assert _scope(sid, {"memory": {"scope": "gateway"}}) == "gateway"
 
 
 def test_session_id_does_not_affect_other_platforms() -> None:
     sid = _cron_session(deliver="signal:+15551230000")
-    assert resolve_memory_scope("cli", None, session_id=sid) == "cli"
-    assert resolve_memory_scope("discord", None, session_id=sid) == "shared"
+    assert resolve_memory_scope("cli", None, session_id=sid) == "common"
+    assert resolve_memory_scope("discord", None, session_id=sid) == "common"
 
 
 def test_memory_scope_agrees_with_rag_identity() -> None:

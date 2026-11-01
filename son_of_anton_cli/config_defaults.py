@@ -1087,9 +1087,9 @@ DEFAULT_CONFIG = {
         "memory_enabled": True,
         "user_profile_enabled": True,
         # Built-in memory scope override. Empty = auto by session platform:
-        # "cli" -> cli, signal -> gateway, everything else ->
-        # shared. Pin it when a non-standard front-end should see a scope
-        # (e.g. a cron worker that needs the workstation notes).
+        # signal -> gateway, everything else (terminal, cron, subagents) ->
+        # common. Pin it ("common" or "gateway") when a front-end should see a
+        # scope other than its own; "shared" and "cli" still read as common.
         "scope": "",
         # Approval gate for memory writes (add/replace/remove), applied to BOTH
         # foreground agent turns and the background self-improvement review fork
@@ -1150,10 +1150,11 @@ DEFAULT_CONFIG = {
             # chunker's own 1200-char limit only).
             "max_chunk_chars": 0,
             # Extra note files outside the notes tree, each
-            # {path: ..., scope: shared|cli|gateway}.
+            # {path: ..., scope: common|gateway}.
             "sources": [],
             # Automatically indexed notes tree: notes/<scope>/**/*.md,
-            # scope = the first directory name. Empty = $SON_OF_ANTON_HOME/notes.
+            # scope = the first directory name (notes/gateway/ is gateway,
+            # anything else common). Empty = $SON_OF_ANTON_HOME/notes.
             "notes_dir": "",
             # Default: $SON_OF_ANTON_HOME/rag
             "index_dir": "",

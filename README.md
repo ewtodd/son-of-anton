@@ -167,16 +167,15 @@ Both stores are scoped:
 <!---->
 | Scope | Files | Visible from |
 |---|---|---|
-| `shared` | `MEMORY.md`, `USER.md` | every session |
-| `cli` | `MEMORY.cli.md`, `USER.cli.md` | CLI and TUI sessions |
-| `gateway` | `MEMORY.gateway.md`, `USER.gateway.md` | Signal |
+| `common` | `MEMORY.md`, `USER.md` | every session |
+| `gateway` | `MEMORY.gateway.md`, `USER.gateway.md` | Signal (and Signal-bound cron) |
 <!---->
-The active scope follows the surface — cli → `cli`, messaging → `gateway`,
-anything else (cron, sub-agents, unknown front-ends) → `shared`. `memory.scope`
-pins it for a non-standard surface, and the `memory` tool takes an optional
-`scope`, so one surface can file a fact for another. A coding session therefore
-carries deploy, repo and work conventions without personal context; the gateway
-carries shared plus personal. Each store has its own `memory.memory_char_limit`
+The active scope follows the surface — Signal → `gateway`, anything else
+(terminal, sub-agents, unknown front-ends) → `common`; a cron run follows where
+its job delivers. `memory.scope` pins it for a non-standard surface, and the
+`memory` tool takes an optional `scope`, so one surface can file a fact for
+another. A terminal session therefore carries no personal context; the gateway
+carries common plus personal. Each store has its own `memory.memory_char_limit`
 and `memory.user_char_limit` budget, writes can require approval
 (`memory.write_approval`). The files live in `~/.son-of-anton/memories/`; the agent
 edits them through the `memory` tool, and you can edit them directly. Nothing

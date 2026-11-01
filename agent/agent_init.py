@@ -858,7 +858,7 @@ def init_agent(
 
     # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
     agent._memory_store = None
-    agent._memory_scope = "shared"
+    agent._memory_scope = "common"
     agent._memory_enabled = False
     agent._user_profile_enabled = False
     # skip_memory=True skips the external memory *provider*. Flush/background

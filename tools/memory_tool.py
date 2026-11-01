@@ -63,23 +63,40 @@ MEMORY_BLOCK_HEADERS = {
 
 ENTRY_DELIMITER = "\n§\n"
 
-# Built-in memory scopes. The session's scope is active; "shared" is visible
+# Built-in memory scopes. The session's scope is active; "common" is visible
 # from every session regardless of front-end. Scope is what keeps a coding
 # TUI session from carrying the user's personal/health/media context.
-MEMORY_SCOPES: Tuple[str, ...] = ("shared", "cli", "gateway")
+MEMORY_SCOPES: Tuple[str, ...] = ("common", "gateway")
 
 # agent.platform values that map to the gateway (messaging) scope.
 _GATEWAY_PLATFORMS = frozenset({"signal"})
 
 
+# Names that older installs, staged approvals and RAG indexes still carry.
+_SCOPE_ALIASES = {"common": "common", "shared": "common", "cli": "common", "gateway": "gateway"}
+
+
+def normalize_memory_scope(name: object) -> Optional[str]:
+    """The one place a scope name enters the system.
+
+    ``common`` (and the legacy ``shared`` / ``cli``) -> ``common``;
+    ``gateway`` -> ``gateway``; anything else is unknown (``None``) and
+    callers must never treat unknown as ``gateway``.
+    """
+    if not isinstance(name, str):
+        return None
+    return _SCOPE_ALIASES.get(name.strip().lower())
+
+
 def _memory_filename(target: str, scope: str) -> str:
     """Return the on-disk filename for a (target, scope) pair.
 
-    The shared store keeps the historical unsuffixed names so existing
-    installs keep working; every other scope gets a ``.<scope>`` suffix.
+    The common store keeps the historical unsuffixed names so existing
+    installs keep working; gateway gets a ``.gateway`` suffix. Legacy
+    ``*.cli.md`` files are never read or written.
     """
     stem = "USER" if target == "user" else "MEMORY"
-    if scope == "shared":
+    if scope == "common":
         return f"{stem}.md"
     return f"{stem}.{scope}.md"
 
@@ -91,26 +108,20 @@ def resolve_memory_scope(
 ) -> str:
     """Map a session's platform to its built-in memory scope.
 
-    Explicit ``memory.scope`` in config wins (operators pin known surfaces,
-    e.g. a cron worker that should read the workstation notes). Otherwise
-    cli gets the workstation scope, messaging platforms get the personal
-    gateway scope, and anything else (delegates, unknown front-ends) sees
-    only the shared store.
+    Explicit ``memory.scope`` in config wins (normalized; an invalid pin is
+    ignored). Otherwise signal gets the personal ``gateway`` scope and
+    everything else (cli/tui, delegates, unknown front-ends) gets ``common``.
 
     A cron run (platform ``cron`` plus a ``cron_<job>_<stamp>`` *session_id*)
     takes the scope RAG places the same session in (``agent.rag._cron_identity``):
-    where its job delivers, else the chat that created it, else cli. A job
-    that is gone or unresolvable gets the shared store (fail closed).
+    where its job delivers, else the chat that created it, else common. A job
+    that is gone or unresolvable gets ``common``; unknown never means gateway.
     """
     section = get_builtin_memory_config(config)
-    override = section.get("scope")
-    if isinstance(override, str):
-        normalized = override.strip().lower()
-        if normalized in MEMORY_SCOPES:
-            return normalized
+    pinned = normalize_memory_scope(section.get("scope"))
+    if pinned:
+        return pinned
     name = str(platform or "").strip().lower()
-    if name in {"cli", "tui"}:
-        return "cli"
     if name in _GATEWAY_PLATFORMS:
         return "gateway"
     if name == "cron" and session_id:
@@ -120,9 +131,9 @@ def resolve_memory_scope(
             identity = _cron_identity(session_id, {})
         except Exception:
             identity = None
-        if identity is not None and identity[0] in MEMORY_SCOPES:
-            return identity[0]
-    return "shared"
+        if identity is not None:
+            return normalize_memory_scope(identity[0]) or "common"
+    return "common"
 
 
 
@@ -228,7 +239,7 @@ class MemoryStore:
         *,
         memory_enabled: bool = True,
         user_profile_enabled: bool = True,
-        scope: str = "shared",
+        scope: str = "common",
     ):
         if scope not in MEMORY_SCOPES:
             raise ValueError(
@@ -799,7 +810,7 @@ class MemoryStore:
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         title = MEMORY_BLOCK_HEADERS["user" if target == "user" else "memory"]
-        scope_suffix = "" if self.scope == "shared" else f" [scope: {self.scope}]"
+        scope_suffix = "" if self.scope == "common" else f" [scope: {self.scope}]"
         header = f"{title}{scope_suffix} [{pct}% — {current:,}/{limit:,} chars]"
 
         separator = "═" * 46
@@ -932,21 +943,21 @@ class ScopedMemoryStore:
     """Scope-aware facade over one MemoryStore per built-in scope.
 
     ``active_scope`` is the session's scope; rendering and default writes use
-    it together with the always-visible shared store. An explicit ``scope``
+    it together with the always-visible common store. An explicit ``scope``
     selects any store, which is how one surface files a fact for another
     (e.g. the TUI saving a personal detail to the gateway store).
     """
 
     def __init__(
         self,
-        active_scope: str = "shared",
+        active_scope: str = "common",
         *,
         memory_char_limit: int = 2200,
         user_char_limit: int = 1375,
         memory_enabled: bool = True,
         user_profile_enabled: bool = True,
     ):
-        self.active_scope = active_scope if active_scope in MEMORY_SCOPES else "shared"
+        self.active_scope = normalize_memory_scope(active_scope) or "common"
         self._stores = {
             scope: MemoryStore(
                 memory_char_limit=memory_char_limit,
@@ -963,9 +974,9 @@ class ScopedMemoryStore:
         return self._stores[self.active_scope]
 
     def visible_stores(self) -> List[MemoryStore]:
-        """Stores whose entries render in this session (shared first)."""
-        stores = [self._stores["shared"]]
-        if self.active_scope != "shared":
+        """Stores whose entries render in this session (common first)."""
+        stores = [self._stores["common"]]
+        if self.active_scope != "common":
             stores.append(self.active)
         return stores
 
@@ -976,7 +987,8 @@ class ScopedMemoryStore:
         name = str(scope).strip().lower()
         if name in {"", "current", "session"}:
             return self.active
-        store = self._stores.get(name)
+        canonical = normalize_memory_scope(name)
+        store = self._stores.get(canonical) if canonical else None
         if store is None:
             raise KeyError(scope)
         return store
@@ -1005,7 +1017,7 @@ def load_on_disk_store() -> "ScopedMemoryStore":
     """Build a fresh on-disk :class:`ScopedMemoryStore`, honoring configured char limits.
 
     Approved writes route to the store named by the staged payload's
-    ``scope`` (the active scope is ``shared`` when there is no live agent).
+    ``scope`` (the active scope is ``common`` when there is no live agent).
 
     Use this from any context that has no live agent (the messaging gateway,
     the CLI ``/memory`` handler) but still needs to read or apply approved
@@ -1033,7 +1045,7 @@ def load_on_disk_store() -> "ScopedMemoryStore":
         pass  # config optional — fall back to defaults rather than break /memory
 
     store = ScopedMemoryStore(
-        active_scope="shared",
+        active_scope="common",
         memory_char_limit=memory_char_limit,
         user_char_limit=user_char_limit,
         memory_enabled=memory_enabled,
@@ -1045,7 +1057,7 @@ def load_on_disk_store() -> "ScopedMemoryStore":
 
 def _store_label(target: str, scope: Optional[str]) -> str:
     label = "user profile" if target == "user" else "memory"
-    return f"{label} ({scope})" if scope and scope != "shared" else label
+    return f"{label} ({scope})" if scope and scope != "common" else label
 
 
 def _write_gate(summary: str, detail: str, payload: Dict[str, Any],
@@ -1128,7 +1140,7 @@ def memory_tool(
     that trap.
 
     ``scope`` selects one of the :class:`ScopedMemoryStore`'s stores
-    (``shared``, ``cli``, or ``gateway``); omitted/null/``current`` writes to
+    (``common`` or ``gateway``; ``shared``/``cli`` are aliases of common); omitted/null/``current`` writes to
     the session's active scope.
 
     Returns JSON string with results.
@@ -1363,11 +1375,10 @@ MEMORY_SCHEMA = {
             },
             "scope": {
                 "type": "string",
-                "enum": ["current", "shared", "cli", "gateway"],
+                "enum": ["current", "common", "gateway"],
                 "description": (
-                    "Where the entry is shown. Omit for this kind of session ('cli' is the "
-                    "terminal, 'gateway' messaging); 'shared' for every session (work and deploy "
-                    "conventions); 'gateway' for personal context, never shown in the terminal."
+                    "Omit for this session's own. 'common': every session. "
+                    "'gateway': personal, never shown in the terminal."
                 )
             },
             "content": {
