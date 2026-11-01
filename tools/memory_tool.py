@@ -24,10 +24,12 @@ nothing; unknown keys inside an entry survive a rewrite. The legacy ``MEMORY*.md
 ``USER*.md`` files are no longer read or written.
 """
 
+import contextlib
 import datetime
 import fcntl
 import json
 import logging
+import os
 import re
 import tomllib
 from contextlib import contextmanager
@@ -597,6 +599,144 @@ class ScopedMemoryStore:
     def usage(self) -> str:
         rules, error = _read_entries(self._path("rule", "common"), "rule")
         return f"{_rules_size(rules):,}/{self.rules_char_limit:,} chars" if not error else "unreadable"
+
+
+# ---------------------------------------------------------------------------
+# One-time import of the pre-2026-11-01 MEMORY*.md / USER*.md stores
+# ---------------------------------------------------------------------------
+
+_LEGACY_DELIMITER = "\n§\n"
+# (file name, kind, scope), in import order.
+_LEGACY_FILES: Tuple[Tuple[str, str, str], ...] = (
+    ("USER.md", "rule", "common"),
+    ("USER.cli.md", "rule", "common"),
+    ("USER.gateway.md", "rule", "gateway"),
+    ("MEMORY.md", "fact", "common"),
+    ("MEMORY.cli.md", "fact", "common"),
+    ("MEMORY.gateway.md", "fact", "gateway"),
+)
+
+
+def _legacy_target(path: Path) -> Path:
+    target = path.with_name(path.name + ".legacy")
+    n = 2
+    while target.exists():
+        target = path.with_name(f"{path.name}.legacy.{n}")
+        n += 1
+    return target
+
+
+def migrate_legacy_memory(
+    rules_char_limit: int = DEFAULT_RULES_CHAR_LIMIT,
+) -> Optional[Dict[str, int]]:
+    """Import the legacy MEMORY*.md / USER*.md files into rules and facts, once.
+
+    Runs when a legacy file exists and neither facts file does (rules.toml may
+    already exist: activation creates it). USER* entries become rules, MEMORY*
+    entries facts, ``cli`` folding into ``common``. Nothing is dropped: rules past
+    *rules_char_limit* become facts of the same scope. Imported files are renamed
+    ``<name>.legacy``. If any legacy file cannot be read, or rules.toml does not
+    parse, nothing is written or renamed. Returns the counts, or None if it did
+    not run. Held under the rules and facts locks, so concurrent starts migrate once.
+    """
+    mem_dir = get_memory_dir()
+    legacy = [(mem_dir / n, k, s) for n, k, s in _LEGACY_FILES if (mem_dir / n).exists()]
+    facts_paths = {s: mem_dir / facts_filename(s) for s in MEMORY_SCOPES}
+    if not legacy or any(p.exists() for p in facts_paths.values()):
+        return None
+    rules_path = mem_dir / RULES_FILENAME
+    try:
+        with contextlib.ExitStack() as stack:
+            for lock_target in (rules_path, *(facts_paths[s] for s in MEMORY_SCOPES)):
+                stack.enter_context(_file_lock(lock_target))
+            if any(p.exists() for p in facts_paths.values()):
+                return None  # another process migrated while we waited
+            legacy = [(p, k, s) for p, k, s in legacy if p.exists()]
+            if not legacy:
+                return None
+            rules, error = _read_entries(rules_path, "rule")
+            if error:
+                logger.warning("Legacy memory not migrated: %s", error)
+                return None
+            imported: Dict[Tuple[str, str], List[str]] = {}
+            for path, kind, scope in legacy:
+                try:
+                    raw = path.read_bytes().decode("utf-8")
+                except (OSError, UnicodeDecodeError) as e:
+                    logger.warning("Legacy memory not migrated: %s unreadable (%s)", path.name, e)
+                    return None
+                entries = imported.setdefault((kind, scope), [])
+                entries.extend(t.strip() for t in raw.split(_LEGACY_DELIMITER) if t.strip())
+
+            today = datetime.date.today()
+            facts: Dict[str, List[Dict[str, Any]]] = {s: [] for s in MEMORY_SCOPES}
+            counts = {"rules": 0, "facts": 0, "overflow": 0, "duplicates": 0, "renamed": 0}
+            taken = {r["id"] for r in rules}
+            seen_rules = {(_entry_scope(r), " ".join(r["text"].split())) for r in rules}
+            full = False
+
+            def add_fact(scope: str, text: str) -> None:
+                bucket = facts[scope]
+                bucket.append(
+                    {
+                        "id": make_entry_id(text, {f["id"] for f in bucket}, "fact"),
+                        "text": text,
+                        "source": "agent",
+                        "added": today,
+                    }
+                )
+
+            for scope in MEMORY_SCOPES:
+                for text in imported.get(("rule", scope), []):
+                    text = " ".join(text.split())
+                    if (scope, text) in seen_rules:
+                        counts["duplicates"] += 1
+                        continue
+                    seen_rules.add((scope, text))
+                    new = {
+                        "id": make_entry_id(text, taken, "rule"),
+                        "text": text,
+                        "scope": scope,
+                        "source": "agent",
+                        "added": today,
+                    }
+                    if not full and _rules_size(rules + [new]) <= rules_char_limit:
+                        taken.add(new["id"])
+                        rules.append(new)
+                        counts["rules"] += 1
+                    else:
+                        full = True
+                        add_fact(scope, text)
+                        counts["overflow"] += 1
+                for text in imported.get(("fact", scope), []):
+                    if any(f["text"] == text for f in facts[scope]):
+                        counts["duplicates"] += 1
+                        continue
+                    add_fact(scope, text)
+                    counts["facts"] += 1
+
+            mem_dir.mkdir(parents=True, exist_ok=True)
+            if counts["rules"]:
+                _write_entries(rules_path, "rule", rules)
+            # Facts last: their existence is what stops a re-run.
+            for scope in MEMORY_SCOPES:
+                _write_entries(facts_paths[scope], "fact", facts[scope])
+            for path, _kind, _scope in legacy:
+                try:
+                    os.replace(path, _legacy_target(path))
+                    counts["renamed"] += 1
+                except OSError as e:
+                    logger.warning("Could not rename %s after migrating it: %s", path.name, e)
+    except (OSError, RuntimeError) as e:
+        logger.warning("Legacy memory not migrated: %s", e)
+        return None
+    logger.info(
+        "Migrated legacy memory: %(rules)d rules, %(facts)d facts, %(overflow)d rules over "
+        "the cap filed as facts, %(duplicates)d duplicates skipped, %(renamed)d files renamed",
+        counts,
+    )
+    _kick_fact_index()
+    return counts
 
 
 def load_on_disk_store() -> "ScopedMemoryStore":

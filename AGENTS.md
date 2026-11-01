@@ -644,7 +644,11 @@ standing rules to make room, and RAG injected mostly old tool output.
 - **The wall**: `session_search` never lets a common caller find, list, read or scroll a
   gateway or chat-stamped session (`identity_readable_from` / `SessionWall` in
   `agent/rag.py`, one rule). A walled session reads as not found.
-- The legacy MEMORY*.md / USER*.md files are neither read nor written.
+- The legacy MEMORY*.md / USER*.md files are neither read nor written by the stores; the
+  one exception is `migrate_legacy_memory()` (called in `agent/agent_init.py` before the
+  prompt snapshot), which imports them once (USER* to rules, MEMORY* to facts, rules over
+  the cap spilling to facts) when a legacy file exists and no facts file does, then renames
+  them `*.legacy`; it touches nothing if a legacy file is unreadable or rules.toml does not parse.
 
 ## Cron (scheduled jobs)
 

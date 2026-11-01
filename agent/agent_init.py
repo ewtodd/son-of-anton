@@ -890,10 +890,18 @@ def init_agent(
                     _agent_cfg,
                     session_id=getattr(agent, "session_id", None),
                 )
+                from tools.memory_tool import migrate_legacy_memory
+
+                _limits = _store_limits(mem_config)
+                # One-time import of MEMORY*.md / USER*.md; must precede the snapshot.
+                try:
+                    migrate_legacy_memory(_limits["rules_char_limit"])
+                except Exception:
+                    logger.warning("Legacy memory migration failed", exc_info=True)
                 agent._memory_store = ScopedMemoryStore(
                     active_scope=agent._memory_scope,
                     memory_enabled=agent._memory_enabled,
-                    **_store_limits(mem_config),
+                    **_limits,
                 )
                 agent._memory_store.load_from_disk()
         except Exception:
