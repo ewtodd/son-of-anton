@@ -13,7 +13,7 @@ Nix only. MIT.
 
 ## Current state
 
-- **Deployed:** e-desktop's `/etc/nixos` pins `fe9d6755` (2026-10-16).
+- **Deployed:** e-workstation's `/etc/nixos` pins `2dae4044` (2026-11-01).
 - **On `main`, not yet deployed:** the purge of 2026-10-16/17. Removed:
   - Discord, Slack and the Nous relay connector;
   - every model provider but `custom`;
