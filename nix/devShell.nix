@@ -14,6 +14,9 @@
           # programmable completion (compgen/complete) for tests/test_shell_completion.py
           pkgs.bashInteractive
           package
+          # the Go daemon (daemon/)
+          pkgs.go
+          pkgs.gopls
         ]
         ++ package.passthru.devDeps;
 

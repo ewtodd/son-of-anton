@@ -1,0 +1,422 @@
+// Package store is the daemon's SQLite state: sessions, system prompts,
+// the message transcript and full-text search.
+package store
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+// ErrNotFound is returned when a session or prompt does not exist.
+var ErrNotFound = errors.New("store: not found")
+
+// Store is an open state database.
+type Store struct {
+	db *sql.DB
+}
+
+// Open opens (creating if needed) the SQLite database at path, enables WAL
+// and migrates it to the latest schema version.
+func Open(path string) (*Store, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: enabling WAL: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: setting busy_timeout: %w", err)
+	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Store{db: db}, nil
+}
+
+// Close closes the database.
+func (s *Store) Close() error { return s.db.Close() }
+
+// SchemaVersion returns the applied schema version.
+func (s *Store) SchemaVersion() (int, error) {
+	var v int
+	err := s.db.QueryRow("SELECT version FROM schema_version WHERE rowid = 1").Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return v, err
+}
+
+// migrations are applied in order; index i+1 is version i+1.
+var migrations = []string{
+	`CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version (version) VALUES (1);
+
+CREATE TABLE sessions (
+	id          TEXT PRIMARY KEY,
+	kind        TEXT NOT NULL,
+	parent_id   TEXT,
+	source      TEXT,
+	title       TEXT,
+	cwd         TEXT,
+	model       TEXT,
+	prompt_hash TEXT,
+	created     TEXT NOT NULL,
+	ended       TEXT
+);
+
+CREATE TABLE system_prompts (
+	hash TEXT PRIMARY KEY,
+	text TEXT NOT NULL
+);
+
+CREATE TABLE messages (
+	rowid        INTEGER PRIMARY KEY,
+	session_id   TEXT NOT NULL REFERENCES sessions(id),
+	seq          INTEGER NOT NULL,
+	role         TEXT NOT NULL,
+	content      TEXT NOT NULL DEFAULT '',
+	api_content  TEXT,
+	reasoning    TEXT,
+	tool_calls   TEXT,
+	tool_call_id TEXT,
+	tool_name    TEXT,
+	ts           TEXT NOT NULL,
+	UNIQUE (session_id, seq)
+);
+
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+	content,
+	content='messages',
+	content_rowid='rowid'
+);`,
+}
+
+func migrate(db *sql.DB) error {
+	current, err := appliedVersion(db)
+	if err != nil {
+		return err
+	}
+	for v := current + 1; v <= len(migrations); v++ {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(migrations[v-1]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("store: applying schema v%d: %w", v, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func appliedVersion(db *sql.DB) (int, error) {
+	var v int
+	err := db.QueryRow("SELECT version FROM schema_version WHERE rowid = 1").Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		// A fresh database has no schema_version table yet.
+		if strings.Contains(err.Error(), "no such table: schema_version") {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return v, nil
+}
+
+// Session is one stored conversation.
+type Session struct {
+	ID         string
+	Kind       string
+	ParentID   string
+	Source     string
+	Title      string
+	Cwd        string
+	Model      string
+	PromptHash string
+	Created    time.Time
+	Ended      time.Time
+}
+
+// newSessionID returns YYYYmmdd_HHMMSS_ plus six random hex chars (local
+// time).
+func newSessionID() (string, error) {
+	b := make([]byte, 3)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return time.Now().Format("20060102_150405") + "_" + hex.EncodeToString(b), nil
+}
+
+// CreateSession stores a new session, generating its ID and Created.
+func (s *Store) CreateSession(ctx context.Context, sess Session) (Session, error) {
+	for {
+		id, err := newSessionID()
+		if err != nil {
+			return Session{}, err
+		}
+		if sess.Created.IsZero() {
+			sess.Created = time.Now()
+		}
+		sess.ID = id
+		_, err = s.db.ExecContext(ctx,
+			`INSERT INTO sessions (id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sess.ID, sess.Kind, nullStr(sess.ParentID), nullStr(sess.Source), nullStr(sess.Title),
+			nullStr(sess.Cwd), nullStr(sess.Model), nullStr(sess.PromptHash),
+			formatTime(sess.Created), nullTime(sess.Ended))
+		if err == nil {
+			return sess, nil
+		}
+		if !strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return Session{}, err
+		}
+		// ID collision: draw a new one.
+	}
+}
+
+// Session loads one session by ID.
+func (s *Store) Session(ctx context.Context, id string) (Session, error) {
+	var (
+		sess     Session
+		parentID sql.NullString
+		source   sql.NullString
+		title    sql.NullString
+		cwd      sql.NullString
+		model    sql.NullString
+		hash     sql.NullString
+		created  sql.NullString
+		ended    sql.NullString
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended
+		 FROM sessions WHERE id = ?`, id).
+		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, ErrNotFound
+	}
+	if err != nil {
+		return Session{}, err
+	}
+	sess.ParentID = parentID.String
+	sess.Source = source.String
+	sess.Title = title.String
+	sess.Cwd = cwd.String
+	sess.Model = model.String
+	sess.PromptHash = hash.String
+	sess.Created, err = parseTime(created.String)
+	if err != nil {
+		return Session{}, err
+	}
+	if ended.Valid {
+		sess.Ended, err = parseTime(ended.String)
+		if err != nil {
+			return Session{}, err
+		}
+	}
+	return sess, nil
+}
+
+// PutPrompt stores a system prompt and returns its sha256 hex hash. The text
+// is stored only once, by hash.
+func (s *Store) PutPrompt(ctx context.Context, text string) (string, error) {
+	sum := sha256.Sum256([]byte(text))
+	hash := hex.EncodeToString(sum[:])
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO system_prompts (hash, text) VALUES (?, ?)`, hash, text); err != nil {
+		return "", err
+	}
+	return hash, nil
+}
+
+// Prompt returns the stored text for a prompt hash.
+func (s *Store) Prompt(ctx context.Context, hash string) (string, error) {
+	var text string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT text FROM system_prompts WHERE hash = ?`, hash).Scan(&text)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return text, err
+}
+
+// Message is one transcript row.
+type Message struct {
+	Seq        int64
+	Role       string
+	Content    string
+	APIContent string
+	Reasoning  string
+	ToolCalls  json.RawMessage
+	ToolCallID string
+	ToolName   string
+	TS         time.Time
+}
+
+// AppendMessages appends messages to a session's transcript in one
+// transaction, numbering them from 1 per session. It returns the assigned
+// seqs. Appending to an unknown session fails and writes nothing.
+func (s *Store) AppendMessages(ctx context.Context, sessionID string, msgs ...Message) ([]int64, error) {
+	if len(msgs) == 0 {
+		return nil, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var count int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sessions WHERE id = ?`, sessionID).Scan(&count); err != nil {
+		return nil, err
+	}
+	if count == 0 {
+		return nil, fmt.Errorf("store: unknown session %q", sessionID)
+	}
+
+	var nextSeq int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?`, sessionID).Scan(&nextSeq); err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	seqs := make([]int64, 0, len(msgs))
+	for i := range msgs {
+		nextSeq++
+		m := &msgs[i]
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO messages (session_id, seq, role, content, api_content, reasoning, tool_calls, tool_call_id, tool_name, ts)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			sessionID, nextSeq, m.Role, m.Content, nullStr(m.APIContent), nullStr(m.Reasoning),
+			nullStr(string(m.ToolCalls)), nullStr(m.ToolCallID), nullStr(m.ToolName), formatTime(now))
+		if err != nil {
+			return nil, err
+		}
+		rowid, err := res.LastInsertId()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO messages_fts (rowid, content) VALUES (?, ?)`, rowid, m.Content); err != nil {
+			return nil, err
+		}
+		m.Seq = nextSeq
+		seqs = append(seqs, nextSeq)
+	}
+	return seqs, tx.Commit()
+}
+
+// Messages returns the session's transcript in seq order.
+func (s *Store) Messages(ctx context.Context, sessionID string) ([]Message, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT seq, role, content, api_content, reasoning, tool_calls, tool_call_id, tool_name, ts
+		 FROM messages WHERE session_id = ? ORDER BY seq`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Message
+	for rows.Next() {
+		var (
+			m          Message
+			apiContent sql.NullString
+			reasoning  sql.NullString
+			toolCalls  sql.NullString
+			toolCallID sql.NullString
+			toolName   sql.NullString
+			ts         string
+		)
+		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &apiContent, &reasoning,
+			&toolCalls, &toolCallID, &toolName, &ts); err != nil {
+			return nil, err
+		}
+		m.APIContent = apiContent.String
+		m.Reasoning = reasoning.String
+		if toolCalls.Valid {
+			m.ToolCalls = json.RawMessage(toolCalls.String)
+		}
+		m.ToolCallID = toolCallID.String
+		m.ToolName = toolName.String
+		if m.TS, err = parseTime(ts); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// Hit is one search result.
+type Hit struct {
+	SessionID string
+	Seq       int64
+	Snippet   string
+}
+
+// Search full-text-searches message content.
+func (s *Store) Search(ctx context.Context, query string, limit int) ([]Hit, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT m.session_id, m.seq, snippet(messages_fts, 0, '«', '»', '…', 12)
+		 FROM messages_fts
+		 JOIN messages m ON m.rowid = messages_fts.rowid
+		 WHERE messages_fts MATCH ?
+		 ORDER BY rank
+		 LIMIT ?`, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Hit
+	for rows.Next() {
+		var h Hit
+		if err := rows.Scan(&h.SessionID, &h.Seq, &h.Snippet); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+func nullStr(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return formatTime(t)
+}
+
+func formatTime(t time.Time) string { return t.Format(time.RFC3339Nano) }
+
+func parseTime(s string) (time.Time, error) {
+	return time.Parse(time.RFC3339Nano, s)
+}

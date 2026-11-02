@@ -124,6 +124,15 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # Build the Go daemon (its check phase runs the Go contract tests)
+        # and smoke-run the binary.
+        build-soa-d = pkgs.runCommand "soa-d-build" { } ''
+          ${self'.packages.soa-d}/bin/soa-d version
+          echo "PASS: soa-d built and runs"
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
         # ── The NixOS module ─────────────────────────────────────────────
         nixos-module =
           let
