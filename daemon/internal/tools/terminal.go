@@ -40,7 +40,8 @@ func (terminalTool) Schema() provider.Tool {
     "command": {"type": "string", "description": "The shell command to run."},
     "timeout": {"type": "integer", "description": "Seconds to wait (default 180, max 600). Long-running work must use background=true."},
     "workdir": {"type": "string", "description": "Run in this directory for this call only; the session cwd is unchanged."},
-    "background": {"type": "boolean", "description": "Run in the background and return a session id (not available in this build)."}
+    "background": {"type": "boolean", "description": "Run in the background and return a session id; manage it with the process tool."},
+    "notify_on_complete": {"type": "boolean", "description": "With background: notify when the process exits."}
   },
   "required": ["command"]
 }`),
@@ -48,7 +49,8 @@ func (terminalTool) Schema() provider.Tool {
 }
 
 var (
-	trailingAmpRe = regexp.MustCompile(`(^|\s)&(\s|$)`)
+	// A command that ends in a lone & (not &&) backgrounds itself.
+	trailingAmpRe = regexp.MustCompile(`(^|[^&])&\s*$`)
 	// workdir is a plain path: no shell metacharacters allowed.
 	workdirRe = regexp.MustCompile(`^[A-Za-z0-9/._~@=,:-]+$`)
 	// ANSI escape sequences (CSI, OSC, other single-character escapes).
@@ -60,6 +62,7 @@ type terminalArgs struct {
 	Timeout    *int   `json:"timeout"`
 	Workdir    string `json:"workdir"`
 	Background bool   `json:"background"`
+	Notify     bool   `json:"notify_on_complete"`
 }
 
 func (terminalTool) Run(ctx context.Context, env *Env, args json.RawMessage) (string, error) {
@@ -80,9 +83,6 @@ func (terminalTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 	if timeout > terminalMaxTimeout {
 		return errorResult(fmt.Sprintf("foreground timeout is capped at %d seconds; long-running work must use background=true", terminalMaxTimeout)), nil
 	}
-	if a.Background {
-		return errorResult("background mode is not available in this build; run the command in the foreground"), nil
-	}
 	if a.Workdir != "" && !workdirRe.MatchString(a.Workdir) {
 		return errorResult("workdir must be a plain path (no shell metacharacters)"), nil
 	}
@@ -99,6 +99,9 @@ func (terminalTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 	if a.Workdir != "" {
 		cwd = a.Workdir
 	}
+	if a.Background {
+		return runBackground(env, cwd, a)
+	}
 	out, newCwd, code, done := runShell(ctx, env.State.SnapshotPath(), cwd, a.Command, timeout)
 	out = stripANSI(out)
 	out = strings.TrimSpace(out)
@@ -114,7 +117,7 @@ func (terminalTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 // refuseBackgrounding rejects commands that try to outlive the call.
 func refuseBackgrounding(command string) error {
 	if trailingAmpRe.MatchString(command) {
-		return fmt.Errorf("backgrounding with & is refused: run the command in the foreground, or use background mode when it is available")
+		return fmt.Errorf("backgrounding with & is refused: run the command in the foreground, or use background mode")
 	}
 	for _, seg := range strings.FieldsFunc(command, func(r rune) bool {
 		return r == ';' || r == '&' || r == '|' || r == '\n'

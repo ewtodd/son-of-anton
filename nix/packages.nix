@@ -22,7 +22,7 @@
         # use coreutils); the wrapper puts them on PATH at run time and the
         # check phase needs them too.
         nativeBuildInputs = [ pkgs.makeWrapper pkgs.bash pkgs.ripgrep pkgs.coreutils ];
-        nativeCheckInputs = [ pkgs.bash pkgs.ripgrep pkgs.coreutils ];
+        nativeCheckInputs = [ pkgs.bash pkgs.ripgrep pkgs.coreutils pkgs.git ];
 
         # The contract tests live in internal/*, which subPackages would skip
         # in the default check phase; test the whole module instead.

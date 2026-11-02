@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -112,6 +113,9 @@ type Client struct {
 	BaseURL string
 	APIKey  string
 	Retry   RetryPolicy
+	// IdleTimeout abandons an attempt when no byte arrives for this long,
+	// from sending the request to the end of the stream. Zero disables it.
+	IdleTimeout time.Duration
 
 	http *http.Client
 }
@@ -126,8 +130,28 @@ func New(baseURL, apiKey string) *Client {
 			BaseDelay:   500 * time.Millisecond,
 			MaxDelay:    8 * time.Second,
 		},
-		http: &http.Client{},
+		IdleTimeout: 10 * time.Minute,
+		http:        &http.Client{},
 	}
+}
+
+// errIdle is an attempt abandoned for silence; before any output reached the
+// caller it is retried like a connection error.
+var errIdle = errors.New("provider: no data from the model within the idle timeout")
+
+// idleReader resets the idle timer on every byte received.
+type idleReader struct {
+	r io.Reader
+	t *time.Timer
+	d time.Duration
+}
+
+func (i idleReader) Read(p []byte) (int, error) {
+	n, err := i.r.Read(p)
+	if n > 0 {
+		i.t.Reset(i.d)
+	}
+	return n, err
 }
 
 // wireRequest is the exact JSON body sent on the wire.
@@ -194,6 +218,24 @@ func (c *Client) Complete(ctx context.Context, req Request, onDelta func(Delta))
 // doOnce performs a single request and fully reads the stream. It reports
 // whether any delta reached onDelta and the Retry-After hint, if any.
 func (c *Client) doOnce(ctx context.Context, body []byte, onDelta func(Delta)) (*Response, bool, string, error) {
+	parent := ctx
+	var idled atomic.Bool
+	var timer *time.Timer
+	if c.IdleTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(parent)
+		defer cancel()
+		timer = time.AfterFunc(c.IdleTimeout, func() { idled.Store(true); cancel() })
+		defer timer.Stop()
+	}
+	resp, delivered, retryAfter, err := c.attempt(ctx, body, onDelta, timer, c.IdleTimeout)
+	if err != nil && idled.Load() && parent.Err() == nil {
+		err = errIdle
+	}
+	return resp, delivered, retryAfter, err
+}
+
+func (c *Client) attempt(ctx context.Context, body []byte, onDelta func(Delta), timer *time.Timer, idle time.Duration) (*Response, bool, string, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, false, "", err
@@ -215,7 +257,12 @@ func (c *Client) doOnce(ctx context.Context, body []byte, onDelta func(Delta)) (
 			retryAfter: resp.Header.Get("Retry-After"),
 		}
 	}
-	return parseStream(resp.Body, onDelta)
+	var rd io.Reader = resp.Body
+	if timer != nil {
+		timer.Reset(idle)
+		rd = idleReader{r: resp.Body, t: timer, d: idle}
+	}
+	return parseStream(rd, onDelta)
 }
 
 // sseChunk is one data: payload of the stream.
@@ -406,6 +453,9 @@ func retryable(err error) bool {
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+	if errors.Is(err, errIdle) {
+		return true
 	}
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {

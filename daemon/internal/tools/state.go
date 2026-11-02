@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 )
 
 // readStamp records what a read_file saw, so a later write_file can warn when
@@ -22,6 +23,10 @@ type State struct {
 	cwd     string
 	tempDir string
 	stamps  map[string]readStamp
+	closed  bool
+	procs   map[string]*bgProc
+	notes   []note
+	todos   []todoItem
 }
 
 // NewState creates the per-session state. The cwd need not exist yet.
@@ -34,7 +39,7 @@ func NewState(cwd string) (*State, error) {
 		_ = os.RemoveAll(dir)
 		return nil, err
 	}
-	return &State{cwd: cwd, tempDir: dir, stamps: map[string]readStamp{}}, nil
+	return &State{cwd: cwd, tempDir: dir, stamps: map[string]readStamp{}, procs: map[string]*bgProc{}}, nil
 }
 
 // Cwd is the session's current working directory.
@@ -71,11 +76,16 @@ func (s *State) SetReadStamp(path string, st readStamp) {
 	s.stamps[path] = st
 }
 
-// Close removes the session's private temp dir.
+// Close kills the session's background processes and removes its private temp
+// dir.
 func (s *State) Close() error {
 	s.mu.Lock()
 	dir := s.tempDir
 	s.tempDir = ""
+	s.closed = true
+	for _, p := range s.procs {
+		p.signal(syscall.SIGKILL)
+	}
 	s.mu.Unlock()
 	if dir == "" {
 		return nil

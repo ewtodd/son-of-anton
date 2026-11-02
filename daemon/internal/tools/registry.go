@@ -1,5 +1,5 @@
-// Package tools implements the daemon's five builtin tools: terminal,
-// read_file, write_file, patch and search_files. Results are JSON objects;
+// Package tools implements the daemon's builtin tools: terminal,
+// process, read_file, write_file, patch, search_files, todo and clarify. Results are JSON objects;
 // a tool reports failures as {"error": "..."} and reserves returned errors
 // for infrastructure failures the loop should surface.
 package tools
@@ -19,6 +19,11 @@ type Env struct {
 	Policy paths.Policy
 	Gate   *approval.Gate
 	State  *State
+	// Ask answers clarify questions; nil means nobody can answer.
+	Ask Questioner
+	// AsyncDelivery says whether a background completion notice can ever be
+	// delivered in this run.
+	AsyncDelivery bool
 }
 
 // Tool is one builtin tool.
@@ -64,14 +69,17 @@ func (r *Registry) Lookup(name string) (Tool, bool) {
 	return t, ok
 }
 
-// Builtin is the phase 1a tool set, in canonical order.
+// Builtin is the builtin tool set, in canonical order.
 func Builtin() []Tool {
 	return []Tool{
 		terminalTool{},
+		processTool{},
 		readFileTool{},
 		writeFileTool{},
 		patchTool{},
 		searchFilesTool{},
+		todoTool{},
+		clarifyTool{},
 	}
 }
 

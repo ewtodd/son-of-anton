@@ -25,6 +25,9 @@ type Config struct {
 		ReasoningEffort    any            `toml:"reasoning_effort"`
 		ReasoningOverrides map[string]any `toml:"reasoning_overrides"`
 	} `toml:"agent"`
+	Memory struct {
+		RulesCharLimit int `toml:"rules_char_limit"`
+	} `toml:"memory"`
 	Approvals struct {
 		Mode string `toml:"mode"`
 	} `toml:"approvals"`

@@ -40,6 +40,10 @@ type Runner struct {
 	Mode               approval.Mode
 	Approver           approval.Approver
 	Allowlist          approval.Allowlist
+	// AsyncDelivery says whether a background completion notice can ever be
+	// delivered in this run; Ask answers clarify (nil: nobody can).
+	AsyncDelivery bool
+	Ask           tools.Questioner
 }
 
 // NewSession builds the prompt (exactly once), stores it, and creates the
@@ -79,7 +83,21 @@ func (r *Runner) Resume(ctx context.Context, id string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return r.newSession(id, text, sess.Cwd)
+	s, err := r.newSession(id, text, sess.Cwd)
+	if err != nil {
+		return nil, err
+	}
+	stored, err := r.Store.Messages(ctx, id)
+	if err != nil {
+		_ = s.Close()
+		return nil, err
+	}
+	for i := len(stored) - 1; i >= 0; i-- {
+		if stored[i].Role == "tool" && stored[i].ToolName == "todo" && s.state.RestoreTodos(stored[i].Content) == nil {
+			break
+		}
+	}
+	return s, nil
 }
 
 func (r *Runner) newSession(id, prompt, cwd string) (*Session, error) {
@@ -112,8 +130,11 @@ type Session struct {
 // ID returns the session ID.
 func (s *Session) ID() string { return s.id }
 
-// Close releases the session's terminal state.
+// Close releases the session's tool state, killing its background processes.
 func (s *Session) Close() error { return s.state.Close() }
+
+// TakeNotifications drains the queued background completion notices.
+func (s *Session) TakeNotifications() []string { return s.state.TakeNotifications() }
 
 // Event is one streaming update.
 type Event struct {
@@ -127,7 +148,9 @@ type Event struct {
 type Result struct {
 	Content   string
 	Reasoning string
-	Usage     provider.Usage
+	// Usage sums every request of the turn; APICalls counts them.
+	Usage    provider.Usage
+	APICalls int
 }
 
 // Send runs one turn: the request is built from the stored transcript (the
@@ -142,6 +165,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 		return Result{}, err
 	}
 	msgs := buildStepMessages(s.prompt, stored, text)
+	var total Result
 	first := true
 	steps := 0
 	maxSteps := r.MaxSteps
@@ -177,8 +201,13 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			}
 		})
 		if err != nil {
-			return Result{}, err
+			return total, err
 		}
+		total.APICalls++
+		total.Usage.PromptTokens += resp.Usage.PromptTokens
+		total.Usage.CompletionTokens += resp.Usage.CompletionTokens
+		total.Usage.ReasoningTokens += resp.Usage.ReasoningTokens
+		total.Usage.CachedTokens += resp.Usage.CachedTokens
 		if len(resp.Message.ToolCalls) == 0 || req.ToolChoice == "none" {
 			assistant := store.Message{
 				Role:      "assistant",
@@ -186,9 +215,10 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 				Reasoning: resp.Reasoning,
 			}
 			if err := s.persistStep(ctx, text, first, assistant, nil); err != nil {
-				return Result{}, err
+				return total, err
 			}
-			return Result{Content: resp.Message.Content, Reasoning: resp.Reasoning, Usage: resp.Usage}, nil
+			total.Content, total.Reasoning = resp.Message.Content, resp.Reasoning
+			return total, nil
 		}
 		rows := s.runToolCalls(ctx, resp.Message.ToolCalls, onEvent, maxChars)
 		assistant := store.Message{
@@ -198,18 +228,18 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			ToolCalls: marshalToolCalls(resp.Message.ToolCalls),
 		}
 		if err := s.persistStep(ctx, text, first, assistant, rows); err != nil {
-			return Result{}, err
+			return total, err
 		}
 		first = false
 		steps++
 		if ctx.Err() != nil {
-			return Result{}, ctx.Err()
+			return total, ctx.Err()
 		}
 		// Rebuild from the store: the next request replays exactly what
 		// was persisted, byte for byte.
 		stored, err = r.Store.Messages(ctx, s.id)
 		if err != nil {
-			return Result{}, err
+			return total, err
 		}
 		msgs = buildStepMessages(s.prompt, stored, "")
 	}
@@ -219,7 +249,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 // remaining calls (each gets a cancellation result); the running call keeps
 // whatever its tool returned.
 func (s *Session) runToolCalls(ctx context.Context, calls []provider.ToolCall, onEvent func(Event), maxChars int) []store.Message {
-	env := &tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state}
+	env := &tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery}
 	rows := make([]store.Message, 0, len(calls))
 	for _, call := range calls {
 		if onEvent != nil {
