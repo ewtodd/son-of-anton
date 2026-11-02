@@ -207,3 +207,28 @@ func TestTheSameRequestSerializesToTheSameBytes(t *testing.T) {
 		t.Fatalf("bodies differ:\n%s\n%s", b[0], b[1])
 	}
 }
+
+func TestAToolCallAlwaysCarriesItsArguments(t *testing.T) {
+	fake := fakellm.New(t, fakellm.Turn{Content: "done"})
+	req := basicRequest()
+	req.Messages = append(req.Messages,
+		provider.Message{Role: "assistant", ToolCalls: []provider.ToolCall{{
+			ID: "c1", Type: "function",
+			Function: provider.FunctionCall{Name: "list_things", Arguments: ""},
+		}}},
+		provider.Message{Role: "tool", ToolCallID: "c1", Name: "list_things", Content: "[]"},
+	)
+	if _, err := client(fake).Complete(context.Background(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	if call := fake.Messages(0)[2]; !bytes.Contains(call, []byte(`"arguments":""`)) {
+		t.Fatalf("assistant tool call = %s; a call must always carry its arguments key", call)
+	}
+}
+
+func TestToolSchemasAreTyped(t *testing.T) {
+	tool := provider.Tool{Type: "function", Function: provider.ToolFunction{Name: "terminal"}}
+	if tool.Function.Name != "terminal" {
+		t.Fatalf("tool = %+v", tool)
+	}
+}

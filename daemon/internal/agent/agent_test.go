@@ -288,3 +288,20 @@ func TestTheRunnerSendsItsModelAndEffort(t *testing.T) {
 		t.Fatal("no effort configured: reasoning_effort must be omitted")
 	}
 }
+
+func TestThePromptBuilderSeesTheSessionItBuildsFor(t *testing.T) {
+	st := newStore(t)
+	fake := fakellm.New(t)
+	var seen store.Session
+	r := runner(st, fake, "sys", nil)
+	r.Prompt = func(_ context.Context, s store.Session) (string, error) {
+		seen = s
+		return "sys", nil
+	}
+	if _, err := r.NewSession(ctx, "child", "/repo"); err != nil {
+		t.Fatal(err)
+	}
+	if seen.Kind != "child" || seen.Cwd != "/repo" || seen.Model != "m" {
+		t.Fatalf("the prompt builder saw %+v; it needs the kind, cwd and model it builds for", seen)
+	}
+}
