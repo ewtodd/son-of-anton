@@ -160,6 +160,34 @@ The daemon is the only writer of `state.db`. Clients never open it.
   `agent/conversation_compaction.py`, `agent/context_compactor.py`,
   `agent/retry_utils.py`.
 
+### Prompt composition (owner, 2026-11-01)
+
+A delegated run should not carry the user's whole context: a worker the owner
+launches with `-z`, or a subagent, needs its task, not the user's memories.
+The Python fork only has `--ignore-rules`, which drops everything (including
+`AGENTS.md`) at once, and `-z` loads full memory by default.
+
+The system prompt is built from layers, in this order (most stable first, for
+the prefix cache):
+
+1. identity: `SOUL.md`, or a short default;
+2. tool and behavior guidance;
+3. project context files from the session's cwd (`AGENTS.md` and friends);
+4. memory rules for the session's scope.
+
+Per-turn recall rides the user message, never the system prompt.
+
+| session | layers | recall |
+|---|---|---|
+| `interactive`, `chat`, `worker`, `cron`, `-q` | 1-4 | yes |
+| `-z` | task prompt instead of 1, then 2-3 | no |
+| `child` (subagent) | its agent type's prompt instead of 1, then 2-3 | no |
+
+Flags on both `-q` and `-z`: `--system FILE` makes that file, verbatim, the
+whole system prompt (nothing is added); `--memory` / `--no-memory` override
+the default for layers 1, 4 and recall. Whatever is chosen is fixed for the
+session like any other prompt (invariant 1).
+
 ## 8. Tools (v1)
 
 Short schemas (the Python schemas trimmed in `85300ef3` are the starting
@@ -295,7 +323,8 @@ serving every instance until the last one migrates.
    schema v1, provider client against the fake server, a tool-less loop,
    `son-of-anton -q`.
 1. **Core tools and safety:** terminal/process, file tools, todo, clarify,
-   approvals and permission modes, `-z`.
+   approvals and permission modes, `-z`, and the prompt composition of
+   section 7 (layers, per-kind defaults, `--system`, `--memory`).
 2. **Protocol and TUI:** socket API, attach/replay, events; the Textual
    client replaces `backend.py`; the slash commands in use (`/model`,
    `/reasoning`, `/commit`, `/resume`, `/sessions`, `/new`, `/stop`,
