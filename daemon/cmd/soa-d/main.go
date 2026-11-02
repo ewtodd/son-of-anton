@@ -155,7 +155,7 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 			}
 			r, err := prompt.Build(prompt.Options{
 				Home: home, Cwd: s.Cwd, Scope: "common", Memory: o.memory,
-				Now: time.Now(), RulesCharLimit: cfg.Memory.RulesCharLimit,
+				Now: time.Now().In(localZone()), RulesCharLimit: cfg.Memory.RulesCharLimit,
 			})
 			for _, w := range r.Warnings {
 				fmt.Fprintf(stderr, "soa-d: %s\n", w)
@@ -279,6 +279,26 @@ func userHome() string {
 		return h
 	}
 	return ""
+}
+
+// localZone is time.Local with its zone name, which time.Local alone prints
+// as "Local": TZ, else the zoneinfo path /etc/localtime points at. Without
+// either, time.Local.
+func localZone() *time.Location {
+	name := strings.TrimPrefix(os.Getenv("TZ"), ":")
+	if name == "" {
+		if p, err := filepath.EvalSymlinks("/etc/localtime"); err == nil {
+			if i := strings.LastIndex(p, "zoneinfo/"); i >= 0 {
+				name = p[i+len("zoneinfo/"):]
+			}
+		}
+	}
+	if name != "" {
+		if loc, err := time.LoadLocation(name); err == nil {
+			return loc
+		}
+	}
+	return time.Local
 }
 
 // queryMode resolves the permission mode for a run: --yolo wins, otherwise

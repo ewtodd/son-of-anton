@@ -77,9 +77,25 @@ func Build(o Options) (Result, error) {
 	if rules != "" {
 		layers = append(layers, rules)
 	}
-	layers = append(layers, fmt.Sprintf("Conversation started: %s (%s)", o.Now.Format("Monday, January 2, 2006"), o.Now.Location()))
+	layers = append(layers, fmt.Sprintf("Conversation started: %s (%s)", o.Now.Format("Monday, January 2, 2006"), zoneSuffix(o.Now)))
 	res.Text = strings.Join(layers, "\n\n")
 	return res, nil
+}
+
+// zoneSuffix names Now's zone as the Python does: the zone name, the
+// abbreviation when it differs, and the UTC offset, so the model never has
+// to guess between standard and daylight time. An unnamed local zone
+// ("Local") gives only the abbreviation and the offset.
+func zoneSuffix(t time.Time) string {
+	var bits []string
+	name := t.Location().String()
+	if name != "Local" {
+		bits = append(bits, name)
+	}
+	if abbrev, _ := t.Zone(); abbrev != "" && abbrev != name {
+		bits = append(bits, abbrev)
+	}
+	return strings.Join(append(bits, "UTC"+t.Format("-07:00")), ", ")
 }
 
 type rule struct {
