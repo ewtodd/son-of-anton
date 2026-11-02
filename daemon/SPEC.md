@@ -180,13 +180,20 @@ Per-turn recall rides the user message, never the system prompt.
 | session | layers | recall |
 |---|---|---|
 | `interactive`, `chat`, `worker`, `cron`, `-q` | 1-4 | yes |
-| `-z` | task prompt instead of 1, then 2-3 | no |
-| `child` (subagent) | its agent type's prompt instead of 1, then 2-3 | no |
+| `-z` | task prompt instead of 1, then 2-3, then delegated rules | no |
+| `child` (subagent) | its agent type's prompt instead of 1, then 2-3, then delegated rules | no |
+
+**Delegated rules (owner, 2026-11-01).** A few rules are guards for anything
+that runs commands on the owner's machines ("never rm user files", "never
+regenerate e-workstation's keys"), not preferences about working with the
+owner. A rule with `delegated = true` is kept in the lean prompts above, so a
+worker carries the guards without the rest of the user's context. Facts and
+recall are never part of a lean prompt.
 
 Flags on both `-q` and `-z`: `--system FILE` makes that file, verbatim, the
-whole system prompt (nothing is added); `--memory` / `--no-memory` override
-the default for layers 1, 4 and recall. Whatever is chosen is fixed for the
-session like any other prompt (invariant 1).
+whole system prompt (nothing is added, not even delegated rules); `--memory` /
+`--no-memory` override the default for layers 1, 4 and recall. Whatever is
+chosen is fixed for the session like any other prompt (invariant 1).
 
 ## 8. Tools (v1)
 
@@ -238,6 +245,10 @@ and never called once; do not port it.
   `tools/approval.py`; keep the approval UX (TUI modal, Signal `/approve <id>`
   / `/deny <id>`).
 - Approvals are durable rows: the first answer from any driver wins.
+- **Nobody to ask means deny** (owner, 2026-11-01): `-q` and `-z` have no one
+  to answer an approval, so a dangerous command is denied with a reason the
+  model sees, unless the run was started with `--yolo`. The Python fork's `-z`
+  silently auto-approves everything; that is not carried over.
 
 ## 11. Memory and recall
 
@@ -248,6 +259,12 @@ TOML with ids, scopes `common` and `gateway`, rule changes always approved,
 facts retrieved per turn with a keyword fallback, notes indexed by scope,
 conversation text indexed for `session_search` only, the wall. Embeddings
 come from maitred; cosine scan in Go over facts and notes per turn.
+
+One addition: a rule may carry `delegated = true` (default false), which keeps
+it in lean prompts (section 7). The rules loader, the Nix `memoryRules` /
+`memoryRulesFile` validation and the rules merge must all accept the field; the
+Python fork's merge rejects unknown keys, so rules are tagged only once soa-d's
+merge is the one running.
 
 ## 12. Signal, fiona and the relay
 
