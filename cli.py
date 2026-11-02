@@ -1,6 +1,6 @@
 """
-Son of Anton Agent CLI — SonOfAntonCLI, the session/agent half behind the
-Textual TUI (son_of_anton_tui.backend.TextualBackend) and single-query mode.
+Son of Anton Agent CLI — SonOfAntonCLI, the Python agent behind single-query mode
+(chat -Q, the gateway's relay workers). The interactive TUI is a client of soa-d.
 
 Entered through ``son-of-anton`` (son_of_anton_cli.main), never directly.
 """
@@ -9864,6 +9864,62 @@ class SonOfAntonCLI(CLIAgentSetupMixin, CLICommandsMixin):
 # Main Entry Point
 # ============================================================================
 
+class QuietCLI(SonOfAntonCLI):
+    """SonOfAntonCLI with no screen: the streaming and repaint seams that the
+    interactive front-end used to supply are no-ops. It serves the single-query
+    paths (``chat -Q``, the gateway's relay workers), which print only the final
+    response; streamed text, reasoning and tool progress have no one to show to.
+    """
+
+    def _emit_stream_text(self, text: str) -> None:
+        pass
+
+    def _flush_stream(self) -> None:
+        self._stream_buf = ""
+
+    def _stream_reasoning_delta(self, text: str) -> None:
+        if text:
+            self._reasoning_shown_this_turn = True
+
+    def _close_reasoning_box(self) -> None:
+        pass
+
+    def _emit_reasoning_preview(self, reasoning_text: str) -> None:
+        pass
+
+    def _on_tool_gen_start(self, tool_name: str) -> None:
+        pass
+
+    def _on_tool_progress(self, event_type: str, function_name: str = None, preview: str = None,
+                          function_args: dict = None, **kwargs) -> None:
+        if event_type == "tool.completed":
+            try:
+                self._turn_summary_record(function_name, kwargs.get("result"), kwargs.get("is_error", False))
+            except Exception:
+                pass
+
+    def _render_compaction_summary(self, summary: str, stats=None) -> None:
+        pass
+
+    def _on_thinking(self, text: str) -> None:
+        self._spinner_text = text or ""
+
+    def _paint_now(self) -> None:
+        pass
+
+    def _invalidate(self, min_interval: float = 0.25) -> None:
+        pass
+
+    def _force_full_redraw(self) -> None:
+        pass
+
+    def _capture_modal_input_snapshot(self) -> None:
+        pass
+
+    def _restore_modal_input_snapshot(self) -> None:
+        pass
+
+
 def main(
     query: str = None,
     image: str = None,
@@ -9991,12 +10047,9 @@ def main(
         from son_of_anton_cli.tools_config import _get_platform_tools
         toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
-    # Create CLI instance. Textual is the one interactive front-end
-    # (son_of_anton_tui.backend.TextualBackend subclasses SonOfAntonCLI), so
-    # every option below applies to it unchanged.
-    from son_of_anton_tui.backend import TextualBackend
-
-    cli = TextualBackend(
+    # Create the CLI instance. It serves the single-query paths (-Q, relay
+    # workers); the interactive TUI is a client of soa-d and never gets here.
+    cli = QuietCLI(
         model=model,
         toolsets=toolsets_list,
         provider=provider,
@@ -10009,9 +10062,6 @@ def main(
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
     )
-    # ``son-of-anton --pickup``: the TUI picks the session up as it starts.
-    cli._relay_pickup_on_start = bool(pickup) and not (query or image)
-
     # Join the background worktree creation (started above) before anything
     # consumes TERMINAL_CWD / wt_info — the SonOfAntonCLI construction it
     # overlapped with is done. Setup failure keeps the old abort semantics.
@@ -10277,7 +10327,6 @@ def main(
             _finalize_single_query(cli)
         return
     
-    # Run the interactive front-end
-    from son_of_anton_tui.tui import run_app as _run_textual_app
-
-    _run_textual_app(cli)
+    # Interactive use is the Textual TUI on soa-d (son_of_anton_cli/main.py).
+    print("Error: the interactive TUI runs on soa-d; start it with `son-of-anton`.", file=sys.stderr)
+    sys.exit(1)

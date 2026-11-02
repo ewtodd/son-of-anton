@@ -927,6 +927,155 @@ def _resolve_continue_arg(args) -> None:
                 )
 
 
+# Flags with no meaning on soa-d: (attribute, display name, "set" test).
+_DAEMON_UNSUPPORTED = (
+    ("toolsets", "-t/--toolsets"),
+    ("worktree", "-w/--worktree"),
+    ("pickup", "--pickup"),
+    ("no_restore_cwd", "--no-restore-cwd"),
+    ("pass_session_id", "--pass-session-id"),
+    ("ignore_user_config", "--ignore-user-config"),
+    ("ignore_rules", "--ignore-rules"),
+    ("safe_mode", "--safe-mode"),
+    ("image", "--image"),
+    ("verbose", "-v/--verbose"),
+    ("source", "--source"),
+    ("max_turns", "--max-turns"),
+    ("run_budget", "--run-budget"),
+    ("create_if_missing", "--create-if-missing"),
+)
+
+
+def _daemon_flag_error(name: str, why: str = "has no meaning on soa-d") -> None:
+    print(f"son-of-anton: {name} {why}", file=sys.stderr)
+    sys.exit(2)
+
+
+def _daemon_provider_check(args, home: str) -> None:
+    """--provider is accepted when it names the configured provider."""
+    wanted = getattr(args, "provider", None)
+    if not wanted:
+        return
+    try:
+        import tomllib
+
+        with open(os.path.join(home, "config.toml"), "rb") as fh:
+            configured = (tomllib.load(fh).get("model") or {}).get("provider")
+    except (OSError, ValueError):
+        configured = None
+    if wanted != configured:
+        _daemon_flag_error("--provider", f"{wanted!r} is not the configured provider ({configured or 'none'})")
+
+
+def _daemon_exec(home: str, argv: list) -> None:
+    import shutil
+
+    binary = os.environ.get("SOA_D_BIN") or shutil.which("soa-d")
+    if not binary:
+        print("son-of-anton: soa-d is not installed (not on PATH, and SOA_D_BIN is unset)", file=sys.stderr)
+        sys.exit(1)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(binary, [binary, *argv])
+
+
+def _route_to_daemon(args) -> None:
+    """Send the invocation to soa-d when it belongs there.
+
+    Returns (staying on the Python agent) only for ``chat -Q`` and for ``-q`` /
+    ``--query-file`` with ``--resume``: the gateway's relay workers. Otherwise
+    it never returns: ``-z`` and ``-q`` exec ``soa-d oneshot`` / ``soa-d query``
+    and the interactive launch runs the Textual TUI on the daemon.
+    """
+    command = getattr(args, "command", None)
+    if command not in (None, "chat"):
+        return
+    oneshot = getattr(args, "oneshot", None)
+    query = getattr(args, "query", None)
+    query_file = getattr(args, "query_file", None)
+    resume = getattr(args, "resume", None)
+    continue_last = getattr(args, "continue_last", None)
+    if getattr(args, "quiet", False):
+        return
+    if (query or query_file) and not oneshot and resume:
+        return
+
+    home = str(get_son_of_anton_home())
+    for attr, name in _DAEMON_UNSUPPORTED:
+        if getattr(args, attr, None):
+            _daemon_flag_error(name)
+    if getattr(args, "in_dir", None) and (oneshot or query or query_file):
+        _daemon_flag_error("--in", "has no meaning with -q/-z")
+    if (oneshot or query or query_file) and (resume or continue_last):
+        _daemon_flag_error("--resume/--continue", "has no meaning with -q/-z")
+    if getattr(args, "usage_file", None) and not oneshot:
+        _daemon_flag_error("--usage-file", "only works with -z")
+    _daemon_provider_check(args, home)
+
+    common = ["--home", home]
+    if getattr(args, "model", None):
+        common += ["--model", args.model]
+    if getattr(args, "reasoning", None):
+        common += ["--reasoning", args.reasoning]
+    if getattr(args, "yolo", False):
+        common.append("--yolo")
+
+    if oneshot:
+        argv = ["oneshot", *common]
+        if getattr(args, "usage_file", None):
+            argv += ["--usage-file", args.usage_file]
+        _daemon_exec(home, [*argv, oneshot])
+    if query_file:
+        try:
+            if query_file == "-":
+                query = sys.stdin.read()
+            else:
+                with open(query_file, "r", encoding="utf-8", errors="replace") as fh:
+                    query = fh.read()
+        except OSError as exc:
+            print(f"Error: cannot read --query-file {query_file}: {exc}", file=sys.stderr)
+            sys.exit(2)
+        if not (query or "").strip():
+            print(f"Error: --query-file {query_file} is empty", file=sys.stderr)
+            sys.exit(2)
+    if query:
+        _daemon_exec(home, ["query", *common, query])
+
+    # Interactive.
+    if isinstance(continue_last, str):
+        _daemon_flag_error("-c NAME", "(resume by name) has no meaning on soa-d; use -c or --resume ID")
+    if isinstance(resume, str) and resume.strip().startswith("@"):
+        _daemon_flag_error("--resume " + resume.strip(), "has no meaning on soa-d")
+    want_latest = bool(continue_last) or (isinstance(resume, str) and resume.strip().lower() == "latest")
+    resume_id = None if want_latest else resume
+    cwd = os.getcwd()
+    in_dir = getattr(args, "in_dir", None)
+    if in_dir:
+        cwd = os.path.abspath(os.path.expanduser(in_dir))
+        if not os.path.isdir(cwd):
+            print(f"Error: --in directory not found: {in_dir}", file=sys.stderr)
+            sys.exit(1)
+    try:
+        from son_of_anton_cli.config import load_config
+        from son_of_anton_cli.skin_engine import init_skin_from_config
+
+        init_skin_from_config(load_config())
+    except Exception:
+        pass
+    from son_of_anton_tui.backend import DaemonBackend
+    from son_of_anton_tui.tui import run_app
+
+    backend = DaemonBackend(
+        home=home, cwd=cwd, resume=resume_id, continue_last=want_latest,
+        model=getattr(args, "model", None), yolo=bool(getattr(args, "yolo", False)),
+        reasoning=getattr(args, "reasoning", None),
+    )
+    if not backend.start():
+        sys.exit(1)
+    run_app(backend)
+    sys.exit(0)
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     _apply_safe_mode(args)
@@ -964,20 +1113,6 @@ def cmd_chat(args):
 
     # Resolve --continue into --resume with the latest session or by name
     _resolve_continue_arg(args)
-
-    # --pickup: resume the session most recently handed off or relayed from
-    # the messaging chat; the TUI ends the relaying as it starts. A headless
-    # worker mid-turn on it yields first, and the TUI continues its turn.
-    if getattr(args, "pickup", False):
-        if getattr(args, "query", None) or getattr(args, "query_file", None):
-            print("Error: --pickup opens the TUI; it does not take a query.")
-            sys.exit(2)
-        from son_of_anton_cli.relay_host import resolve_pickup
-
-        _picked = resolve_pickup()
-        if not _picked:
-            sys.exit(1)
-        args.resume = _picked
 
     # --resume @claude / @codex / @opencode: import a foreign session and
     # resume the newly created Son of Anton session.
@@ -1333,9 +1468,9 @@ def cmd_problem(args, parser=None):
 # skip a real positional.
 _TOP_LEVEL_VALUE_FLAGS = frozenset(
     {
-        "-z", "--oneshot",
+        "-z", "--oneshot", "-q", "--query", "--query-file",
         "-m", "--model",
-        "--provider",
+        "--provider", "--reasoning",
         "-t", "--toolsets",
         "-r", "--resume",
         "--usage-file",
@@ -1544,12 +1679,12 @@ def _try_fast_chat_launch() -> bool:
     if getattr(args, "command", None) not in {None, "chat"}:
         return False
 
+    # soa-d takes everything but chat -Q and the relay workers' resumed queries.
+    _route_to_daemon(args)
+
     if getattr(args, "yolo", False):
         os.environ["SON_OF_ANTON_YOLO_MODE"] = "1"
     _prepare_agent_startup(args)
-
-    if getattr(args, "oneshot", None):
-        _run_and_exit_oneshot_args(args)
 
     if (args.resume or args.continue_last) and args.command is None:
         args.command = "chat"
@@ -2365,6 +2500,10 @@ def main():
     # import time (PR #7994, security hardening against prompt-injection).
     # If the env var is set only later (e.g. inside cmd_chat), the frozen
     # value is already False and --yolo silently does nothing.
+    # -z, -q and the interactive launch belong to soa-d (see _route_to_daemon).
+    if args.command in (None, "chat"):
+        _route_to_daemon(args)
+
     if getattr(args, "yolo", False):
         os.environ["SON_OF_ANTON_YOLO_MODE"] = "1"
 
@@ -2372,11 +2511,6 @@ def main():
     # introspection commands (cron list, gateway status, mcp list, ...) don't
     # pay for it.
     _prepare_agent_startup(args)
-
-    # Handle top-level --oneshot / -z: single-shot mode, stdout = final
-    # response only, nothing else. Bypasses cli.py entirely.
-    if getattr(args, "oneshot", None):
-        _run_and_exit_oneshot_args(args)
 
     # Handle top-level --resume / --continue as shortcut to chat
     if (args.resume or args.continue_last) and args.command is None:

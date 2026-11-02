@@ -4,10 +4,6 @@
   perSystem =
     { pkgs, system, lib, ... }:
     let
-      package = pkgs.callPackage ./son-of-anton.nix {
-        inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
-      };
-
       # The Go daemon. Only daemon/ is the source, so Python changes never
       # rebuild it. Pure Go (CGO off); tests run in the check phase.
       soa-d = pkgs.buildGoModule rec {
@@ -38,6 +34,12 @@
         '';
 
         vendorHash = "sha256-BUcU0XPJRLUo4/ncM5iQ3F4w9MIqagMvDeLGtQlvDzY=";
+      };
+
+      package = pkgs.callPackage ./son-of-anton.nix {
+        inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
+        # on the wrapper PATH: `son-of-anton` (TUI, -q, -z) runs on the daemon
+        inherit soa-d;
       };
     in
     {

@@ -16,7 +16,6 @@ import os
 import sqlite3
 import subprocess
 import sys
-import threading
 import time
 import types
 
@@ -277,53 +276,3 @@ def test_an_orphaned_handover_goes_back_to_the_chat(db, procs, monkeypatch) -> N
     monkeypatch.setattr(relay_workers, "start_run", _fake_start)
     asyncio.run(relay_workers.sweep_tui_hosts(_runner(db)))
     assert started == [(SID, ["waiting"])]
-
-
-# ── the terminal waits ───────────────────────────────────────────────────
-
-
-def test_the_terminal_waits_for_the_worker_and_notices_a_crash(db, procs) -> None:
-    from son_of_anton_cli.relay_host import take_back
-
-    worker = procs()
-    _worker_running(db, worker)
-    db.append_message(SID, "user", "go")
-    db.append_message(SID, "assistant", "", tool_calls=[{
-        "id": "c1", "type": "function",
-        "function": {"name": "terminal", "arguments": '{"command": "make test"}'},
-    }])
-    said: list = []
-    box: dict = {}
-    thread = threading.Thread(
-        target=lambda: box.setdefault("outcome", take_back(db, SID, os.getpid(), say=said.append,
-                                                            poll_s=0.05)),
-        daemon=True,
-    )
-    thread.start()
-    time.sleep(0.5)
-    assert thread.is_alive(), "it waits while the worker runs"
-    assert any("terminal (make test)" in line for line in said), "and says what is running"
-    _end(worker)  # it dies without ever yielding
-    thread.join(10)
-    assert box["outcome"] == "taken"
-
-
-def test_giving_up_the_wait_leaves_the_worker_running(db, procs) -> None:
-    from son_of_anton_cli.relay_host import take_back
-
-    worker = procs()
-    _worker_running(db, worker)
-    stop = threading.Event()
-    box: dict = {}
-    thread = threading.Thread(
-        target=lambda: box.setdefault("outcome", take_back(db, SID, os.getpid(), say=lambda _t: None,
-                                                            stop=stop, poll_s=0.05)),
-        daemon=True,
-    )
-    thread.start()
-    time.sleep(0.3)
-    stop.set()
-    thread.join(10)
-    assert box["outcome"] == "cancelled"
-    binding = db.get_relay_binding(SID)
-    assert binding["live"] and binding["host_pid"] == worker.pid and binding["yield_pid"] is None

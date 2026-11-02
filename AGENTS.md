@@ -264,13 +264,14 @@ never routed — it comes from the normal resolution chain and `/model`.
 ## CLI Architecture (cli.py)
 
 `cli.py` is the `SonOfAntonCLI` class (the agent-orchestration half) plus the
-`main()` entry point. The interactive front-end is Textual (see
-[Interface](#interface)); `main()` builds a `TextualBackend` (which
-subclasses `SonOfAntonCLI`), so every CLI option applies to it unchanged.
+`main()` entry point, which now serves only the single-query paths (`chat -Q`,
+the gateway's relay workers) on the Python agent. The interactive front-end is
+Textual (see [Interface](#interface)) and a client of the soa-d daemon;
+`son_of_anton_cli/main.py` routes the interactive launch, `-q` and `-z` to it
+(`_route_to_daemon`).
 
-- `main()` (bottom of `cli.py`) parses flags, builds the `TextualBackend`,
-  then either runs a single query (no front-end) or hands the backend to
-  `son_of_anton_tui.tui.run_app()`.
+- `main()` (bottom of `cli.py`) parses flags and builds a `QuietCLI` (a
+  `SonOfAntonCLI` with no screen) for the single query.
 - **Rich** is still used for the single-query path: `ChatConsole` and
   `show_banner()` (what `/clear` prints) render through it. The interactive
   TUI renders through Textual widgets, not Rich.
@@ -333,10 +334,12 @@ fallback: if Textual will not start, nothing interactive starts. Single-query mo
   `@` references (checked against `agent.context_references`' parser) and,
   on Tab only, file paths. Tab never moves focus off the prompt; history shows
   as ghost text (`PromptHistory.suggest`, → accepts).
-- `son_of_anton_tui/backend.py` — `TextualBackend(SonOfAntonCLI)`: owns the
-  session state, routes slash commands to `process_command()`, and bridges the
-  agent loop into the TUI. `_apply_tui_skin_style()` re-resolves the palette
-  after `/skin`.
+- `son_of_anton_tui/daemon.py` — the soa-d protocol client (socket, hello,
+  autostart, calls, events).
+- `son_of_anton_tui/backend.py` — `DaemonBackend`: attaches one soa-d session as
+  driver, turns daemon events into the app's typed events, and handles every
+  slash command itself (those soa-d lacks say so). `daemon/phases/02b-tui-client.md`
+  is the spec.
 - The layout is a deliberate port of [opencode](https://github.com/sst/opencode)'s
   session route (its TUI is the nicest in the category, and open source). The
   design is theirs; the code is a from-scratch Textual port. See

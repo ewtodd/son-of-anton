@@ -1,41 +1,37 @@
-"""The Textual backend: ``SonOfAntonCLI`` with every output hook redirected.
+"""The Textual TUI's backend: a client of the soa-d daemon.
 
-The prompt_toolkit CLI (``cli.SonOfAntonCLI``) owns the whole agent lifecycle —
-credentials, routing, session persistence, slash commands, interrupts, the
-approval / clarify / sudo / secret prompts.  None of that is UI, so the Textual
-front-end reuses it wholesale instead of re-deriving it.
-
-``TextualBackend`` is that class with the *rendering* seams overridden:
-
-* streamed tokens, reasoning, tool lifecycle → typed events for the app;
-* ``_cprint`` / ``ChatConsole`` / ``self.console`` / bare ``print`` → the feed;
-* modal prompts keep their queue-based contract (the agent thread blocks on a
-  ``response_queue``) — the app watches the ``_*_state`` dicts and answers them
-  through the same queues the prompt_toolkit key bindings used;
-* the few stdin fallbacks (``_prompt_text_input``, curses pickers, the secret
-  prompt) become queue-based too, so nothing ever reads the raw terminal while
-  Textual owns it.
-
-Everything model-facing (system prompt, toolsets, history) is untouched — the
-backend is a pure view layer, so per-conversation prompt caching is preserved.
+``DaemonBackend`` owns one attached session. It turns the daemon's events
+(daemon/phases/02a-server.md) into the typed events the app renders
+(``SonOfAntonTUIApp._ev_*``), and the app's actions into protocol calls.
+Slash commands are handled here; none reaches the Python CLI.
 """
 
 from __future__ import annotations
 
-import logging
-import queue
+import json
+import os
+import re
+import sys
 import threading
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Optional
 
-import cli as _cli
-from cli import SonOfAntonCLI
-from son_of_anton_cli.relay_host import RelayHostMixin
-
-_MODAL_TIMEOUT = 120.0
+from son_of_anton_tui import daemon as _daemon
 
 # The cycle shift+tab walks. Same set and spelling as ``/perm``.
 PERMISSION_MODES = ("default", "ask", "lockdown", "yolo")
+
+INTERRUPTED_TEXT = "[response interrupted]"
+FAILED_TEXT = "[response failed]"
+NOT_IN_SOAD = "session {id} is not in soa-d (Python sessions are imported in phase 8)"
+
+# Canonical names of the commands this client handles (the rest say so).
+SUPPORTED = (
+    "model", "reasoning", "perm", "new", "clear", "resume", "sessions", "commit",
+    "stop", "sendnow", "sendall", "cancel", "status", "help", "skin", "quit",
+)
 
 
 class Sink:
@@ -45,950 +41,760 @@ class Sink:
         raise NotImplementedError
 
     def run_with_terminal(self, fn: Callable[[], Any]) -> Any:  # pragma: no cover - protocol
-        """Run ``fn`` with the raw terminal handed back to it."""
         raise NotImplementedError
 
 
-class _SinkStream:
-    """A line-buffered file-like that turns Rich console output into events."""
+def looks_like_command(text: str) -> bool:
+    """A slash command, not a pasted path (``/usr/bin/x`` has more slashes)."""
+    if not text or text[0] not in "/:":
+        return False
+    words = text.split()
+    if not words:
+        return False
+    if text[0] == ":":
+        from son_of_anton_cli.commands import resolve_command
 
-    def __init__(self, backend: "TextualBackend", *, stderr: bool = False) -> None:
-        self._backend = backend
-        self._stderr = stderr
-        self._buf = ""
-
-    def write(self, text: str) -> int:
-        if not text:
-            return 0
-        self._buf += text
-        while "\n" in self._buf:
-            line, self._buf = self._buf.split("\n", 1)
-            self._backend.emit("ansi", text=line, stderr=self._stderr)
-        return len(text)
-
-    def flush(self) -> None:
-        if self._buf:
-            self._backend.emit("ansi", text=self._buf, stderr=self._stderr)
-            self._buf = ""
-
-    def isatty(self) -> bool:
-        return True
-
-    def fileno(self) -> int:
-        raise OSError("sink stream has no fileno")
+        return resolve_command(words[0]) is not None
+    return "/" not in words[0][1:]
 
 
-def _looks_like_rule(text: str) -> bool:
-    """True for the ``────`` separator the CLI prints around each turn."""
-    stripped = text.strip()
-    return bool(stripped) and set(stripped) <= {"─", "━", "-"}
+def tool_summary(name: str, arguments: Any) -> str:
+    """One line for a tool call, as the daemon's ``summary`` (history rows)."""
+    try:
+        args = json.loads(arguments) if isinstance(arguments, str) else dict(arguments or {})
+    except (ValueError, TypeError):
+        args = {}
+    if not isinstance(args, dict):
+        args = {}
+    pick = {
+        "terminal": "command", "read_file": "path", "write_file": "path", "patch": "path",
+        "search_files": "pattern", "clarify": "question",
+    }.get(name)
+    text = str(args.get(pick, "")) if pick else ""
+    if not text:
+        raw = arguments if isinstance(arguments, str) else json.dumps(args)
+        text = raw or name
+    text = " ".join(text.split())
+    return text[:120]
 
 
-class TextualBackend(RelayHostMixin, SonOfAntonCLI):
-    """``SonOfAntonCLI`` whose output seams feed a Textual app.
+def _parse_time(value: Any) -> Optional[float]:
+    if not value:
+        return None
+    s = str(value).strip().replace("Z", "+00:00")
+    s = re.sub(r"(\.\d{6})\d+", r"\1", s)
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
-    It is also what ``/handoff`` makes the host of a relayed session
-    (son_of_anton_cli/relay_host.py).
-    """
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+def _compact_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h" if hours else f"{days}d"
+
+
+def _preview(text: str, room: int = 100) -> str:
+    preview = " ".join(str(text).split())
+    return preview if len(preview) <= room else preview[: room - 1] + "…"
+
+
+def _result_is_error(content: Any) -> bool:
+    try:
+        obj = json.loads(content) if isinstance(content, str) else content
+    except ValueError:
+        return False
+    return isinstance(obj, dict) and bool(obj.get("error"))
+
+
+class DaemonBackend:
+    def __init__(self, home: str, cwd: str, *, resume: Optional[str] = None,
+                 continue_last: bool = False, model: Optional[str] = None, yolo: bool = False,
+                 reasoning: Optional[str] = None) -> None:
+        self.home = str(home)
+        self.cwd = str(cwd)
+        self._resume = resume
+        self._continue_last = continue_last
+        self._model = model
+        self._yolo = yolo
+        self._reasoning = reasoning
+        self.session_id: Optional[str] = None
+        self.session: dict = {}
+        self.role = "driver"
+        self.provider = ""
+        self._history_file = Path(self.home) / ".son_of_anton_history"
+        self._client: Optional[_daemon.Client] = None
         self._sink: Optional[Sink] = None
-        # Startup work (credential checks, the tirith warning) emits before the
-        # app has mounted. Hold those instead of dropping them.
-        self._pending_events: list = []
-        self._tui_feed_width: int = 0
-        self._tui_text_prompt_state: Optional[dict] = None
-        self._tui_picker_state: Optional[dict] = None
-        self._tui_prepared = False
-        self._perm_label: Optional[str] = None
-        self._relay_init()
-        super().__init__(*args, **kwargs)
+        self._pending: list = []  # (kind, payload) emitted before the app mounted
+        self._elock = threading.RLock()
+        self._lock = threading.Lock()  # guards _attaching/_held
+        self._attaching = False
+        self._held: list = []
+        self._last_seq = 0
+        self._queue: list = []  # [{id, kind, text}]
+        self._open: Optional[str] = None  # "assistant" | "reasoning"
+        self._calls: dict = {}  # call_id -> (name, summary)
+        self._action = ""
+        self._closing = False
+        self._reconnecting = False
 
     # ------------------------------------------------------------------
-    # Wiring
+    # Lifecycle
     # ------------------------------------------------------------------
-    def emit(self, kind: str, **payload: Any) -> None:
-        sink = self._sink
-        if sink is None:
-            # Only buffer content; repaint requests are meaningless once late.
-            if kind in ("ansi", "rich") and len(self._pending_events) < 200:
-                self._pending_events.append((kind, payload))
-            return
+    def start(self) -> bool:
         try:
-            sink.emit(kind, **payload)
-        except Exception:
-            pass
-
-    def attach(self, sink: Sink, feed_width: int = 0) -> None:
-        """Bind the app, replay anything said before it mounted, and reroute output."""
-        self._sink = sink
-        if feed_width:
-            self._tui_feed_width = feed_width
-        self._patch_output_funnels()
-        pending, self._pending_events = self._pending_events, []
-        for kind, payload in pending:
-            self.emit(kind, **payload)
-
-    def detach(self) -> None:
-        self._sink = None
-        _cli._CPRINT_ROUTED = False
-        try:
-            from son_of_anton_constants import set_frontend_active
-
-            set_frontend_active(False)
-        except Exception:
-            pass
-
-    def _patch_output_funnels(self) -> None:
-        backend = self
-
-        def _tui_cprint(text: str, strip: bool = True) -> None:
-            if strip:
-                text = _cli.strip_decorative_glyphs(text or "")
-            try:
-                _cli._record_output_history(text)
-            except Exception:
-                pass
-            backend.emit("ansi", text=text)
-
-        _cli._cprint = _tui_cprint  # type: ignore[assignment]
-        _cli._CPRINT_ROUTED = True
-        # Tell the low-level layers (approval) that a
-        # full-screen app owns stdin, so nothing tries to prompt on the tty.
-        from son_of_anton_constants import set_frontend_active
-
-        set_frontend_active(True)
-
-        try:
-            from son_of_anton_cli import banner as _banner
-
-            _banner.cprint = lambda text: _tui_cprint(text)  # type: ignore[assignment]
-        except Exception:
-            pass
-
-        class _TuiChatConsole:
-            """Drop-in for ``cli.ChatConsole``: renderables go straight to the feed."""
-
-            def __init__(self) -> None:
-                pass
-
-            def print(self, *objects: Any, **kwargs: Any) -> None:
-                if not objects:
-                    backend.emit("ansi", text="")
-                    return
-                from rich.text import Text
-
-                for obj in objects:
-                    if isinstance(obj, str):
-                        if _looks_like_rule(obj.split("]")[-1] if obj.startswith("[") else obj):
-                            continue
-                        try:
-                            renderable: Any = Text.from_markup(obj)
-                        except Exception:
-                            renderable = Text(obj)
-                        backend.emit("rich", renderable=renderable)
-                    else:
-                        backend.emit("rich", renderable=obj)
-
-        _cli.ChatConsole = _TuiChatConsole  # type: ignore[assignment,misc]
-
-        from rich.console import Console
-
-        self.console = Console(
-            file=_SinkStream(self),
-            force_terminal=True,
-            color_system="standard",
-            highlight=False,
-            width=max(20, self._tui_feed_width or 100),
-        )
-
-    def run_with_terminal(self, fn: Callable[[], Any]) -> Any:
-        """Run ``fn`` while the front-end lets go of the terminal.
-
-        Anything that draws its own screen — an editor, a pager — cannot share
-        the tty with a running full-screen app: both write to it and both read
-        stdin, so the child's output and its escape-sequence replies land in the
-        app as stray characters. The app suspends around ``fn`` instead.
-        """
-        runner = getattr(self._sink, "run_with_terminal", None)
-        if runner is None:
-            return fn()
-        return runner(fn)
-
-    def _compose_in_editor(self, initial_text: str = "") -> str:
-        """Compose in ``$EDITOR`` with the terminal handed over first.
-
-        The inherited implementation spawns the editor on this process's tty;
-        doing that under a running front-end is what garbles the screen.
-        """
-        return self.run_with_terminal(lambda: super(TextualBackend, self)._compose_in_editor(initial_text))
-
-    def _apply_tui_skin_style(self) -> bool:
-        """Re-resolve the app's palette after ``/skin`` changes the accents."""
-        if self._sink is None:
-            return False
-        self.emit("restyle")
-        return True
-
-    def set_feed_width(self, width: int) -> None:
-        """Keep the Rich console and box helpers in step with the feed column."""
-        self._tui_feed_width = max(20, int(width or 0))
-        try:
-            self.console.width = self._tui_feed_width
-        except Exception:
-            pass
-
-    # ------------------------------------------------------------------
-    # The run() prologue, minus prompt_toolkit
-    # ------------------------------------------------------------------
-    def prepare_interactive_state(self) -> bool:
-        """Do what ``run()`` does before it builds the prompt_toolkit app."""
-        if self._tui_prepared:
+            self._client = _daemon.connect(self.home)
+            self._client.on_event(self._on_event)
+            sid = self._resume
+            if not sid and self._continue_last:
+                listed = self._client.call("session.list", {"kinds": ["interactive"], "limit": 1})
+                rows = listed.get("sessions") or []
+                sid = rows[0]["id"] if rows else None
+            resumed = bool(sid)
+            if not sid:
+                sid = self._client.call("session.create", {"cwd": self.cwd})["session"]["id"]
+            self._attach(sid, resumed=resumed)
+            params: dict = {}
+            if self._model:
+                params["model"] = self._model
+            if self._reasoning:
+                params["reasoning_effort"] = self._reasoning
+            if self._yolo:
+                params["mode"] = "yolo"
+            if params:
+                self._set(**params)
             return True
-        if not self._claim_active_session("cli"):
+        except _daemon.DaemonError as exc:
+            if exc.code == -32011 and self._resume:
+                print(NOT_IN_SOAD.format(id=self._resume), file=sys.stderr)
+            else:
+                print(f"son-of-anton: {exc.message}", file=sys.stderr)
+            self._closing = True
+            client, self._client = self._client, None
+            if client is not None:
+                client.close()
             return False
-        try:
-            _cli._detect_light_mode()
-        except Exception:
-            pass
-
-        self._agent_running = False
-        self._agent_interruptible = False
-        self._pending_input = queue.Queue()
-        self._interrupt_queue = queue.Queue()
-        self._last_turn_interrupted = False
-        self._should_exit = False
-
-        try:
-            from son_of_anton_cli.config import get_config_path as _get_config_path
-
-            _cfg_path = _get_config_path()
-            self._config_mtime = _cfg_path.stat().st_mtime if _cfg_path.exists() else 0.0
-        except Exception:
-            self._config_mtime = 0.0
-        self._config_mcp_servers = self.config.get("mcp_servers") or {}
-        self._last_config_check = 0.0
-
-        self._clarify_state = None
-        self._clarify_freetext = False
-        self._clarify_deadline = 0
-        self._approval_state = None
-        self._approval_deadline = 0
-        self._approval_lock = threading.Lock()
-        self._slash_confirm_state = None
-        self._command_running = False
-        self._command_blocks_input = False
-        self._attached_images = []
-        self._image_counter = 0
-        self._model_picker_state = getattr(self, "_model_picker_state", None)
-
-        import os
-
-        # Startup prewarms all fetch or import in the background and write under
-        # SON_OF_ANTON_HOME, so they answer to the same defer flag the classic
-        # run() honours — including the /model picker cache, which fetches every
-        # authed provider's model list.
-        if os.environ.get("SON_OF_ANTON_DEFER_AGENT_STARTUP") != "1":
-            self._install_tool_callbacks()
-            self._ensure_tirith_security()
-            try:
-                from son_of_anton_cli.model_switch import prewarm_picker_cache_async
-
-                prewarm_picker_cache_async()
-            except Exception:
-                pass
-
-            def _prewarm_agent_runtime() -> None:
-                try:
-                    import run_agent  # noqa: F401
-                    import openai  # noqa: F401
-                except Exception:
-                    pass
-
-            threading.Thread(
-                target=_prewarm_agent_runtime, name="agent-runtime-prewarm", daemon=True
-            ).start()
-        self._tui_prepared = True
-        # ``son-of-anton --pickup``: end the relaying of the resumed session.
-        self.relay_pickup_at_start()
-        return True
 
     def finish(self) -> None:
-        """Shut the session down cleanly after the app exits.
-
-        This is the only exit path now, so it carries everything the old
-        prompt_toolkit ``run()`` did in its ``finally``: stop the agent, drop
-        callbacks, flush the in-memory transcript, close/prune the session row,
-        fire the interrupted-session hook, then the shared cleanup and the
-        resume summary. Every step is independently guarded — a failure late in
-        teardown must not skip the steps after it.
-        """
-        self.detach()
-        self._should_exit = True
-        try:
-            print("Shutting down… (finalizing session)", flush=True)
-        except Exception:
-            pass
-
-        # A handed-off session loses its host: the relay chat's next send
-        # starts a headless worker, as before the handoff.
-        try:
-            self.relay_release_on_exit()
-        except Exception:
-            pass
-
-        # Delegation results still waiting for a turn go back to state.db so
-        # the next start replays them instead of losing them with the queue.
-        try:
-            self._release_unsettled_notifications()
-        except Exception:
-            pass
-
-        agent = getattr(self, "agent", None)
-        was_running = bool(agent and getattr(self, "_agent_running", False))
-
-        # Stop the agent's daemon thread making more API calls on the way out.
-        if was_running:
-            try:
-                _cli.request_hard_interrupt(agent)
-            except Exception:
-                pass
-
-        # Drop callbacks so a reused thread can't reach a disposed instance.
-        for setter in (
-            "set_approval_callback",
-        ):
-            try:
-                getattr(_cli, setter)(None)
-            except Exception:
-                pass
-
-        # A terminal close can reap the agent thread before run_conversation()
-        # persists the turn, so flush before marking the session closed.
-        try:
-            self._persist_active_session_before_close()
-        except Exception:
-            pass
-
-        session_db = getattr(self, "_session_db", None)
-        if session_db and agent:
-            try:
-                session_db.end_session(agent.session_id, "cli_close")
-            except (Exception, KeyboardInterrupt):
-                pass
-            if getattr(self, "_delete_session_on_exit", False):
-                # /exit --delete: drop the transcripts and the SQLite history.
-                try:
-                    from son_of_anton_constants import get_son_of_anton_home
-
-                    deleted = session_db.delete_session(
-                        agent.session_id,
-                        sessions_dir=get_son_of_anton_home() / "sessions",
-                        remove_journal=True,
-                    )
-                    print(
-                        f"  {'✓' if deleted else '✗'} Session {agent.session_id}"
-                        f"{' deleted' if deleted else ' not found for deletion'}"
-                    )
-                except (Exception, KeyboardInterrupt):
-                    pass
-            else:
-                # Quit-immediately sessions never gained content; keep /resume
-                # and `sessions list` clean by dropping the empty row.
-                try:
-                    self._discard_session_if_empty(agent.session_id)
-                except (Exception, KeyboardInterrupt):
-                    pass
-
-        try:
-            _cli._run_cleanup()
-        except Exception:
-            pass
-        try:
-            self._print_exit_summary()
-        except Exception:
-            pass
-        try:
-            self._release_active_session()
-        except Exception:
-            pass
-
-    # ------------------------------------------------------------------
-    # Turn helpers used by the app
-    # ------------------------------------------------------------------
-    def run_turn(
-        self, message: Any, images: Optional[list] = None, *, continue_turn: bool = False,
-    ) -> Optional[str]:
-        """Run one chat turn on the calling (worker) thread.
-
-        ``continue_turn`` runs no new message: it carries on the turn the
-        transcript ends in — one a headless relay run handed back to this
-        terminal (``/pickup``) — and streams like any turn.
-        """
-        self._agent_running = True
-        self._agent_interruptible = True
-        self._interactive_turn = True
-        try:
-            self._turn_summary_begin()
-        except Exception:
-            pass
-        self.emit("refresh")
-        reply: Optional[str] = None
-        try:
-            if continue_turn:
-                reply = self.chat(None, continue_turn=True)
-            else:
-                reply = self.chat(message, images=images)
-            # The agent's turn work is done at this point. A further Ctrl+C or
-            # Escape must not re-arm the interrupt on a finished turn: that
-            # left a stale _interrupt_requested which the next turn's lease
-            # pre-check read as "the user aborted the wait" and surfaced as the
-            # misleading "Stopped waiting for another Son of Anton process".
-            self._agent_interruptible = False
-            return reply
-        finally:
-            # Idempotent: also clears on the chat() raising path, while the
-            # remaining finally work is dispatch cleanup, not agent activity.
-            self._agent_interruptible = False
-            # A drained delegation result is acknowledged only now, and only
-            # if this turn took it; otherwise it goes back on the queue.
-            try:
-                self._settle_notification_delivery(message)
-            except Exception:
-                logging.debug("settling a delegation result failed", exc_info=True)
-            self._agent_running = False
-            self._interactive_turn = False
-            self._spinner_text = ""
-            self._tool_start_time = 0.0
-            try:
-                self._pending_tool_info.clear()
-            except Exception:
-                pass
-            # Handed off: the relay chat hears how the turn ended.
-            try:
-                self.relay_after_turn(
-                    reply, interrupted=bool(getattr(self, "_last_turn_interrupted", False))
-                )
-            except Exception:
-                logging.debug("relaying the turn's end failed", exc_info=True)
-            self._post_turn_hooks()
-            self.emit("turn_end")
-
-    def _post_turn_hooks(self) -> None:
-        """The end-of-turn work the old input loop did after ``chat()``.
-
-        Each is independent and non-fatal: the accounting footer, re-queueing
-        messages that raced the interrupt path, the standing-goal judge, the
-        ``/loop`` tick evaluation, and background process notifications that
-        arrived while the agent held the floor.
-        """
-        for hook in (
-            self._turn_summary_emit,
-            self._drain_interrupt_queue_to_pending_input,
-            self._maybe_continue_goal_after_turn,
-            self._maybe_complete_loop_tick_after_turn,
-            lambda: self._drain_process_notifications("cli-post-turn"),
-        ):
-            try:
-                hook()
-            except Exception:
-                logging.debug("post-turn hook failed", exc_info=True)
-
-    def idle_tick(self) -> None:
-        """Periodic work the old input loop did while waiting on input.
-
-        Watches config for mcp_servers changes, surfaces finished background
-        processes, and fires a due ``/loop`` wakeup. Skipped while a turn holds
-        the floor, matching the loop this replaces.
-        """
-        if getattr(self, "_agent_running", False):
+        """Detach and close. Never stops the daemon or a running turn."""
+        self._closing = True
+        client, self._client = self._client, None
+        if client is None:
             return
-        for hook in (
-            self._check_config_mcp_changes,
-            lambda: self._drain_process_notifications("cli-idle"),
-            self._maybe_fire_loop_tick,
-        ):
+        if self.session_id:
             try:
-                hook()
-            except Exception:
-                logging.debug("idle hook failed", exc_info=True)
-
-    def consume_resume_selection(self, text: str) -> bool:
-        """True when ``text`` picked a session from a bare ``/resume`` listing."""
-        if not getattr(self, "_pending_resume_sessions", None):
-            return False
-        try:
-            return bool(self._consume_pending_resume_selection(text))
-        except Exception:
-            return False
-
-    def new_session(self, *args: Any, **kwargs: Any):
-        """Start a fresh session, dropping this session's permission override."""
-        previous = self.session_id
-        result = super().new_session(*args, **kwargs)
-        if previous and previous != self.session_id:
-            try:
-                from tools.approval import set_session_permission_mode
-
-                set_session_permission_mode(previous, None)
-            except Exception:
+                client.call("session.detach", {"session": self.session_id}, timeout=3.0)
+            except _daemon.DaemonError:
                 pass
-        self._perm_label = None
-        return result
+        client.close()
 
-    def run_slash(self, command: str) -> bool:
-        """Run a slash command; returns False when the app should exit."""
-        self._command_running = True
-        self.emit("refresh")
-        if command.lstrip("/:").split()[:1] == ["perm"]:
-            self._perm_label = None
+    # ------------------------------------------------------------------
+    # Sink wiring
+    # ------------------------------------------------------------------
+    def attach(self, sink: Sink, feed_width: int = 0) -> None:
+        with self._elock:
+            self._sink = sink
+            pending, self._pending = self._pending, []
+            for kind, payload in pending:
+                self._send_to_sink(kind, payload)
+
+    def detach(self) -> None:
+        with self._elock:
+            self._sink = None
+
+    def set_feed_width(self, width: int) -> None:
+        pass
+
+    def run_with_terminal(self, fn: Callable[[], Any]) -> Any:
+        runner = getattr(self._sink, "run_with_terminal", None)
+        return runner(fn) if runner else fn()
+
+    def _send_to_sink(self, kind: str, payload: dict) -> None:
         try:
-            return self.process_command(command)
-        except KeyboardInterrupt:
-            self.emit("ansi", text="Command interrupted.")
-            return True
+            self._sink.emit(kind, **payload)  # type: ignore[union-attr]
+        except Exception:
+            pass
+
+    def emit(self, kind: str, **payload: Any) -> None:
+        with self._elock:
+            if self._sink is None:
+                if len(self._pending) < 5000:
+                    self._pending.append((kind, payload))
+                return
+            self._send_to_sink(kind, payload)
+
+    def note(self, text: str, muted: bool = True) -> None:
+        self.emit("ansi", text=text, stderr=muted)
+
+    # ------------------------------------------------------------------
+    # Calls
+    # ------------------------------------------------------------------
+    def _call(self, method: str, params: Optional[dict] = None, timeout: float = 30.0) -> dict:
+        client = self._client
+        if client is None:
+            raise _daemon.DaemonError(0, "not connected to soa-d")
+        return client.call(method, params, timeout)
+
+    def _sess(self, **extra: Any) -> dict:
+        return {"session": self.session_id, **extra}
+
+    def _set(self, **fields: Any) -> dict:
+        res = self._call("session.set", self._sess(**fields))
+        if isinstance(res.get("session"), dict):
+            self._update_session(res["session"])
+        return self.session
+
+    def _update_session(self, state: dict) -> None:
+        self.session = state
+        self.emit("status", running=state.get("status") == "running")
+
+    def _attach(self, sid: str, *, after_seq: Optional[int] = None, resumed: bool = True,
+                clear: bool = False) -> None:
+        params: dict = {"session": sid, "as": "driver"}
+        if after_seq:
+            params["after_seq"] = after_seq
+        with self._lock:
+            self._attaching = True
+            self._held = []
+        previous = self.session_id
+        self.session_id = sid
+        try:
+            try:
+                res = self._call("session.attach", params)
+            except BaseException:
+                self.session_id = previous
+                raise
+            self._open = None
+            self._calls.clear()
+            self._action = ""
+            self.role = res.get("role", "driver")
+            self._queue = list(res.get("queue") or [])
+            if res.get("gap") or clear:
+                self.emit("clear")
+            self._update_session(res.get("session") or {})
+            self.emit("queue", items=[q.get("text", "") for q in self._queue])
+            self._render_history(res.get("messages") or [], more_before=bool(res.get("more_before")),
+                                 resumed=resumed)
         finally:
-            self._command_running = False
-            self._perm_label = None if command.lstrip("/:").startswith("perm") else self._perm_label
-            self.emit("refresh")
-
-    def interrupt_turn(self) -> bool:
-        """Ctrl+C while the agent runs: hard-interrupt the current turn."""
-        agent = getattr(self, "agent", None)
-        # Gate on the agent actually having in-flight turn work, not on the
-        # dispatch worker still winding down: the window after chat() returns
-        # (notifications settling, relay_after_turn, post-turn hooks) must not
-        # let a second Ctrl+C/Escape re-arm _interrupt_requested on a finished
-        # turn. That stale flag then aborted the next turn's lease acquisition.
-        if not (getattr(self, "_agent_interruptible", False) and agent):
-            return False
-        try:
-            _cli.request_hard_interrupt(agent)
-        except Exception:
-            try:
-                agent.interrupt()
-            except Exception:
-                return False
-        try:
-            self._clear_active_overlays_for_interrupt()
-        except Exception:
-            pass
-        return True
-
-    def cancel_pending_prompts(self) -> None:
-        """Unblock every prompt still waiting on a queue (app exit / interrupt).
-
-        Worker threads block on ``response_queue.get()``; if the app goes away
-        without answering, a non-daemon worker would keep the process alive.
-        """
-        try:
-            self._clear_active_overlays_for_interrupt()
-        except Exception:
-            pass
-        for attr, answer in (
-            ("_slash_confirm_state", "cancel"),
-            ("_tui_text_prompt_state", None),
-            ("_tui_picker_state", None),
-        ):
-            state = getattr(self, attr, None)
-            if state:
-                try:
-                    state["response_queue"].put(answer)
-                except Exception:
-                    pass
-                setattr(self, attr, None)
-        try:
-            self._close_model_picker()
-        except Exception:
-            pass
-
-    def has_pending_input(self) -> bool:
-        """Whether backend work (notifications, goal/loop turns) is queued."""
-        q = getattr(self, "_pending_input", None)
-        return q is not None and not q.empty()
-
-    def drain_pending_input(self) -> list:
-        """Messages re-queued by an interrupt or a leftover steer."""
-        items = []
-        q = getattr(self, "_pending_input", None)
-        if q is None:
-            return items
-        while True:
-            try:
-                items.append(q.get_nowait())
-            except queue.Empty:
-                break
-        return items
+            while True:
+                with self._lock:
+                    if not self._held:
+                        self._attaching = False
+                        break
+                    p = self._held.pop(0)
+                if self.session_id == sid:
+                    self._handle(p)
 
     # ------------------------------------------------------------------
-    # Permission mode
+    # History
     # ------------------------------------------------------------------
-    def permission_mode(self) -> str:
-        """This session's mode: default | ask | lockdown | yolo.
+    def _render_history(self, messages: list, *, more_before: bool, resumed: bool) -> None:
+        if not messages:
+            return
+        if resumed:
+            hidden = " · earlier messages not shown" if more_before else ""
+            self.note(f"resumed session {self.session_id}{hidden}")
+        open_calls: dict = {}
+        for m in messages:
+            self._last_seq = max(self._last_seq, int(m.get("seq") or 0))
+            role = m.get("role")
+            content = (m.get("content") or "").strip()
+            if role == "user":
+                if content.startswith("[Background process"):
+                    self.note(content.splitlines()[0][:200])
+                elif content:
+                    self.emit("user", text=content)
+            elif role == "assistant":
+                if content in (INTERRUPTED_TEXT, FAILED_TEXT):
+                    self.note(content)
+                    continue
+                if (m.get("reasoning") or "").strip():
+                    self.emit("reasoning_block", text=m["reasoning"])
+                if content:
+                    self.emit("markdown", text=content)
+                for call in m.get("tool_calls") or []:
+                    name = call.get("name", "")
+                    label = tool_summary(name, call.get("arguments"))
+                    open_calls[call.get("id", "")] = (name, label)
+                    self.emit("tool_start", name=name, label=label, call_id=call.get("id", ""))
+            elif role == "tool":
+                cid = m.get("tool_call_id", "")
+                name, label = open_calls.pop(cid, (m.get("tool_name", ""), ""))
+                self.emit("tool_done", name=name, label=label, duration=0.0,
+                          is_error=_result_is_error(m.get("content")), call_id=cid)
+        for cid, (name, label) in open_calls.items():
+            self.emit("tool_done", name=name, label=label, duration=0.0, is_error=False, call_id=cid)
 
-        A session override (set by the front-end's cycle) wins; otherwise this
-        reports what config says, which is what ``/perm`` writes. Read through
-        the approval guard's own resolvers rather than the CLI's cached config,
-        because ``/perm`` persists to disk without refreshing that copy.
-        Cached between changes so a once-a-second status repaint costs nothing.
-        """
-        if self._perm_label is not None:
-            return self._perm_label
-        label = "default"
-        try:
-            from tools.approval import (
-                _get_approval_config,
-                _normalize_approval_mode,
-                get_session_permission_mode,
-            )
+    # ------------------------------------------------------------------
+    # Events
+    # ------------------------------------------------------------------
+    def _on_event(self, p: dict) -> None:
+        if p.get("kind") == "connection.lost":
+            self._lost()
+            return
+        if p.get("session") != self.session_id:
+            return
+        with self._lock:
+            if self._attaching:
+                self._held.append(p)
+                return
+        self._handle(p)
 
-            override = get_session_permission_mode(self.session_id or "")
-            if override is not None:
-                label = override
+    def _close_open(self) -> None:
+        if self._open == "assistant":
+            self.emit("assistant_end")
+        elif self._open == "reasoning":
+            self.emit("reasoning_end")
+        self._open = None
+
+    def _handle(self, p: dict) -> None:
+        kind = p.get("kind")
+        if kind == "turn.start":
+            text = p.get("text") or ""
+            self._close_open()
+            if text.startswith("[Background process"):
+                self.note(text.splitlines()[0][:200])
             else:
-                mode = _normalize_approval_mode(_get_approval_config().get("mode", "manual"))
-                lockdown = False
+                self.emit("user", text=text)
+        elif kind == "reasoning.delta":
+            if self._open != "reasoning":
+                self._close_open()
+                self._open = "reasoning"
+                self.emit("reasoning_start")
+            self.emit("reasoning_delta", text=p.get("text", ""))
+        elif kind == "assistant.delta":
+            if self._open != "assistant":
+                self._close_open()
+                self._open = "assistant"
+                self.emit("assistant_start")
+            self.emit("assistant_delta", text=p.get("text", ""))
+        elif kind == "tool.start":
+            self._close_open()
+            cid, name, summary = p.get("call_id", ""), p.get("name", ""), p.get("summary", "")
+            self._calls[cid] = (name, summary)
+            self._action = summary or name
+            self.emit("tool_start", name=name, label=summary, call_id=cid)
+        elif kind == "tool.end":
+            cid = p.get("call_id", "")
+            name, summary = self._calls.pop(cid, (p.get("name", ""), ""))
+            self._action = ""
+            self.emit("tool_done", name=name or p.get("name", ""), label=summary,
+                      duration=float(p.get("duration_ms") or 0) / 1000.0,
+                      is_error=bool(p.get("is_error")), call_id=cid)
+        elif kind == "message":
+            self._close_open()
+            m = p.get("message") or {}
+            self._last_seq = max(self._last_seq, int(m.get("seq") or 0))
+        elif kind == "turn.end":
+            self._close_open()
+            self._calls.clear()
+            self._action = ""
+            self.emit("turn_end")
+            status = p.get("status")
+            if status == "interrupted":
+                self.note("interrupted")
+            elif status == "error":
+                self.note(f"error: {p.get('error') or 'the turn failed'}", muted=False)
+        elif kind == "notice":
+            self.note(p.get("text", ""), muted=p.get("level", "info") == "info")
+        elif kind == "queue.updated":
+            self._queue = list(p.get("items") or [])
+            self.emit("queue", items=[q.get("text", "") for q in self._queue])
+        elif kind == "session.updated":
+            if isinstance(p.get("state"), dict):
+                self._update_session(p["state"])
+        elif kind == "role":
+            self.role = p.get("as", self.role)
+            if self.role != "driver":
+                self.note("another client is now the driver of this session")
+        elif kind == "approval.request":
+            self.emit("approval", approval_id=p.get("approval_id", ""), subject=p.get("subject", ""),
+                      reasons=p.get("reasons") or [], choices=p.get("choices") or [])
+        elif kind == "approval.resolved":
+            self.emit("approval_resolved", approval_id=p.get("approval_id", ""))
+        elif kind == "question.request":
+            self.emit("question", question_id=p.get("question_id", ""), text=p.get("text", ""),
+                      choices=p.get("choices") or [], multi_select=bool(p.get("multi_select")))
+        elif kind == "question.resolved":
+            self.emit("question_resolved", question_id=p.get("question_id", ""))
+
+    # ------------------------------------------------------------------
+    # Connection loss
+    # ------------------------------------------------------------------
+    def _lost(self) -> None:
+        if self._closing or self._reconnecting:
+            return
+        self._reconnecting = True
+        self._open = None
+        self.emit("prompts_clear")
+        self.emit("status", running=False)
+        self.note("lost the connection to soa-d; reconnecting…", muted=False)
+        threading.Thread(target=self._reconnect, name="soa-d-reconnect", daemon=True).start()
+
+    def _reconnect(self) -> None:
+        delay = 0.5
+        try:
+            while not self._closing:
                 try:
-                    from son_of_anton_cli.config import load_config_readonly
+                    old, self._client = self._client, None
+                    if old is not None:
+                        old.close()
+                    client = _daemon.connect(self.home)
+                    client.on_event(self._on_event)
+                    self._client = client
+                    self._attach(self.session_id or "", after_seq=self._last_seq, resumed=False)
+                    self.note("reconnected to soa-d")
+                    return
+                except _daemon.DaemonError as exc:
+                    if exc.code == -32011:
+                        self.note(NOT_IN_SOAD.format(id=self.session_id), muted=False)
+                        return
+                    time.sleep(delay)
+                    delay = min(delay * 2, 10.0)
+        finally:
+            self._reconnecting = False
 
-                    lockdown = bool((load_config_readonly() or {}).get("security", {}).get("lockdown", False))
-                except Exception:
-                    pass
-                label = "lockdown" if lockdown else {"off": "yolo", "manual": "ask"}.get(mode, "default")
-        except Exception:
-            pass
-        self._perm_label = label
-        return label
-
-    def cycle_permission_mode(self) -> str:
-        """Advance this session's permission mode and report the new one.
-
-        Session-scoped on purpose: the cycle never writes config, so it cannot
-        outlive the session that chose it, and a new session (``/new``, or a new
-        process) starts from the configured default again. ``/perm`` remains the
-        way to change the persistent setting.
-        """
-        order = PERMISSION_MODES
+    # ------------------------------------------------------------------
+    # What the app asks for
+    # ------------------------------------------------------------------
+    def send(self, text: str, mode: str = "queue") -> dict:
         try:
-            index = order.index(self.permission_mode())
-        except ValueError:
-            index = 0
-        target = order[(index + 1) % len(order)]
-        try:
-            from tools.approval import set_session_permission_mode
-
-            set_session_permission_mode(self.session_id or "", target)
-        except Exception as exc:
-            self.emit("ansi", text=f"  ✗ Could not switch permission mode: {exc}")
-            return self.permission_mode()
-        self._perm_label = target
-        detail = {
-            "default": "smart approvals",
-            "ask": "every dangerous command asks",
-            "lockdown": "every command asks",
-            "yolo": "approvals skipped",
-        }[target]
-        self.emit("ansi", text=f"  Permission mode: {target} — {detail} (this session)")
-        self.emit("refresh")
-        return target
-
-    def status_snapshot(self) -> dict:
-        try:
-            return self._get_status_bar_snapshot()
-        except Exception:
+            return self._call("turn.send", self._sess(text=text, mode=mode))
+        except _daemon.DaemonError as exc:
+            self.note(f"could not send: {exc.message}", muted=False)
             return {}
 
-    def palette_entries(self) -> list:
-        try:
-            return self._build_command_palette_entries()
-        except Exception:
-            return []
+    def interrupt_turn(self) -> bool:
+        if self.session.get("status") != "running" or self._client is None:
+            return False
 
-    # ------------------------------------------------------------------
-    # Streaming seams
-    # ------------------------------------------------------------------
-    def _emit_stream_text(self, text: str) -> None:
-        if not text:
-            return
-        self._close_reasoning_box()
-        if not self._stream_box_opened:
-            text = text.lstrip("\n")
-            if not text:
-                return
-            self._stream_box_opened = True
-            self.emit("assistant_start")
-        self.emit("assistant_delta", text=text)
-
-    def _flush_stream(self) -> None:
-        if getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
-            # A tag mentioned in prose, never closed: recover the text.
-            self._in_reasoning_block = False
-            self._emit_stream_text(self._stream_prefilt)
-            self._stream_prefilt = ""
-        self._close_reasoning_box()
-        if self._stream_buf:
-            self.emit("assistant_delta", text=self._stream_buf)
-            self._stream_buf = ""
-        if self._stream_box_opened:
-            self.emit("assistant_end")
-
-    def _stream_reasoning_delta(self, text: str) -> None:
-        if not text:
-            return
-        self._reasoning_shown_this_turn = True
-        if getattr(self, "_stream_box_opened", False):
-            return
-        if not getattr(self, "_reasoning_box_opened", False):
-            self._reasoning_box_opened = True
-            self.emit("reasoning_start")
-        self.emit("reasoning_delta", text=text)
-
-    def _close_reasoning_box(self) -> None:
-        if getattr(self, "_reasoning_box_opened", False):
-            self._reasoning_box_opened = False
-            self.emit("reasoning_end")
-        deferred = getattr(self, "_deferred_content", "")
-        if deferred:
-            self._deferred_content = ""
-            self._emit_stream_text(deferred)
-
-    def _emit_reasoning_preview(self, reasoning_text: str) -> None:
-        """Verbose (non-streaming) reasoning preview → the same reasoning block."""
-        preview = (reasoning_text or "").strip()
-        if not preview:
-            return
-        if not getattr(self, "_reasoning_box_opened", False):
-            self._reasoning_box_opened = True
-            self.emit("reasoning_start")
-        self.emit("reasoning_delta", text=preview + "\n")
-
-    # ------------------------------------------------------------------
-    # Tool lifecycle seams
-    # ------------------------------------------------------------------
-    def _render_compaction_summary(self, summary: str, stats: Optional[dict] = None) -> None:  # type: ignore[override]
-        """Compaction summary as a typed event; the app draws the divider + markdown."""
-        self.emit("compaction", text=summary or "", stats=dict(stats or {}))
-
-    def _on_tool_gen_start(self, tool_name: str) -> None:
-        if getattr(self, "_stream_box_opened", False):
-            self._flush_stream()
-            self._stream_box_opened = False
-        self._close_reasoning_box()
-        self.emit("tool_gen", name=tool_name)
-
-    def _on_tool_progress(
-        self,
-        event_type: str,
-        function_name: str = None,
-        preview: str = None,
-        function_args: dict = None,
-        **kwargs: Any,
-    ) -> None:
-        if event_type == "tool.started":
-            if function_name and not function_name.startswith("_"):
-                label = preview or function_name
-                try:
-                    from agent.display import get_tool_preview_max_len
-
-                    _pl = get_tool_preview_max_len()
-                    if _pl > 0 and len(label) > _pl:
-                        label = label[: _pl - 3] + "..."
-                except Exception:
-                    pass
-                self._spinner_text = label
-                self._tool_start_time = time.monotonic()
-                self._pending_tool_info.setdefault(function_name, []).append(
-                    function_args if function_args is not None else {}
-                )
-                self.emit(
-                    "tool_start",
-                    name=function_name,
-                    label=label,
-                    hidden=self.tool_progress_mode == "off",
-                )
-            return
-        if event_type != "tool.completed":
-            return
-        self._tool_start_time = 0.0
-        try:
-            self._turn_summary_record(
-                function_name, kwargs.get("result"), kwargs.get("is_error", False)
-            )
-        except Exception:
-            pass
-        duration = kwargs.get("duration", 0.0) or 0.0
-        stored = self._pending_tool_info.get(function_name)
-        stored_args = stored.pop(0) if stored else {}
-        if stored is not None and not stored:
-            del self._pending_tool_info[function_name]
-        # The app draws its own icon column, so send the phrase rather than the
-        # REPL's pre-decorated line ("Running scripts/x.sh", "Reading foo.py").
-        # ``line`` stays as the fallback for anything build_tool_label can't phrase.
-        label = ""
-        line = ""
-        if function_name and self.tool_progress_mode != "off":
+        def _go() -> None:
             try:
-                from agent.display import build_tool_label
-
-                label = build_tool_label(function_name, stored_args or {}) or ""
-            except Exception:
-                label = ""
-            if not label:
-                try:
-                    from agent.display import get_cute_tool_message
-
-                    line = get_cute_tool_message(
-                        function_name, stored_args, duration, result=kwargs.get("result")
-                    )
-                except Exception:
-                    line = ""
-                label = label or function_name
-        self.emit(
-            "tool_done",
-            name=function_name,
-            label=label,
-            line=line,
-            duration=duration,
-            is_error=bool(kwargs.get("is_error", False)),
-            hidden=self.tool_progress_mode == "off",
-        )
-
-    def _on_thinking(self, text: str) -> None:
-        if not text:
-            try:
-                self._flush_reasoning_preview(force=True)
-            except Exception:
+                self._call("turn.interrupt", self._sess(), timeout=10.0)
+            except _daemon.DaemonError:
                 pass
-        self._spinner_text = text or ""
-        self._tool_start_time = 0.0
-        self.emit("refresh")
+
+        threading.Thread(target=_go, name="soa-d-interrupt", daemon=True).start()
+        return True
+
+    def answer_approval(self, approval_id: str, choice: str) -> None:
+        try:
+            self._call("approval.answer", self._sess(approval_id=approval_id, choice=choice))
+        except _daemon.DaemonError as exc:
+            if exc.code not in (-32011, -32012):
+                self.note(f"could not answer the approval: {exc.message}", muted=False)
+
+    def answer_question(self, question_id: str, answers: list) -> None:
+        try:
+            self._call("question.answer", self._sess(question_id=question_id, answers=list(answers)))
+        except _daemon.DaemonError as exc:
+            if exc.code not in (-32011, -32012):
+                self.note(f"could not answer the question: {exc.message}", muted=False)
+
+    def idle_tick(self) -> None:
+        pass
 
     # ------------------------------------------------------------------
-    # Repaint seams (prompt_toolkit invalidate → app refresh)
+    # Status
     # ------------------------------------------------------------------
-    def _paint_now(self) -> None:
-        self.emit("refresh")
+    def permission_mode(self) -> str:
+        return self.session.get("mode") or "default"
 
-    def _invalidate(self, min_interval: float = 0.25) -> None:
-        # The classic CLI throttles repaints to min_interval; the agent's
-        # spinner calls this every ~120ms from the worker thread. Honour the
-        # same cadence so a running turn does not schedule chrome refreshes
-        # faster than the frame can change. Callers that need an immediate
-        # paint pass min_interval=0.0 and always get through.
-        now = time.monotonic()
-        last = getattr(self, "_last_tui_invalidate", 0.0)
-        if now - last < min_interval:
+    def cycle_permission_mode(self) -> str:
+        order = PERMISSION_MODES
+        cur = self.permission_mode()
+        target = order[(order.index(cur) + 1) % len(order)] if cur in order else order[0]
+        try:
+            self._set(mode=target)
+        except _daemon.DaemonError as exc:
+            self.note(f"could not switch permission mode: {exc.message}", muted=False)
+        return self.permission_mode()
+
+    def status_action(self) -> str:
+        return self._action
+
+    def prompt_start_time(self) -> Optional[float]:
+        if self.session.get("status") != "running":
+            return None
+        return _parse_time(self.session.get("turn_started"))
+
+    def status_snapshot(self) -> dict:
+        s = self.session or {}
+        model = s.get("model") or "unknown"
+        short = model.split("/")[-1]
+        if short.endswith(".gguf"):
+            short = short[:-5]
+        if len(short) > 26:
+            short = f"{short[:23]}..."
+        usage = s.get("usage") or {}
+        created = _parse_time(s.get("created"))
+        started = self.prompt_start_time()
+        title = (s.get("title") or s.get("preview") or "").strip()
+        return {
+            "model_name": model,
+            "model_short": short,
+            "session_title": title,
+            "reasoning_label": s.get("reasoning_effort") or "default",
+            "context_tokens": s.get("context_tokens", 0),
+            "context_length": None,
+            "context_percent": None,
+            "session_input_tokens": usage.get("input_tokens", 0),
+            "session_output_tokens": usage.get("output_tokens", 0),
+            "session_api_calls": usage.get("api_calls", 0),
+            "active_background_processes": s.get("background_processes", 0),
+            "duration": _compact_duration(time.time() - created) if created else "",
+            "prompt_elapsed": _compact_duration(time.time() - started) if started else "",
+            "compactions": 0,
+        }
+
+    def palette_entries(self) -> list:
+        from son_of_anton_cli.commands import COMMANDS_BY_CATEGORY, resolve_command
+
+        out = []
+        for category, commands in COMMANDS_BY_CATEGORY.items():
+            for cmd, desc in commands.items():
+                c = resolve_command(cmd)
+                if c is not None and c.name in SUPPORTED:
+                    out.append((cmd, category, desc))
+        return out
+
+    # ------------------------------------------------------------------
+    # Slash commands and ! lines
+    # ------------------------------------------------------------------
+    def run_slash(self, command: str) -> bool:
+        """Run a slash command; returns False when the app should exit."""
+        from son_of_anton_cli.commands import resolve_command
+
+        parts = command.strip().split(None, 1)
+        head = parts[0] if parts else ""
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        cmd = resolve_command(head)
+        if cmd is None:
+            self.note(f"unknown command {head} (/help lists them)", muted=False)
+            return True
+        if cmd.name not in SUPPORTED:
+            self.note(f"/{head.lstrip('/:')} is not available in soa-d yet", muted=False)
+            return True
+        try:
+            return self._run_supported(cmd.name, arg)
+        except _daemon.DaemonError as exc:
+            self.note(f"/{cmd.name}: {exc.message}", muted=False)
+            return True
+
+    def _run_supported(self, name: str, arg: str) -> bool:
+        if name == "quit":
+            return False
+        if name == "model":
+            if arg:
+                self._set(model=arg)
+                self.note(f"model: {self.session.get('model')} (from the next turn)")
+            else:
+                res = self._call("model.list", self._sess())
+                cur = res.get("current") or self.session.get("model", "")
+                rows = []
+                for m in res.get("models") or []:
+                    eff = ", ".join(m.get("reasoning_efforts") or [])
+                    label = f"{m['name']}  ●" if m["name"] == cur else m["name"]
+                    rows.append((m["name"], label, f"reasoning: {eff}" if eff else ""))
+                self.emit("pick", purpose="model", title=f"Switch model  ·  now {cur}", rows=rows,
+                          default=next((i for i, r in enumerate(rows) if r[0] == cur), 0), filterable=True)
+        elif name == "reasoning":
+            if arg:
+                self._set(reasoning_effort="" if arg.lower() == "default" else arg.lower())
+                self.note(f"reasoning: {self.session.get('reasoning_effort') or 'default'} (from the next turn)")
+            else:
+                res = self._call("model.list", self._sess())
+                cur = self.session.get("model", "")
+                efforts = next((m.get("reasoning_efforts") or [] for m in res.get("models") or [] if m["name"] == cur), [])
+                if not efforts:
+                    self.note(f"{cur} has no configured reasoning levels")
+                else:
+                    now = self.session.get("reasoning_effort") or ""
+                    rows = [("", "default", "the configured default")] + [(e, e, "") for e in efforts]
+                    self.emit("pick", purpose="reasoning", title=f"Reasoning  ·  now {now or 'default'}",
+                              rows=rows, default=0, filterable=False)
+        elif name == "perm":
+            if arg:
+                self._set(mode=arg.lower())
+                self.note(f"permission mode: {self.permission_mode()}")
+            else:
+                self.note(f"permission mode: {self.permission_mode()}  (default | ask | lockdown | yolo)")
+        elif name in ("new", "clear"):
+            self.new_session()
+        elif name in ("resume", "sessions"):
+            if arg:
+                self.resume(arg)
+            else:
+                rows = []
+                for s in self.list_sessions():
+                    title = (s.get("title") or s.get("preview") or "").strip() or "untitled"
+                    rows.append((s["id"], title[:80], f"{s.get('cwd', '')} · {str(s.get('updated', ''))[:16]}"))
+                if not rows:
+                    self.note("no sessions to resume")
+                else:
+                    self.emit("pick", purpose="resume", title="Resume session", rows=rows, default=0, filterable=True)
+        elif name == "commit":
+            self._call("command.run", self._sess(name="commit", args=arg))
+        elif name == "stop":
+            res = self._call("command.run", self._sess(name="stop", args=""))
+            n = int(res.get("killed") or 0)
+            self.note(f"killed {n} background process{'es' if n != 1 else ''}")
+        elif name == "sendnow":
+            if arg:
+                self._call("turn.send", self._sess(text=arg, mode="now"))
+            else:
+                self._steer(False)
+        elif name == "sendall":
+            self._steer(True)
+        elif name == "cancel":
+            if not self._queue:
+                self.note("nothing queued")
+            else:
+                rows = [(q["id"], _preview(q.get("text", ""))) for q in self._queue]
+                self.emit("pick_many", purpose="cancel", title="Drop queued messages", rows=rows)
+        elif name == "status":
+            s = self.session
+            u = s.get("usage") or {}
+            self.note(f"session {self.session_id} · {s.get('model')} · mode {self.permission_mode()} · "
+                      f"in {u.get('input_tokens', 0)} out {u.get('output_tokens', 0)} · "
+                      f"{u.get('api_calls', 0)} calls")
+        elif name == "help":
+            from son_of_anton_cli.commands import COMMAND_REGISTRY
+
+            self.note("commands (everything else is not available in soa-d yet):")
+            for c in COMMAND_REGISTRY:
+                if c.name in SUPPORTED:
+                    self.note(f"  /{c.name} {c.args_hint}".rstrip() + f" — {c.description}")
+            self.note("  !cmd runs a shell command here · :q quits")
+        elif name == "skin":
+            self._skin(arg)
+        return True
+
+    def _steer(self, everything: bool) -> None:
+        res = self._call("queue.steer", self._sess(all=everything))
+        if not (res.get("started") or res.get("steered")):
+            self.note("nothing queued to send")
+
+    def _skin(self, arg: str) -> None:
+        from son_of_anton_cli.skin_engine import get_active_skin_name, list_skins, set_active_skin
+
+        if not arg:
+            cur = get_active_skin_name()
+            self.note(f"skin: {cur}")
+            for s in list_skins():
+                self.note(f"  {'●' if s['name'] == cur else ' '} {s['name']} — {s['description']}")
             return
-        self._last_tui_invalidate = now
-        self.emit("refresh")
+        name = arg.lower()
+        if name not in {s["name"] for s in list_skins()}:
+            self.note(f"unknown skin: {name}", muted=False)
+            return
+        set_active_skin(name)
+        self.emit("restyle")
+        self.note(f"skin: {name}")
 
-    def _force_full_redraw(self) -> None:
-        self.emit("refresh")
+    def picked(self, purpose: str, key: str) -> None:
+        try:
+            if purpose == "model":
+                self._set(model=key)
+                self.note(f"model: {key} (from the next turn)")
+            elif purpose == "reasoning":
+                self._set(reasoning_effort=key)
+                self.note(f"reasoning: {key or 'default'} (from the next turn)")
+            elif purpose == "resume":
+                self.resume(key)
+        except _daemon.DaemonError as exc:
+            self.note(exc.message, muted=False)
 
-    def _capture_modal_input_snapshot(self) -> None:
-        return None
-
-    def _restore_modal_input_snapshot(self) -> None:
-        return None
-
-    def _scrollback_box_width(self, width: Optional[int] = None) -> int:  # type: ignore[override]
-        return SonOfAntonCLI._scrollback_box_width(width or self._tui_feed_width or None)
-
-    # ------------------------------------------------------------------
-    # Prompts that fell back to stdin: make them queue-based
-    # ------------------------------------------------------------------
-    def _wait_for_queue(
-        self,
-        response_queue: "queue.Queue[Any]",
-        timeout: Optional[float],
-        *,
-        still_open: Callable[[], bool],
-    ) -> tuple[bool, Any]:
-        """Block the calling (worker) thread until the app answers or timeout."""
-        deadline = None if not timeout or timeout <= 0 else time.monotonic() + timeout
-        self.emit("refresh")
-        while True:
+    def picked_many(self, purpose: str, keys: list) -> None:
+        if purpose == "cancel" and keys:
             try:
-                return True, response_queue.get(timeout=1)
-            except queue.Empty:
-                if not still_open():
-                    return False, None
-                if deadline is not None and time.monotonic() >= deadline:
-                    return False, None
-                self.emit("refresh")
+                self._call("queue.remove", self._sess(items=list(keys)))
+                self.note(f"dropped {len(keys)} queued message{'s' if len(keys) != 1 else ''}")
+            except _daemon.DaemonError as exc:
+                self.note(exc.message, muted=False)
 
-    def _prompt_text_input_modal(
-        self,
-        *,
-        title: str,
-        detail: str,
-        choices: list,
-        timeout: float = _MODAL_TIMEOUT,
-    ) -> Optional[str]:
-        if not choices:
-            return None
-        response_queue: "queue.Queue[Any]" = queue.Queue()
-        self._slash_confirm_state = {
-            "title": title,
-            "detail": detail,
-            "choices": choices,
-            "selected": 0,
-            "response_queue": response_queue,
-        }
-        try:
-            ok, result = self._wait_for_queue(
-                response_queue, timeout, still_open=lambda: self._slash_confirm_state is not None
-            )
-        finally:
-            self._slash_confirm_state = None
-            self.emit("refresh")
-        return result if ok else None
+    def list_sessions(self) -> list:
+        return self._call("session.list", {"kinds": ["interactive"], "limit": 500}).get("sessions") or []
 
-    def _prompt_text_input(self, prompt_text: str) -> Optional[str]:
-        return self.prompt_text(prompt_text)
+    def new_session(self) -> None:
+        sid = self._call("session.create", {"cwd": self.cwd})["session"]["id"]
+        self._switch(sid, resumed=False)
 
-    def prompt_text(
-        self, prompt_text: str, *, password: bool = False, timeout: float = _MODAL_TIMEOUT
-    ) -> Optional[str]:
-        """Ask the user for one line of text through a Textual modal."""
-        response_queue: "queue.Queue[Any]" = queue.Queue()
-        self._tui_text_prompt_state = {
-            "prompt": prompt_text,
-            "password": password,
-            "response_queue": response_queue,
-        }
+    def resume(self, sid: str) -> None:
         try:
-            ok, result = self._wait_for_queue(
-                response_queue, timeout, still_open=lambda: self._tui_text_prompt_state is not None
-            )
-        finally:
-            self._tui_text_prompt_state = None
-            self.emit("refresh")
-        if not ok or result is None:
-            return None
-        result = str(result).strip()
-        return result or None
+            self._switch(sid, resumed=True)
+        except _daemon.DaemonError as exc:
+            if exc.code != -32011:
+                raise
+            self.note(NOT_IN_SOAD.format(id=sid), muted=False)
 
-    def _run_curses_picker(
-        self, title: str, items: list, default_index: int = 0
-    ) -> Optional[int]:
-        response_queue: "queue.Queue[Any]" = queue.Queue()
-        self._tui_picker_state = {
-            "title": title,
-            "items": list(items),
-            "default": default_index,
-            "response_queue": response_queue,
-        }
+    def _switch(self, sid: str, *, resumed: bool) -> None:
+        old = self.session_id
+        saved_seq = self._last_seq
+        self._last_seq = 0
         try:
-            ok, result = self._wait_for_queue(
-                response_queue, _MODAL_TIMEOUT, still_open=lambda: self._tui_picker_state is not None
-            )
-        finally:
-            self._tui_picker_state = None
-            self.emit("refresh")
-        if not ok or result is None:
-            return None
+            self._attach(sid, resumed=resumed, clear=True)
+        except _daemon.DaemonError:
+            self._last_seq = saved_seq
+            raise
+        if old and old != sid:
+            try:
+                self._call("session.detach", {"session": old}, timeout=5.0)
+            except _daemon.DaemonError:
+                pass
+
+    def run_bang(self, line: str) -> None:
+        from son_of_anton_cli.bang_shell import USAGE_HINT, parse_bang_command, run_bang_command
+
+        command = parse_bang_command(line)
+        if not command:
+            self.note(USAGE_HINT)
+            return
+        code = run_bang_command(command, cwd=self.cwd,
+                                writer=lambda text: self.emit("ansi", text=text.rstrip("\n")))
+        if code:
+            self.note(f"! exited {code}")
+
+    def _compose_in_editor(self, initial_text: str = "") -> str:
+        """Compose in ``$VISUAL``/``$EDITOR`` with the terminal handed over."""
+        return self.run_with_terminal(lambda: _edit(initial_text))
+
+
+def _edit(initial_text: str) -> str:
+    import shlex
+    import subprocess
+    import tempfile
+
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nano"
+    header = (
+        "#! Compose your prompt below. Lines starting with '#!' are ignored.\n"
+        "#! Save and quit to send; leave empty to cancel.\n\n"
+    )
+    fd, path = tempfile.mkstemp(suffix=".md", prefix="son_of_anton_prompt_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(header + (initial_text or ""))
         try:
-            return int(result)
-        except (TypeError, ValueError):
-            return None
+            subprocess.call([*shlex.split(editor), path])
+        except Exception:
+            subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    return "\n".join(ln for ln in raw.splitlines() if not ln.startswith("#!")).strip()

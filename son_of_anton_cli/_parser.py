@@ -84,6 +84,19 @@ def build_top_level_parser():
         ),
     )
     parser.add_argument(
+        "-q",
+        "--query",
+        metavar="PROMPT",
+        default=None,
+        help="Single query (non-interactive mode): runs soa-d query and prints the answer as it streams",
+    )
+    parser.add_argument(
+        "--query-file",
+        metavar="PATH",
+        default=None,
+        help="Like -q, reading the query from PATH ('-' is stdin)",
+    )
+    parser.add_argument(
         "--usage-file",
         metavar="PATH",
         default=None,

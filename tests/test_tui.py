@@ -12,20 +12,17 @@ multi-line prompt with its ↑/↓ history recall, slash completion, the backend
 event stream (assistant markdown, reasoning, tool rows, ANSI lines), the modal
 screens, and ``:q``.
 
-The backend half (``son_of_anton_tui.backend.TextualBackend``) is tested
-against the real ``cli.SonOfAntonCLI`` under the temp ``SON_OF_ANTON_HOME``
-conftest provides: the streaming seams must turn the classic CLI's callbacks
-into typed events, and the queue-based prompts must unblock when answered from
-another thread — the contract the app relies on.
+The ``backend`` fixture is a ``DaemonBackend`` on a real ``soa-d`` in a temp
+home, for the tests that need a backend only as a host for app-local behaviour.
+The daemon-backed behaviour itself (turns, queue, modals, commands) is
+tests/test_tui_daemon.py.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-import queue
 import sys
-import threading
 import time
 
 import pytest
@@ -810,650 +807,52 @@ def test_modal_screens_return_their_answers() -> None:
 # Backend (real cli.SonOfAntonCLI under the temp home)
 # ---------------------------------------------------------------------------
 
-class _Recorder:
-    def __init__(self) -> None:
-        self.events: list = []
-
-    def emit(self, kind: str, **payload) -> None:
-        self.events.append((kind, payload))
-
-    def kinds(self) -> list:
-        return [k for k, _ in self.events]
-
-
 @pytest.fixture
 def backend(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
-    # No startup prewarms: they fetch and import in background threads that write
-    # under the temp SON_OF_ANTON_HOME, and a late write races its cleanup.
-    monkeypatch.setenv("SON_OF_ANTON_DEFER_AGENT_STARTUP", "1")
-    from son_of_anton_tui.backend import TextualBackend
+    """A started DaemonBackend on a real soa-d in a throwaway home (a model
+    endpoint nothing listens on: these tests never run a turn to completion)."""
+    import shutil
+    import signal
+    import tempfile
 
-    b = TextualBackend(model="test-model", provider="openai", api_key="sk-test", base_url="https://example.invalid/v1")
-    rec = _Recorder()
-    b.attach(rec, feed_width=90)
-    assert b.prepare_interactive_state()
-    rec.events.clear()  # drop startup chrome; tests assert on what they trigger
+    from son_of_anton_tui import daemon as _daemon
+    from son_of_anton_tui.backend import DaemonBackend
+
+    if not (os.environ.get("SOA_D_BIN") or shutil.which("soa-d")):
+        pytest.fail("soa-d is not on PATH: the dev shell provides it")
+    home = tempfile.mkdtemp(prefix="soad", dir="/tmp" if os.path.isdir("/tmp") else None)
+    with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
+        fh.write(
+            '[model]\ndefault = "test-model"\nprovider = "custom"\n\n'
+            '[custom_providers.custom]\nbase_url = "http://127.0.0.1:9/v1"\nkey_env = "SOA_D_TEST_KEY"\n\n'
+            '[custom_providers.custom.models."test-model"]\n'
+        )
+    with open(os.path.join(home, ".env"), "w", encoding="utf-8") as fh:
+        fh.write("SOA_D_TEST_KEY=s3cret\n")
+    os.chmod(os.path.join(home, ".env"), 0o600)
+    monkeypatch.setenv("SON_OF_ANTON_HOME", home)
+    b = DaemonBackend(home=home, cwd=os.getcwd())
+    assert b.start(), "DaemonBackend.start() failed"
     try:
-        yield b, rec
+        yield b, None
     finally:
-        b.detach()
-        b._release_active_session()
-        db = getattr(b, "_session_db", None)
-        if db is not None:
-            db.close()
-
-
-def test_backend_streaming_seams_emit_typed_events(backend) -> None:
-    b, rec = backend
-    b._reset_stream_state()
-    b._stream_delta("<think>secret thoughts\n</think>")
-    b._stream_delta("Hello **world**")
-    b._stream_delta(None)  # intermediate turn boundary
-    b._on_tool_gen_start("terminal")
-    b._on_tool_progress("tool.started", function_name="terminal", preview="ls", function_args={"command": "ls"})
-    b._on_tool_progress("tool.completed", function_name="terminal", duration=0.4, result="ok")
-    b._stream_delta("after tools")
-    b._flush_stream()
-
-    kinds = [k for k in rec.kinds() if k != "refresh"]
-    assert kinds == [
-        "reasoning_start", "reasoning_delta", "reasoning_end",
-        "assistant_start", "assistant_delta", "assistant_end",
-        "tool_gen", "tool_start", "tool_done",
-        "assistant_start", "assistant_delta", "assistant_end",
-    ]
-    payloads = dict((k, p) for k, p in rec.events)
-    assert payloads["reasoning_delta"]["text"] == "secret thoughts\n"
-    assert payloads["tool_start"]["label"] == "ls"
-    # the app draws its own icon column, so completion carries the phrase
-    assert payloads["tool_done"]["label"] == "Running ls"
-    assert payloads["tool_done"]["duration"] == 0.4
-    # reasoning-tag content never reaches the assistant stream
-    assert all("secret" not in p.get("text", "") for k, p in rec.events if k == "assistant_delta")
-
-
-def test_backend_reroutes_every_output_funnel(backend) -> None:
-    b, rec = backend
-    import cli
-
-    cli._cprint("\x1b[2mvia cprint\x1b[0m")
-    cli.ChatConsole().print("[bold]markup[/bold]")
-    cli.ChatConsole().print("[yellow]" + "─" * 40)  # the classic turn rule is dropped
-    b.console.print("[red]console[/red]")
-    from son_of_anton_cli import banner
-
-    banner.cprint("via banner")
-
-    ansi = [p["text"] for k, p in rec.events if k == "ansi"]
-    assert any("via cprint" in t for t in ansi)
-    assert any("console" in t for t in ansi)
-    assert any("via banner" in t for t in ansi)
-    rich = [p["renderable"] for k, p in rec.events if k == "rich"]
-    assert len(rich) == 1 and rich[0].plain == "markup"
-
-
-def test_backend_prompts_block_until_answered_from_another_thread(backend) -> None:
-    b, rec = backend
-
-    def answer() -> None:
-        def wait_for(attr):
-            for _ in range(100):
-                state = getattr(b, attr)
-                if state:
-                    return state
-                time.sleep(0.02)
-            raise AssertionError(f"{attr} never appeared")
-
-        wait_for("_slash_confirm_state")["response_queue"].put("always")
-        wait_for("_tui_text_prompt_state")["response_queue"].put("typed")
-        wait_for("_tui_picker_state")["response_queue"].put(2)
-
-    threading.Thread(target=answer, daemon=True).start()
-    assert b._prompt_text_input_modal(title="t", detail="d", choices=[("once", "Once", ""), ("always", "Always", "")]) == "always"
-    assert b._slash_confirm_state is None
-    assert b._prompt_text_input("name? ") == "typed"
-    assert b._run_curses_picker("pick", ["a", "b", "c"]) == 2
-    assert "refresh" in rec.kinds()
-
-
-def test_command_approval_nudges_after_the_delay(backend, monkeypatch) -> None:
-    """A pending dangerous-command approval sends the same desktop nudge."""
-    import cli as _cli
-    from tools import clarify_gateway
-
-    b, _rec = backend
-    agent_cfg = dict(_cli.CLI_CONFIG.get("agent") or {}, prompt_notify_after=1)
-    monkeypatch.setitem(_cli.CLI_CONFIG, "agent", agent_cfg)
-    nudges: list = []
-    monkeypatch.setattr(
-        clarify_gateway, "notify_waiting", lambda body, **kw: nudges.append((body, kw.get("title", "")))
-    )
-
-    result: dict = {}
-    worker = threading.Thread(
-        target=lambda: result.setdefault("answer", b._approval_callback("rm -rf /tmp/x", "Recursive delete")),
-        daemon=True,
-    )
-    worker.start()
-    time.sleep(2.5)
-    assert worker.is_alive(), f"approval returned without an answer: {result}"
-    assert len(nudges) == 1 and nudges[0][0] == "rm -rf /tmp/x", nudges
-    assert "approval" in nudges[0][1].lower()
-
-    b._approval_state["response_queue"].put("deny")
-    worker.join(5)
-    assert result.get("answer") == "deny"
-
-
-def test_clarify_waits_for_the_answer_and_nudges_after_the_delay(backend, monkeypatch) -> None:
-    """No answer, no action: the question blocks until answered, with a nudge.
-
-    It used to give up after 120s and tell the agent to decide for itself.
-    """
-    import cli as _cli
-    from tools import clarify_gateway
-
-    b, _rec = backend
-    agent_cfg = dict(_cli.CLI_CONFIG.get("agent") or {}, prompt_notify_after=1)
-    monkeypatch.setitem(_cli.CLI_CONFIG, "agent", agent_cfg)
-    nudges: list = []
-    monkeypatch.setattr(clarify_gateway, "notify_waiting", lambda body, **kw: nudges.append(body))
-
-    result: dict = {}
-    worker = threading.Thread(
-        target=lambda: result.setdefault("answer", b._clarify_callback("Which flavour?", ["vanilla", "chocolate"])),
-        daemon=True,
-    )
-    worker.start()
-    time.sleep(2.5)
-    assert worker.is_alive(), f"clarify returned without an answer: {result}"
-    assert nudges == ["Which flavour?"], "expected exactly one desktop nudge"
-
-    b._clarify_state["response_queue"].put("chocolate")
-    worker.join(5)
-    assert result.get("answer") == "chocolate"
-
-
-def test_backend_cancel_pending_prompts_unblocks_everything(backend) -> None:
-    b, rec = backend
-    q: "queue.Queue" = queue.Queue()
-    b._slash_confirm_state = {"response_queue": q, "choices": [], "title": "", "detail": ""}
-    b._tui_picker_state = {"response_queue": q, "items": [], "title": ""}
-    b.cancel_pending_prompts()
-    assert q.get_nowait() == "cancel"
-    assert q.get_nowait() is None
-    assert b._slash_confirm_state is None and b._tui_picker_state is None
-
-
-def test_backend_slash_commands_and_status(backend) -> None:
-    b, rec = backend
-    assert b.run_slash("/exit") is False
-    snap = b.status_snapshot()
-    assert snap["model_short"] == "test-model"
-    entries = b.palette_entries()
-    assert any(cmd == "/model" for cmd, _cat, _desc in entries)
+        b.finish()
+        try:
+            c = _daemon.connect(home, autostart=False, timeout=2)
+            pid = c.hello["pid"]
+            c.close()
+            os.kill(pid, signal.SIGTERM)
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and os.path.exists(_daemon.socket_path(home)):
+                time.sleep(0.05)
+        except Exception:
+            pass
+        shutil.rmtree(home, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
 # App + backend, end to end (chat() stubbed to drive the real seams)
 # ---------------------------------------------------------------------------
-
-def test_app_runs_a_turn_and_answers_the_backend_modals(backend) -> None:
-    _textual()
-    b, _rec = backend
-    b.detach()
-    seen: dict = {}
-
-    def fake_chat(message, images=None):
-        b._reset_stream_state()
-        b._stream_reasoning_delta("pondering\n")
-        b._stream_delta("Sure — running a command.\n")
-        b._stream_delta(None)
-        b._on_tool_progress("tool.started", function_name="terminal", preview="rm -rf /tmp/x", function_args={"command": "rm -rf /tmp/x"})
-        seen["approval"] = b._approval_callback("rm -rf /tmp/x", "Recursive delete")
-        b._on_tool_progress("tool.completed", function_name="terminal", duration=0.2, result="done")
-        seen["clarify"] = b._clarify_callback("Which flavour?", ["vanilla", "chocolate"])
-        print("a bare print from the worker")
-        b._stream_delta(f"All done: **{seen['clarify']}**\n")
-        b._flush_stream()
-        return "All done"
-
-    b.chat = fake_chat
-
-    async def wait_for(pilot, pred, timeout=8.0):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            await pilot.pause(0.1)
-            if pred():
-                return True
-        return False
-
-    async def run() -> None:
-        app = _tui.SonOfAntonTUIApp(backend=b)
-        async with app.run_test(size=(150, 45)) as pilot:
-            await pilot.pause(0.3)
-            prompt = app.query_one("#input")
-            prompt.focus()
-            prompt.text = "hello"
-            await pilot.press("enter")
-            assert await wait_for(pilot, lambda: isinstance(app.screen, _tui.ChoiceModal)), "approval modal never opened"
-            assert "run a command" in app.screen._title
-            await pilot.press("2")  # allow for this session
-            assert await wait_for(pilot, lambda: isinstance(app.screen, _tui.ChoiceModal) and "input" in app.screen._title), "clarify modal never opened"
-            await pilot.press("down", "enter")  # chocolate
-            assert await wait_for(pilot, lambda: app._busy is None), "turn never finished"
-            await pilot.pause(0.3)
-
-            assert seen == {"approval": "session", "clarify": "chocolate"}
-            feed = app.query_one("#feed")
-            kinds = [b.kind for b in feed._blocks]
-            assert "user" in kinds and "reasoning" in kinds and "tool" in kinds
-            assert kinds.count("markdown") == 2
-            assert "All done: **chocolate**" in app._transcript
-            notes = "".join(s.text for b in feed._blocks if b.kind == "note" for s in b.lines)
-            assert "a bare print from the worker" in notes, "print() from the worker is captured"
-            assert "Approval: rm -rf /tmp/x" in notes, "the persisted prompt summary lands in the feed"
-            assert app.focused is prompt
-
-            prompt.text = "/verbose"
-            await pilot.press("enter")
-            assert await wait_for(pilot, lambda: app._busy is None)
-            await pilot.pause(0.3)
-            notes = "".join(s.text for b in app.query_one("#feed")._blocks if b.kind == "note" for s in b.lines)
-            assert "Tool progress" in notes, "slash command output reaches the feed"
-
-    asyncio.run(run())
-
-
-def test_ctrl_c_interrupts_a_running_turn_and_quitting_unwinds_it(backend) -> None:
-    """A turn in flight must be interruptible, and quitting must not wait on it.
-
-    Textual runs threaded workers on asyncio's default executor and the loop joins
-    those threads at shutdown, so an un-interrupted turn would stall the quit.
-    """
-    _textual()
-    b, _rec = backend
-    b.detach()
-    released = threading.Event()
-    interrupted = threading.Event()
-
-    def fake_chat(message, images=None):
-        b._stream_delta("working…")
-        released.wait(10)
-        b._flush_stream()
-        return "stopped"
-
-    def fake_interrupt() -> bool:
-        interrupted.set()
-        released.set()
-        return True
-
-    b.chat = fake_chat
-    b.interrupt_turn = fake_interrupt
-
-    async def run() -> None:
-        app = _tui.SonOfAntonTUIApp(backend=b)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause(0.3)
-            prompt = app.query_one("#input")
-            prompt.focus()
-            prompt.text = "long task"
-            await pilot.press("enter")
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and app._busy != "turn":
-                await pilot.pause(0.05)
-            assert app._busy == "turn", "turn never started"
-
-            await pilot.press("ctrl+c")
-            assert interrupted.wait(5), "ctrl+c did not reach the backend"
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and app._busy is not None:
-                await pilot.pause(0.05)
-            assert app._busy is None, "turn did not unwind after the interrupt"
-
-            # A second turn, quit while it runs: on_unmount interrupts it.
-            interrupted.clear()
-            released.clear()
-            prompt.text = "another long task"
-            await pilot.press("enter")
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and app._busy != "turn":
-                await pilot.pause(0.05)
-            app.exit()
-        assert interrupted.is_set(), "quitting mid-turn did not interrupt the agent"
-
-    asyncio.run(run())
-
-
-def test_typing_mid_turn_queues_above_the_prompt(backend) -> None:
-    """A message typed while a turn runs is queued, not dropped or redirected.
-
-    The queue shows above the prompt; ``/sendnow`` redirects the live turn onto
-    the oldest queued message, ``/sendnow <text>`` onto arbitrary text, and
-    ``/sendall`` onto the whole queue as one correction. When the live turn
-    will not take a redirect the message stays queued instead of being lost.
-    """
-    _textual()
-    b, _rec = backend
-    b.detach()
-    released = threading.Event()
-
-    class _FakeAgent:
-        _supports_active_turn_redirect = True
-
-        def __init__(self) -> None:
-            self.redirected: list = []
-            self.accept = True
-
-        def redirect(self, text):
-            if not self.accept:
-                return False
-            self.redirected.append(text)
-            return True
-
-    agent = _FakeAgent()
-    b.agent = agent
-
-    def fake_chat(message, images=None):
-        released.wait(10)
-        return "done"
-
-    b.chat = fake_chat
-
-    async def run() -> None:
-        app = _tui.SonOfAntonTUIApp(backend=b)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause(0.3)
-            prompt = app.query_one("#input")
-            prompt.focus()
-            prompt.text = "long task"
-            await pilot.press("enter")
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and app._busy != "turn":
-                await pilot.pause(0.05)
-            assert app._busy == "turn", "turn never started"
-
-            prompt.text = "first follow-up"
-            await pilot.press("enter")
-            await pilot.pause(0.2)
-            assert app._queued_items == ["first follow-up"]
-            assert prompt.text == "", "queuing must clear the prompt"
-            strip = app.query_one("#queued-strip")
-            assert strip.display is True
-            assert "first follow-up" in strip.content.plain
-            assert "/sendnow sends this now" in strip.content.plain
-
-            prompt.text = "second follow-up"
-            await pilot.press("enter")
-            await pilot.pause(0.2)
-            assert app._queued_items == ["first follow-up", "second follow-up"]
-            assert "/sendall sends all" in app.query_one("#queued-strip").content.plain
-
-            prompt.text = "/sendnow"
-            await pilot.press("enter")
-            await pilot.pause(0.2)
-            assert agent.redirected == ["first follow-up"]
-            assert app._queued_items == ["second follow-up"]
-            # The toast names what was left behind, like the copy confirmation.
-            assert any("still queued" in n.message for n in app._notifications)
-
-            prompt.text = "/sendall"
-            await pilot.press("enter")
-            await pilot.pause(0.2)
-            assert agent.redirected == ["first follow-up", "second follow-up"]
-            assert app._queued_items == []
-            assert app.query_one("#queued-strip").display is False
-
-            prompt.text = "/sendnow do it the other way"
-            await pilot.press("enter")
-            await pilot.pause(0.2)
-            assert agent.redirected[-1] == "do it the other way"
-            assert app._queued_items == []
-
-            # A live turn that cannot absorb a redirect leaves the queue alone.
-            agent.accept = False
-            prompt.text = "third follow-up"
-            await pilot.press("enter")
-            await pilot.pause(0.2)
-            prompt.text = "/sendnow"
-            await pilot.press("enter")
-            await pilot.pause(0.2)
-            assert app._queued_items == ["third follow-up"], "declined redirect must not drop it"
-            assert agent.redirected[-1] == "do it the other way"
-            assert any("queue unchanged" in n.message for n in app._notifications)
-
-            released.set()
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and app._busy is not None:
-                await pilot.pause(0.05)
-            assert app._busy is None, "turn did not unwind"
-
-    asyncio.run(run())
-
-
-def test_bare_resume_opens_a_filterable_session_picker(backend) -> None:
-    """`/resume` with no argument is a picker, not a printed number list.
-
-    The modal mirrors the model picker: type to filter, arrow keys move,
-    Enter resumes the highlighted session.
-    """
-    _textual()
-    b, _rec = backend
-    b.detach()
-    b._list_recent_sessions = lambda limit=10: [
-        {
-            "id": "20260101_000000_aaaaaa",
-            "title": "Fix login button",
-            "source": "cli",
-            "last_active": time.time(),
-        }
-    ]
-    resumed: list = []
-    b.run_slash = lambda cmd: resumed.append(cmd) or True
-
-    async def run() -> None:
-        app = _tui.SonOfAntonTUIApp(backend=b)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause(0.3)
-            prompt = app.query_one("#input")
-            prompt.focus()
-            prompt.text = "/resume"
-            await pilot.press("enter")
-            await pilot.pause(0.4)
-            assert isinstance(app.screen, _tui.ChoiceModal), type(app.screen)
-            title = app.screen.query_one(".dialog-title", _tui.Static).content
-            assert "Resume" in str(title)
-
-            await pilot.press("enter")
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and not resumed:
-                await pilot.pause(0.05)
-            assert resumed == ["/resume 20260101_000000_aaaaaa"]
-
-    asyncio.run(run())
-
-
-def test_queued_commands_never_ride_a_redirect(backend) -> None:
-    """A command queued mid-turn runs as a command when the turn ends.
-
-    ``/sendnow`` and ``/sendall`` redirect only messages; a slash command or
-    ``!`` line that rode the redirect reached the model as literal text. A
-    message queued, then ``/reasoning`` queued behind it, then ``/sendnow``
-    twice sent the model the word "/reasoning".
-    """
-    _textual()
-    b, _rec = backend
-    b.detach()
-    released = threading.Event()
-
-    class _FakeAgent:
-        _supports_active_turn_redirect = True
-
-        def __init__(self) -> None:
-            self.redirected: list = []
-
-        def redirect(self, text):
-            self.redirected.append(text)
-            return True
-
-    agent = _FakeAgent()
-    b.agent = agent
-    ran: list = []
-
-    def fake_chat(message, images=None):
-        released.wait(10)
-        return "done"
-
-    def fake_slash(command):
-        ran.append(command)
-        return True
-
-    b.chat = fake_chat
-    b.run_slash = fake_slash
-
-    async def run() -> None:
-        app = _tui.SonOfAntonTUIApp(backend=b)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause(0.3)
-            prompt = app.query_one("#input")
-            prompt.focus()
-
-            async def submit(text: str) -> None:
-                prompt.text = text
-                await pilot.press("enter")
-                await pilot.pause(0.2)
-
-            await submit("long task")
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and app._busy != "turn":
-                await pilot.pause(0.05)
-            assert app._busy == "turn", "turn never started"
-
-            await submit("that's fine")
-            await submit("/reasoning")
-            assert app._queued_items == ["that's fine", "/reasoning"]
-            await submit("/sendnow")
-            assert agent.redirected == ["that's fine"]
-            assert app._queued_items == ["/reasoning"]
-            assert "commands run when this turn ends" in app.query_one("#queued-strip").content.plain
-
-            await submit("/sendnow")
-            await submit("/sendall")
-            await submit("/sendnow /reasoning high")
-            await submit("!ls")
-            await submit("/sendall")
-            assert agent.redirected == ["that's fine"], "a command rode a redirect"
-            assert app._queued_items == ["/reasoning", "/reasoning high", "!ls"]
-
-            released.set()
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and (app._busy is not None or app._queued_items):
-                await pilot.pause(0.05)
-            assert ran[:2] == ["/reasoning", "/reasoning high"]
-
-    asyncio.run(run())
-
-
-def test_cancel_picks_queued_messages_to_drop(backend) -> None:
-    """``/cancel`` opens a picker over the queue; checked messages are dropped.
-
-    Esc keeps everything. The queue is held while the picker is open, so a
-    turn that ends meanwhile sends nothing until the pick is made, and then
-    only what was kept, in order.
-    """
-    _textual()
-    b, _rec = backend
-    b.detach()
-    released = threading.Event()
-    sent: list = []
-
-    def fake_chat(message, images=None):
-        sent.append(message)
-        if message == "long task":
-            released.wait(10)
-        return "done"
-
-    b.chat = fake_chat
-
-    async def run() -> None:
-        app = _tui.SonOfAntonTUIApp(backend=b)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause(0.3)
-            prompt = app.query_one("#input")
-            prompt.focus()
-
-            async def submit(text: str) -> None:
-                prompt.text = text
-                await pilot.press("enter")
-                await pilot.pause(0.2)
-
-            await submit("/cancel")
-            assert not isinstance(app.screen, _tui.MultiChoiceModal), "nothing queued, no picker"
-
-            await submit("long task")
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and app._busy != "turn":
-                await pilot.pause(0.05)
-            for text in ("first", "second", "third"):
-                await submit(text)
-            assert "/cancel drops" in app.query_one("#queued-strip").content.plain
-
-            await submit("/cancel")
-            assert isinstance(app.screen, _tui.MultiChoiceModal)
-            await pilot.press("escape")
-            await pilot.pause(0.2)
-            assert app._queued_items == ["first", "second", "third"], "esc must keep the queue"
-
-            await submit("/cancel")
-            assert isinstance(app.screen, _tui.MultiChoiceModal)
-            assert app._queued_items == [], "the queue is held while the picker is open"
-            # The turn ends while the picker is open: nothing may be sent yet.
-            released.set()
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and app._busy is not None:
-                await pilot.pause(0.05)
-            await pilot.pause(0.3)
-            assert sent == ["long task"], sent
-
-            app.screen.query_one("#choices").select("1")
-            await pilot.press("enter")
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and len(sent) < 3:
-                await pilot.pause(0.05)
-            assert sent == ["long task", "first", "third"], sent
-
-    asyncio.run(run())
-
-
-def test_after_dispatch_runs_queued_follow_ups_before_backend_work(backend) -> None:
-    """User follow-ups queued during a turn preempt backend-scheduled work.
-
-    Goal continuations and notifications land on ``_pending_input`` while the
-    user's own queue lives in the app; the user's messages must go first.
-    """
-    _textual()
-    b, _rec = backend
-    b.detach()
-
-    async def run() -> None:
-        app = _tui.SonOfAntonTUIApp(backend=b)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause(0.3)
-            dispatched: list = []
-
-            async def fake_dispatch(value, images=None):
-                dispatched.append(value)
-
-            app._dispatch = fake_dispatch
-            app._queued_items = ["later follow-up"]
-            b._pending_input.put("goal continuation")
-            await app._after_dispatch()
-            assert dispatched == ["later follow-up", "goal continuation"]
-            assert app._queued_items == []
-
-    asyncio.run(run())
-
 
 def test_provider_label_prefers_the_display_name_over_the_slug() -> None:
     _textual()
@@ -1463,91 +862,6 @@ def test_provider_label_prefers_the_display_name_over_the_slug() -> None:
     assert _tui._provider_label({"slug": "openai", "name": "custom", "label": "OpenAI"}) == "OpenAI"
     assert _tui._provider_label({"slug": "openai"}) == "openai"
     assert _tui._provider_label({}) == "?"
-
-
-def test_model_picker_advances_through_both_stages(backend, monkeypatch) -> None:
-    """Picking a provider must load its models, and picking a model must switch.
-
-    The picker is the one modal whose selection re-enters the backend to advance
-    its own state machine, so the callback has to actually run that work rather
-    than merely create it.
-    """
-    _textual()
-    b, _rec = backend
-    b.detach()
-
-    switched: dict = {}
-
-    class _Result:
-        success = True
-        new_model = "gpt-b"
-        target_provider = "openai"
-
-    def fake_switch_model(**kwargs):
-        switched.update(kwargs)
-        return _Result()
-
-    import son_of_anton_cli.model_switch as _ms
-
-    monkeypatch.setattr(_ms, "switch_model", fake_switch_model)
-    applied: list = []
-    b._confirm_and_apply_model_switch_result = lambda *a, **kw: applied.append(a)
-
-    b._model_picker_state = {
-        "stage": "provider",
-        "providers": [
-            {"slug": "openai", "label": "OpenAI", "models": ["gpt-a", "gpt-b"], "is_current": True},
-            {"slug": "deepseek", "label": "DeepSeek", "models": ["ds-1"]},
-        ],
-        "selected": 0,
-        "current_model": "gpt-a",
-        "current_provider": "OpenAI",
-        "user_provs": None,
-        "custom_provs": None,
-        "filter": "",
-    }
-
-    async def wait_for(pilot, pred, timeout=8.0):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            await pilot.pause(0.1)
-            if pred():
-                return True
-        return False
-
-    async def run() -> None:
-        app = _tui.SonOfAntonTUIApp(backend=b)
-        async with app.run_test(size=(140, 40)) as pilot:
-            assert await wait_for(pilot, lambda: isinstance(app.screen, _tui.ChoiceModal)), "provider modal never opened"
-            assert "Switch model" in app.screen._title
-            await pilot.press("1")  # OpenAI
-
-            assert await wait_for(
-                pilot, lambda: (b._model_picker_state or {}).get("stage") == "model"
-            ), "picking a provider did not advance the picker to its model stage"
-            assert await wait_for(
-                pilot,
-                lambda: isinstance(app.screen, _tui.ChoiceModal) and "Models" in app.screen._title,
-            ), "model list never opened"
-            assert app.screen._title.endswith("OpenAI"), f"model stage mislabels the provider: {app.screen._title}"
-            assert b._model_picker_state["model_list"] == ["gpt-a", "gpt-b"]
-            # the model in use is marked, so a switch shows what it is switching from
-            assert [c[1] for c in app.screen._choices][:2] == ["gpt-a  ●", "gpt-b"]
-
-            # The model list filters as you type (long lists), so it carries no
-            # number gutter: narrow, then Enter takes the highlighted row.
-            assert "type to filter" in str(app.screen.query_one(".dialog-hint").render())
-            await pilot.press("g", "p", "t", "-", "b")
-            await pilot.pause(0.2)
-            await pilot.press("enter")
-            assert await wait_for(pilot, lambda: bool(switched)), "picking a model never reached switch_model"
-            assert switched["raw_input"] == "gpt-b"
-            assert switched["explicit_provider"] == "openai"
-            assert await wait_for(pilot, lambda: b._model_picker_state is None), "picker did not close"
-            assert applied, "the switch result was never applied"
-            assert await wait_for(pilot, lambda: app._busy is None)
-
-    asyncio.run(run())
 
 
 # ---------------------------------------------------------------------------
@@ -1800,32 +1114,6 @@ def test_app_paints_generated_surfaces_only_when_the_terminal_answered() -> None
     asyncio.run(without_colors())
 
 
-def test_startup_output_is_replayed_once_the_app_mounts(monkeypatch) -> None:
-    """Warnings printed before the frame exists must not vanish.
-
-    Credential checks and the tirith advisory run during startup, before the app
-    has mounted and bound its sink.
-    """
-    monkeypatch.setenv("SON_OF_ANTON_DEFER_AGENT_STARTUP", "1")
-    from son_of_anton_tui.backend import TextualBackend
-
-    b = TextualBackend(model="test-model", provider="openai", api_key="sk-test", base_url="https://example.invalid/v1")
-    try:
-        b.emit("ansi", text="a warning from startup")
-        b.emit("refresh")  # transient: not worth replaying later
-        rec = _Recorder()
-        b.attach(rec, feed_width=80)
-        assert [k for k, _ in rec.events] == ["ansi"]
-        assert rec.events[0][1]["text"] == "a warning from startup"
-        # the buffer is drained, not replayed forever
-        rec.events.clear()
-        b.detach()
-        b.attach(rec, feed_width=80)
-        assert rec.events == []
-    finally:
-        b.detach()
-
-
 def test_generated_surfaces_stay_readable_under_default_text() -> None:
     """Panels must stay on the terminal background's side of the light/dark line.
 
@@ -1987,21 +1275,6 @@ def test_transcript_rows_fit_the_feed_across_resizes(backend) -> None:
                             f"{feed._width}-cell feed at term width {width}: {text[-20:]!r}"
                         )
 
-                # A console line already wrapped by the backend must land as
-                # exactly one indented row: no crop, no second wrap.
-                feed.reset_note()
-                before = len(feed._blocks)
-                b.console.print(f"width {width}: {words}")
-                await pilot.pause(0.3)
-                feed.flush()
-                printed = [blk for blk in feed._blocks[before:] if blk.kind == "note"]
-                assert printed, "console output never reached the feed"
-                rows = [strip for blk in printed for strip in blk.lines]
-                assert all(strip.cell_length <= feed._width for strip in rows)
-                assert len(rows) == sum(len(blk.texts) for blk in printed), (
-                    f"console lines re-wrapped in the feed at term width {width}"
-                )
-
     asyncio.run(run())
 
 
@@ -2120,56 +1393,6 @@ def test_blocks_are_separated_the_way_opencode_separates_them() -> None:
     asyncio.run(run())
 
 
-def test_shift_tab_cycles_permission_modes(backend) -> None:
-    """shift+tab walks default → ask → lockdown → yolo → default."""
-    from son_of_anton_tui.backend import PERMISSION_MODES
-
-    b, _rec = backend
-    assert b.permission_mode() == "default"
-    seen = [b.cycle_permission_mode() for _ in range(len(PERMISSION_MODES))]
-    assert seen == ["ask", "lockdown", "yolo", "default"], seen
-
-
-def test_permission_cycle_is_session_scoped_and_never_writes_config(backend) -> None:
-    """The cycle must not outlive its session, nor edit the user's profile.
-
-    ``/perm`` is the persistent setting; shift+tab is a session override, so a
-    new session — and the next process — starts from the configured mode again.
-    """
-    from son_of_anton_cli.config import get_config_path
-    from tools.approval import get_session_permission_mode
-
-    b, _rec = backend
-    config = get_config_path()
-    before = config.read_bytes() if config.exists() else None
-
-    b.cycle_permission_mode()
-    b.cycle_permission_mode()
-    assert b.permission_mode() == "lockdown"
-    assert get_session_permission_mode(b.session_id) == "lockdown"
-
-    after = config.read_bytes() if config.exists() else None
-    assert after == before, "cycling permission modes must not touch config.toml"
-
-    # A different session is unaffected: the override is keyed by session id.
-    assert get_session_permission_mode("some-other-session") is None
-
-
-def test_a_new_session_starts_back_on_the_configured_mode(backend) -> None:
-    from tools.approval import get_session_permission_mode
-
-    b, _rec = backend
-    b.cycle_permission_mode()  # ask
-    old_session = b.session_id
-    assert get_session_permission_mode(old_session) == "ask"
-
-    b.new_session(silent=True)
-    assert b.session_id != old_session, "new_session should mint a fresh id"
-    assert get_session_permission_mode(b.session_id) is None
-    assert get_session_permission_mode(old_session) is None, "the old override was not released"
-    assert b.permission_mode() == "default"
-
-
 def test_the_guard_honours_the_session_override() -> None:
     """The override has to reach the approval guard, not just the status line."""
     from tools.approval import (
@@ -2218,27 +1441,6 @@ def test_another_session_is_unaffected_by_an_override() -> None:
         reset_current_session_key(token)
         set_session_permission_mode("session-a", None)
         clear_session("session-a")
-
-
-def test_shift_tab_is_bound_and_reaches_the_backend(backend) -> None:
-    _textual()
-    b, _rec = backend
-    b.detach()
-    called: list = []
-    b.cycle_permission_mode = lambda: called.append(True) or "ask"
-
-    async def run() -> None:
-        app = _tui.SonOfAntonTUIApp(backend=b)
-        async with app.run_test(size=(150, 40)) as pilot:
-            await pilot.pause(0.3)
-            app.query_one("#input").focus()
-            await pilot.press("shift+tab")
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and not called:
-                await pilot.pause(0.1)
-            assert called, "shift+tab never reached the backend"
-
-    asyncio.run(run())
 
 
 def test_session_yolo_override_cannot_bypass_the_unconditional_floors() -> None:
@@ -2364,95 +1566,9 @@ def test_an_empty_editor_gives_the_draft_back(backend, monkeypatch) -> None:
     asyncio.run(run())
 
 
-def test_a_running_front_end_is_visible_to_the_low_level_guards(backend) -> None:
-    """approval / lazy-install must know not to prompt on a tty someone else owns."""
-    from son_of_anton_constants import is_frontend_active
-
-    b, _rec = backend  # the fixture attaches a sink
-    assert is_frontend_active() is True
-    b.detach()
-    assert is_frontend_active() is False
-
-
 # ---------------------------------------------------------------------------
 # Lifecycle the old input loop used to drive
 # ---------------------------------------------------------------------------
-
-def test_idle_and_post_turn_hooks_run(backend, monkeypatch) -> None:
-    """The behaviours the deleted REPL loop drove must still fire.
-
-    Config-watch, background notifications and /loop ticks ran on idle; the
-    turn footer, interrupt drain, goal judge and loop completion ran after a
-    turn. Losing them to the interface swap would be a silent regression.
-    """
-    b, _rec = backend
-    called: list = []
-
-    for name in (
-        "_check_config_mcp_changes",
-        "_drain_process_notifications",
-        "_maybe_fire_loop_tick",
-        "_turn_summary_emit",
-        "_drain_interrupt_queue_to_pending_input",
-        "_maybe_continue_goal_after_turn",
-        "_maybe_complete_loop_tick_after_turn",
-    ):
-        monkeypatch.setattr(b, name, lambda *a, _n=name, **k: called.append(_n))
-
-    b.idle_tick()
-    assert called == ["_check_config_mcp_changes", "_drain_process_notifications", "_maybe_fire_loop_tick"]
-
-    called.clear()
-    b.chat = lambda message, images=None: "ok"
-    b.run_turn("hi")
-    assert called[:4] == [
-        "_turn_summary_emit",
-        "_drain_interrupt_queue_to_pending_input",
-        "_maybe_continue_goal_after_turn",
-        "_maybe_complete_loop_tick_after_turn",
-    ], called
-    assert "_drain_process_notifications" in called
-
-    # A turn in flight owns the floor; idle work must not interleave with it.
-    called.clear()
-    b._agent_running = True
-    b.idle_tick()
-    assert called == []
-    b._agent_running = False
-
-
-def test_a_failing_hook_does_not_break_the_turn(backend, monkeypatch) -> None:
-    b, _rec = backend
-    monkeypatch.setattr(b, "_turn_summary_emit", lambda: 1 / 0)
-    b.chat = lambda message, images=None: "still fine"
-    assert b.run_turn("hi") == "still fine"
-
-
-def test_interrupt_turn_is_ignored_after_the_turn_finishes(backend) -> None:
-    # A second Ctrl+C/Escape that lands after chat() returned must not re-arm
-    # the interrupt on a finished turn. Gating interrupt_turn on the agent
-    # actually having in-flight work (not on the dispatch worker winding down)
-    # keeps that stale flag from aborting the next turn's lease acquisition.
-    b, _rec = backend
-    calls: list[object] = []
-
-    class FakeAgent:
-        def interrupt(self, message=None) -> None:
-            calls.append(message)
-
-    b.agent = FakeAgent()
-
-    # Mid-turn: an interrupt is delivered.
-    b._agent_interruptible = True
-    assert b.interrupt_turn() is True
-    assert calls == [None]
-    calls.clear()
-
-    # Turn work is done: a further interrupt is a no-op.
-    b._agent_interruptible = False
-    assert b.interrupt_turn() is False
-    assert calls == []
-
 
 # ---------------------------------------------------------------------------
 # /commit
@@ -2464,173 +1580,6 @@ def test_commit_command_is_registered() -> None:
     cmd = resolve_command("commit")
     assert cmd is not None and cmd.name == "commit"
     assert cmd.cli_only, "committing is an interactive action, not a chat-platform one"
-
-
-def test_commit_prompt_pins_the_configured_author(backend, monkeypatch) -> None:
-    """A configured identity pins the AUTHOR; the committer stays as-is.
-
-    The whole point: the log reads "authored by the configured account,
-    committed by you" — so the prompt must instruct `--author=` and must keep
-    the committer on the repository's already-configured identity.
-    """
-    b, _rec = backend
-
-    monkeypatch.setattr(
-        b, "_commit_identity", lambda: ("son-of-anton-bot", "bot@users.noreply.github.com")
-    )
-    prompt = b.build_commit_prompt()
-    assert "review all uncommitted git changes" in prompt
-    assert "matching the existing style" in prompt
-    assert "son-of-anton-bot <bot@users.noreply.github.com>" in prompt
-    # The account is applied as the author, via --author, not as the committer.
-    assert 'git commit --author="son-of-anton-bot <bot@users.noreply.github.com>"' in prompt
-    assert "Author the commit as" in prompt
-    assert "committer" in prompt
-    assert "GIT_COMMITTER_NAME" in prompt
-
-    # A different identity flows through unchanged.
-    monkeypatch.setattr(b, "_commit_identity", lambda: ("Ada", "ada@example.com"))
-    prompt = b.build_commit_prompt()
-    assert 'git commit --author="Ada <ada@example.com>"' in prompt
-
-
-def test_no_identity_is_shipped_as_a_default(backend) -> None:
-    """Out of the box we commit as nobody in particular.
-
-    Baking a name into the defaults would attribute other people's commits to
-    an account they never chose; the identity is opt-in per install.
-    """
-    from son_of_anton_cli.config import DEFAULT_CONFIG
-
-    assert DEFAULT_CONFIG["git"] == {"author_name": "", "author_email": ""}
-
-    b, _rec = backend
-    assert b._commit_identity() == ("", "")
-    assert "do not override author" in b.build_commit_prompt()
-
-
-def test_a_configured_identity_is_picked_up(backend, monkeypatch, son_of_anton_home) -> None:
-    """Setting both keys in config.toml is what turns the override on."""
-    import tomllib
-
-    from son_of_anton_cli.config import load_config_readonly
-    from utils import dump_toml
-
-    config_path = son_of_anton_home / "config.toml"
-    existing = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
-    existing = existing or {}
-    existing["git"] = {"author_name": "a-bot", "author_email": "bot@example.invalid"}
-    config_path.write_text(dump_toml(existing))
-    load_config_readonly.cache_clear() if hasattr(load_config_readonly, "cache_clear") else None
-
-    b, _rec = backend
-    assert b._commit_identity() == ("a-bot", "bot@example.invalid")
-    assert "a-bot <bot@example.invalid>" in b.build_commit_prompt()
-
-
-def test_half_an_identity_is_not_used(backend, monkeypatch) -> None:
-    """A name with no email (or vice versa) must not produce a broken author."""
-    b, _rec = backend
-    for half in ({"author_name": "a-bot"}, {"author_email": "bot@example.invalid"}):
-        monkeypatch.setattr(
-            "son_of_anton_cli.config.load_config_readonly", lambda _h=half: {"git": _h}
-        )
-        assert b._commit_identity() == ("", "")
-
-
-def test_blank_identity_leaves_git_alone(backend, monkeypatch) -> None:
-    """Blanking the config must not emit an empty author — it defers to git."""
-    b, _rec = backend
-    monkeypatch.setattr(b, "_commit_identity", lambda: ("", ""))
-    prompt = b.build_commit_prompt()
-    assert "do not override author" in prompt
-    assert "<>" not in prompt and "Commit using this account" not in prompt
-
-
-def test_commit_passes_extra_instructions_through(backend) -> None:
-    b, _rec = backend
-    prompt = b.build_commit_prompt("only the TUI files")
-    assert "only the TUI files" in prompt
-
-
-def test_commit_command_queues_a_turn_rather_than_committing_itself(backend) -> None:
-    """/commit hands the work to the agent as a normal turn.
-
-    Reviewing a diff and matching a repo's style is the model's job, and it
-    already has the terminal tool — so this adds no model-tool surface, and the
-    commit goes through the agent's usual approvals.
-    """
-    b, _rec = backend
-    b._pending_agent_seed = None
-    assert b.run_slash("/commit hold the version bump") is True
-    seed = b._pending_agent_seed
-    assert seed and "uncommitted git changes" in seed
-    assert "hold the version bump" in seed
-
-
-def test_commit_reaches_the_agent_through_the_app(backend) -> None:
-    _textual()
-    b, _rec = backend
-    b.detach()
-    sent: dict = {}
-    b.chat = lambda message, images=None: sent.setdefault("msg", message) and "ok"
-
-    async def run() -> None:
-        app = _tui.SonOfAntonTUIApp(backend=b)
-        async with app.run_test(size=(130, 32)) as pilot:
-            await pilot.pause(0.3)
-            app.query_one("#input").focus()
-            app._prompt.text = "/commit"
-            await pilot.press("enter")
-            deadline = time.monotonic() + 20
-            while time.monotonic() < deadline and "msg" not in sent:
-                await pilot.pause(0.1)
-            assert "msg" in sent, "/commit never reached the agent"
-            assert "uncommitted git changes" in sent["msg"]
-            assert b._pending_agent_seed is None, "the one-shot seed was not consumed"
-
-    asyncio.run(run())
-
-
-
-def test_plan_reaches_the_agent_through_the_app(backend) -> None:
-    """/plan, like /commit, queues a planning turn rather than doing anything itself."""
-    _textual()
-    b, _rec = backend
-    b.detach()
-    sent: dict = {}
-    b.chat = lambda message, images=None: sent.setdefault("msg", message) and "ok"
-
-    async def run() -> None:
-        app = _tui.SonOfAntonTUIApp(backend=b)
-        async with app.run_test(size=(130, 32)) as pilot:
-            await pilot.pause(0.3)
-            app.query_one("#input").focus()
-            app._prompt.text = "/plan split the gateway module"
-            await pilot.press("enter")
-            deadline = time.monotonic() + 20
-            while time.monotonic() < deadline and "msg" not in sent:
-                await pilot.pause(0.1)
-            assert "msg" in sent, "/plan never reached the agent"
-            assert sent["msg"].startswith("Plan only")
-            assert "The task to plan: split the gateway module" in sent["msg"]
-            assert b._pending_agent_seed is None, "the one-shot seed was not consumed"
-
-    asyncio.run(run())
-
-
-def test_backend_compaction_summary_is_a_typed_event(backend) -> None:
-    b, rec = backend
-    b._render_compaction_summary(
-        "## Objective\n- keep going",
-        {"before_messages": 40, "after_messages": 6, "before_tokens": 150_000, "after_tokens": 30_000},
-    )
-    events = [p for k, p in rec.events if k == "compaction"]
-    assert len(events) == 1
-    assert events[0]["text"].startswith("## Objective")
-    assert events[0]["stats"]["after_messages"] == 6
-    # the classic Rich panel path must not also fire into the feed
-    assert not [k for k, _ in rec.events if k == "rich"]
 
 
 def test_compaction_renders_as_a_divider_then_what_it_remembers() -> None:

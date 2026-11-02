@@ -30,8 +30,8 @@ const version = "soa-d 0.0.1"
 const usage = `soa-d — the Son of Anton daemon
 
 usage:
-  soa-d query [--home DIR] [--model M] [--yolo] [--system FILE] [--memory | --no-memory] PROMPT
-  soa-d oneshot [--home DIR] [--model M] [--yolo] [--system FILE] [--memory | --no-memory] [--usage-file PATH] PROMPT
+  soa-d query [--home DIR] [--model M] [--reasoning LEVEL] [--yolo] [--system FILE] [--memory | --no-memory] PROMPT
+  soa-d oneshot [--home DIR] [--model M] [--reasoning LEVEL] [--yolo] [--system FILE] [--memory | --no-memory] [--usage-file PATH] PROMPT
   soa-d serve [--home DIR]
   soa-d version
 `
@@ -64,10 +64,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 // options are the flags query and oneshot share.
 type options struct {
-	home, model, system, usageFile string
-	yolo                           bool
-	memory                         bool
-	prompt                         string
+	home, model, system, usageFile, reasoning string
+	yolo                                      bool
+	memory                                    bool
+	prompt                                    string
 }
 
 // parseOptions reads the flags and joins the rest into the prompt. ok is
@@ -77,7 +77,7 @@ func parseOptions(args []string, defaultMemory, allowUsageFile bool, stderr io.W
 	var words []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--home", "--model", "--system", "--usage-file":
+		case "--home", "--model", "--system", "--usage-file", "--reasoning":
 			if i+1 >= len(args) || (args[i] == "--usage-file" && !allowUsageFile) {
 				fmt.Fprintf(stderr, "soa-d: %s needs a value\n\n%s", args[i], usage)
 				return o, false
@@ -89,6 +89,8 @@ func parseOptions(args []string, defaultMemory, allowUsageFile bool, stderr io.W
 				o.home = v
 			case "--model":
 				o.model = v
+			case "--reasoning":
+				o.reasoning = v
 			case "--system":
 				o.system = v
 			default:
@@ -134,6 +136,9 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 	ep, err := cfg.Endpoint(o.model)
 	if err != nil {
 		return nil, err
+	}
+	if o.reasoning != "" {
+		ep.ReasoningEffort = o.reasoning
 	}
 	var system []byte
 	if o.system != "" {

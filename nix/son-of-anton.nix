@@ -21,6 +21,8 @@
   wl-clipboard,
   xclip,
   libnotify,
+  # The Go daemon: the TUI, -q and -z are its clients (packages.nix).
+  soa-d,
 
   # Flake inputs — passed explicitly by packages.nix and overlays.nix
   uv2nix,
@@ -93,6 +95,7 @@ let
     xclip
     # notify-send: an unanswered clarify question nudges the user.
     libnotify
+    soa-d
   ]
   ++ extraPackages;
 

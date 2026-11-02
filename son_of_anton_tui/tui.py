@@ -13,13 +13,13 @@ scrollback:
     opens a fuzzy command palette;
   * the ASCII "SON OF ANTON" wordmark opens the session.
 
-The agent is the unchanged ``cli.SonOfAntonCLI`` loop, wrapped by
-``son_of_anton_tui.backend.TextualBackend``: it runs ``chat()`` and slash
-commands on worker threads and emits typed events (assistant tokens,
-reasoning, tool lifecycle, ANSI lines, refresh) that this app renders.  Modal
-prompts (approval, clarify, sudo, destructive-command confirm, model picker)
-are the backend's own ``_*_state`` dicts, watched here and answered through
-their ``response_queue`` — the same contract prompt_toolkit used.
+The agent is the soa-d daemon.  ``son_of_anton_tui.backend.DaemonBackend``
+is this app's client of it: the daemon's events (assistant tokens, reasoning,
+tool lifecycle, notes, queue and status changes, approval and question
+requests) arrive as typed events that this app renders, and what the user
+types goes straight to the daemon, which starts the turn or queues it.  Modal
+prompts are the daemon's approval and question requests, answered through
+the backend.
 
 Chrome is terminal-native: Textual's ``ansi-dark`` / ``ansi-light`` theme is
 picked from the detected terminal polarity so backgrounds, foregrounds and
@@ -87,8 +87,6 @@ FEED_PADDING = 2  # #feed has `padding: 0 2`
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-# How often a handed-off session (/handoff) checks for its relay chat's messages.
-RELAY_TICK_S = 1.5
 
 # opencode gives each tool a one-glyph icon in a two-cell column
 # (INLINE_TOOL_ICON_WIDTH), so labels align no matter the tool.
@@ -219,42 +217,6 @@ def _provider_label(provider: dict) -> str:
     """
     p = provider or {}
     return str(p.get("label") or p.get("name") or p.get("slug") or "?")
-
-
-class RelayedText(str):
-    """A message the relay chat sent to a handed-off session (/handoff).
-
-    Always a user turn: it is never run as a slash command or ``!`` line,
-    whatever it starts with — the chat relays the user's words, it does not
-    drive the terminal. ``platform`` labels it in the transcript.
-    """
-
-    platform: str = ""
-
-    def __new__(cls, text: str, platform: str = "") -> "RelayedText":
-        obj = super().__new__(cls, text)
-        obj.platform = platform
-        return obj
-
-    def stripped(self) -> "RelayedText":
-        return RelayedText(self.strip(), self.platform)
-
-
-def _runs_locally(value: str) -> bool:
-    """Whether the prompt runs ``value`` itself instead of sending it to the agent.
-
-    Slash commands, ``:q`` and ``!`` shell lines never become a user message
-    (see ``_dispatch``), so none of them may ride a redirect into the live
-    turn either: steered, they reach the model as literal text. A relayed
-    message is always a message.
-    """
-    import cli as _cli
-    from son_of_anton_cli.bang_shell import is_bang_command
-
-    if isinstance(value, RelayedText):
-        return False
-    text = value.strip()
-    return _cli._looks_like_slash_command(text) or text in (":q", ":quit") or is_bang_command(text)
 
 
 def _compaction_stats_line(stats: dict) -> str:
@@ -935,29 +897,17 @@ if _TEXTUAL_AVAILABLE:
             self._completion_before = ""
             self._completion_explicit = False
             self._project_files = _completion.ProjectFiles(on_update=self._project_files_loaded)
-            # Follow-ups typed while a turn is running, in arrival order. They
-            # are dispatched after the turn unless /sendnow redirects the live
-            # turn onto one of them first.
+            # The daemon queue's texts (``queue.updated``), oldest first.
             self._queued_items: list[str] = []
-            # Set by exit(): the app is closing (Textual's own flag is private).
-            self._relay_closing = False
-            # The queue while the /cancel picker is open: out of the queue so
-            # a turn that ends meanwhile cannot send what is being dropped.
-            self._held_for_cancel: Optional[list] = None
-            # Dispatch chains in flight (a turn/command plus the follow-ups and
-            # backend work it dispatches after itself). Input arriving while a
-            # chain runs queues behind it instead of starting a second chain:
-            # two chains run turns concurrently on one session.
-            self._dispatch_chains = 0
-            # The backend prompt a modal being opened answers ((attr, state)),
-            # stamped on its screen so a prompt answered elsewhere — from the
-            # relay chat, or an interrupt — takes its modal down with it.
-            self._opening_owner: Optional[tuple] = None
-            # A handed-off session's poll is in flight (see _relay_tick).
-            self._relay_ticking = False
-            # Relayed messages that reached their turn while the app was
-            # exiting: never run, returned to the inbox on unmount.
-            self._relay_unrun: list = []
+            # Approval and question requests waiting for (or showing) a modal.
+            self._prompts: list[dict] = []
+            # The request whose modal is being opened, stamped on its screen.
+            self._opening_owner: Optional[dict] = None
+            # Blocking backend calls run here, in order, off the event loop.
+            import queue as _queue
+
+            self._jobs: _queue.Queue = _queue.Queue()
+            self._job_thread: Optional[Any] = None
             self._last_ctrl_c = 0.0
             self._snap_cache: Optional[tuple] = None
             self._log_handlers: list[tuple[logging.Handler, Any]] = []
@@ -1065,26 +1015,11 @@ if _TEXTUAL_AVAILABLE:
             self._redirect_log_handlers()
             if self.backend is not None:
                 self.backend.attach(_AppSink(self), feed_width=note_width(self._feed_inner_width()))
-                self._render_resumed_history()
             self.set_interval(0.12, self._tick_spinner)
             self.set_interval(1.0, self._tick_chrome)
-            # Independent of the idle tick, which skips while a turn runs: a
-            # handed-off session hears from its chat mid-turn too.
-            self.set_interval(RELAY_TICK_S, self._relay_tick)
             self._refresh_chrome()
 
-        def exit(self, *args: Any, **kwargs: Any) -> None:
-            self._relay_closing = True
-            super().exit(*args, **kwargs)
-
         def on_unmount(self) -> None:
-            if self.backend is not None:
-                # Textual runs threaded workers on asyncio's default executor and
-                # the loop JOINS them at shutdown, so a turn still in flight would
-                # stall the quit. Unwind it (and any blocked prompt) first.
-                self.backend.interrupt_turn()
-                self.backend.cancel_pending_prompts()
-                self._give_back_relayed()
             self._restore_log_handlers()
             try:
                 self.end_capture_print(self)
@@ -1112,6 +1047,9 @@ if _TEXTUAL_AVAILABLE:
             if self._sidebar_forced is not None:
                 return self._sidebar_forced
             return self._wide(width)
+
+        def _cwd(self) -> str:
+            return str(getattr(self.backend, "cwd", "") or os.getcwd())
 
         def _feed_width(self) -> int:
             # An overlaid sidebar floats above the column, so it takes no width.
@@ -1173,7 +1111,7 @@ if _TEXTUAL_AVAILABLE:
                 sid = getattr(self.backend, "session_id", "") or ""
                 if sid:
                     parts.append(f"session {sid}")
-            parts.append(_short_path(os.getenv("TERMINAL_CWD", os.getcwd())))
+            parts.append(_short_path(self._cwd()))
             text = Text("  ·  ".join(parts), style="dim")
             text.append("\n/help for commands · ctrl+p for the palette · :q to quit", style="dim")
             try:
@@ -1328,7 +1266,9 @@ if _TEXTUAL_AVAILABLE:
             line.dirty = True
             self._tool_gen_line = line
 
-        def _ev_tool_start(self, name: str = "", label: str = "", hidden: bool = False) -> None:
+        def _ev_tool_start(
+            self, name: str = "", label: str = "", hidden: bool = False, call_id: str = ""
+        ) -> None:
             line = self._tool_gen_line
             self._tool_gen_line = None
             if hidden:
@@ -1340,7 +1280,7 @@ if _TEXTUAL_AVAILABLE:
             line.label = label or name
             line.icon = _tool_icon(name)
             line.dirty = True
-            self._tool_lines.setdefault(name, []).append(line)
+            self._tool_lines.setdefault(call_id or name, []).append(line)
             self._running_tools.append(line)
 
         def _ev_tool_done(
@@ -1351,11 +1291,13 @@ if _TEXTUAL_AVAILABLE:
             duration: float = 0.0,
             is_error: bool = False,
             hidden: bool = False,
+            call_id: str = "",
         ) -> None:
-            rows = self._tool_lines.get(name)
+            key = call_id or name
+            rows = self._tool_lines.get(key)
             row = rows.pop(0) if rows else None
             if rows is not None and not rows:
-                self._tool_lines.pop(name, None)
+                self._tool_lines.pop(key, None)
             if row is not None and row in self._running_tools:
                 self._running_tools.remove(row)
             if hidden:
@@ -1368,6 +1310,71 @@ if _TEXTUAL_AVAILABLE:
                 row = self._feed.open_tool(name)
             row.finish(_tool_icon(name), label or name, is_error, duration)
             self._feed.changed(row)
+
+        # ---- events from the daemon backend ----
+        def _ev_user(self, text: str = "") -> None:
+            self._close_assistant()
+            self._finish_reasoning()
+            self._add_user_turn(text)
+
+        def _ev_markdown(self, text: str = "") -> None:
+            if text.strip():
+                self._feed.add_markdown(text)
+
+        def _ev_reasoning_block(self, text: str = "") -> None:
+            block = self._feed.open_reasoning()
+            block.append(text)
+            block.finish()
+            self._feed.changed(block)
+
+        def _ev_status(self, running: bool = False) -> None:
+            self._busy = "turn" if running else None
+            self._snap_cache = None
+            self._update_status()
+
+        def _ev_queue(self, items: Optional[list] = None) -> None:
+            self._queued_items = [str(i) for i in (items or [])]
+            self._update_status()
+
+        def _ev_approval(self, approval_id: str = "", subject: str = "", reasons: Optional[list] = None,
+                         choices: Optional[list] = None) -> None:
+            self._add_prompt("approval", approval_id,
+                             {"subject": subject, "reasons": reasons or [], "choices": choices or []})
+
+        def _ev_approval_resolved(self, approval_id: str = "") -> None:
+            self._resolve_prompt("approval", approval_id)
+
+        def _ev_question(self, question_id: str = "", text: str = "", choices: Optional[list] = None,
+                         multi_select: bool = False) -> None:
+            self._add_prompt("question", question_id,
+                             {"text": text, "choices": choices or [], "multi_select": multi_select})
+
+        def _ev_question_resolved(self, question_id: str = "") -> None:
+            self._resolve_prompt("question", question_id)
+
+        def _ev_prompts_clear(self) -> None:
+            entries, self._prompts = self._prompts, []
+            for entry in entries:
+                self._dismiss_modal_of(entry)
+
+        def _clear_feed(self) -> None:
+            self._feed.clear()
+            self._transcript = ""
+            self._md_block = None
+            self._reasoning = None
+            self._tool_gen_line = None
+            self._tool_lines.clear()
+            self._running_tools.clear()
+
+        def _ev_clear(self) -> None:
+            self._clear_feed()
+
+        def _ev_pick(self, purpose: str = "", title: str = "", rows: Optional[list] = None,
+                     default: int = 0, filterable: bool = False) -> None:
+            self._open_pick(purpose, title, [tuple(r) for r in rows or []], default, filterable)
+
+        def _ev_pick_many(self, purpose: str = "", title: str = "", rows: Optional[list] = None) -> None:
+            self._open_pick_many(purpose, title, [tuple(r) for r in rows or []])
 
         def _ev_turn_end(self) -> None:
             self._close_assistant()
@@ -1407,146 +1414,6 @@ if _TEXTUAL_AVAILABLE:
             self._refresh_chrome()
             if self.backend is not None:
                 self.backend.idle_tick()
-                self._dispatch_idle_work()
-
-        def _dispatch_idle_work(self) -> None:
-            """Run work that was queued while nothing was dispatching.
-
-            The idle tick drains background notifications (delegation results,
-            process completions) and due ``/loop`` wakeups into the backend's
-            queue. The old REPL ran that queue as soon as it was idle; without
-            this they waited for the user's next message.
-            """
-            backend = self.backend
-            if backend is None or self._busy or self._dispatch_chains or self._modal_open:
-                return
-            has_pending = getattr(backend, "has_pending_input", None)
-            backend_work = bool(has_pending()) if callable(has_pending) else False
-            if not (backend_work or self._queued_items):
-                return
-            self._start_dispatch_chain(self._after_dispatch())
-
-        async def _relay_tick(self) -> None:
-            """A handed-off session (/handoff): take what its relay chat sent.
-
-            Free and silent when nothing is handed off — no I/O at all. While
-            handed off, the poll (one small read; a write only to claim or for
-            the heartbeat) runs off the event loop.
-            """
-            backend = self.backend
-            if backend is None or self._relay_ticking or self._relay_closing:
-                return  # exiting: take nothing more from the chat
-            active = getattr(backend, "relay_active", None)
-            if not callable(active) or not active():
-                return
-            self._relay_ticking = True
-            try:
-                rows = await asyncio.to_thread(backend.relay_poll)
-            except Exception:
-                rows = []
-            finally:
-                self._relay_ticking = False
-            rows = list(rows or [])
-            for index, row in enumerate(rows):
-                if self._relay_deliver(row) is False:
-                    # Not deliverable yet: it and everything behind it wait,
-                    # in order, for the next tick.
-                    backend.relay_requeue(rows[index:])
-                    break
-            if rows:
-                self._update_status()
-
-        def _relay_deliver(self, row: dict) -> Optional[bool]:
-            """Run one message from the relay chat the way a typed one would run.
-
-            An open clarify takes it as the answer. Otherwise: idle, it starts
-            a turn; mid-turn it queues like a typed follow-up, unless the chat
-            asked for ``now`` — then it steers the live turn (falling back to
-            the queue, like /sendnow). ``stop`` interrupts the running turn.
-            ``continue`` (a session taken back from a headless run, /pickup)
-            carries on the turn the run left open, before anything else;
-            False until the app is idle.
-            """
-            backend = self.backend
-            mode = str(row.get("mode") or "queue")
-            label = str(row.get("platform") or "the relay chat")
-            text = str(row.get("text") or "")
-            if mode == "continue":
-                if self._relay_closing:
-                    return None
-                if self._busy or self._dispatch_chains or self._modal_open:
-                    return False  # the next tick, or _after_dispatch, runs it
-                self._start_dispatch_chain(self._continue_turn())
-                return None
-            if mode == "stop":
-                if self._busy == "turn" and backend.interrupt_turn():
-                    self._note(f"{label}: stop — interrupting the running turn", muted=True)
-                return
-            if not text.strip():
-                return
-            if backend.relay_answer_clarify(text):
-                preview = " ".join(text.split())
-                self._note(f"{label} answered the question: {preview[:120]}", muted=True)
-                return
-            if mode == "now" and self._busy == "turn" and self._redirect_into_turn(text):
-                self._redirect_feedback(text)
-                self._note(f"↳ sent from {label}", muted=True)
-                return
-            relayed = RelayedText(text, label)
-            if self._busy or self._dispatch_chains or self._modal_open:
-                self._queued_items.append(relayed)
-                self._note(f"{label} sent a message — queued for the next turn", muted=True)
-                self._update_status()
-                return
-            self._start_dispatch_chain(self._dispatch(relayed))
-
-        async def _continue_turn(self) -> None:
-            """Carry on the turn a headless relay run handed to this terminal.
-
-            No message is added: the model is called on the transcript as the
-            run left it (its last tool result, or the message it never
-            answered), and the reply streams like any turn's.
-            """
-            backend = self.backend
-            if backend is None:
-                return
-            self._reset_note_block()
-            self._note("↻ continuing the turn the headless run left open", muted=True)
-            await self._run_in_worker("turn", partial(backend.run_turn, None, continue_turn=True))
-            await self._after_dispatch()
-
-        def _give_back_relayed(self) -> None:
-            """Closing: relayed messages that never ran go back to the inbox.
-
-            Whoever hosts the session next — a headless run once this process
-            is gone — runs them; they are taken out of the local queue so a
-            dispatch during shutdown cannot run them as well.
-            """
-            pending = list(self._held_for_cancel or []) + list(self._queued_items)
-            unsent = self._relay_unrun + [i for i in pending if isinstance(i, RelayedText)]
-            if not unsent:
-                return
-            self._relay_unrun = []
-            self._queued_items = [i for i in self._queued_items if not isinstance(i, RelayedText)]
-            if self._held_for_cancel is not None:
-                self._held_for_cancel = [
-                    i for i in self._held_for_cancel if not isinstance(i, RelayedText)
-                ]
-            give_back = getattr(self.backend, "relay_return_unsent", None)
-            if callable(give_back):
-                give_back([str(i) for i in unsent])
-
-        def _start_dispatch_chain(self, coro: Any) -> None:
-            """Run ``coro`` as a dispatch chain, counted while it runs."""
-            self._dispatch_chains += 1
-
-            async def _chain() -> None:
-                try:
-                    await coro
-                finally:
-                    self._dispatch_chains -= 1
-
-            self.run_worker(_chain(), group="dispatch", exclusive=False)
 
         def _refresh_chrome(self) -> None:
             self._refresh_scheduled = False
@@ -1567,12 +1434,8 @@ if _TEXTUAL_AVAILABLE:
 
             # --- the row below the prompt --------------------------------
             if self._busy == "turn":
-                action = ""
-                try:
-                    action = (backend._render_spinner_text() or "").strip() if backend else ""
-                except Exception:
-                    action = ""
-                started = getattr(backend, "_prompt_start_time", None) if backend else None
+                action = (backend.status_action() or "").strip() if backend else ""
+                started = backend.prompt_start_time() if backend else None
                 left = Text.assemble((f"{frame} ", "bold"), action or "thinking")
                 if started:
                     left.append(f"  {time.time() - started:.0f}s", style="dim")
@@ -1581,7 +1444,7 @@ if _TEXTUAL_AVAILABLE:
                 left = Text.assemble((f"{frame} ", "bold"), f"running {self._busy}")
                 self._status_left.add_class("busy")
             else:
-                left = Text(_short_path(os.getenv("TERMINAL_CWD", os.getcwd())))
+                left = Text(_short_path(self._cwd()))
                 self._status_left.remove_class("busy")
             if self._queued_items:
                 left.append(f"  · {len(self._queued_items)} queued", style="dim")
@@ -1665,19 +1528,16 @@ if _TEXTUAL_AVAILABLE:
                 body.append("\n")
                 body.append(f"   +{hidden} more", style="dim")
             body.append("\n")
-            messages = sum(1 for item in items if not _runs_locally(item))
-            if messages > 1:
+            if len(items) > 1:
                 hint = "/sendnow sends the oldest · /sendall sends all"
-            elif messages == 1:
-                hint = "/sendnow sends this now" if len(items) == 1 else "/sendnow sends the message now"
             else:
-                hint = "commands run when this turn ends"
+                hint = "/sendnow sends this now"
             body.append(hint + " · /cancel drops", style="dim")
             strip.update(body)
             strip.display = True
 
         def _attached(self) -> list:
-            return list(getattr(self.backend, "_attached_images", None) or [])
+            return []
 
         def _snapshot(self) -> dict:
             """The backend status snapshot, reused for a short window.
@@ -1699,7 +1559,7 @@ if _TEXTUAL_AVAILABLE:
             if not self._panel.display:
                 return
             backend = self.backend
-            cwd = _short_path(os.getenv("TERMINAL_CWD", os.getcwd()))
+            cwd = _short_path(self._cwd())
             if backend is None:
                 self.query_one("#ctx-title", Static).update(self.agent_name)
                 self.query_one("#ctx-cwd", Static).update(cwd)
@@ -1747,66 +1607,52 @@ if _TEXTUAL_AVAILABLE:
             self.query_one("#ctx-elapsed", Static).update(f"session {snap.get('duration', '')}".rstrip())
 
         # ---------------- modal servicing ----------------
-        def _service_modals(self) -> None:
-            """Show a modal for whichever backend prompt is waiting (one at a time)."""
-            backend = self.backend
-            if backend is None:
+        def _add_prompt(self, kind: str, prompt_id: str, data: dict) -> None:
+            if any(e["id"] == prompt_id and e["kind"] == kind for e in self._prompts):
                 return
-            if self._modal_open:
-                self._dismiss_answered_modal()
-                return
-            for attr, opener in (
-                ("_approval_state", self._open_approval),
-                ("_clarify_state", self._open_clarify),
-                ("_slash_confirm_state", self._open_slash_confirm),
-                ("_tui_text_prompt_state", self._open_text_prompt),
-                ("_tui_picker_state", self._open_picker),
-                ("_model_picker_state", self._open_model_picker),
-            ):
-                state = getattr(backend, attr, None)
-                if not state:
-                    continue
-                # Clarify (batch) and the model picker mutate one state dict in
-                # place as they advance, so they are re-serviced on every tick;
-                # the rest are shown once per state object.
-                if self._serviced.get(attr) is state and attr not in ("_clarify_state", "_model_picker_state"):
-                    continue
-                self._serviced[attr] = state
-                self._modal_open = True
-                self._opening_owner = (attr, state)
+            self._prompts.append({"kind": kind, "id": prompt_id, "data": data, "shown": False})
+            self._service_modals()
+
+        def _resolve_prompt(self, kind: str, prompt_id: str) -> None:
+            """Answered elsewhere (or the turn was interrupted): drop it and its modal."""
+            for entry in list(self._prompts):
+                if entry["kind"] == kind and entry["id"] == prompt_id:
+                    self._prompts.remove(entry)
+                    self._dismiss_modal_of(entry)
+            self._service_modals()
+
+        def _dismiss_modal_of(self, entry: dict) -> None:
+            # The callbacks answer only a prompt still in ``_prompts``, so
+            # dismissing a screen for a removed entry answers nothing.
+            screen = self.screen
+            if getattr(screen, "_soa_owner", None) is entry:
                 try:
-                    opener(state)
+                    screen.dismiss(None)
+                except Exception:
+                    pass
+
+        def _service_modals(self) -> None:
+            """Show a modal for whichever daemon request is waiting (one at a time)."""
+            if self._modal_open:
+                return
+            for entry in self._prompts:
+                if entry["shown"]:
+                    continue
+                entry["shown"] = True
+                self._modal_open = True
+                self._opening_owner = entry
+                try:
+                    if entry["kind"] == "approval":
+                        self._open_approval(entry)
+                    else:
+                        self._open_question(entry)
                 finally:
                     self._opening_owner = None
                 return
 
-        # Prompts another surface can answer first: the relay chat (approval,
-        # clarify) or an interrupt (both).
-        _ANSWERABLE_ELSEWHERE = ("_approval_state", "_clarify_state")
-
-        def _dismiss_answered_modal(self) -> None:
-            """Take down a modal whose prompt was answered somewhere else.
-
-            The backend clears its ``_*_state`` once a prompt is resolved; a
-            modal still up for a cleared state would only answer into a queue
-            nobody reads. Its callbacks check the state's identity first, so
-            dismissing it answers nothing.
-            """
-            screen = self.screen
-            owner = getattr(screen, "_soa_owner", None)
-            if not owner or owner[0] not in self._ANSWERABLE_ELSEWHERE:
-                return
-            attr, state = owner
-            if getattr(self.backend, attr, None) is state:
-                return
-            try:
-                screen.dismiss(None)
-            except Exception:
-                pass
-
         def _push(self, screen: Any, callback: Any) -> None:
-            # A modal opened from another modal's answer (clarify → "Other…")
-            # answers the same prompt.
+            # A modal opened from another modal's answer (question → "Other…")
+            # answers the same request.
             screen._soa_owner = self._opening_owner
 
             def _done(result: Any) -> None:
@@ -1818,76 +1664,57 @@ if _TEXTUAL_AVAILABLE:
                     self._opening_owner = None
                     self._prompt.focus()
                     self._schedule_refresh()
+                    self._service_modals()
 
             self.push_screen(screen, _done)
 
-        def _open_approval(self, state: dict) -> None:
+        def _open_approval(self, entry: dict) -> None:
+            data = entry["data"]
             labels = {
-                "once": ("Allow once", "run this command now"),
-                "session": ("Allow for this session", "no more prompts for this command until exit"),
+                "once": ("Allow once", "run this now"),
+                "session": ("Allow for this session", "no more prompts for this until exit"),
                 "always": ("Always allow", "add to the allowlist"),
-                "deny": ("Deny", "the agent is told the command was refused"),
+                "deny": ("Deny", "the agent is told it was refused"),
             }
-            choices = [(k, *labels[k]) for k in state.get("choices", []) if k in labels]
-            detail = [
-                Static(Text(str(state.get("command", "")), style="bold"), classes="command"),
-                Static(Text(str(state.get("description", "")), style="dim"), classes="dialog-detail"),
-            ]
-            deadline = getattr(self.backend, "_approval_deadline", 0) or None
-            screen = ChoiceModal("The agent wants to run a command", choices, detail, deadline=deadline, accent="warning")
+            choices = [(k, *labels[k]) for k in data.get("choices", []) if k in labels]
+            detail = Text.assemble((str(data.get("subject", "")), "bold"))
+            reasons = "; ".join(str(r) for r in data.get("reasons") or [])
+            if reasons:
+                detail.append("\n" + reasons, style="dim")
+            screen = ChoiceModal("The agent wants to run a command", choices, detail, accent="warning")
 
             def _answer(result: Any) -> None:
-                if self.backend._approval_state is state:
-                    state["response_queue"].put(result or "deny")
+                if entry in self._prompts:
+                    self._prompts.remove(entry)
+                    self._bg(partial(self.backend.answer_approval, entry["id"], result or "deny"))
 
             self._push(screen, _answer)
 
-        def _open_clarify(self, state: dict) -> None:
-            backend = self.backend
-            deadline = getattr(backend, "_clarify_deadline", None) or None
-            batch = bool(state.get("questions"))
-            question = str(state.get("question", ""))
+        def _open_question(self, entry: dict) -> None:
+            data = entry["data"]
+            question = str(data.get("text", ""))
             title = "Son of Anton needs your input"
-            if batch:
-                title = f"Question {state.get('active', 0) + 1} of {len(state['questions'])}"
-            choices = list(state.get("choices") or [])
-            multi = bool(state.get("multi_select"))
+            choices = list(data.get("choices") or [])
+            multi = bool(data.get("multi_select"))
 
-            def _lock(answer: Any, meta: Optional[dict] = None) -> None:
-                """Deliver ``answer`` the way the prompt_toolkit Enter handler did."""
-                if backend._clarify_state is not state:
-                    return
-                if batch:
-                    backend._clarify_batch_lock(state, answer, meta=meta)
-                    backend._clarify_freetext = False
-                else:
-                    state["response_queue"].put(answer)
-                    backend._clarify_state = None
-                    backend._clarify_freetext = False
+            def _lock(answers: list) -> None:
+                if entry in self._prompts:
+                    self._prompts.remove(entry)
+                    self._bg(partial(self.backend.answer_question, entry["id"], answers))
 
-            def _freetext(prefill: str = "", base: Optional[list] = None) -> None:
+            dismissed = ["The user dismissed the question without answering; use your best judgement."]
+
+            def _freetext(base: Optional[list] = None) -> None:
                 self._modal_open = True
 
                 def _typed(text: Any) -> None:
-                    if text is None or not str(text).strip():
-                        if not batch:
-                            _lock("")
+                    text = str(text or "").strip()
+                    if not text:
+                        _lock(list(base) if base else dismissed)
                         return
-                    text = str(text).strip()
-                    if batch:
-                        if base is not None:
-                            import json
+                    _lock(list(base or []) + [text] if multi else [text])
 
-                            _lock(json.dumps(base + [text], ensure_ascii=False),
-                                  meta={"kind": "multi", "choices": base, "other_text": text})
-                        else:
-                            _lock(text, meta={"kind": "other", "other_text": text})
-                    else:
-                        if base:
-                            text = ", ".join(base) + ", " + text
-                        _lock(text)
-
-                self._push(TextModal(title, "your answer", prefill=prefill, detail=Text(question)), _typed)
+                self._push(TextModal(title, "your answer", detail=Text(question)), _typed)
 
             if not choices:
                 self._modal_open = False
@@ -1899,151 +1726,45 @@ if _TEXTUAL_AVAILABLE:
 
                 def _picked(result: Any) -> None:
                     if result is None:
-                        _lock("" if not batch else "[]", meta={"kind": "multi", "choices": [], "other_text": ""})
+                        _lock(dismissed)
                         return
-                    keys = [k for k in result]
+                    keys = list(result)
                     picked = [choices[int(k)] for k in keys if k != "__other__"]
                     if "__other__" in keys:
                         _freetext(base=picked)
                         return
-                    if batch:
-                        import json
+                    _lock(picked)
 
-                        _lock(json.dumps(picked, ensure_ascii=False), meta={"kind": "multi", "choices": picked, "other_text": ""})
-                    else:
-                        _lock(", ".join(picked))
-
-                self._push(MultiChoiceModal(title, rows, Text(question), deadline=deadline), _picked)
+                self._push(MultiChoiceModal(title, rows, Text(question)), _picked)
                 return
 
             rows = [(str(i), c, "") for i, c in enumerate(choices)] + [("__other__", "Other…", "type your own answer")]
 
             def _chosen(result: Any) -> None:
                 if result is None:
-                    _lock("The user dismissed the question without answering; use your best judgement.")
-                    return
-                if result == "__other__":
+                    _lock(dismissed)
+                elif result == "__other__":
                     _freetext()
-                    return
-                _lock(choices[int(result)], meta={"kind": "choice"})
+                else:
+                    _lock([choices[int(result)]])
 
-            self._push(ChoiceModal(title, rows, Text(question), deadline=deadline, default=int(state.get("selected", 0) or 0)), _chosen)
+            self._push(ChoiceModal(title, rows, Text(question)), _chosen)
 
-        def _open_slash_confirm(self, state: dict) -> None:
-            choices = [tuple(c) for c in state.get("choices", [])]
-            screen = ChoiceModal(str(state.get("title", "Confirm")), choices, Text(str(state.get("detail", ""))), accent="warning")
+        def _open_pick(self, purpose: str, title: str, rows: list, default: int, filterable: bool) -> None:
+            def _picked(result: Any) -> None:
+                if result is not None:
+                    self._bg(partial(self.backend.picked, purpose, str(result)))
 
-            def _answer(result: Any) -> None:
-                if self.backend._slash_confirm_state is state:
-                    state["response_queue"].put(result if result is not None else "cancel")
-
-            self._push(screen, _answer)
-
-        def _open_text_prompt(self, state: dict) -> None:
-            screen = TextModal(str(state.get("prompt", "")).strip() or "Input", "", password=bool(state.get("password")))
-
-            def _answer(result: Any) -> None:
-                if self.backend._tui_text_prompt_state is state:
-                    state["response_queue"].put(result)
-
-            self._push(screen, _answer)
-
-        def _open_picker(self, state: dict) -> None:
-            items = [(str(i), str(item), "") for i, item in enumerate(state.get("items", []))]
-            screen = ChoiceModal(str(state.get("title", "Pick one")), items, filterable=len(items) > 12,
-                                 default=int(state.get("default", 0) or 0))
-
-            def _answer(result: Any) -> None:
-                if self.backend._tui_picker_state is state:
-                    state["response_queue"].put(None if result is None else int(result))
-
-            self._push(screen, _answer)
-
-        def _open_model_picker(self, state: dict) -> None:
-            backend = self.backend
-            stage = state.get("stage")
-            if stage == "provider":
-                providers = state.get("providers") or []
-                rows = []
-                for i, p in enumerate(providers):
-                    label = _provider_label(p)
-                    count = p.get("total_models") or len(p.get("models") or [])
-                    desc = f"{count} model{'s' if count != 1 else ''}"
-                    if p.get("is_current"):
-                        label = f"{label}  ●"
-                    rows.append((str(i), label, desc))
-                screen = ChoiceModal(
-                    f"Switch model  ·  now {state.get('current_model', '')} via {state.get('current_provider', '')}",
-                    rows, "Pick a provider", default=int(state.get("selected", 0) or 0),
-                )
-
-                def _picked(result: Any) -> None:
-                    if backend._model_picker_state is not state:
-                        return
-                    if result is None:
-                        backend._close_model_picker()
-                        return
-                    self._advance_model_picker(state, int(result))
-
-                self._push(screen, _picked)
-                return
-            if stage == "model":
-                model_list = list(state.get("model_list") or [])
-                state["_filtered_pairs"] = None
-                current = str(state.get("current_model") or "")
-                rows = []
-                current_idx = 0
-                for i, m in enumerate(model_list):
-                    if m == current:
-                        current_idx = i
-                        rows.append((str(i), f"{m}  ●", "current"))
-                    else:
-                        rows.append((str(i), m, ""))
-                rows.append(("__back__", "← back to providers", ""))
-                screen = ChoiceModal(
-                    f"Models  ·  {_provider_label(state.get('provider_data'))}",
-                    rows,
-                    filterable=True,
-                    default=current_idx,
-                )
-
-                def _picked(result: Any) -> None:
-                    if backend._model_picker_state is not state:
-                        return
-                    if result is None:
-                        backend._close_model_picker()
-                        return
-                    self._advance_model_picker(
-                        state, len(model_list) if result == "__back__" else int(result)
-                    )
-
-                self._push(screen, _picked)
-                return
-            self._modal_open = False
-
-        def _advance_model_picker(self, state: dict, selected: int) -> None:
-            """Run the picker's own state machine for the chosen row.
-
-            Unlike every other modal — which answers a queue the worker thread is
-            already blocked on — the picker re-enters the backend to advance
-            itself (provider → model list → switch).  That work runs on a thread,
-            and this must be scheduled rather than merely created: an un-awaited
-            coroutine here silently does nothing.  ``_modal_open`` stays set until
-            it finishes so the ticker cannot re-open the stage we are leaving.
-            """
-            state["selected"] = selected
             self._modal_open = True
+            self._push(ChoiceModal(title, rows, filterable=filterable, default=default), _picked)
 
-            async def _advance() -> None:
-                try:
-                    await self._run_in_worker(
-                        "model", self.backend._handle_model_picker_selection
-                    )
-                finally:
-                    self._modal_open = False
-                    self._schedule_refresh()
+        def _open_pick_many(self, purpose: str, title: str, rows: list) -> None:
+            def _picked(result: Any) -> None:
+                if result:
+                    self._bg(partial(self.backend.picked_many, purpose, [str(k) for k in result]))
 
-            self.run_worker(_advance(), group="model-picker")
+            self._modal_open = True
+            self._push(MultiChoiceModal(title, [(k, Text(label)) for k, label in rows]), _picked)
 
         # ---------------- input ----------------
         @on(PromptArea.Submitted)
@@ -2060,23 +1781,37 @@ if _TEXTUAL_AVAILABLE:
                 history.record(value)
             await self._submit_text(value)
 
+        def _bg(self, fn: Any) -> None:
+            """Run a blocking backend call off the event loop, in submission order."""
+            self._jobs.put(fn)
+            if self._job_thread is None:
+                import threading
+
+                self._job_thread = threading.Thread(target=self._job_loop, name="tui-jobs", daemon=True)
+                self._job_thread.start()
+
+        def _job_loop(self) -> None:
+            while True:
+                fn = self._jobs.get()
+                try:
+                    fn()
+                except Exception:
+                    logging.getLogger(__name__).debug("backend call failed", exc_info=True)
+
+        def _run_command(self, value: str) -> None:
+            keep_going = self.backend.run_slash(value)
+            if keep_going is False:
+                self.call_from_thread(self.exit)
+
         async def _submit_text(self, value: str) -> None:
-            # Quit always quits, even mid-turn: the command path runs the
-            # quit handler (so /quit --delete still registers), and the app's
-            # on_unmount interrupts the running turn before the loop joins.
             first_parts = value.split(None, 1)
             head = first_parts[0].lower() if first_parts else ""
             if head[:1] in ("/", ":"):
                 from son_of_anton_cli.commands import resolve_command as _resolve_command
 
                 _cmd = _resolve_command(head)
-                if _cmd is not None and _cmd.name in ("quit", "exit"):
-                    if self.backend is None:
-                        self.exit()
-                    else:
-                        self.run_worker(
-                            self._dispatch(value), group="dispatch", exclusive=False
-                        )
+                if _cmd is not None and _cmd.name == "quit":
+                    self.exit()
                     return
 
             if self.backend is None:
@@ -2084,296 +1819,34 @@ if _TEXTUAL_AVAILABLE:
                 self._note("(no agent attached — this frame is running standalone)", muted=True)
                 return
 
-            # ``/sendnow`` redirects the live turn: with text, onto that text;
-            # bare, onto the oldest queued message. ``/sendall`` sends the whole
-            # queue as one correction. Command names are case-insensitive, like
-            # the slash-command registry.
-            parts = value.split(None, 1)
-            head = parts[0].lower() if parts else ""
-            send_now = False
-            if head == "/sendnow":
-                payload = parts[1].strip() if len(parts) > 1 else ""
-                if not payload:
-                    self._send_queued_now(send_all=False)
-                    return
-                value = payload
-                send_now = True
-            elif head == "/sendall":
-                self._send_queued_now(send_all=True)
-                return
-            elif head == "/cancel":
-                self._open_cancel_picker()
-                return
-            elif head in ("/handoff", "/pickup") and (self._busy or self._dispatch_chains):
-                # The point of /handoff is leaving mid-task: it must not wait
-                # behind the turn it hands off. Neither touches the turn.
-                self._reset_note_block()
-                self._feed.add_rich(Text(f"⚙ {value}", style="dim"))
-                self._transcript_scroll()
-                self.run_worker(
-                    partial(self.backend.run_slash, value),
-                    thread=True, exit_on_error=False, group="relay", exclusive=False,
-                )
-                return
-
-            if self._busy or self._dispatch_chains:
-                # The agent is mid-turn (or between the turns of a running
-                # chain): park the message above the prompt. /sendnow
-                # redirects the live turn onto it instead; a command never
-                # rides a redirect, so it queues and runs after the turn.
-                local = _runs_locally(value)
-                if send_now and self._busy == "turn" and not local:
-                    self._send_text_now(value)
-                else:
-                    self._queued_items.append(value)
-                    self._note("queued — runs when this turn ends" if local else "queued for the next turn", muted=True)
-                self._update_status()
-                return
-            self._start_dispatch_chain(self._dispatch(value))
-
-        def _open_cancel_picker(self) -> None:
-            """``/cancel``: check the queued messages to drop; the rest stay queued.
-
-            The queue is held while the picker is open, so a turn that ends
-            meanwhile cannot send a message the user is about to drop. What is
-            kept goes back in front, in order, and runs as it would have.
-            """
-            if not self._queued_items:
-                self._note("nothing queued", muted=True)
-                return
-            held = list(self._queued_items)
-            self._queued_items = []
-            self._held_for_cancel = held
-            self._update_status()
-            room = max(20, self._feed_width() - 12)
-            rows = []
-            for index, item in enumerate(held):
-                preview = " ".join(str(item).split())
-                if len(preview) > room:
-                    preview = preview[: room - 1] + "…"
-                rows.append((str(index), Text(preview)))
-
-            def _picked(result: Any) -> None:
-                drop = {int(key) for key in (result or [])}
-                self._held_for_cancel = None
-                self._queued_items = [item for index, item in enumerate(held) if index not in drop] + self._queued_items
-                if drop:
-                    self._note(f"dropped {len(drop)} queued message{'s' if len(drop) != 1 else ''}", muted=True)
-                self._update_status()
-                self._dispatch_idle_work()
-
-            self._modal_open = True
-            self._push(MultiChoiceModal("Drop queued messages", rows), _picked)
-
-        def _redirect_into_turn(self, payload: str) -> bool:
-            """Ask the live agent to absorb ``payload`` as a user correction.
-
-            ``agent.redirect()`` cancels only the in-flight model request and
-            retries the same turn with the correction appended; while tools are
-            executing it degrades to ``steer()`` (the text lands on the next
-            tool result). False means there is no live turn to take it.
-            """
-            agent = getattr(self.backend, "agent", None)
-            if agent is None or not getattr(agent, "_supports_active_turn_redirect", False):
-                return False
-            try:
-                return bool(agent.redirect(payload))
-            except Exception:
-                return False
-
-        def _redirect_feedback(self, payload: str) -> None:
-            """Show a successful redirect in the transcript.
-
-            Closing the open assistant/reasoning blocks makes the retried
-            response start a fresh block below the correction instead of
-            appending above it.
-            """
-            self._close_assistant()
-            self._finish_reasoning()
-            self._add_user_turn(payload)
-            self._note("sending now — redirecting the current turn…", muted=True)
-
-        def _steer_warning(self, message: str) -> None:
-            """Transient warning toast, same style as the copy confirmation."""
-            self.notify(message, severity="warning", timeout=4.0)
-
-        def _send_text_now(self, value: str) -> None:
-            """``/sendnow <text>``: redirect the live turn onto ``value``."""
-            if self._redirect_into_turn(value):
-                self._redirect_feedback(value)
-            else:
-                self._queued_items.append(value)
-                self._note("queued for the next turn", muted=True)
-                self._steer_warning("no live turn to steer — queued for the next turn")
-
-        def _send_queued_now(self, *, send_all: bool) -> None:
-            """``/sendnow`` / ``/sendall``: redirect queued messages into the turn.
-
-            Only messages ride the redirect. Queued commands and ``!`` lines
-            stay queued and run when the turn ends, as they would have anyway.
-            """
-            if not self._queued_items:
-                self._note("nothing queued to send", muted=True)
-                return
-            if self._busy != "turn":
-                self._note("no running turn to redirect — staying queued", muted=True)
-                self._steer_warning("no running turn to steer — the queue stays put")
-                return
-            messages = [index for index, item in enumerate(self._queued_items) if not _runs_locally(item)]
-            if not messages:
-                self._note("only commands are queued — they run when this turn ends", muted=True)
-                return
-            if not send_all:
-                messages = messages[:1]
-            selected = [self._queued_items[index] for index in messages]
-            payload = "\n".join(selected)
-            if not self._redirect_into_turn(payload):
-                self._note("the live turn cannot absorb a redirect — staying queued", muted=True)
-                self._steer_warning("the live turn can't take a steer right now — queue unchanged")
-                return
-            for index in reversed(messages):
-                del self._queued_items[index]
-            self._redirect_feedback(payload)
-            remaining = len(self._queued_items)
-            if remaining:
-                self.notify(
-                    f"steered the oldest queued message · {remaining} still queued",
-                    timeout=3.0,
-                )
-            self._update_status()
-
-        async def _dispatch(self, value: str, images: Optional[list] = None) -> None:
-            backend = self.backend
-            import cli as _cli
-
-            if isinstance(value, RelayedText):
-                if self._relay_closing:
-                    # Its turn came while the app is closing: it would never
-                    # run. on_unmount gives it back to the chat's queue.
-                    self._relay_unrun.append(value)
-                    return
-                # From the relay chat: a user turn, whatever it looks like.
-                text = str(value)
-                self._add_user_turn(text)
-                self._note(f"↳ sent from {value.platform or 'the relay chat'}", muted=True)
-                await self._run_in_worker("turn", partial(backend.run_turn, text, images))
-                await self._after_dispatch()
-                return
-
-            # A bare number right after a bare `/resume` picks that session, so
-            # it must not be sent to the agent as a message.
-            if backend.consume_resume_selection(value):
-                await self._after_dispatch()
-                return
-            # Bare /resume opens the filterable session picker instead of the
-            # classic numbered printout.
-            first_parts = value.strip().split(None, 1)
-            if len(first_parts) == 1 and first_parts[0].lower() in ("/resume", ":resume"):
-                await self._open_resume_picker()
-                return
-            if _cli._looks_like_slash_command(value) or value in (":q", ":quit"):
-                self._reset_note_block()
-                self._feed.add_rich(Text(f"⚙ {value}", style="dim"))
-                self._transcript_scroll()
-                keep_going = await self._run_in_worker("command", partial(backend.run_slash, value))
-                if keep_going is False:
-                    self.exit()
-                    return
-                seed = getattr(backend, "_pending_agent_seed", None)
-                if seed:
-                    backend._pending_agent_seed = None
-                    await self._dispatch(seed)
-                    return
-                await self._after_dispatch()
-                return
             if value.startswith("!"):
                 self._reset_note_block()
                 self._feed.add_rich(Text(value, style="dim"))
-                handled = await self._run_in_worker("shell", partial(backend.handle_bang_shell, value))
-                if handled:
-                    await self._after_dispatch()
-                    return
-            self._add_user_turn(value)
-            await self._run_in_worker("turn", partial(backend.run_turn, value, images))
-            await self._after_dispatch()
-
-        async def _open_resume_picker(self) -> None:
-            """Bare /resume: a filterable session list like the model picker."""
-            backend = self.backend
-            sessions = backend._list_recent_sessions(limit=500) if backend is not None else []
-            if not sessions:
-                self.notify("no sessions to resume", timeout=3.0)
-                return
-            from son_of_anton_cli.main import _relative_time
-
-            rows = []
-            for session in sessions:
-                session_id = str(session.get("id") or "")
-                if not session_id:
-                    continue
-                title = str(session.get("title") or "").strip() or "untitled"
-                source = str(session.get("source") or "")
-                when = _relative_time(session.get("last_active"))
-                detail = f"{source} · {when}" if source else when
-                rows.append((session_id, title, detail))
-            if not rows:
-                self.notify("no sessions to resume", timeout=3.0)
-                return
-
-            def _picked(result: Any) -> None:
-                if result:
-                    self._start_dispatch_chain(self._resume_session(str(result)))
-
-            self._push(ChoiceModal("Resume session", rows, filterable=True), _picked)
-
-        async def _resume_session(self, session_id: str) -> None:
-            backend = self.backend
-            if backend is None:
-                return
-            self._reset_note_block()
-            self._feed.add_rich(Text(f"⚙ /resume {session_id}", style="dim"))
-            self._transcript_scroll()
-            keep_going = await self._run_in_worker(
-                "command", partial(backend.run_slash, f"/resume {session_id}")
-            )
-            if keep_going is False:
-                self.exit()
-                return
-            await self._after_dispatch()
-
-        async def _after_dispatch(self) -> None:
-            self._schedule_refresh()
-            if self.backend is None:
-                return
-            if self._held_for_cancel is not None:
-                # The /cancel picker holds the queue; closing it dispatches.
-                return
-            # /pickup took a session back mid-turn: that turn goes on before
-            # anything typed or relayed meanwhile.
-            take_continue = getattr(self.backend, "relay_take_continue", None)
-            if not self._relay_closing and callable(take_continue) and take_continue():
-                await self._continue_turn()
-                return
-            pending = self.backend.drain_pending_input()
-            # Follow-ups the user queued while the turn ran go first; backend
-            # work (goal continuations, notifications) yields to them.
-            queued: list = [item for item in self._queued_items if isinstance(item, str) and item.strip()]
-            self._queued_items = []
-            self._update_status()
-            for item in queued:
-                await self._dispatch(
-                    item.stripped() if isinstance(item, RelayedText) else item.strip(), None
+                self._transcript_scroll()
+                self.run_worker(
+                    partial(self.backend.run_bang, value),
+                    thread=True, exit_on_error=False, group="shell", exclusive=False,
                 )
-            for item in pending:
-                images = None
-                if isinstance(item, tuple):
-                    item, images = item
-                if isinstance(item, str) and item.strip():
-                    await self._dispatch(item.strip(), images)
+                return
+
+            from son_of_anton_tui.backend import looks_like_command
+
+            if looks_like_command(value):
+                self._reset_note_block()
+                self._feed.add_rich(Text(f"⚙ {value}", style="dim"))
+                self._transcript_scroll()
+                self._bg(partial(self._run_command, value))
+                return
+            # Everything else goes straight to the daemon, which starts the
+            # turn or queues the message.
+            self._bg(partial(self.backend.send, value))
 
         async def _run_in_worker(self, label: str, fn: Any) -> Any:
-            self._busy = label
-            self._update_status()
+            """Run a blocking call on a thread. The editor shows as busy while
+            it holds the terminal; ``_busy == "turn"`` is the session's status."""
+            if label == "editor":
+                self._busy = label
+                self._update_status()
             worker = self.run_worker(fn, thread=True, exit_on_error=False, group="agent", exclusive=False)
             try:
                 return await worker.wait()
@@ -2381,8 +1854,10 @@ if _TEXTUAL_AVAILABLE:
                 self._note(f"error: {getattr(exc, 'error', exc)}", muted=True)
                 return None
             finally:
-                self._busy = None
-                self._update_status()
+                if label == "editor":
+                    running = getattr(self.backend, "session", {}).get("status") == "running"
+                    self._busy = "turn" if running else None
+                    self._update_status()
 
         # ---------------- prompt completion ----------------
         # What completes is son_of_anton_tui/completion.py; this half maps
@@ -2602,13 +2077,6 @@ if _TEXTUAL_AVAILABLE:
         # ---------------- actions ----------------
         def action_interrupt_or_quit(self) -> None:
             now = time.monotonic()
-            # /pickup waiting for a headless worker to yield: stop waiting
-            # (the worker carries on); never quit out from under it.
-            waiting = getattr(self.backend, "relay_waiting", None)
-            if callable(waiting) and waiting():
-                self.backend.relay_stop_waiting()
-                self._note("stopping the wait for the headless worker…", muted=True)
-                return
             if self._busy == "turn" and self.backend is not None:
                 if now - self._last_ctrl_c < 2.0:
                     self.backend.interrupt_turn()
@@ -2632,8 +2100,7 @@ if _TEXTUAL_AVAILABLE:
                 self.backend.interrupt_turn()
 
         def action_clear_feed(self) -> None:
-            self._feed.clear()
-            self._transcript = ""
+            self._clear_feed()
 
         def run_suspended(self, fn: Any) -> Any:
             """Run ``fn`` with the app suspended and the terminal restored."""
@@ -2669,8 +2136,8 @@ if _TEXTUAL_AVAILABLE:
             if self.backend is None:
                 return
             self.run_worker(
-                self._run_in_worker("permissions", self.backend.cycle_permission_mode),
-                group="permissions",
+                self.backend.cycle_permission_mode, thread=True, exit_on_error=False,
+                group="permissions", exclusive=False,
             )
 
         def action_toggle_sidebar(self) -> None:
@@ -2684,83 +2151,18 @@ if _TEXTUAL_AVAILABLE:
         def action_feed_page_down(self) -> None:
             self._feed.scroll_page_down()
 
-        # ---------------- resume ----------------
-        def _render_resumed_history(self) -> None:
-            backend = self.backend
-            history = getattr(backend, "_resume_display_history", None) or getattr(backend, "conversation_history", None)
-            if not getattr(backend, "_resumed", False) or not history:
-                return
-            try:
-                pairs = int((backend.config or {}).get("display", {}).get("resume_exchanges", 0))
-            except Exception:
-                pairs = 0
-            shown = [m for m in history if m.get("role") in ("user", "assistant") and m.get("display_kind") != "hidden"]
-            # resume_exchanges == 0 (the default) paints the whole lineage:
-            # the virtual feed renders per viewport, so cost stays O(visible
-            # lines) however long the session is.  A positive value keeps the
-            # old recap behaviour.
-            from son_of_anton_cli.cli_agent_setup_mixin import resume_recap_limit
-
-            limit = resume_recap_limit(pairs, len(shown))
-            hidden = max(0, len(shown) - limit)
-            self._note(f"resumed session {backend.session_id}" + (f" · {hidden} earlier messages not shown" if hidden else ""), muted=True)
-            for msg in shown[-limit:]:
-                content = msg.get("content")
-                if isinstance(content, list):
-                    content = " ".join(
-                        p.get("text", "") if isinstance(p, dict) and p.get("type") == "text" else "[image]"
-                        for p in content if isinstance(p, dict)
-                    )
-                content = (content or "").strip()
-                if msg.get("role") == "user":
-                    if content:
-                        self._feed.add_user(content)
-                else:
-                    try:
-                        import cli as _cli
-
-                        content = _cli._strip_reasoning_tags(content)
-                    except Exception:
-                        pass
-                    if content:
-                        self._feed.add_markdown(content)
-                    for call in msg.get("tool_calls") or []:
-                        name = (call.get("function") or {}).get("name") if isinstance(call, dict) else None
-                        if name:
-                            row = self._feed.open_tool(name)
-                            row.finish(_tool_icon(name), name, False, 0.0)
-                            self._feed.changed(row)
-            self._reset_note_block()
-
 else:
     SonOfAntonTUIApp = None  # type: ignore
     PromptArea = None  # type: ignore
 
 
 def run_app(backend: Any) -> None:
-    """Launch the Textual front-end around a prepared ``TextualBackend``."""
+    """Launch the Textual front-end around a started ``DaemonBackend``."""
     if not _TEXTUAL_AVAILABLE or SonOfAntonTUIApp is None:
         from son_of_anton_constants import missing_dependency_message
 
         print(missing_dependency_message("Textual (a core dependency)"))
         return
-    if not backend.prepare_interactive_state():
-        return
-    # Keep the retrieval index fresh for CLI-only installs (no gateway
-    # housekeeping loop): a background incremental sync when the last one is
-    # older than memory.rag.reindex_interval_minutes. Non-blocking; a no-op
-    # when RAG is off.
-    try:
-        from agent.rag import maybe_refresh_index_async
-
-        maybe_refresh_index_async()
-    except Exception:
-        pass
-    if getattr(backend, "_resumed", False):
-        try:
-            backend._preload_resumed_session()
-        except Exception:
-            pass
     # Ask the terminal for its colours BEFORE Textual takes the tty: the reply
     # is what lets the app generate panel surfaces that still follow the theme.
     from son_of_anton_tui.palette import query_terminal_colors
