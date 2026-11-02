@@ -3,7 +3,7 @@ package agent_test
 // These tests pin the invariants in daemon/SPEC.md section 4 on the exact
 // bytes the model server receives: a session's system prompt never changes,
 // each request replays the previous one byte for byte, roles alternate, and a
-// failed turn leaves no trace.
+// turn that did not finish is recorded and closed on an assistant row.
 
 import (
 	"bytes"
@@ -169,7 +169,11 @@ func TestRolesAlternate(t *testing.T) {
 	}
 }
 
-func TestAFailedTurnLeavesNoTrace(t *testing.T) {
+// A turn whose request fails is still recorded: the user's message and a
+// closing assistant row (agent.FailedText), so the next turn alternates.
+// (Phase 2a: this replaces "a failed turn leaves no trace"; a lost message
+// and a transcript ending on a user row were both worse.)
+func TestAFailedTurnIsRecordedAndClosed(t *testing.T) {
 	st := newStore(t)
 	fake := fakellm.New(t,
 		fakellm.Turn{Content: "hello"},
@@ -178,12 +182,12 @@ func TestAFailedTurnLeavesNoTrace(t *testing.T) {
 	)
 	s, _ := runner(st, fake, "sys", nil).NewSession(ctx, "interactive", "/w")
 	send(t, s, "one")
-	if _, err := s.Send(ctx, "two", nil); err == nil {
-		t.Fatal("the second turn must fail")
+	if _, err := s.Send(ctx, "two", nil); err == nil || errors.Is(err, agent.ErrStopped) {
+		t.Fatalf("the second turn must fail, err = %v", err)
 	}
 	msgs, _ := st.Messages(ctx, s.ID())
-	if len(msgs) != 2 {
-		t.Fatalf("stored %d messages after a failed turn, want 2 (the failed turn rolled back)", len(msgs))
+	if len(msgs) != 4 || msgs[2].Role != "user" || msgs[2].Content != "two" || msgs[3].Role != "assistant" || msgs[3].Content != agent.FailedText {
+		t.Fatalf("after a failed turn the store holds %+v, want the user's message and a closing %q", msgs, agent.FailedText)
 	}
 	send(t, s, "three")
 	got := decode(t, fake.Messages(3))
@@ -191,12 +195,14 @@ func TestAFailedTurnLeavesNoTrace(t *testing.T) {
 	for _, m := range got {
 		roles = append(roles, m.Role)
 	}
-	if strings.Join(roles, ",") != "system,user,assistant,user" || got[3].Content != "three" {
-		t.Fatalf("after a failed turn the next request is %v / %q", roles, got[3].Content)
+	if strings.Join(roles, ",") != "system,user,assistant,user,assistant,user" || got[5].Content != "three" {
+		t.Fatalf("after a failed turn the next request is %v / %q", roles, got[5].Content)
 	}
 }
 
-func TestAnInterruptedTurnLeavesNoTrace(t *testing.T) {
+// An interrupted first request keeps the user's message and closes with
+// agent.InterruptedText when nothing had streamed.
+func TestAnInterruptedFirstRequestKeepsTheMessage(t *testing.T) {
 	st := newStore(t)
 	fake := fakellm.New(t, fakellm.Turn{Hang: true})
 	s, _ := runner(st, fake, "sys", nil).NewSession(ctx, "interactive", "/w")
@@ -205,11 +211,11 @@ func TestAnInterruptedTurnLeavesNoTrace(t *testing.T) {
 	if _, err := s.Send(cctx, "slow", nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	if msgs, _ := st.Messages(ctx, s.ID()); len(msgs) != 0 {
-		t.Fatalf("an interrupted first turn stored %d messages", len(msgs))
+	msgs, _ := st.Messages(ctx, s.ID())
+	if len(msgs) != 2 || msgs[0].Content != "slow" || msgs[1].Role != "assistant" || msgs[1].Content != agent.InterruptedText {
+		t.Fatalf("an interrupted first turn stored %+v", msgs)
 	}
 }
-
 func TestTheStoredAPIContentIsWhatGetsReplayed(t *testing.T) {
 	st := newStore(t)
 	fake := fakellm.New(t, fakellm.Turn{Content: "next answer"})

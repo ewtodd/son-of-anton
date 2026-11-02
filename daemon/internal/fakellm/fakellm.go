@@ -52,6 +52,10 @@ type Turn struct {
 	// StallAfterFirst sends the first content delta, then goes silent until
 	// the client gives up (idle-timeout tests).
 	StallAfterFirst bool
+	// Release, when non-nil, sends the first content delta and then waits
+	// until the channel is closed (or the client goes away) before sending
+	// the rest: a turn the test holds open mid-stream.
+	Release chan struct{}
 }
 
 // Server is a running fake. URL is the base URL, ending in /v1.
@@ -63,6 +67,7 @@ type Server struct {
 	turns   []Turn
 	bodies  [][]byte
 	headers []http.Header
+	models  []string
 }
 
 // New starts a fake that answers the given turns in order.
@@ -71,6 +76,7 @@ func New(t testing.TB, turns ...Turn) *Server {
 	s := &Server{t: t, turns: turns}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", s.handle)
+	mux.HandleFunc("/v1/models", s.handleModels)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	s.URL = srv.URL + "/v1"
@@ -213,6 +219,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			<-r.Context().Done()
 			return
 		}
+		if turn.Release != nil && i == 0 {
+			select {
+			case <-turn.Release:
+			case <-r.Context().Done():
+				return
+			}
+		}
 	}
 	for i, tc := range turn.ToolCalls {
 		send(chunk(map[string]any{"tool_calls": []any{map[string]any{
@@ -270,4 +283,22 @@ func split(s string, n int) []string {
 		runes = runes[k:]
 	}
 	return out
+}
+
+// SetModels sets the ids GET /v1/models lists (none by default).
+func (s *Server) SetModels(ids ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.models = append([]string(nil), ids...)
+}
+
+func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	data := make([]any, 0, len(s.models))
+	for _, id := range s.models {
+		data = append(data, map[string]any{"id": id, "object": "model"})
+	}
+	s.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
 }

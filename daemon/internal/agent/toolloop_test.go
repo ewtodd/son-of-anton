@@ -100,8 +100,9 @@ func roles(ms []fullMsg) string {
 }
 
 // checkPairing asserts the alternation rule with tools: user and assistant
-// never repeat, and each tool message answers a call of the assistant message
-// before it, exactly once per call.
+// never repeat, a user message never follows a tool result directly (strict
+// providers misread tool -> user; phase 2a), and each tool message answers a
+// call of the assistant message before it, exactly once per call.
 func checkPairing(t *testing.T, ms []fullMsg) {
 	t.Helper()
 	pending := map[string]bool{}
@@ -119,6 +120,9 @@ func checkPairing(t *testing.T, ms []fullMsg) {
 			}
 			if i > 0 && ms[i-1].Role == m.Role {
 				t.Fatalf("two %s messages in a row at %d (roles %s)", m.Role, i, roles(ms))
+			}
+			if i > 0 && m.Role == "user" && ms[i-1].Role == "tool" {
+				t.Fatalf("a user message follows a tool result at %d (roles %s)", i, roles(ms))
 			}
 		}
 		for _, c := range m.ToolCalls {
@@ -246,12 +250,12 @@ func TestAFailureAfterAToolStepKeepsTheStep(t *testing.T) {
 		t.Fatal("the turn must fail")
 	}
 	stored, _ := st.Messages(ctx, s.ID())
-	if len(stored) != 3 {
-		t.Fatalf("stored %d messages; the completed tool step (user, assistant, tool) must be kept", len(stored))
+	if len(stored) != 4 || stored[3].Role != "assistant" || stored[3].Content != agent.FailedText {
+		t.Fatalf("stored %+v; the completed tool step (user, assistant, tool) must be kept and closed with %q", stored, agent.FailedText)
 	}
 	send(t, s, "retry")
 	ms := full(t, fake.Messages(3))
-	if roles(ms) != "system,user,assistant,tool,user" {
+	if roles(ms) != "system,user,assistant,tool,assistant,user" {
 		t.Fatalf("after a failed step: %s", roles(ms))
 	}
 	checkPairing(t, ms)
@@ -278,11 +282,14 @@ func TestAnInterruptDuringToolsKeepsEveryCallAnswered(t *testing.T) {
 		t.Fatal("calls after the interrupt must not run")
 	}
 	stored, _ := st.Messages(ctx, s.ID())
-	if len(stored) != 4 || stored[2].ToolCallID != "c1" || stored[3].ToolCallID != "c2" {
+	if len(stored) != 5 || stored[2].ToolCallID != "c1" || stored[3].ToolCallID != "c2" {
 		t.Fatalf("stored %+v; both calls need results", stored)
 	}
 	if !strings.Contains(strings.ToLower(stored[3].Content), "cancel") {
 		t.Fatalf("the skipped call's result = %q, want it to say it was cancelled", stored[3].Content)
+	}
+	if stored[4].Role != "assistant" || stored[4].Content != agent.InterruptedText {
+		t.Fatalf("an interrupted tool step closes with %q, got %+v", agent.InterruptedText, stored[4])
 	}
 }
 
