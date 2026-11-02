@@ -33,22 +33,28 @@ type Message struct {
 type ToolCall struct {
 	ID       string       `json:"id"`
 	Type     string       `json:"type"`
-	Function ToolFunction `json:"function"`
+	Function FunctionCall `json:"function"`
 }
 
-// ToolFunction is the function payload shared by tool schemas (name,
-// description, parameters) and tool calls (name, arguments).
+// FunctionCall is the function payload of a tool call. Arguments is always
+// serialized (no omitempty): a call must carry its arguments key even when
+// empty.
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// ToolFunction is the function payload of a tool schema.
 type ToolFunction struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
-	Arguments   string          `json:"arguments,omitempty"`
 }
 
 // Tool is a tool schema entry.
 type Tool struct {
-	Type     string `json:"type"`
-	Function any    `json:"function"`
+	Type     string       `json:"type"`
+	Function ToolFunction `json:"function"`
 }
 
 // Request is one chat completion request.
