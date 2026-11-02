@@ -232,3 +232,23 @@ func TestToolSchemasAreTyped(t *testing.T) {
 		t.Fatalf("tool = %+v", tool)
 	}
 }
+
+func TestToolChoiceIsSentOnlyWhenSet(t *testing.T) {
+	fake := fakellm.New(t, fakellm.Turn{Content: "a"}, fakellm.Turn{Content: "b"})
+	c := client(fake)
+	req := basicRequest()
+	req.ToolChoice = "none"
+	if _, err := c.Complete(context.Background(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	req.ToolChoice = ""
+	if _, err := c.Complete(context.Background(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	if fake.Request(0)["tool_choice"] != "none" {
+		t.Fatalf("tool_choice = %v", fake.Request(0)["tool_choice"])
+	}
+	if _, present := fake.Request(1)["tool_choice"]; present {
+		t.Fatal("an empty tool_choice must be omitted")
+	}
+}

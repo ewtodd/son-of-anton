@@ -197,3 +197,26 @@ func TestDataSurvivesReopen(t *testing.T) {
 		t.Fatalf("after reopen: %+v, %v", msgs, err)
 	}
 }
+
+func TestTheApprovalAllowlistPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "soa-d.db")
+	a, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	al := a.Allowlist()
+	if al.Has("git reset --hard") {
+		t.Fatal("a fresh allowlist is empty")
+	}
+	if err := al.Add("git reset --hard"); err != nil {
+		t.Fatal(err)
+	}
+	if err := al.Add("git reset --hard"); err != nil {
+		t.Fatalf("adding a key twice is fine: %v", err)
+	}
+	_ = a.Close()
+	b := open(t, path)
+	if !b.Allowlist().Has("git reset --hard") || b.Allowlist().Has("git push --force") {
+		t.Fatal("allowlisted keys must survive a reopen, and only those")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
 )
 
@@ -230,5 +231,24 @@ func TestUnknownProviderIsNamedInTheError(t *testing.T) {
 func TestMalformedConfigIsAnError(t *testing.T) {
 	if _, err := config.Load(home(t, "[model\ndefault=", "")); err == nil {
 		t.Fatal("Load must fail on invalid TOML")
+	}
+}
+
+func TestPermissionMode(t *testing.T) {
+	cases := []struct {
+		extra string
+		want  approval.Mode
+	}{
+		{"", approval.Default},
+		{"[approvals]\nmode = \"smart\"\n", approval.Default},
+		{"[approvals]\nmode = \"manual\"\n", approval.Ask},
+		{"[approvals]\nmode = \"off\"\n", approval.Yolo},
+		{"[approvals]\nmode = \"off\"\n[security]\nlockdown = true\n", approval.Lockdown},
+		{"[security]\nlockdown = true\n", approval.Lockdown},
+	}
+	for _, c := range cases {
+		if got := load(t, home(t, sample+c.extra, "")).PermissionMode(); got != c.want {
+			t.Errorf("PermissionMode with %q = %q, want %q", c.extra, got, c.want)
+		}
 	}
 }

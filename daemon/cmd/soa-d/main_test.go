@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,5 +119,64 @@ func TestUsageErrors(t *testing.T) {
 	out.Reset()
 	if code := run([]string{"version"}, &out, &errOut); code != 0 || out.Len() == 0 {
 		t.Fatalf("version: exit %d, stdout %q", code, out.String())
+	}
+}
+
+func toolTurns(command string) []fakellm.Turn {
+	args, _ := json.Marshal(map[string]string{"command": command})
+	return []fakellm.Turn{
+		{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "terminal", Arguments: string(args)}}},
+		{Content: "done"},
+	}
+}
+
+func TestQueryRunsToolsInTheWorkingDirectory(t *testing.T) {
+	fake := fakellm.New(t, toolTurns("echo made > made.txt")...)
+	home := testHome(t, fake, "")
+	work := t.TempDir()
+	t.Chdir(work)
+	var out, errOut bytes.Buffer
+	if code := run([]string{"query", "--home", home, "make a file"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, errOut.String())
+	}
+	if out.String() != "done\n" {
+		t.Fatalf("stdout = %q; tool activity must not reach stdout", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(work, "made.txt")); err != nil {
+		t.Fatal("the tool call must run in the query's working directory")
+	}
+	if tools, _ := fake.Request(0)["tools"].([]any); len(tools) != 5 {
+		t.Fatalf("query must offer the five builtin tools, got %d", len(tools))
+	}
+}
+
+func TestQueryDeniesDangerousCommandsUnlessYolo(t *testing.T) {
+	for _, yolo := range []bool{false, true} {
+		fake := fakellm.New(t, toolTurns("rm -r victim")...)
+		home := testHome(t, fake, "")
+		work := t.TempDir()
+		victim := filepath.Join(work, "victim")
+		if err := os.MkdirAll(filepath.Join(victim, "inner"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(work)
+		args := []string{"query", "--home", home}
+		if yolo {
+			args = append(args, "--yolo")
+		}
+		var out, errOut bytes.Buffer
+		if code := run(append(args, "clean up"), &out, &errOut); code != 0 {
+			t.Fatalf("yolo=%v: exit %d, stderr %q", yolo, code, errOut.String())
+		}
+		_, err := os.Stat(victim)
+		if !yolo && err != nil {
+			t.Fatal("without --yolo a dangerous command must be denied: nobody is there to approve it")
+		}
+		if yolo && !os.IsNotExist(err) {
+			t.Fatal("with --yolo the command runs")
+		}
+		if !yolo && !bytes.Contains(fake.Messages(1)[3], []byte("BLOCKED")) {
+			t.Fatalf("the model must be told the command was blocked: %s", fake.Messages(1)[3])
+		}
 	}
 }
