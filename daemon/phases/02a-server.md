@@ -56,14 +56,20 @@ When a turn does not end with a final answer:
 
 ```go
 func (s *Session) Stop(finishTools bool)
+func (s *Session) Begin()
 ```
 
-Ends the running turn at the next safe point; a no-op when idle (never
+`Stop` ends the running turn at the next safe point; a no-op when idle (never
 carried into a later turn). A model request in flight is cancelled. With
 `finishTools`, running tool calls finish and keep their results; without, they
 are cancelled (their context is cancelled). Calls that had not started get the
 existing cancellation result. Then the step is persisted and the closing row
 added. Calling `Stop` from inside `onEvent` is not required to work.
+
+`Begin` (added in review) reserves the next turn: a `Stop` between `Begin`
+and the end of the next `Send` applies to that `Send`, even before it has
+registered. The server calls it before starting `Send` on a goroutine, so a
+steer that lands in between is not lost.
 
 ```go
 func (s *Session) SetModel(c *provider.Client, model, effort string) // from the next turn
@@ -279,7 +285,7 @@ attach.
 | `question.request` | `question_id`, `text`, `choices`, `multi_select` |
 | `question.resolved` | `question_id` |
 | `queue.updated` | `items` |
-| `session.updated` | `session` |
+| `session.updated` | `state` (the session object; `session` is the id, as on every event) |
 | `role` | `as` |
 | `notice` | `level` (`info` \| `warning` \| `error`), `text` |
 

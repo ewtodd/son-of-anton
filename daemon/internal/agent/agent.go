@@ -150,10 +150,24 @@ type Session struct {
 	turn          *turnCtl
 }
 
-// turnCtl is the running turn's stop switches.
+// turnCtl is the running turn's stop switches. A reserved turn (Begin, no
+// Send yet) has no cancel funcs; a Stop on it is recorded for Send to apply.
 type turnCtl struct {
 	reqCancel, toolCancel context.CancelFunc
 	stopped               atomic.Bool
+	reserved              bool // Begin, no Send yet (under Session.mu)
+	cancelTools           bool // a Stop while reserved did not let tools finish
+}
+
+// Begin reserves the next turn: a Stop from now until that Send ends applies
+// to it, even one that lands before Send has started. A caller that runs
+// Send on another goroutine calls Begin first, so no stop falls in between.
+func (s *Session) Begin() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turn == nil {
+		s.turn = &turnCtl{reserved: true}
+	}
 }
 
 // Stop ends the running turn at the next safe point; a no-op when idle. A
@@ -163,6 +177,12 @@ type turnCtl struct {
 func (s *Session) Stop(finishTools bool) {
 	s.mu.Lock()
 	t := s.turn
+	if t != nil && t.reserved {
+		t.stopped.Store(true)
+		t.cancelTools = t.cancelTools || !finishTools
+		s.mu.Unlock()
+		return
+	}
 	s.mu.Unlock()
 	if t == nil {
 		return
@@ -236,7 +256,8 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 	toolCtx, toolCancel := context.WithCancel(ctx)
 	t := &turnCtl{reqCancel: reqCancel, toolCancel: toolCancel}
 	s.mu.Lock()
-	if s.turn != nil {
+	reserved := s.turn
+	if reserved != nil && !reserved.reserved {
 		s.mu.Unlock()
 		reqCancel()
 		toolCancel()
@@ -245,6 +266,15 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 	s.turn = t
 	client, model, effort := s.client, s.model, s.effort
 	s.mu.Unlock()
+	// A Stop that landed between Begin and here applies now; none can reach
+	// the reservation any more.
+	if reserved != nil && reserved.stopped.Load() {
+		t.stopped.Store(true)
+		reqCancel()
+		if reserved.cancelTools {
+			toolCancel()
+		}
+	}
 	defer func() {
 		s.mu.Lock()
 		s.turn = nil

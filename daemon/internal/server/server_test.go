@@ -5,6 +5,8 @@ package server_test
 import (
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +59,31 @@ func TestHelloComesFirst(t *testing.T) {
 	}
 	// The connection survives a bad line.
 	c.ok("session.list", map[string]any{})
+}
+
+// A client that sends its requests and then closes its side (a script piping
+// into socat, say) still gets every reply.
+func TestRepliesSurviveAHalfClose(t *testing.T) {
+	h := newHarness(t, fakellm.New(t), "")
+	conn, err := net.Dial("unix", h.sock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	reqs := `{"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":1,"client":"t"}}` + "\n" +
+		`{"jsonrpc":"2.0","id":2,"method":"session.create","params":{"cwd":"` + t.TempDir() + `"}}` + "\n" +
+		`{"jsonrpc":"2.0","id":3,"method":"session.list","params":{}}` + "\n"
+	if _, err := conn.Write([]byte(reqs)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.(*net.UnixConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(waitFor))
+	b, _ := io.ReadAll(conn)
+	if lines := strings.Split(strings.TrimSpace(string(b)), "\n"); len(lines) != 3 {
+		t.Fatalf("got %d replies after a half-close, want 3:\n%s", len(lines), b)
+	}
 }
 
 func TestTheSocketIsPrivateAndExclusive(t *testing.T) {
@@ -126,8 +153,8 @@ func TestATurnStreamsAndCommits(t *testing.T) {
 	if str(end, "status") != "done" || obj(end, "usage")["prompt_tokens"] != 50.0 || end["api_calls"] != 1.0 {
 		t.Fatalf("turn.end = %v", end)
 	}
-	upd := c.awaitWhere("session.updated", func(e map[string]any) bool { return str(obj(e, "session"), "status") == "idle" })
-	s := obj(upd, "session")
+	upd := c.awaitWhere("session.updated", func(e map[string]any) bool { return str(obj(e, "state"), "status") == "idle" })
+	s := obj(upd, "state")
 	if s["context_tokens"] != 55.0 || obj(s, "usage")["input_tokens"] != 50.0 || obj(s, "usage")["api_calls"] != 1.0 {
 		t.Fatalf("session after the turn = %v", s)
 	}
@@ -668,7 +695,7 @@ func TestSessionListModelsAndSettings(t *testing.T) {
 	if s := obj(r, "session"); str(s, "model") != "other-model" || str(s, "reasoning_effort") != "low" || str(s, "mode") != "yolo" {
 		t.Fatalf("session.set = %v", r)
 	}
-	c.awaitWhere("session.updated", func(e map[string]any) bool { return str(obj(e, "session"), "model") == "other-model" })
+	c.awaitWhere("session.updated", func(e map[string]any) bool { return str(obj(e, "state"), "model") == "other-model" })
 	c.fails("session.set", map[string]any{"session": s1, "mode": "bogus"}, codeBadParams)
 
 	c.send(s1, "again")
@@ -735,9 +762,9 @@ func TestStopKillsBackgroundProcesses(t *testing.T) {
 	if pid == 0 || syscall.Kill(pid, 0) != nil {
 		t.Fatal("the background process should be running")
 	}
-	upd := c.awaitWhere("session.updated", func(e map[string]any) bool { return str(obj(e, "session"), "status") == "idle" })
-	if obj(upd, "session")["background_processes"] != 1.0 {
-		t.Fatalf("session = %v; it counts running background processes", obj(upd, "session"))
+	upd := c.awaitWhere("session.updated", func(e map[string]any) bool { return str(obj(e, "state"), "status") == "idle" })
+	if obj(upd, "state")["background_processes"] != 1.0 {
+		t.Fatalf("session = %v; it counts running background processes", obj(upd, "state"))
 	}
 	if r := c.ok("command.run", map[string]any{"session": id, "name": "stop"}); r["killed"] != 1.0 {
 		t.Fatalf("stop = %v", r)

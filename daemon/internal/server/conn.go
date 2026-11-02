@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net"
 	"sync"
+	"time"
 )
 
 // Error codes (phases/02a-server.md, "Errors").
@@ -58,11 +59,12 @@ type conn struct {
 	client string
 	hello  bool
 
-	omu  sync.Mutex // guards out and dead; the innermost lock
-	out  [][]byte
-	dead bool
-	wake chan struct{}
-	done chan struct{}
+	omu     sync.Mutex // guards out, writing and dead; the innermost lock
+	out     [][]byte
+	writing bool // writeLoop holds a batch it has not finished writing
+	dead    bool
+	wake    chan struct{}
+	done    chan struct{}
 
 	attached map[string]*live // touched only by the read goroutine
 }
@@ -114,7 +116,7 @@ func (c *conn) writeLoop() {
 		}
 		c.omu.Lock()
 		batch := c.out
-		c.out = nil
+		c.out, c.writing = nil, true
 		c.omu.Unlock()
 		buf := bytes.Join(batch, nil)
 		if len(buf) > 0 {
@@ -123,7 +125,27 @@ func (c *conn) writeLoop() {
 				return
 			}
 		}
+		c.omu.Lock()
+		c.writing = false
+		c.omu.Unlock()
 	}
+}
+
+// drainThenClose closes the connection once everything queued has been
+// written, or after 2s: the client stopped sending (EOF, possibly only its
+// write side), and the replies to what it sent are still owed.
+func (c *conn) drainThenClose() {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c.omu.Lock()
+		idle := c.dead || (len(c.out) == 0 && !c.writing)
+		c.omu.Unlock()
+		if idle {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	c.close()
 }
 
 func (c *conn) reply(id json.RawMessage, result any, e *rpcError) {
@@ -155,7 +177,7 @@ func (c *conn) run() {
 	for sc.Scan() {
 		c.handleLine(bytes.TrimSpace(sc.Bytes()))
 	}
-	c.close()
+	c.drainThenClose()
 	for _, l := range c.attached {
 		l.detach(c)
 		c.srv.maybeUnload(l)

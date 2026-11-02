@@ -136,6 +136,23 @@ func TestStopWithoutFinishingToolsCancelsThem(t *testing.T) {
 	}
 }
 
+// The daemon runs Send on its own goroutine; a steer can land before Send
+// has registered the turn. Begin reserves the turn so that stop is kept.
+func TestAStopBetweenBeginAndSendIsNotLost(t *testing.T) {
+	st := newStore(t)
+	fake := fakellm.New(t, fakellm.Turn{Hang: true})
+	s, _ := runner(st, fake, "sys", nil).NewSession(ctx, "interactive", "/w")
+	s.Begin()
+	s.Stop(true)
+	if err := wait(t, sendAsync(s, "q", nil)); !errors.Is(err, agent.ErrStopped) {
+		t.Fatalf("err = %v, want agent.ErrStopped: a stop after Begin applies to the next Send", err)
+	}
+	stored, _ := st.Messages(ctx, s.ID())
+	if len(stored) != 2 || stored[0].Content != "q" || stored[1].Content != agent.InterruptedText {
+		t.Fatalf("stored %+v", stored)
+	}
+}
+
 func TestStopWhenIdleIsANoOp(t *testing.T) {
 	st := newStore(t)
 	fake := fakellm.New(t, fakellm.Turn{Content: "fine"})

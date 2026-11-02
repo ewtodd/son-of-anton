@@ -88,9 +88,7 @@ func newLive(s *Server, rec store.Session, sum store.Summary) *live {
 // emit sends an event to every attached client and records it in the live
 // tail.
 func (l *live) emit(kind string, f map[string]any) {
-	if _, ok := f["session"]; !ok {
-		f["session"] = l.id // session.updated carries the whole session object instead
-	}
+	f["session"] = l.id
 	f["kind"] = kind
 	line := eventLine(f)
 	for c := range l.viewers {
@@ -111,7 +109,7 @@ func (l *live) emit(kind string, f map[string]any) {
 }
 
 func (l *live) emitSession() {
-	l.emit("session.updated", map[string]any{"session": l.sessionObj()})
+	l.emit("session.updated", map[string]any{"state": l.sessionObj()})
 }
 
 func (l *live) emitQueue() {
@@ -141,6 +139,7 @@ func (l *live) startTurn(text string) {
 	l.emit("turn.start", map[string]any{"text": text})
 	l.emitSession()
 	l.srv.turns.Add(1)
+	l.sess.Begin() // a steer or interrupt from here on reaches this Send
 	go func() {
 		defer l.srv.turns.Done()
 		res, err := l.sess.Send(ctx, text, l.onAgent)
