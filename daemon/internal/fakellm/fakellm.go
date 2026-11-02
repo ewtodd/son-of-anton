@@ -52,6 +52,9 @@ type Turn struct {
 	// StallAfterFirst sends the first content delta, then goes silent until
 	// the client gives up (idle-timeout tests).
 	StallAfterFirst bool
+	// ServedModel, when set, is sent as the x-maitred-model header (maitred
+	// naming the model that answered).
+	ServedModel string
 	// Release, when non-nil, sends the first content delta and then waits
 	// until the channel is closed (or the client goes away) before sending
 	// the rest: a turn the test holds open mid-stream.
@@ -187,6 +190,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
+	if turn.ServedModel != "" {
+		w.Header().Set("X-Maitred-Model", turn.ServedModel)
+	}
 	flusher, _ := w.(http.Flusher)
 	id := fmt.Sprintf("chatcmpl-%d", idx+1)
 	send := func(v any) {

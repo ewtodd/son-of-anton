@@ -611,6 +611,7 @@ func (l *live) sessionObj() map[string]any {
 		"usage": map[string]any{"input_tokens": l.usage.input, "output_tokens": l.usage.output,
 			"cached_tokens": l.usage.cached, "reasoning_tokens": l.usage.reasoning, "api_calls": l.usage.calls},
 		"background_processes": l.sess.BackgroundRunning(),
+		"served_model":         l.sess.ServedModel(),
 	}
 	if l.running {
 		o["status"] = "running"

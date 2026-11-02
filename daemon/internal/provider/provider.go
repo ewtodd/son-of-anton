@@ -92,6 +92,9 @@ type Response struct {
 	Reasoning    string
 	FinishReason string
 	Usage        Usage
+	// ServedModel is the model that answered, from maitred's x-maitred-model
+	// header (under auto, the one it routed to); empty when not reported.
+	ServedModel string
 }
 
 // HTTPError is a non-2xx status from the endpoint.
@@ -273,7 +276,11 @@ func (c *Client) attempt(ctx context.Context, body []byte, onDelta func(Delta), 
 		timer.Reset(idle)
 		rd = idleReader{r: resp.Body, t: timer, d: idle}
 	}
-	return parseStream(rd, onDelta)
+	out, delivered, retryAfter, err := parseStream(rd, onDelta)
+	if out != nil {
+		out.ServedModel = resp.Header.Get("X-Maitred-Model")
+	}
+	return out, delivered, retryAfter, err
 }
 
 // sseChunk is one data: payload of the stream.

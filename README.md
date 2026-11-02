@@ -87,8 +87,9 @@ launch starts the new daemon.
 | `/status`, `/help`, `/skin`, `/q` | |
 
 `!cmd` runs a shell command in the session's directory. `/commit` authors as
-`[git] author_name` / `author_email` when both are set, and leaves you as the
-committer.
+`[git] author_name` / `author_email` when both are set, leaving you as the
+committer and ending the message with a `Model:` line naming the model that
+wrote it (under `auto`, the one that served it; the TUI shows it too).
 
 ## Signal
 

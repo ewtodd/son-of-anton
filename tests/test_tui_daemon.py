@@ -88,6 +88,8 @@ class FakeLLM:
                     return
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
+                if turn.get("served"):  # maitred naming the model that answered
+                    self.send_header("X-Maitred-Model", turn["served"])
                 self.end_headers()
                 model = body.get("model", "")
 
@@ -606,3 +608,17 @@ def test_the_title_and_context_use_reach_the_status(daemon_home, tmp_path) -> No
         run_app(b, body)
     finally:
         titles.close()
+
+
+def test_the_status_names_the_model_that_served_auto(daemon_home, tmp_path) -> None:
+    _textual()
+    home, fake = daemon_home([{"content": "hi", "served": "radiance/qwen3.8-27b"}])
+    b = start_backend(home, tmp_path, model="auto")
+
+    async def body(app, pilot):
+        assert b.status_snapshot()["model_short"] == "auto", "nothing served yet"
+        await type_line(app, pilot, "hello")
+        assert await wait_for(pilot, lambda: b.status_snapshot()["model_short"] == "auto → qwen3.8-27b"), b.status_snapshot()
+        assert b.status_snapshot()["model_name"] == "auto → radiance/qwen3.8-27b"
+
+    run_app(b, body)

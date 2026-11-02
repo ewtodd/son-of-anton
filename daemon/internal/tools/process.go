@@ -117,7 +117,7 @@ func startBackground(env *Env, cwd, command string, notify bool) (string, error)
 	}, "\n")
 	cmd := exec.Command("bash", "-c", script)
 	cmd.Dir = cwd
-	cmd.Env = append(append([]string{}, os.Environ()...), "SOA_D_CMD="+command)
+	cmd.Env = append(append([]string{}, os.Environ()...), "SOA_D_CMD="+command, "SOA_MODEL="+env.Model)
 	cmd.Stdin = openNull()
 	cmd.Stdout, cmd.Stderr = p.buf, p.buf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

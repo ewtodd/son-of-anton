@@ -151,6 +151,7 @@ type Session struct {
 	mu            sync.Mutex // guards the fields below
 	client        *provider.Client
 	model, effort string
+	served        string // the model the last response reported serving it
 	turn          *turnCtl
 	comp          compState
 }
@@ -205,6 +206,7 @@ func (s *Session) SetModel(c *provider.Client, model, effort string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.client, s.model, s.effort = c, model, effort
+	s.served = "" // known again after the next response
 }
 
 // SetMode changes the permission mode at once.
@@ -391,6 +393,11 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			return closeTurn(store.Message{Role: "assistant", Content: FailedText}, err)
 		}
 		retried = false
+		if resp.ServedModel != "" {
+			s.mu.Lock()
+			s.served = resp.ServedModel
+			s.mu.Unlock()
+		}
 		total.APICalls++
 		s.noteResponse(resp.Usage.PromptTokens, emit)
 		total.Last = resp.Usage
@@ -437,7 +444,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 // remaining calls are not run (each gets a cancellation result); a running
 // call keeps whatever its tool returned.
 func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emit func(Event), maxChars int) []store.Message {
-	env := &tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery}
+	env := &tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel()}
 	rows := make([]store.Message, 0, len(calls))
 	for _, call := range calls {
 		emit(Event{Kind: "tool.start", Tool: call.Function.Name, CallID: call.ID, Text: string(call.Function.Arguments)})
@@ -604,4 +611,16 @@ func marshalToolCalls(calls []provider.ToolCall) json.RawMessage {
 		return nil
 	}
 	return b
+}
+
+// ServedModel is the model that answered the latest request, as the endpoint
+// reported it (maitred's x-maitred-model; under auto, the one it routed to),
+// else the session's model.
+func (s *Session) ServedModel() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.served != "" {
+		return s.served
+	}
+	return s.model
 }

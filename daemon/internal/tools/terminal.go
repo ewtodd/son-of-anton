@@ -102,7 +102,7 @@ func (terminalTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 	if a.Background {
 		return runBackground(env, cwd, a)
 	}
-	out, newCwd, code, done := runShell(ctx, env.State.SnapshotPath(), cwd, a.Command, timeout)
+	out, newCwd, code, done := runShell(ctx, env.State.SnapshotPath(), cwd, a.Command, timeout, env.Model)
 	out = stripANSI(out)
 	out = strings.TrimSpace(out)
 
@@ -147,13 +147,13 @@ func refuseBackgrounding(command string) error {
 // It returns the output (stdout+stderr merged), the new cwd (empty when the
 // command exited before the marker), the exit code, and whether the marker
 // was seen.
-func runShell(ctx context.Context, snapshot, cwd, command string, timeoutSeconds int) (string, string, int, bool) {
+func runShell(ctx context.Context, snapshot, cwd, command string, timeoutSeconds int, model string) (string, string, int, bool) {
 	nonce := newNonce()
 	wrapper := buildWrapper(snapshot, cwd, nonce)
 
 	cmd := exec.Command("bash", "-c", wrapper)
 	cmd.Dir = cwd
-	cmd.Env = append(append([]string{}, os.Environ()...), "SOA_D_CMD="+command)
+	cmd.Env = append(append([]string{}, os.Environ()...), "SOA_D_CMD="+command, "SOA_MODEL="+model)
 	cmd.Stdin = openNull()
 	buf := &boundedBuffer{}
 	cmd.Stdout = buf
@@ -223,7 +223,7 @@ func buildWrapper(snapshot, cwd, nonce string) string {
 		fmt.Sprintf("builtin cd -- %s || exit 126", shQuote(cwd)),
 		`eval "$SOA_D_CMD"`,
 		"__soa_rc=$?",
-		"unset SOA_D_CMD",
+		"unset SOA_D_CMD SOA_MODEL", // never into the snapshot: the next call sets its own
 		fmt.Sprintf("export -p > %s && mv -f %s %s", shQuote(snapshot+".tmp"), shQuote(snapshot+".tmp"), shQuote(snapshot)),
 		// Leading newline keeps the nonce on its own line even when the
 		// command's output has no trailing newline.

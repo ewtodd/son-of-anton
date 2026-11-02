@@ -138,7 +138,8 @@ nix shell nixpkgs#uv -c env UV_PYTHON=<nix-python-3.12> uv lock
 - Name the model. A commit made by an agent ends its body with one line,
   `Model: <id>`: the exact model that wrote the change (`Model: claude-opus-5-5`,
   `Model: radiance/qwen3.8-27b`). Under `auto`, name the model that actually served
-  it, which maitred reports in its `x-maitred-model` response header, never `auto`.
+  it, never `auto`: maitred reports it in its `x-maitred-model` response header, and
+  soa-d gives it to shell commands as `$SOA_MODEL`.
   It records provenance; it is not a co-author.
 - Message: a short summary line (`area: what changed`), a blank line, then a body that
   explains what changed and why. Never cram several changes into one long subject line.

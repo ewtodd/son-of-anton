@@ -558,11 +558,18 @@ class DaemonBackend:
     def status_snapshot(self) -> dict:
         s = self.session or {}
         model = s.get("model") or "unknown"
-        short = model.split("/")[-1]
-        if short.endswith(".gguf"):
-            short = short[:-5]
+        # Under auto, maitred names the model that actually answered.
+        served = s.get("served_model") or model
+
+        def _short(name: str) -> str:
+            name = name.split("/")[-1]
+            return name[:-5] if name.endswith(".gguf") else name
+
+        short = _short(served) if served == model else f"{_short(model)} → {_short(served)}"
         if len(short) > 26:
             short = f"{short[:23]}..."
+        if served != model:
+            model = f"{model} → {served}"
         usage = s.get("usage") or {}
         created = _parse_time(s.get("created"))
         started = self.prompt_start_time()

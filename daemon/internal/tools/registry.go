@@ -24,6 +24,9 @@ type Env struct {
 	// AsyncDelivery says whether a background completion notice can ever be
 	// delivered in this run.
 	AsyncDelivery bool
+	// Model is the model serving this step; shell commands see it as
+	// $SOA_MODEL (for a commit's Model: line).
+	Model string
 }
 
 // Tool is one builtin tool.

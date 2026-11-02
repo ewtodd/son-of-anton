@@ -497,6 +497,9 @@ func (s *Server) commitPrompt(extra string) string {
 			"repository or your global git config already sets (do not override "+
 			"the committer; no GIT_COMMITTER_NAME / GIT_COMMITTER_EMAIL, no "+
 			"-c user.name / user.email).")
+		lines = append(lines, "The commit is authored by "+name+", not by you, so end the message body "+
+			"with one line `Model: <id>`, where <id> is the value of $SOA_MODEL in your "+
+			"shell: the model writing this commit. Add no Co-authored-by trailer.")
 	} else {
 		lines = append(lines, "Commit with the repository's already-configured git identity; do not "+
 			"override author or committer.")
