@@ -72,6 +72,9 @@ type Server struct {
 	headers []http.Header
 	models  []string
 	meta    map[string]map[string]any
+
+	embedStatus int        // when set, /v1/embeddings answers with this status
+	embedCalls  [][]string // the inputs of every embeddings request
 }
 
 // New starts a fake that answers the given turns in order.
@@ -81,6 +84,7 @@ func New(t testing.TB, turns ...Turn) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", s.handle)
 	mux.HandleFunc("/v1/models", s.handleModels)
+	mux.HandleFunc("/v1/embeddings", s.handleEmbeddings)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	s.URL = srv.URL + "/v1"
@@ -323,4 +327,86 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
+}
+
+// EmbedDims is the size of the fake's embedding vectors.
+const EmbedDims = 512
+
+// WordVector is the fake's embedding: a bag of lowercased words hashed into
+// EmbedDims buckets, so texts sharing words are close and unrelated ones are
+// not. Tests can compute expected similarities with it.
+func WordVector(text string) []float64 {
+	v := make([]float64, EmbedDims)
+	word := []rune{}
+	flush := func() {
+		if len(word) == 0 {
+			return
+		}
+		h := uint32(2166136261)
+		for _, r := range string(word) {
+			h = (h ^ uint32(r)) * 16777619
+		}
+		v[h%EmbedDims]++
+		word = word[:0]
+	}
+	for _, r := range text {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			word = append(word, r)
+		case r >= 'A' && r <= 'Z':
+			word = append(word, r+'a'-'A')
+		default:
+			flush()
+		}
+	}
+	flush()
+	return v
+}
+
+// SetEmbedStatus makes /v1/embeddings fail with status (0 restores it).
+func (s *Server) SetEmbedStatus(status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.embedStatus = status
+}
+
+// EmbedCalls returns the inputs of every embeddings request so far.
+func (s *Server) EmbedCalls() [][]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][]string, len(s.embedCalls))
+	copy(out, s.embedCalls)
+	return out
+}
+
+func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Model string   `json:"model"`
+		Input []string `json:"input"`
+	}
+	body, _ := io.ReadAll(r.Body)
+	if err := json.Unmarshal(body, &req); err != nil {
+		var one struct {
+			Input string `json:"input"`
+		}
+		if json.Unmarshal(body, &one) != nil {
+			http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+			return
+		}
+		req.Input = []string{one.Input}
+	}
+	s.mu.Lock()
+	status := s.embedStatus
+	s.embedCalls = append(s.embedCalls, req.Input)
+	s.mu.Unlock()
+	if status != 0 {
+		http.Error(w, `{"error":"embedder down"}`, status)
+		return
+	}
+	data := make([]any, len(req.Input))
+	for i, in := range req.Input {
+		data[i] = map[string]any{"object": "embedding", "index": i, "embedding": WordVector(in)}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "model": req.Model, "data": data})
 }

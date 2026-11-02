@@ -622,3 +622,29 @@ def test_the_status_names_the_model_that_served_auto(daemon_home, tmp_path) -> N
         assert b.status_snapshot()["model_name"] == "auto → radiance/qwen3.8-27b"
 
     run_app(b, body)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3b: a rule change asks in the TUI
+# ---------------------------------------------------------------------------
+
+def test_a_rule_change_asks_and_is_saved(daemon_home, tmp_path) -> None:
+    _textual()
+    home, fake = daemon_home([
+        {"tool_calls": [{"id": "c1", "name": "memory", "arguments": json.dumps(
+            {"kind": "rule", "action": "add", "text": "Answer in plain English"})}]},
+        {"content": "saved it"},
+    ])
+    b = start_backend(home, tmp_path)
+
+    async def body(app, pilot):
+        await type_line(app, pilot, "remember: plain English")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, _tui.ChoiceModal)), "the approval modal never opened"
+        title_and_detail = app.screen._title + str(getattr(app.screen, "_detail", ""))
+        assert "memory" in title_and_detail.lower() and "Answer in plain English" in title_and_detail, title_and_detail
+        await pilot.press("1")  # once
+        assert await wait_for(pilot, lambda: "saved it" in app._transcript)
+        rules = Path(home, "memories", "rules.toml").read_text(encoding="utf-8")
+        assert "Answer in plain English" in rules
+
+    run_app(b, body)
