@@ -3,7 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
@@ -24,6 +29,16 @@ const (
 	// DefaultMaxToolResultChars caps a tool result's size in context.
 	DefaultMaxToolResultChars = 100_000
 )
+
+// How a turn that did not end with a final answer is closed in the
+// transcript, so it always ends on an assistant row.
+const (
+	InterruptedText = "[response interrupted]" // ../agent/agent_runtime_helpers.py:1597
+	FailedText      = "[response failed]"
+)
+
+// ErrStopped is Send's error after Stop.
+var ErrStopped = errors.New("agent: the turn was stopped")
 
 // Runner creates and drives sessions against one client and model.
 type Runner struct {
@@ -115,6 +130,9 @@ func (r *Runner) newSession(id, prompt, cwd string) (*Session, error) {
 		prompt: prompt,
 		state:  state,
 		gate:   approval.NewGate(mode, r.Approver, r.Allowlist),
+		client: r.Client,
+		model:  r.Model,
+		effort: r.ReasoningEffort,
 	}, nil
 }
 
@@ -125,7 +143,57 @@ type Session struct {
 	prompt string
 	state  *tools.State
 	gate   *approval.Gate
+
+	mu            sync.Mutex // guards the fields below
+	client        *provider.Client
+	model, effort string
+	turn          *turnCtl
 }
+
+// turnCtl is the running turn's stop switches.
+type turnCtl struct {
+	reqCancel, toolCancel context.CancelFunc
+	stopped               atomic.Bool
+}
+
+// Stop ends the running turn at the next safe point; a no-op when idle. A
+// model request in flight is cancelled. With finishTools, running tool calls
+// finish and keep their results; without, they are cancelled. Calls that had
+// not started are cancelled either way.
+func (s *Session) Stop(finishTools bool) {
+	s.mu.Lock()
+	t := s.turn
+	s.mu.Unlock()
+	if t == nil {
+		return
+	}
+	t.stopped.Store(true)
+	t.reqCancel()
+	if !finishTools {
+		t.toolCancel()
+	}
+}
+
+// SetModel changes the model client, name and reasoning effort from the next
+// turn; the prompt and tools are untouched.
+func (s *Session) SetModel(c *provider.Client, model, effort string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.client, s.model, s.effort = c, model, effort
+}
+
+// SetMode changes the permission mode at once.
+func (s *Session) SetMode(m approval.Mode) { s.gate.SetMode(m) }
+
+// BackgroundRunning counts the running background processes.
+func (s *Session) BackgroundRunning() int { return s.state.BackgroundRunning() }
+
+// KillBackground kills the running background processes and returns how many.
+func (s *Session) KillBackground() int { return s.state.KillBackground() }
+
+// OnNotify registers f, called (on any goroutine) when a completion notice is
+// queued. Drain with TakeNotifications.
+func (s *Session) OnNotify(f func()) { s.state.SetNotify(f) }
 
 // ID returns the session ID.
 func (s *Session) ID() string { return s.id }
@@ -138,10 +206,12 @@ func (s *Session) TakeNotifications() []string { return s.state.TakeNotification
 
 // Event is one streaming update.
 type Event struct {
-	Kind   string // "assistant.delta" | "reasoning.delta" | "tool.start" | "tool.end"
-	Text   string // the fragment, the call arguments, or the result
-	Tool   string // tool name (tool.start / tool.end)
-	CallID string // the call id (tool.start / tool.end)
+	Kind     string         // "assistant.delta" | "reasoning.delta" | "tool.start" | "tool.end" | "message"
+	Text     string         // the fragment, the call arguments, or the result
+	Tool     string         // tool name (tool.start / tool.end)
+	CallID   string         // the call id (tool.start / tool.end)
+	Message  *store.Message // the stored row (message)
+	Duration time.Duration  // how long the call ran (tool.end)
 }
 
 // Result is the finished turn.
@@ -151,6 +221,8 @@ type Result struct {
 	// Usage sums every request of the turn; APICalls counts them.
 	Usage    provider.Usage
 	APICalls int
+	// Last is the latest request's usage alone.
+	Last provider.Usage
 }
 
 // Send runs one turn: the request is built from the stored transcript (the
@@ -160,6 +232,32 @@ type Result struct {
 // failure never loses a step.
 func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (Result, error) {
 	r := s.runner
+	reqCtx, reqCancel := context.WithCancel(ctx)
+	toolCtx, toolCancel := context.WithCancel(ctx)
+	t := &turnCtl{reqCancel: reqCancel, toolCancel: toolCancel}
+	s.mu.Lock()
+	if s.turn != nil {
+		s.mu.Unlock()
+		reqCancel()
+		toolCancel()
+		return Result{}, errors.New("agent: a turn is already running")
+	}
+	s.turn = t
+	client, model, effort := s.client, s.model, s.effort
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.turn = nil
+		s.mu.Unlock()
+		reqCancel()
+		toolCancel()
+	}()
+	emit := func(e Event) {
+		if onEvent != nil {
+			onEvent(e)
+		}
+	}
+
 	stored, err := r.Store.Messages(ctx, s.id)
 	if err != nil {
 		return Result{}, err
@@ -176,10 +274,26 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 	if maxChars <= 0 {
 		maxChars = DefaultMaxToolResultChars
 	}
+	// stopped says whether the turn must end at the next safe point.
+	stopped := func() bool { return t.stopped.Load() || ctx.Err() != nil }
+	// closeTurn records a turn that did not end with a final answer: the
+	// user message if it is not stored yet, then a closing assistant row.
+	closeTurn := func(row store.Message, cause error) (Result, error) {
+		if err := s.persistStep(ctx, text, first, row, nil, emit); err != nil {
+			return total, err
+		}
+		return total, cause
+	}
+	stopErr := func() error {
+		if t.stopped.Load() {
+			return ErrStopped
+		}
+		return ctx.Err()
+	}
 	for {
 		req := provider.Request{
-			Model:           r.Model,
-			ReasoningEffort: r.ReasoningEffort,
+			Model:           model,
+			ReasoningEffort: effort,
 			Messages:        msgs,
 		}
 		if r.Tools != nil {
@@ -189,21 +303,30 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			}
 		}
 
-		resp, err := r.Client.Complete(ctx, req, func(d provider.Delta) {
-			if onEvent == nil {
-				return
-			}
+		var content, reasoning strings.Builder
+		resp, err := client.Complete(reqCtx, req, func(d provider.Delta) {
+			content.WriteString(d.Content)
+			reasoning.WriteString(d.Reasoning)
 			if d.Content != "" {
-				onEvent(Event{Kind: "assistant.delta", Text: d.Content})
+				emit(Event{Kind: "assistant.delta", Text: d.Content})
 			}
 			if d.Reasoning != "" {
-				onEvent(Event{Kind: "reasoning.delta", Text: d.Reasoning})
+				emit(Event{Kind: "reasoning.delta", Text: d.Reasoning})
 			}
 		})
 		if err != nil {
-			return total, err
+			if stopped() {
+				// The streamed text, trimmed, closes the turn.
+				row := store.Message{Role: "assistant", Content: strings.TrimSpace(content.String()), Reasoning: reasoning.String()}
+				if row.Content == "" {
+					row.Content = InterruptedText
+				}
+				return closeTurn(row, stopErr())
+			}
+			return closeTurn(store.Message{Role: "assistant", Content: FailedText}, err)
 		}
 		total.APICalls++
+		total.Last = resp.Usage
 		total.Usage.PromptTokens += resp.Usage.PromptTokens
 		total.Usage.CompletionTokens += resp.Usage.CompletionTokens
 		total.Usage.ReasoningTokens += resp.Usage.ReasoningTokens
@@ -214,51 +337,53 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 				Content:   resp.Message.Content,
 				Reasoning: resp.Reasoning,
 			}
-			if err := s.persistStep(ctx, text, first, assistant, nil); err != nil {
+			if err := s.persistStep(ctx, text, first, assistant, nil, emit); err != nil {
 				return total, err
 			}
 			total.Content, total.Reasoning = resp.Message.Content, resp.Reasoning
 			return total, nil
 		}
-		rows := s.runToolCalls(ctx, resp.Message.ToolCalls, onEvent, maxChars)
+		rows := s.runToolCalls(toolCtx, stopped, resp.Message.ToolCalls, emit, maxChars)
 		assistant := store.Message{
 			Role:      "assistant",
 			Content:   resp.Message.Content,
 			Reasoning: resp.Reasoning,
 			ToolCalls: marshalToolCalls(resp.Message.ToolCalls),
 		}
-		if err := s.persistStep(ctx, text, first, assistant, rows); err != nil {
+		if err := s.persistStep(ctx, text, first, assistant, rows, emit); err != nil {
 			return total, err
 		}
 		first = false
 		steps++
-		if ctx.Err() != nil {
-			return total, ctx.Err()
+		if stopped() {
+			return closeTurn(store.Message{Role: "assistant", Content: InterruptedText}, stopErr())
 		}
 		// Rebuild from the store: the next request replays exactly what
 		// was persisted, byte for byte.
 		stored, err = r.Store.Messages(ctx, s.id)
 		if err != nil {
-			return total, err
+			return closeTurn(store.Message{Role: "assistant", Content: FailedText}, err)
 		}
 		msgs = buildStepMessages(s.prompt, stored, "")
 	}
 }
 
-// runToolCalls executes every call in order. A cancelled context stops the
-// remaining calls (each gets a cancellation result); the running call keeps
-// whatever its tool returned.
-func (s *Session) runToolCalls(ctx context.Context, calls []provider.ToolCall, onEvent func(Event), maxChars int) []store.Message {
+// runToolCalls executes every call in order. Once the turn is stopped the
+// remaining calls are not run (each gets a cancellation result); a running
+// call keeps whatever its tool returned.
+func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emit func(Event), maxChars int) []store.Message {
 	env := &tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery}
 	rows := make([]store.Message, 0, len(calls))
 	for _, call := range calls {
-		if onEvent != nil {
-			onEvent(Event{Kind: "tool.start", Tool: call.Function.Name, CallID: call.ID, Text: string(call.Function.Arguments)})
+		emit(Event{Kind: "tool.start", Tool: call.Function.Name, CallID: call.ID, Text: string(call.Function.Arguments)})
+		began := time.Now()
+		var result string
+		if stopped() {
+			result = errorJSON("cancelled: the user interrupted before this call ran")
+		} else {
+			result = s.runOneCall(ctx, env, call, maxChars)
 		}
-		result := s.runOneCall(ctx, env, call, maxChars)
-		if onEvent != nil {
-			onEvent(Event{Kind: "tool.end", Tool: call.Function.Name, CallID: call.ID, Text: result})
-		}
+		emit(Event{Kind: "tool.end", Tool: call.Function.Name, CallID: call.ID, Text: result, Duration: time.Since(began)})
 		rows = append(rows, store.Message{
 			Role:       "tool",
 			ToolCallID: call.ID,
@@ -291,17 +416,24 @@ func (s *Session) runOneCall(ctx context.Context, env *tools.Env, call provider.
 	return truncateToolResult(out, maxChars)
 }
 
-// persistStep stores one completed step. It uses a context that is not
-// cancelled: an interrupted turn must still keep its steps.
-func (s *Session) persistStep(ctx context.Context, text string, first bool, assistant store.Message, toolRows []store.Message) error {
+// persistStep stores one completed step and announces each stored row. It
+// uses a context that is not cancelled: an interrupted turn must still keep
+// its steps.
+func (s *Session) persistStep(ctx context.Context, text string, first bool, assistant store.Message, toolRows []store.Message, emit func(Event)) error {
 	msgs := make([]store.Message, 0, 2+len(toolRows))
 	if first {
 		msgs = append(msgs, store.Message{Role: "user", Content: text, APIContent: text})
 	}
 	msgs = append(msgs, assistant)
 	msgs = append(msgs, toolRows...)
-	_, err := s.runner.Store.AppendMessages(context.WithoutCancel(ctx), s.id, msgs...)
-	return err
+	if _, err := s.runner.Store.AppendMessages(context.WithoutCancel(ctx), s.id, msgs...); err != nil {
+		return err
+	}
+	for i := range msgs {
+		m := msgs[i]
+		emit(Event{Kind: "message", Message: &m})
+	}
+	return nil
 }
 
 // buildStepMessages is the wire form of one request: the system prompt, the

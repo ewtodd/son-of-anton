@@ -147,12 +147,17 @@ func startBackground(env *Env, cwd, command string, notify bool) (string, error)
 		st.mu.Lock()
 		p.exited, p.exitCode, p.ended = true, code, time.Now()
 		close(p.done)
-		if p.notify && !p.consumed {
+		queued := p.notify && !p.consumed
+		if queued {
 			st.notes = append(st.notes, note{p.id, fmt.Sprintf(
 				"[Background process %s exited with code %d. Command: %s. Output (last %d chars):\n%s]",
 				p.id, code, p.command, procExitedChars, cleanOutput(p.buf.String(), procExitedChars))})
 		}
+		cb := st.onNote
 		st.mu.Unlock()
+		if queued && cb != nil {
+			cb()
+		}
 	}()
 	return p.id, nil
 }

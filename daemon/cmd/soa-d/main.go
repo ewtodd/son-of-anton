@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
@@ -18,6 +20,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
+	"github.com/ewtodd/son-of-anton/daemon/internal/server"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
 )
@@ -29,6 +32,7 @@ const usage = `soa-d — the Son of Anton daemon
 usage:
   soa-d query [--home DIR] [--model M] [--yolo] [--system FILE] [--memory | --no-memory] PROMPT
   soa-d oneshot [--home DIR] [--model M] [--yolo] [--system FILE] [--memory | --no-memory] [--usage-file PATH] PROMPT
+  soa-d serve [--home DIR]
   soa-d version
 `
 
@@ -50,6 +54,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runQuery(args[1:], stdout, stderr)
 	case "oneshot":
 		return runOneshot(args[1:], stdout, stderr)
+	case "serve":
+		return runServe(args[1:], stderr)
 	default:
 		fmt.Fprint(stderr, usage)
 		return 2
@@ -155,7 +161,7 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 			}
 			r, err := prompt.Build(prompt.Options{
 				Home: home, Cwd: s.Cwd, Scope: "common", Memory: o.memory,
-				Now: time.Now().In(localZone()), RulesCharLimit: cfg.Memory.RulesCharLimit,
+				Now: time.Now().In(prompt.LocalZone()), RulesCharLimit: cfg.Memory.RulesCharLimit,
 			})
 			for _, w := range r.Warnings {
 				fmt.Fprintf(stderr, "soa-d: %s\n", w)
@@ -281,26 +287,6 @@ func userHome() string {
 	return ""
 }
 
-// localZone is time.Local with its zone name, which time.Local alone prints
-// as "Local": TZ, else the zoneinfo path /etc/localtime points at. Without
-// either, time.Local.
-func localZone() *time.Location {
-	name := strings.TrimPrefix(os.Getenv("TZ"), ":")
-	if name == "" {
-		if p, err := filepath.EvalSymlinks("/etc/localtime"); err == nil {
-			if i := strings.LastIndex(p, "zoneinfo/"); i >= 0 {
-				name = p[i+len("zoneinfo/"):]
-			}
-		}
-	}
-	if name != "" {
-		if loc, err := time.LoadLocation(name); err == nil {
-			return loc
-		}
-	}
-	return time.Local
-}
-
 // queryMode resolves the permission mode for a run: --yolo wins, otherwise
 // the config's [approvals] mode.
 func queryMode(cfg *config.Config, yolo bool) approval.Mode {
@@ -308,4 +294,50 @@ func queryMode(cfg *config.Config, yolo bool) approval.Mode {
 		return approval.Yolo
 	}
 	return cfg.PermissionMode()
+}
+
+// runServe is the daemon: listen first (a second daemon on the same home
+// stops here), then serve until SIGINT or SIGTERM.
+func runServe(args []string, stderr io.Writer) int {
+	home := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] != "--home" || i+1 >= len(args) {
+			fmt.Fprint(stderr, usage)
+			return 2
+		}
+		home = args[i+1]
+		i++
+	}
+	if home == "" {
+		var err error
+		if home, err = config.Home(); err != nil {
+			fmt.Fprintf(stderr, "soa-d serve: %v\n", err)
+			return 1
+		}
+	}
+	ln, err := server.Listen(home)
+	if errors.Is(err, server.ErrRunning) {
+		fmt.Fprintf(stderr, "soa-d serve: already running (%s)\n", filepath.Join(home, "run", "soa-d.sock"))
+		return 1
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "soa-d serve: %v\n", err)
+		return 1
+	}
+	srv, err := server.New(server.Options{Home: home, Version: version})
+	if err != nil {
+		_ = ln.Close()
+		fmt.Fprintf(stderr, "soa-d serve: %v\n", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	fmt.Fprintf(stderr, "soa-d serve: listening on %s\n", ln.Addr())
+	err = srv.Serve(ctx, ln)
+	fmt.Fprintln(stderr, "soa-d serve: stopped")
+	if err != nil {
+		fmt.Fprintf(stderr, "soa-d serve: %v\n", err)
+		return 1
+	}
+	return 0
 }

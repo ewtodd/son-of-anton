@@ -274,7 +274,7 @@ attach.
 | `tool.end` | `call_id`, `name`, `result`, `is_error`, `duration_ms` |
 | `message` | `message` |
 | `turn.end` | `status` (`done` \| `interrupted` \| `steered` \| `error`), `error`, `usage` (`prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `cached_tokens`), `api_calls` |
-| `approval.request` | `approval_id`, `kind` (`command` \| `write`), `subject`, `reasons`, `choices` |
+| `approval.request` | `approval_id`, `approval_kind` (`command` \| `write`; `kind` is the event kind), `subject`, `reasons`, `choices` |
 | `approval.resolved` | `approval_id`, `choice` |
 | `question.request` | `question_id`, `text`, `choices`, `multi_select` |
 | `question.resolved` | `question_id` |

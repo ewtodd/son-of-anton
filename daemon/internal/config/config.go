@@ -34,6 +34,10 @@ type Config struct {
 	Security struct {
 		Lockdown bool `toml:"lockdown"`
 	} `toml:"security"`
+	Git struct {
+		AuthorName  string `toml:"author_name"`
+		AuthorEmail string `toml:"author_email"`
+	} `toml:"git"`
 	CustomProviders map[string]CustomProvider `toml:"custom_providers"`
 
 	dotenv map[string]string
@@ -211,6 +215,16 @@ func parseDotEnv(text string) map[string]string {
 			}
 		}
 		out[key] = val
+	}
+	return out
+}
+
+// Routes lists the model routes configured under the model provider, with
+// their reasoning_efforts (nil without a vocabulary).
+func (c *Config) Routes() map[string][]string {
+	out := map[string][]string{}
+	for name, route := range c.CustomProviders[c.Model.Provider].Models {
+		out[name] = route.ReasoningEfforts
 	}
 	return out
 }

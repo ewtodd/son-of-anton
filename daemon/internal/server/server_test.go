@@ -455,7 +455,7 @@ func TestApprovalsGoToTheDriver(t *testing.T) {
 	}
 	d.send(id, "go")
 	req := d.await("approval.request")
-	if str(req, "kind") != "command" || !strings.Contains(str(req, "subject"), "chmod 777") || len(strs(req, "reasons")) == 0 {
+	if str(req, "approval_kind") != "command" || !strings.Contains(str(req, "subject"), "chmod 777") || len(strs(req, "reasons")) == 0 {
 		t.Fatalf("approval.request = %v", req)
 	}
 	choices := strings.Join(strs(req, "choices"), ",")

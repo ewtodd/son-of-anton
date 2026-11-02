@@ -27,6 +27,7 @@ type State struct {
 	procs   map[string]*bgProc
 	notes   []note
 	todos   []todoItem
+	onNote  func() // called, with no lock held, after a notice is queued
 }
 
 // NewState creates the per-session state. The cwd need not exist yet.
@@ -91,4 +92,41 @@ func (s *State) Close() error {
 		return nil
 	}
 	return os.RemoveAll(dir)
+}
+
+// SetNotify registers f to run (on any goroutine, with no State lock held)
+// each time a completion notice is queued.
+func (s *State) SetNotify(f func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onNote = f
+}
+
+// BackgroundRunning counts the background processes still running.
+func (s *State) BackgroundRunning() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, p := range s.procs {
+		if !p.exited {
+			n++
+		}
+	}
+	return n
+}
+
+// KillBackground kills the running background processes and returns how many.
+// They were killed on purpose, so they queue no completion notice.
+func (s *State) KillBackground() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, p := range s.procs {
+		if !p.exited {
+			p.consumed = true
+			p.signal(syscall.SIGKILL)
+			n++
+		}
+	}
+	return n
 }

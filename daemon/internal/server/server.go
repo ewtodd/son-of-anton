@@ -1,0 +1,298 @@
+// Package server is soa-d's unix-socket JSON-RPC server: it owns sessions,
+// runs their turns, keeps the durable queue of pending sends, asks the
+// attached driver for approvals and answers, and streams events to every
+// attached client.
+//
+// Concurrency: each loaded session (live) changes its state only under its own
+// mutex, which is never held across a call into the agent loop or a write to
+// a socket (events are appended to a connection's outgoing queue, which never
+// blocks). Lock order is Server.mu, then live.mu, then conn.omu.
+package server
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
+	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
+	"github.com/ewtodd/son-of-anton/daemon/internal/config"
+	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
+	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
+	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
+	"github.com/ewtodd/son-of-anton/daemon/internal/store"
+	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
+)
+
+// ErrRunning means another daemon is serving this home.
+var ErrRunning = errors.New("server: another daemon is serving this home")
+
+const shutdownWait = 10 * time.Second
+
+// Options configure New.
+type Options struct{ Home, Version string }
+
+// Listen creates <home>/run (0700) and listens on <home>/run/soa-d.sock
+// (0600). A live daemon behind an existing socket is ErrRunning; a stale file
+// is replaced.
+func Listen(home string) (net.Listener, error) {
+	dir := filepath.Join(home, "run")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, err
+	}
+	sock := filepath.Join(dir, "soa-d.sock")
+	if _, err := os.Lstat(sock); err == nil {
+		if c, err := net.DialTimeout("unix", sock, 2*time.Second); err == nil {
+			_ = c.Close()
+			return nil, ErrRunning
+		}
+		if err := os.Remove(sock); err != nil {
+			return nil, err
+		}
+	}
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(sock, 0o600); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	return ln, nil
+}
+
+// Server is one daemon.
+type Server struct {
+	opt  Options
+	cfg  *config.Config
+	st   *store.Store
+	reg  *tools.Registry
+	base context.Context // cancelled when shutdown starts
+	stop context.CancelFunc
+
+	mu      sync.Mutex
+	live    map[string]*live
+	conns   map[*conn]struct{}
+	closing bool
+
+	turns  sync.WaitGroup // running turn goroutines
+	connWG sync.WaitGroup // connection goroutines
+}
+
+// New loads the config and opens <home>/soa-d.db.
+func New(o Options) (*Server, error) {
+	cfg, err := config.Load(o.Home)
+	if err != nil {
+		return nil, err
+	}
+	st, err := store.Open(filepath.Join(o.Home, "soa-d.db"))
+	if err != nil {
+		return nil, err
+	}
+	s := &Server{opt: o, cfg: cfg, st: st, reg: tools.NewRegistry(tools.Builtin()...),
+		live: map[string]*live{}, conns: map[*conn]struct{}{}}
+	s.base, s.stop = context.WithCancel(context.Background())
+	return s, nil
+}
+
+// Serve accepts connections until ctx is done, then shuts down cleanly.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	stopAccept := context.AfterFunc(ctx, func() { _ = ln.Close() })
+	defer stopAccept()
+	var acceptErr error
+	for {
+		nc, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() == nil {
+				acceptErr = err
+			}
+			break
+		}
+		s.mu.Lock()
+		if s.closing {
+			s.mu.Unlock()
+			_ = nc.Close()
+			continue
+		}
+		c := newConn(s, nc)
+		s.conns[c] = struct{}{}
+		s.connWG.Add(1)
+		s.mu.Unlock()
+		go c.run()
+	}
+	_ = ln.Close()
+	s.shutdown()
+	return acceptErr
+}
+
+func (s *Server) shutdown() {
+	s.mu.Lock()
+	s.closing = true
+	conns := make([]*conn, 0, len(s.conns))
+	for c := range s.conns {
+		conns = append(conns, c)
+	}
+	s.mu.Unlock()
+	s.stop()
+	for _, c := range conns {
+		c.close()
+	}
+	s.connWG.Wait()
+
+	s.mu.Lock()
+	lives := make([]*live, 0, len(s.live))
+	for _, l := range s.live {
+		lives = append(lives, l)
+	}
+	s.mu.Unlock()
+	for _, l := range lives {
+		l.shutdown()
+	}
+	done := make(chan struct{})
+	go func() { s.turns.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(shutdownWait):
+	}
+	for _, l := range lives {
+		_ = l.sess.Close()
+	}
+	_ = s.st.Close()
+}
+
+func (s *Server) userHome() string {
+	h, _ := os.UserHomeDir()
+	return h
+}
+
+// runner builds a per-session Runner: the shared pieces plus this session's
+// approver and questioner.
+func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source string, warnings *[]string) *agent.Runner {
+	return &agent.Runner{
+		Store:           s.st,
+		Client:          provider.New(ep.BaseURL, ep.APIKey),
+		Model:           ep.Model,
+		ReasoningEffort: ep.ReasoningEffort,
+		Source:          source,
+		Tools:           s.reg,
+		Allowlist:       s.st.Allowlist(),
+		Policy:          paths.Policy{Home: s.userHome(), SoaHome: s.opt.Home},
+		Mode:            mode,
+		Approver:        l.approve,
+		AsyncDelivery:   true,
+		Ask:             l.ask,
+		Prompt: func(_ context.Context, ss store.Session) (string, error) {
+			r, err := prompt.Build(prompt.Options{
+				Home: s.opt.Home, Cwd: ss.Cwd, Scope: "common", Memory: true,
+				Now: time.Now().In(prompt.LocalZone()), RulesCharLimit: s.cfg.Memory.RulesCharLimit,
+			})
+			if warnings != nil {
+				*warnings = append(*warnings, r.Warnings...)
+			}
+			return r.Text, err
+		},
+	}
+}
+
+// create makes a new interactive session and returns its ID. It is not left
+// loaded: attaching loads it.
+func (s *Server) create(ctx context.Context, cwd, source string) (string, []string, error) {
+	ep, err := s.cfg.Endpoint("")
+	if err != nil {
+		return "", nil, err
+	}
+	mode := s.cfg.PermissionMode()
+	var warnings []string
+	sess, err := s.runner(&live{}, ep, mode, source, &warnings).NewSession(ctx, "interactive", cwd)
+	if err != nil {
+		return "", nil, err
+	}
+	defer sess.Close()
+	if err := s.st.UpdateSessionSettings(ctx, sess.ID(), ep.Model, ep.ReasoningEffort, string(mode)); err != nil {
+		return "", nil, err
+	}
+	return sess.ID(), warnings, nil
+}
+
+// load returns the loaded session, loading it from the store if needed.
+func (s *Server) load(ctx context.Context, id string) (*live, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return nil, errors.New("the daemon is shutting down")
+	}
+	if l, ok := s.live[id]; ok {
+		return l, nil
+	}
+	rec, err := s.st.Session(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	ep, err := s.cfg.Endpoint(rec.Model)
+	if err != nil {
+		return nil, err
+	}
+	if rec.ReasoningEffort != "" {
+		ep.ReasoningEffort = rec.ReasoningEffort
+	}
+	mode, err := approval.ParseMode(rec.Mode)
+	if err != nil {
+		mode = s.cfg.PermissionMode()
+	}
+	sum, err := s.st.SessionSummary(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	last, _, err := s.st.MessagesBefore(ctx, id, 0, 1)
+	if err != nil {
+		return nil, err
+	}
+	l := newLive(s, rec, sum)
+	if len(last) > 0 {
+		l.announced = last[0].Seq
+	}
+	sess, err := s.runner(l, ep, mode, rec.Source, nil).Resume(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	l.sess = sess
+	l.model, l.effort, l.mode = ep.Model, ep.ReasoningEffort, string(mode)
+	sess.OnNotify(l.drainNotices)
+	s.live[id] = l
+	return l, nil
+}
+
+// maybeUnload closes a session nobody needs: no client attached, no turn, no
+// background process.
+func (s *Server) maybeUnload(l *live) {
+	s.mu.Lock()
+	l.mu.Lock()
+	ok := !l.unloaded && !l.closing && len(l.viewers) == 0 && !l.running && l.sess.BackgroundRunning() == 0
+	if ok {
+		l.unloaded = true
+		delete(s.live, l.id)
+	}
+	l.mu.Unlock()
+	s.mu.Unlock()
+	if ok {
+		_ = l.sess.Close()
+	}
+}
+
+func (s *Server) loaded(id string) *live {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.live[id]
+}
+
+func errf(code int, format string, a ...any) *rpcError {
+	return &rpcError{Code: code, Message: fmt.Sprintf(format, a...)}
+}

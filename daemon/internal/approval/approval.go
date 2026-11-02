@@ -78,7 +78,7 @@ type Verdict struct {
 
 // Gate enforces one mode for one session.
 type Gate struct {
-	mode     Mode
+	mode     Mode // guarded by mu
 	approver Approver
 	allow    Allowlist
 
@@ -106,7 +106,7 @@ func (g *Gate) Decide(command string) (bool, string) {
 		return false, "hardline: " + hardline.Description
 	}
 	dangerous := len(findings) > 0
-	switch g.mode {
+	switch g.curMode() {
 	case Yolo:
 		return true, ""
 	case Lockdown:
@@ -144,7 +144,7 @@ func (g *Gate) Write(ctx context.Context, absPath string, protected bool) Verdic
 	switch {
 	case protected:
 		v = g.ask(ctx, Request{Kind: "write", Subject: absPath, AllowRemember: false})
-	case g.mode == Lockdown:
+	case g.curMode() == Lockdown:
 		v = g.ask(ctx, Request{Kind: "write", Subject: absPath, AllowRemember: false})
 	default:
 		v = Verdict{Allowed: true}
@@ -184,7 +184,7 @@ func (g *Gate) commandCheck(ctx context.Context, command, subject, detail string
 		}
 	}
 	dangerous := len(findings) > 0
-	switch g.mode {
+	switch g.curMode() {
 	case Yolo:
 		if dangerous {
 			g.Allow(subject, strings.Join(descriptionsOf(findings), ", "))
@@ -280,7 +280,7 @@ func (g *Gate) remember(keys []string) {
 
 func (g *Gate) nobodyMessage(req Request) string {
 	switch {
-	case g.mode == Lockdown:
+	case g.curMode() == Lockdown:
 		return "BLOCKED: lockdown mode requires approval for everything, and nobody is available to approve it. Lockdown stays on; start the run with an approver attached."
 	case req.Kind == "write":
 		return "BLOCKED: this write needs approval, and nobody is available to approve it. Start the run with an approver attached."
@@ -328,4 +328,21 @@ func descriptionsOf(findings []Finding) []string {
 		descs = append(descs, f.Description)
 	}
 	return descs
+}
+
+// SetMode changes the mode; it applies from the next check, even while a
+// turn is running.
+func (g *Gate) SetMode(m Mode) {
+	if m == "" {
+		m = Default
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.mode = m
+}
+
+func (g *Gate) curMode() Mode {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.mode
 }

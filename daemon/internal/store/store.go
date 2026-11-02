@@ -108,6 +108,18 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
 	created_at TEXT NOT NULL
 );
 UPDATE schema_version SET version = 2;`,
+	`ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT;
+ALTER TABLE sessions ADD COLUMN mode TEXT;
+CREATE TABLE queue (
+	n          INTEGER PRIMARY KEY AUTOINCREMENT,
+	id         TEXT NOT NULL UNIQUE,
+	session_id TEXT NOT NULL REFERENCES sessions(id),
+	kind       TEXT NOT NULL,
+	text       TEXT NOT NULL,
+	created    TEXT NOT NULL
+);
+CREATE INDEX queue_session ON queue (session_id, n);
+UPDATE schema_version SET version = 3;`,
 }
 
 func migrate(db *sql.DB) error {
@@ -159,6 +171,10 @@ type Session struct {
 	PromptHash string
 	Created    time.Time
 	Ended      time.Time
+	// ReasoningEffort and Mode are the session's own settings ("" = the
+	// configured default).
+	ReasoningEffort string
+	Mode            string
 }
 
 // newSessionID returns YYYYmmdd_HHMMSS_ plus six random hex chars (local
@@ -183,11 +199,11 @@ func (s *Store) CreateSession(ctx context.Context, sess Session) (Session, error
 		}
 		sess.ID = id
 		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO sessions (id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO sessions (id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sess.ID, sess.Kind, nullStr(sess.ParentID), nullStr(sess.Source), nullStr(sess.Title),
 			nullStr(sess.Cwd), nullStr(sess.Model), nullStr(sess.PromptHash),
-			formatTime(sess.Created), nullTime(sess.Ended))
+			formatTime(sess.Created), nullTime(sess.Ended), nullStr(sess.ReasoningEffort), nullStr(sess.Mode))
 		if err == nil {
 			return sess, nil
 		}
@@ -210,11 +226,13 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 		hash     sql.NullString
 		created  sql.NullString
 		ended    sql.NullString
+		effort   sql.NullString
+		mode     sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended
+		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode
 		 FROM sessions WHERE id = ?`, id).
-		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended)
+		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended, &effort, &mode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -227,6 +245,8 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 	sess.Cwd = cwd.String
 	sess.Model = model.String
 	sess.PromptHash = hash.String
+	sess.ReasoningEffort = effort.String
+	sess.Mode = mode.String
 	sess.Created, err = parseTime(created.String)
 	if err != nil {
 		return Session{}, err
@@ -326,6 +346,7 @@ func (s *Store) AppendMessages(ctx context.Context, sessionID string, msgs ...Me
 			return nil, err
 		}
 		m.Seq = nextSeq
+		m.TS = now
 		seqs = append(seqs, nextSeq)
 	}
 	return seqs, tx.Commit()
@@ -333,9 +354,12 @@ func (s *Store) AppendMessages(ctx context.Context, sessionID string, msgs ...Me
 
 // Messages returns the session's transcript in seq order.
 func (s *Store) Messages(ctx context.Context, sessionID string) ([]Message, error) {
+	return s.queryMessages(ctx, `WHERE session_id = ? ORDER BY seq`, sessionID)
+}
+
+func (s *Store) queryMessages(ctx context.Context, tail string, args ...any) ([]Message, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT seq, role, content, api_content, reasoning, tool_calls, tool_call_id, tool_name, ts
-		 FROM messages WHERE session_id = ? ORDER BY seq`, sessionID)
+		`SELECT seq, role, content, api_content, reasoning, tool_calls, tool_call_id, tool_name, ts FROM messages `+tail, args...)
 	if err != nil {
 		return nil, err
 	}
