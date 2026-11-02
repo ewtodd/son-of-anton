@@ -38,7 +38,10 @@ func Open(path string) (*Store, error) {
 	}
 	// busy_timeout is per connection: set it in the DSN so every pooled
 	// connection waits for a concurrent writer instead of failing at once.
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
+	// Transactions begin IMMEDIATE: one that reads before it writes (as
+	// AppendMessages does) would otherwise fail with SQLITE_BUSY, without
+	// waiting, when another connection commits in between.
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
