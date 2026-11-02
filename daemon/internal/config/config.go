@@ -38,6 +38,11 @@ type Config struct {
 		AuthorName  string `toml:"author_name"`
 		AuthorEmail string `toml:"author_email"`
 	} `toml:"git"`
+	Compaction struct {
+		Enabled   *bool   `toml:"enabled"`
+		Threshold float64 `toml:"threshold"`
+	} `toml:"compaction"`
+	AuxTasks        map[string]AuxiliaryTask  `toml:"auxiliary"`
 	CustomProviders map[string]CustomProvider `toml:"custom_providers"`
 
 	dotenv map[string]string
@@ -70,6 +75,7 @@ type CustomProvider struct {
 type ModelRoute struct {
 	ReasoningEffort  any      `toml:"reasoning_effort"`
 	ReasoningEfforts []string `toml:"reasoning_efforts"`
+	ContextLength    int      `toml:"context_length"`
 }
 
 // Endpoint is a resolved, ready-to-use model endpoint.
@@ -137,11 +143,7 @@ func (c *Config) Endpoint(model string) (Endpoint, error) {
 	}
 	ep := Endpoint{BaseURL: prov.BaseURL, Model: model}
 	if prov.KeyEnv != "" {
-		if v := os.Getenv(prov.KeyEnv); v != "" {
-			ep.APIKey = v
-		} else if v, ok := c.dotenv[prov.KeyEnv]; ok {
-			ep.APIKey = v
-		}
+		ep.APIKey = c.envKey(prov.KeyEnv)
 	}
 	ep.ReasoningEffort = c.resolveEffort(model, &prov)
 	if route, ok := prov.Models[model]; ok {
@@ -227,4 +229,69 @@ func (c *Config) Routes() map[string][]string {
 		out[name] = route.ReasoningEfforts
 	}
 	return out
+}
+
+// AuxiliaryTask is one [auxiliary.<task>] table. provider is accepted and
+// ignored.
+type AuxiliaryTask struct {
+	BaseURL string `toml:"base_url"`
+	KeyEnv  string `toml:"key_env"`
+	Model   string `toml:"model"`
+}
+
+// CompactionEnabled says whether automatic compaction is on (default true).
+func (c *Config) CompactionEnabled() bool {
+	return c.Compaction.Enabled == nil || *c.Compaction.Enabled
+}
+
+// CompactionThreshold is the fraction of the context window at which
+// automatic compaction starts (default 0.75).
+func (c *Config) CompactionThreshold() float64 {
+	if t := c.Compaction.Threshold; t > 0 && t <= 1 {
+		return t
+	}
+	return 0.75
+}
+
+// RouteContextLength is the configured context window of a model under the
+// model provider, 0 when unset.
+func (c *Config) RouteContextLength(model string) int {
+	return c.CustomProviders[c.Model.Provider].Models[model].ContextLength
+}
+
+// Auxiliary resolves the endpoint of an auxiliary task (compaction,
+// title_generation): each field the task leaves unset comes from fallback.
+// The key is the task's key_env variable from the process environment, then
+// .env.
+func (c *Config) Auxiliary(task string, fallback Endpoint) Endpoint {
+	t, ok := c.AuxTasks[task]
+	if !ok {
+		return fallback
+	}
+	out := fallback
+	if t.BaseURL != "" {
+		out.BaseURL = t.BaseURL
+	}
+	if t.Model != "" {
+		out.Model = t.Model
+	}
+	if t.KeyEnv != "" {
+		out.APIKey = c.envKey(t.KeyEnv)
+	}
+	return out
+}
+
+// envKey is the value of an environment variable: the process environment
+// when set and non-empty, else .env.
+func (c *Config) envKey(name string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return c.dotenv[name]
+}
+
+// HasAuxiliary says whether an [auxiliary.<task>] table is configured.
+func (c *Config) HasAuxiliary(task string) bool {
+	_, ok := c.AuxTasks[task]
+	return ok
 }

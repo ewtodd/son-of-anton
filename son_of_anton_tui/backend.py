@@ -30,7 +30,7 @@ NOT_IN_SOAD = "session {id} is not in soa-d (Python sessions are imported in pha
 # Canonical names of the commands this client handles (the rest say so).
 SUPPORTED = (
     "model", "reasoning", "perm", "new", "clear", "resume", "sessions", "commit",
-    "stop", "sendnow", "sendall", "cancel", "status", "help", "skin", "quit",
+    "stop", "sendnow", "sendall", "cancel", "status", "help", "skin", "quit", "compact",
 )
 
 
@@ -90,6 +90,12 @@ def _parse_time(value: Any) -> Optional[float]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.timestamp()
+
+
+def _percent(tokens: int, length: Optional[int]) -> Optional[int]:
+    if not length:
+        return None
+    return round(100 * int(tokens or 0) / length)
 
 
 def _compact_duration(seconds: float) -> str:
@@ -292,7 +298,8 @@ class DaemonBackend:
             self._update_session(res.get("session") or {})
             self.emit("queue", items=[q.get("text", "") for q in self._queue])
             self._render_history(res.get("messages") or [], more_before=bool(res.get("more_before")),
-                                 resumed=resumed)
+                                 resumed=resumed,
+                                 compactions=res.get("compactions") or [])
         finally:
             while True:
                 with self._lock:
@@ -306,9 +313,12 @@ class DaemonBackend:
     # ------------------------------------------------------------------
     # History
     # ------------------------------------------------------------------
-    def _render_history(self, messages: list, *, more_before: bool, resumed: bool) -> None:
+    def _render_history(self, messages: list, *, more_before: bool, resumed: bool,
+                        compactions: Optional[list] = None) -> None:
         if not messages:
             return
+        # A compaction is drawn after the row it summarizes up to.
+        after_seq = {int(c.get("through_seq") or 0): c for c in compactions or []}
         if resumed:
             hidden = " · earlier messages not shown" if more_before else ""
             self.note(f"resumed session {self.session_id}{hidden}")
@@ -325,23 +335,29 @@ class DaemonBackend:
             elif role == "assistant":
                 if content in (INTERRUPTED_TEXT, FAILED_TEXT):
                     self.note(content)
-                    continue
-                if (m.get("reasoning") or "").strip():
-                    self.emit("reasoning_block", text=m["reasoning"])
-                if content:
-                    self.emit("markdown", text=content)
-                for call in m.get("tool_calls") or []:
-                    name = call.get("name", "")
-                    label = tool_summary(name, call.get("arguments"))
-                    open_calls[call.get("id", "")] = (name, label)
-                    self.emit("tool_start", name=name, label=label, call_id=call.get("id", ""))
+                else:
+                    self._render_assistant(m, content, open_calls)
             elif role == "tool":
                 cid = m.get("tool_call_id", "")
                 name, label = open_calls.pop(cid, (m.get("tool_name", ""), ""))
                 self.emit("tool_done", name=name, label=label, duration=0.0,
                           is_error=_result_is_error(m.get("content")), call_id=cid)
+            done = after_seq.get(int(m.get("seq") or 0))
+            if done is not None:
+                self.emit("compaction", text=done.get("summary", ""), stats={})
         for cid, (name, label) in open_calls.items():
             self.emit("tool_done", name=name, label=label, duration=0.0, is_error=False, call_id=cid)
+
+    def _render_assistant(self, m: dict, content: str, open_calls: dict) -> None:
+        if (m.get("reasoning") or "").strip():
+            self.emit("reasoning_block", text=m["reasoning"])
+        if content:
+            self.emit("markdown", text=content)
+        for call in m.get("tool_calls") or []:
+            name = call.get("name", "")
+            label = tool_summary(name, call.get("arguments"))
+            open_calls[call.get("id", "")] = (name, label)
+            self.emit("tool_start", name=name, label=label, call_id=call.get("id", ""))
 
     # ------------------------------------------------------------------
     # Events
@@ -413,6 +429,9 @@ class DaemonBackend:
                 self.note("interrupted")
             elif status == "error":
                 self.note(f"error: {p.get('error') or 'the turn failed'}", muted=False)
+        elif kind == "compaction":
+            self._close_open()
+            self.emit("compaction", text=p.get("summary", ""), stats={"before_tokens": p.get("before_tokens")})
         elif kind == "notice":
             self.note(p.get("text", ""), muted=p.get("level", "info") == "info")
         elif kind == "queue.updated":
@@ -554,15 +573,15 @@ class DaemonBackend:
             "session_title": title,
             "reasoning_label": s.get("reasoning_effort") or "default",
             "context_tokens": s.get("context_tokens", 0),
-            "context_length": None,
-            "context_percent": None,
+            "context_length": s.get("context_length"),
+            "context_percent": _percent(s.get("context_tokens", 0), s.get("context_length")),
             "session_input_tokens": usage.get("input_tokens", 0),
             "session_output_tokens": usage.get("output_tokens", 0),
             "session_api_calls": usage.get("api_calls", 0),
             "active_background_processes": s.get("background_processes", 0),
             "duration": _compact_duration(time.time() - created) if created else "",
             "prompt_elapsed": _compact_duration(time.time() - started) if started else "",
-            "compactions": 0,
+            "compactions": s.get("compactions", 0),
         }
 
     def palette_entries(self) -> list:
@@ -651,6 +670,8 @@ class DaemonBackend:
                     self.note("no sessions to resume")
                 else:
                     self.emit("pick", purpose="resume", title="Resume session", rows=rows, default=0, filterable=True)
+        elif name == "compact":
+            self._compact(arg)
         elif name == "commit":
             self._call("command.run", self._sess(name="commit", args=arg))
         elif name == "stop":
@@ -687,6 +708,15 @@ class DaemonBackend:
         elif name == "skin":
             self._skin(arg)
         return True
+
+    def _compact(self, arg: str) -> None:
+        if arg in ("--preview", "--dry-run"):
+            p = self._call("command.run", self._sess(name="compact", args="--preview")).get("preview") or {}
+            self.note(f"would summarize {p.get('rows', 0)} rows (through seq {p.get('through_seq', 0)}, "
+                      f"about {p.get('tokens', 0):,} tokens) and keep the rest verbatim")
+            return
+        self.note("compacting…")
+        self._call("command.run", self._sess(name="compact", args=arg), timeout=600.0)
 
     def _steer(self, everything: bool) -> None:
         res = self._call("queue.steer", self._sess(all=everything))

@@ -83,6 +83,10 @@ type Server struct {
 	conns   map[*conn]struct{}
 	closing bool
 
+	metaMu  sync.Mutex
+	meta    map[string]map[string]int // base URL -> model -> context length
+	learned map[string]int            // session -> a limit an overflow error stated
+
 	turns  sync.WaitGroup // running turn goroutines
 	connWG sync.WaitGroup // connection goroutines
 }
@@ -98,7 +102,8 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{opt: o, cfg: cfg, st: st, reg: tools.NewRegistry(tools.Builtin()...),
-		live: map[string]*live{}, conns: map[*conn]struct{}{}}
+		live: map[string]*live{}, conns: map[*conn]struct{}{},
+		meta: map[string]map[string]int{}, learned: map[string]int{}}
 	s.base, s.stop = context.WithCancel(context.Background())
 	return s, nil
 }
@@ -189,6 +194,7 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 		Approver:        l.approve,
 		AsyncDelivery:   true,
 		Ask:             l.ask,
+		Compaction:      s.compaction(ep, l.id),
 		Prompt: func(_ context.Context, ss store.Session) (string, error) {
 			r, err := prompt.Build(prompt.Options{
 				Home: s.opt.Home, Cwd: ss.Cwd, Scope: "common", Memory: true,
@@ -224,6 +230,12 @@ func (s *Server) create(ctx context.Context, cwd, source string) (string, []stri
 
 // load returns the loaded session, loading it from the store if needed.
 func (s *Server) load(ctx context.Context, id string) (*live, error) {
+	// The provider's model metadata is fetched before the lock is taken.
+	if rec, err := s.st.Session(ctx, id); err == nil {
+		if ep, err := s.cfg.Endpoint(rec.Model); err == nil {
+			s.fetchMeta(ctx, ep, false)
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closing {
@@ -256,6 +268,12 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 		return nil, err
 	}
 	l := newLive(s, rec, sum)
+	l.title = rec.Title
+	comps, err := s.st.Compactions(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	l.compactions = len(comps)
 	if len(last) > 0 {
 		l.announced = last[0].Seq
 	}
@@ -265,6 +283,7 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 	}
 	l.sess = sess
 	l.model, l.effort, l.mode = ep.Model, ep.ReasoningEffort, string(mode)
+	l.ctxKnown = sess.ContextLength()
 	sess.OnNotify(l.drainNotices)
 	s.live[id] = l
 	return l, nil
@@ -275,7 +294,7 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 func (s *Server) maybeUnload(l *live) {
 	s.mu.Lock()
 	l.mu.Lock()
-	ok := !l.unloaded && !l.closing && len(l.viewers) == 0 && !l.running && l.sess.BackgroundRunning() == 0
+	ok := !l.unloaded && !l.closing && len(l.viewers) == 0 && !l.running && !l.compacting && l.sess.BackgroundRunning() == 0
 	if ok {
 		l.unloaded = true
 		delete(s.live, l.id)

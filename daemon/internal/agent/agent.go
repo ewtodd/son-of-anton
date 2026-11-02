@@ -59,6 +59,8 @@ type Runner struct {
 	// delivered in this run; Ask answers clarify (nil: nobody can).
 	AsyncDelivery bool
 	Ask           tools.Questioner
+	// Compaction configures summarizing a long transcript.
+	Compaction Compaction
 }
 
 // NewSession builds the prompt (exactly once), stores it, and creates the
@@ -134,6 +136,7 @@ func (r *Runner) newSession(id, prompt, cwd string) (*Session, error) {
 		client: r.Client,
 		model:  r.Model,
 		effort: r.ReasoningEffort,
+		comp:   compState{ctxLen: r.Compaction.ContextLength, client: r.Compaction.Client, model: r.Compaction.Model},
 	}, nil
 }
 
@@ -149,6 +152,7 @@ type Session struct {
 	client        *provider.Client
 	model, effort string
 	turn          *turnCtl
+	comp          compState
 }
 
 // turnCtl is the running turn's stop switches. A reserved turn (Begin, no
@@ -227,12 +231,13 @@ func (s *Session) TakeNotifications() []string { return s.state.TakeNotification
 
 // Event is one streaming update.
 type Event struct {
-	Kind     string         // "assistant.delta" | "reasoning.delta" | "tool.start" | "tool.end" | "message"
-	Text     string         // the fragment, the call arguments, or the result
-	Tool     string         // tool name (tool.start / tool.end)
-	CallID   string         // the call id (tool.start / tool.end)
-	Message  *store.Message // the stored row (message)
-	Duration time.Duration  // how long the call ran (tool.end)
+	Kind       string         // "assistant.delta" | "reasoning.delta" | "tool.start" | "tool.end" | "message" | "compaction" | "warning"
+	Text       string         // the fragment, the call arguments, or the result
+	Tool       string         // tool name (tool.start / tool.end)
+	CallID     string         // the call id (tool.start / tool.end)
+	Message    *store.Message // the stored row (message)
+	Duration   time.Duration  // how long the call ran (tool.end)
+	Compaction *CompactResult // the finished compaction (compaction)
 }
 
 // Result is the finished turn.
@@ -258,6 +263,12 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 	t := &turnCtl{reqCancel: reqCancel, toolCancel: toolCancel}
 	s.mu.Lock()
 	reserved := s.turn
+	if s.comp.compacting {
+		s.mu.Unlock()
+		reqCancel()
+		toolCancel()
+		return Result{}, errors.New("agent: a compaction is running")
+	}
 	if reserved != nil && !reserved.reserved {
 		s.mu.Unlock()
 		reqCancel()
@@ -289,13 +300,20 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 		}
 	}
 
-	stored, err := r.Store.Messages(ctx, s.id)
+	msgs, err := s.build(ctx, text)
 	if err != nil {
 		return Result{}, err
 	}
-	msgs := buildStepMessages(s.prompt, stored, text)
 	var total Result
 	first := true
+	autoTried, retried := false, false
+	// pending is the user message not yet stored.
+	pending := func() string {
+		if first {
+			return text
+		}
+		return ""
+	}
 	steps := 0
 	maxSteps := r.MaxSteps
 	if maxSteps <= 0 {
@@ -322,6 +340,15 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 		return ctx.Err()
 	}
 	for {
+		// A long transcript is compacted before the request, at most once a turn.
+		if !autoTried && s.autoDue() {
+			autoTried = true
+			if s.autoCompact(reqCtx, emit) {
+				if msgs, err = s.build(ctx, pending()); err != nil {
+					return closeTurn(store.Message{Role: "assistant", Content: FailedText}, err)
+				}
+			}
+		}
 		req := provider.Request{
 			Model:           model,
 			ReasoningEffort: effort,
@@ -346,6 +373,13 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			}
 		})
 		if err != nil {
+			if !stopped() && !retried && s.overflowCompact(reqCtx, err, emit) {
+				retried = true
+				if msgs, err = s.build(ctx, pending()); err == nil {
+					continue
+				}
+				return closeTurn(store.Message{Role: "assistant", Content: FailedText}, err)
+			}
 			if stopped() {
 				// The streamed text, trimmed, closes the turn.
 				row := store.Message{Role: "assistant", Content: strings.TrimSpace(content.String()), Reasoning: reasoning.String()}
@@ -356,7 +390,9 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			}
 			return closeTurn(store.Message{Role: "assistant", Content: FailedText}, err)
 		}
+		retried = false
 		total.APICalls++
+		s.noteResponse(resp.Usage.PromptTokens, emit)
 		total.Last = resp.Usage
 		total.Usage.PromptTokens += resp.Usage.PromptTokens
 		total.Usage.CompletionTokens += resp.Usage.CompletionTokens
@@ -391,11 +427,9 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 		}
 		// Rebuild from the store: the next request replays exactly what
 		// was persisted, byte for byte.
-		stored, err = r.Store.Messages(ctx, s.id)
-		if err != nil {
+		if msgs, err = s.build(ctx, ""); err != nil {
 			return closeTurn(store.Message{Role: "assistant", Content: FailedText}, err)
 		}
-		msgs = buildStepMessages(s.prompt, stored, "")
 	}
 }
 
@@ -467,12 +501,47 @@ func (s *Session) persistStep(ctx context.Context, text string, first bool, assi
 	return nil
 }
 
+// build loads the transcript and its latest compaction and returns the wire
+// form of the next request. userText is the new user message of the turn's
+// first request, "" after.
+func (s *Session) build(ctx context.Context, userText string) ([]provider.Message, error) {
+	stored, err := s.runner.Store.Messages(ctx, s.id)
+	if err != nil {
+		return nil, err
+	}
+	comps, err := s.runner.Store.Compactions(ctx, s.id)
+	if err != nil {
+		return nil, err
+	}
+	var last *store.Compaction
+	if n := len(comps); n > 0 {
+		last = &comps[n-1]
+	}
+	return buildStepMessages(s.promptText(), stored, last, userText), nil
+}
+
 // buildStepMessages is the wire form of one request: the system prompt, the
-// stored transcript in order, and (for the first request of a turn) the new
-// user message. No synthetic messages.
-func buildStepMessages(prompt string, stored []store.Message, userText string) []provider.Message {
-	msgs := make([]provider.Message, 0, len(stored)+2)
+// summary of the latest compaction (joined to the first kept user row, which
+// keeps roles alternating), the rows after it in order, and (for the first
+// request of a turn) the new user message. No other synthetic messages.
+func buildStepMessages(prompt string, stored []store.Message, comp *store.Compaction, userText string) []provider.Message {
+	msgs := make([]provider.Message, 0, len(stored)+3)
 	msgs = append(msgs, provider.Message{Role: "system", Content: prompt})
+	if comp != nil {
+		block := summaryBlock(comp.Summary)
+		stored = rowsAfter(stored, comp.ThroughSeq)
+		switch {
+		case len(stored) > 0 && stored[0].Role == "user":
+			first := toWireMessage(stored[0])
+			first.Content = block + "\n\n" + first.Content
+			msgs = append(msgs, first)
+			stored = stored[1:]
+		case len(stored) == 0 && userText != "":
+			userText = block + "\n\n" + userText
+		default:
+			msgs = append(msgs, provider.Message{Role: "user", Content: block})
+		}
+	}
 	for _, m := range stored {
 		msgs = append(msgs, toWireMessage(m))
 	}

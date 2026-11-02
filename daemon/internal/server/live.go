@@ -69,6 +69,10 @@ type live struct {
 	announced           int64
 	usage               usageTotals
 	ctxTokens           int
+	title               string
+	compactions         int
+	compacting          bool // a manual compaction is running
+	ctxKnown            int  // the window last set on the agent session
 	approvals           map[string]*pendingApproval
 	questions           map[string]*pendingQuestion
 	resolved            map[string]bool
@@ -134,6 +138,7 @@ func (l *live) sendTail(c *conn) {
 // ---- turns (mu held unless noted) ----
 
 func (l *live) startTurn(text string) {
+	l.nameSession(text)
 	ctx, cancel := context.WithCancel(context.Background())
 	l.running, l.startedAt, l.stop, l.turnCancel, l.tail = true, time.Now(), stopNone, cancel, nil
 	l.emit("turn.start", map[string]any{"text": text})
@@ -160,6 +165,10 @@ func (l *live) onAgent(e agent.Event) {
 	case "tool.end":
 		l.emit("tool.end", map[string]any{"call_id": e.CallID, "name": e.Tool, "result": e.Text,
 			"is_error": isError(e.Text), "duration_ms": e.Duration.Milliseconds()})
+	case "compaction":
+		l.compacted(*e.Compaction)
+	case "warning":
+		l.emit("notice", map[string]any{"level": "warning", "text": e.Text})
 	case "message":
 		m := e.Message
 		l.announced, l.updated = m.Seq, m.TS
@@ -198,6 +207,13 @@ func (l *live) finish(res agent.Result, err error) {
 	if res.APICalls > 0 {
 		l.ctxTokens = res.Last.PromptTokens + res.Last.CompletionTokens
 	}
+	if n := l.sess.ContextLength(); n != l.ctxKnown {
+		// An overflow error stated the real window: keep it for the session's life.
+		l.ctxKnown = n
+		l.srv.metaMu.Lock()
+		l.srv.learned[l.id] = n
+		l.srv.metaMu.Unlock()
+	}
 	end := map[string]any{"status": status, "usage": usageObj(res.Usage), "api_calls": res.APICalls}
 	if msg != "" {
 		end["error"] = msg
@@ -219,7 +235,7 @@ func (l *live) finish(res agent.Result, err error) {
 // next starts what follows an ended turn: a pending steer, then the oldest
 // queue item unless the queue waits.
 func (l *live) next() {
-	if l.closing || l.running {
+	if l.closing || l.running || l.compacting {
 		return
 	}
 	if l.hasSteer {
@@ -252,10 +268,10 @@ func (l *live) send(text, mode string) (bool, string, bool, error) {
 		return false, "", false, errors.New("the daemon is shutting down")
 	}
 	switch {
-	case !l.running:
+	case !l.running && !l.compacting:
 		l.startTurn(text)
 		return true, "", false, nil
-	case mode == "now":
+	case mode == "now" && l.running:
 		l.steerWith(text)
 		return false, "", true, nil
 	default:
@@ -354,7 +370,7 @@ func (l *live) drainNotices() {
 		return
 	}
 	for _, t := range texts {
-		if !l.running && !l.waiting {
+		if !l.running && !l.compacting && !l.waiting {
 			l.startTurn(t)
 			continue
 		}
@@ -556,7 +572,11 @@ func (l *live) attach(c *conn, driver bool, afterSeq *int64, limit int, reply fu
 	if shown == nil {
 		shown = []messageJSON{}
 	}
-	reply(map[string]any{"session": l.sessionObj(), "messages": shown, "more_before": more, "gap": gap, "queue": queueObjs(items), "role": role})
+	comps, err := l.srv.st.Compactions(ctx, l.id)
+	if err != nil {
+		return err
+	}
+	reply(map[string]any{"session": l.sessionObj(), "compactions": compactionObjs(comps), "messages": shown, "more_before": more, "gap": gap, "queue": queueObjs(items), "role": role})
 	if l.running {
 		l.sendTail(c)
 	}
@@ -583,7 +603,8 @@ func (l *live) isDriver(c *conn) bool {
 
 func (l *live) sessionObj() map[string]any {
 	o := map[string]any{
-		"id": l.id, "kind": l.kind, "title": "", "cwd": l.cwd,
+		"id": l.id, "kind": l.kind, "title": l.title, "cwd": l.cwd,
+		"context_length": l.sess.ContextLength(), "compactions": l.compactions,
 		"model": l.model, "reasoning_effort": l.effort, "mode": l.mode,
 		"status": "idle", "created": l.created.Format(time.RFC3339), "updated": l.updated.Format(time.RFC3339),
 		"preview": l.preview, "context_tokens": l.ctxTokens,

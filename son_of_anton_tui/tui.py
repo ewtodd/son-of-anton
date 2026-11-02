@@ -221,6 +221,8 @@ def _provider_label(provider: dict) -> str:
 
 def _compaction_stats_line(stats: dict) -> str:
     """The dim line under a compaction summary (same wording as the classic CLI)."""
+    if isinstance(stats.get("before_tokens"), int) and not isinstance(stats.get("after_tokens"), int):
+        return f"~{stats['before_tokens']:,} tokens before"
     try:
         from cli import _format_compaction_stats
 

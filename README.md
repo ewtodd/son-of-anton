@@ -24,8 +24,8 @@ daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`).
 - **On soa-d now:** the terminal TUI (`son-of-anton`), `-q` and `-z`.
 - **Still Python:** the Signal gateway and its relay workers, cron, physics
   runs.
-- **Not in the daemon yet:** compaction, titles, the memory tool, recall and
-  `session_search` (phase 3); subagents (4); `/handoff` and `/pickup` (5); MCP
+- **Not in the daemon yet:** the memory tool, recall and `session_search`
+  (phase 3b); subagents (4); `/handoff` and `/pickup` (5); MCP
   servers and web tools (7); the Python sessions in `state.db` (imported in 8).
 
 ## Running it
@@ -79,6 +79,7 @@ launch starts the new daemon.
 | `/perm default\|ask\|lockdown\|yolo` | how much it asks before running commands; shift+tab cycles |
 | `/new`, `/clear` | start a new session here |
 | `/resume [ID]`, `/sessions` | open a session (bare: a picker) |
+| `/compact [focus]` | summarize the older turns now, favoring a topic; `/compact --preview` shows what would be summarized |
 | `/commit [notes]` | review the uncommitted diff, write a message in the repo's style, commit |
 | `/stop` | kill the session's background processes |
 | `/sendnow [text]`, `/sendall` | steer the running turn onto this text or the oldest queued message; `/sendall` onto all of them |

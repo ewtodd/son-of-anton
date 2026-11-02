@@ -237,6 +237,8 @@ func (s *Server) driverMethod(c *conn, l *live, req *request, bad func(error) (a
 			return sendResult(l.send(s.commitPrompt(p.Args), "queue"))
 		case "stop":
 			return map[string]any{"killed": l.killBackground()}, nil
+		case "compact":
+			return l.compactCommand(p.Args)
 		}
 		return nil, errf(codeBadParams, "unknown command %q", p.Name)
 	}
@@ -385,10 +387,12 @@ func (s *Server) models(params json.RawMessage, bad func(error) (any, *rpcError)
 	routes := s.cfg.Routes()
 	if ep, err := s.cfg.Endpoint(""); err == nil {
 		ctx, cancel := context.WithTimeout(s.base, 5*time.Second)
-		ids, err := provider.New(ep.BaseURL, ep.APIKey).Models(ctx)
+		infos, err := provider.New(ep.BaseURL, ep.APIKey).ModelInfo(ctx)
 		cancel()
 		if err == nil {
-			for _, id := range ids {
+			s.refreshMeta(ep, infos)
+			for _, info := range infos {
+				id := info.ID
 				if _, ok := routes[id]; !ok {
 					routes[id] = nil
 				}
@@ -418,6 +422,7 @@ func (s *Server) set(l *live, params json.RawMessage, bad func(error) (any, *rpc
 		Model  *string `json:"model"`
 		Effort *string `json:"reasoning_effort"`
 		Mode   *string `json:"mode"`
+		Title  *string `json:"title"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return bad(err)
@@ -452,11 +457,20 @@ func (s *Server) set(l *live, params json.RawMessage, bad func(error) (any, *rpc
 	if err := s.st.UpdateSessionSettings(s.base, l.id, model, effort, string(m)); err != nil {
 		return nil, errf(codeInternal, "%v", err)
 	}
+	if p.Title != nil && strings.TrimSpace(*p.Title) != "" {
+		if err := l.setTitle(strings.TrimSpace(*p.Title)); err != nil {
+			return nil, errf(codeInternal, "%v", err)
+		}
+	}
+	s.fetchMeta(s.base, ep, false)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.model, l.effort, l.mode = model, effort, string(m)
 	l.sess.SetModel(provider.New(ep.BaseURL, ep.APIKey), model, effort)
 	l.sess.SetMode(m)
+	l.sess.SetContextLength(s.contextLength(ep, l.id))
+	l.sess.SetSummarizer(s.summarizer(ep))
+	l.ctxKnown = l.sess.ContextLength()
 	l.emitSession()
 	return map[string]any{"session": l.sessionObj()}, nil
 }

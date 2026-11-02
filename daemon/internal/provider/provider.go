@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -65,6 +66,10 @@ type Request struct {
 	Tools           []Tool
 	ReasoningEffort string
 	ToolChoice      string
+	// MaxTokens, Temperature and ResponseFormat are omitted when unset.
+	MaxTokens      int
+	Temperature    *float64
+	ResponseFormat json.RawMessage
 }
 
 // Delta is one streaming fragment.
@@ -156,13 +161,16 @@ func (i idleReader) Read(p []byte) (int, error) {
 
 // wireRequest is the exact JSON body sent on the wire.
 type wireRequest struct {
-	Model           string        `json:"model"`
-	Messages        []Message     `json:"messages"`
-	Tools           []Tool        `json:"tools,omitempty"`
-	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
-	ToolChoice      string        `json:"tool_choice,omitempty"`
-	Stream          bool          `json:"stream"`
-	StreamOptions   streamOptions `json:"stream_options"`
+	Model           string          `json:"model"`
+	Messages        []Message       `json:"messages"`
+	Tools           []Tool          `json:"tools,omitempty"`
+	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	ToolChoice      string          `json:"tool_choice,omitempty"`
+	MaxTokens       int             `json:"max_tokens,omitempty"`
+	Temperature     *float64        `json:"temperature,omitempty"`
+	ResponseFormat  json.RawMessage `json:"response_format,omitempty"`
+	Stream          bool            `json:"stream"`
+	StreamOptions   streamOptions   `json:"stream_options"`
 }
 
 type streamOptions struct {
@@ -181,6 +189,9 @@ func (c *Client) Complete(ctx context.Context, req Request, onDelta func(Delta))
 		Tools:           req.Tools,
 		ReasoningEffort: req.ReasoningEffort,
 		ToolChoice:      req.ToolChoice,
+		MaxTokens:       req.MaxTokens,
+		Temperature:     req.Temperature,
+		ResponseFormat:  req.ResponseFormat,
 		Stream:          true,
 		StreamOptions:   streamOptions{IncludeUsage: true},
 	})
@@ -478,6 +489,18 @@ func retryable(err error) bool {
 
 // Models lists the endpoint's model ids: GET <base>/models, data[].id.
 func (c *Client) Models(ctx context.Context) ([]string, error) {
+	infos, err := c.ModelInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(infos))
+	for _, i := range infos {
+		ids = append(ids, i.ID)
+	}
+	return ids, nil
+}
+
+func (c *Client) getModels(ctx context.Context) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.BaseURL, "/")+"/models", nil)
 	if err != nil {
 		return nil, err
@@ -495,17 +518,99 @@ func (c *Client) Models(ctx context.Context) ([]string, error) {
 	if resp.StatusCode/100 != 2 {
 		return nil, &HTTPError{Status: resp.StatusCode, Body: string(body)}
 	}
+	return body, nil
+}
+
+// ModelInfo is one /models entry with the metadata an endpoint reports.
+type ModelInfo struct {
+	ID               string
+	ContextLength    int
+	ReasoningEfforts []string
+}
+
+// contextKeys are the fields servers use for a model's context window, in
+// the order they are tried (../agent/model_metadata.py:259-271).
+var contextKeys = []string{
+	"context_length", "context_window", "context_size", "max_context_length",
+	"max_position_embeddings", "max_model_len", "max_input_tokens",
+	"max_sequence_length", "max_seq_len", "n_ctx_train", "n_ctx", "ctx_size",
+}
+
+// ModelInfo lists the endpoint's models with their context lengths and
+// reasoning efforts: GET <base>/models. A context length the entry does not
+// state is 0.
+func (c *Client) ModelInfo(ctx context.Context) ([]ModelInfo, error) {
+	body, err := c.getModels(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var out struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
+		Data []map[string]json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0, len(out.Data))
+	infos := make([]ModelInfo, 0, len(out.Data))
 	for _, d := range out.Data {
-		ids = append(ids, d.ID)
+		var info ModelInfo
+		_ = json.Unmarshal(d["id"], &info.ID)
+		for _, k := range contextKeys {
+			var n float64
+			if json.Unmarshal(d[k], &n) == nil && n >= 1 {
+				info.ContextLength = int(n)
+				break
+			}
+		}
+		_ = json.Unmarshal(d["reasoning_efforts"], &info.ReasoningEfforts)
+		infos = append(infos, info)
 	}
-	return ids, nil
+	return infos, nil
+}
+
+// ContextOverflow reports whether err says the request exceeded the model's
+// context window, and the limit it states (0 when it states none).
+func ContextOverflow(err error) (limit int, ok bool) {
+	var he *HTTPError
+	if !errors.As(err, &he) {
+		return 0, false
+	}
+	low := strings.ToLower(he.Body)
+	if he.Status != 413 {
+		if he.Status != 400 {
+			return 0, false
+		}
+		named := false
+		for _, p := range overflowPhrases {
+			if strings.Contains(low, p) {
+				named = true
+				break
+			}
+		}
+		if !named {
+			return 0, false
+		}
+	}
+	for _, re := range limitPatterns {
+		if m := re.FindStringSubmatch(low); m != nil {
+			if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+				return n, true
+			}
+		}
+	}
+	return 0, true
+}
+
+var overflowPhrases = []string{
+	"context length", "maximum context", "context size", "context window",
+	"prompt is too long", "max_model_len", "maximum model length",
+	"exceed_context_size", "too many tokens",
+}
+
+var limitPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`maximum context length is (\d+)`),
+	regexp.MustCompile(`max_model_len (?:is )?(\d+)`),
+	regexp.MustCompile(`maximum model length (?:is )?(\d+)`),
+	regexp.MustCompile(`context (?:length|size|window)(?: is| of|:) *(\d+)`),
+	regexp.MustCompile(`>\s*(\d+)\s*max`),
+	regexp.MustCompile(`"n_ctx"\s*:\s*(\d+)`),
 }

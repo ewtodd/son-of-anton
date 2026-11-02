@@ -36,7 +36,9 @@ func Open(path string) (*Store, error) {
 	for _, p := range []string{path, path + "-wal", path + "-shm"} {
 		_ = os.Chmod(p, 0o600) // the WAL files may not exist yet
 	}
-	db, err := sql.Open("sqlite", path)
+	// busy_timeout is per connection: set it in the DSN so every pooled
+	// connection waits for a concurrent writer instead of failing at once.
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +134,16 @@ UPDATE schema_version SET version = 3;`,
 UPDATE sessions SET workspace = cwd WHERE workspace IS NULL;
 CREATE INDEX sessions_workspace ON sessions (workspace);
 UPDATE schema_version SET version = 4;`,
+	`CREATE TABLE compactions (
+	session_id    TEXT NOT NULL REFERENCES sessions(id),
+	through_seq   INTEGER NOT NULL,
+	summary       TEXT NOT NULL,
+	before_tokens INTEGER NOT NULL DEFAULT 0,
+	created       TEXT NOT NULL,
+	PRIMARY KEY (session_id, through_seq)
+);
+ALTER TABLE sessions ADD COLUMN title_source TEXT;
+UPDATE schema_version SET version = 5;`,
 }
 
 func migrate(db *sql.DB) error {
@@ -189,6 +201,8 @@ type Session struct {
 	// configured default).
 	ReasoningEffort string
 	Mode            string
+	// TitleSource says where Title came from: derived, llm or user.
+	TitleSource string
 }
 
 // newSessionID returns YYYYmmdd_HHMMSS_ plus six random hex chars (local
@@ -243,11 +257,12 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 		effort   sql.NullString
 		mode     sql.NullString
 		work     sql.NullString
+		tsource  sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace
+		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, title_source
 		 FROM sessions WHERE id = ?`, id).
-		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended, &effort, &mode, &work)
+		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended, &effort, &mode, &work, &tsource)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -263,6 +278,7 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 	sess.ReasoningEffort = effort.String
 	sess.Mode = mode.String
 	sess.Workspace = work.String
+	sess.TitleSource = tsource.String
 	sess.Created, err = parseTime(created.String)
 	if err != nil {
 		return Session{}, err

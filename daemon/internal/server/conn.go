@@ -23,6 +23,7 @@ const (
 	codeNotDriver  = -32010
 	codeNotFound   = -32011
 	codeNotPending = -32012
+	codeBusy       = -32013
 )
 
 const (

@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -222,4 +224,104 @@ func (s *Store) MessagesAfter(ctx context.Context, id string, afterSeq int64, li
 		got = got[:limit]
 	}
 	return got, more, nil
+}
+
+// Compaction is a summary of a session's rows up to ThroughSeq.
+type Compaction struct {
+	ThroughSeq   int64
+	Summary      string
+	BeforeTokens int
+	Created      time.Time
+}
+
+// AddCompaction records a compaction and the rebuilt prompt's hash in one
+// transaction. It refuses a ThroughSeq that is not beyond the last
+// compaction's, or past the last row.
+func (s *Store) AddCompaction(ctx context.Context, sessionID string, c Compaction, promptHash string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// Write first: a transaction that reads before it writes fails with
+	// SQLITE_BUSY when another writer commits in between.
+	res, err := tx.ExecContext(ctx, `UPDATE sessions SET prompt_hash = ? WHERE id = ?`, promptHash, sessionID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("store: unknown session %q", sessionID)
+	}
+	var last, maxSeq int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(through_seq), 0) FROM compactions WHERE session_id = ?`, sessionID).Scan(&last); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?`, sessionID).Scan(&maxSeq); err != nil {
+		return err
+	}
+	if c.ThroughSeq <= last || c.ThroughSeq > maxSeq {
+		return fmt.Errorf("store: compaction through %d: must be beyond %d and within %d rows", c.ThroughSeq, last, maxSeq)
+	}
+	created := c.Created
+	if created.IsZero() {
+		created = time.Now()
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO compactions (session_id, through_seq, summary, before_tokens, created) VALUES (?, ?, ?, ?, ?)`,
+		sessionID, c.ThroughSeq, c.Summary, c.BeforeTokens, formatTime(created)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Compactions returns the session's compactions, oldest first.
+func (s *Store) Compactions(ctx context.Context, sessionID string) ([]Compaction, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT through_seq, summary, before_tokens, created FROM compactions WHERE session_id = ? ORDER BY through_seq`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Compaction
+	for rows.Next() {
+		var c Compaction
+		var created string
+		if err := rows.Scan(&c.ThroughSeq, &c.Summary, &c.BeforeTokens, &created); err != nil {
+			return nil, err
+		}
+		if c.Created, err = parseTime(created); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+var titleRank = map[string]int{"derived": 1, "llm": 2, "user": 3}
+
+// SetTitle sets a session's title unless the current one came from a higher
+// source (derived < llm < user). changed says whether it was set.
+func (s *Store) SetTitle(ctx context.Context, id, title, source string) (changed bool, err error) {
+	rank, ok := titleRank[source]
+	if !ok {
+		return false, fmt.Errorf("store: unknown title source %q", source)
+	}
+	// One statement, so a concurrent writer cannot make it fail with SQLITE_BUSY.
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET title = ?, title_source = ? WHERE id = ?
+		 AND (CASE COALESCE(title_source, '') WHEN 'derived' THEN 1 WHEN 'llm' THEN 2 WHEN 'user' THEN 3 ELSE 0 END) <= ?`,
+		nullStr(title), source, id, rank)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return true, nil
+	}
+	var one int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM sessions WHERE id = ?`, id).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	} else if err != nil {
+		return false, err
+	}
+	return false, nil
 }
