@@ -4,6 +4,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -27,22 +28,22 @@ var (
 	homeVarRe      = regexp.MustCompile(`\$\{HOME\}|\$HOME\b`)
 	escapeRe       = regexp.MustCompile(`\\([^\n])`)
 	emptyQuoteRe   = regexp.MustCompile(`''|""`)
-	ifsRe          = regexp.MustCompile(`\$\{IFS[^}]*\}|\$IFS(?:\b|$)`)
+	ifsRe          = regexp.MustCompile(`\$\{IFS\b[^}]*\}|\$IFS\b`)
 )
 
 // normalize de-obfuscates a command the way the Python detection layer does:
-// ANSI codes and NULs out, NFKC, line continuations folded, the absolute user
-// home written as ~, backslash escapes dropped, empty quotes dropped, $IFS
-// collapsed to a space.
+// ANSI codes and NULs out, NFKC, line continuations folded, the instance and
+// user home prefixes written as ~/.son-of-anton and ~, backslash escapes
+// dropped, empty quotes dropped, $IFS collapsed to a space. A bare home with
+// no path under it is not folded. ($HOME and ${HOME} are also written as ~,
+// which the reference leaves to its patterns; both spellings classify alike.)
 func normalize(command string) string {
 	s := ansiRe.ReplaceAllString(command, "")
 	s = strings.ReplaceAll(s, "\x00", "")
 	s = norm.NFKC.String(s)
 	s = continuationRe.ReplaceAllString(s, "")
-	if home := userHome(); home != "" && len(home) > 2 {
-		s = strings.ReplaceAll(s, home+"/", "~/")
-		s = strings.ReplaceAll(s, home, "~")
-	}
+	s = foldHome(s, soaHome(), "~/.son-of-anton")
+	s = foldHome(s, userHome(), "~")
 	s = homeVarRe.ReplaceAllString(s, "~")
 	s = escapeRe.ReplaceAllString(s, "$1")
 	s = emptyQuoteRe.ReplaceAllString(s, "")
@@ -51,11 +52,50 @@ func normalize(command string) string {
 }
 
 func userHome() string {
+	if h := os.Getenv("HOME"); h != "" {
+		return h
+	}
 	if h, err := os.UserHomeDir(); err == nil {
 		return h
 	}
 	return ""
 }
+
+// soaHome is the instance home: SON_OF_ANTON_HOME, else ~/.son-of-anton.
+func soaHome() string {
+	if h := os.Getenv("SON_OF_ANTON_HOME"); h != "" {
+		return h
+	}
+	if h := userHome(); h != "" {
+		return h + "/.son-of-anton"
+	}
+	return ""
+}
+
+// foldHome rewrites an absolute home path used as a directory prefix (repeated
+// slashes allowed between its components) to replacement, like the
+// reference's _fold_home_prefixes. A home with fewer than two components
+// (unset, "/", "/x") is never folded, so a stray value cannot rewrite
+// unrelated paths.
+func foldHome(s, home, replacement string) string {
+	var parts []string
+	for _, c := range strings.Split(home, "/") {
+		if c != "" {
+			parts = append(parts, regexp.QuoteMeta(c))
+		}
+	}
+	if len(parts) < 2 {
+		return s
+	}
+	re, ok := homeFoldCache.Load(home)
+	if !ok {
+		re = regexp.MustCompile("/*" + strings.Join(parts, "/+") + `(?P<tail>(?:/[^/\s'"` + "`" + `;|&<>()]*)+)`)
+		homeFoldCache.Store(home, re)
+	}
+	return re.(*regexp.Regexp).ReplaceAllString(s, replacement+"${tail}")
+}
+
+var homeFoldCache sync.Map
 
 // markSegments turns the shell separators into newlines (outside quotes), so
 // "command position" means "start of line".
@@ -273,34 +313,212 @@ func isGrepSegment(prefix string) bool {
 	return grepTools[lowerBasename(word)]
 }
 
-// interpreterPayloads extracts the payloads of `bash|sh|zsh|ksh|dash -c
-// <payload>` so they are classified as commands in their own right.
-var interpreters = map[string]bool{"bash": true, "sh": true, "zsh": true, "ksh": true, "dash": true}
+// interpreterPayloads extracts the payloads of `bash|sh|zsh|ksh -c <payload>`
+// (also -lc and the other option bundles bash accepts) so they are classified
+// as commands in their own right. The command word may follow the
+// sudo/env/exec/... wrappers. marked has one command per line.
+var interpreters = map[string]bool{"bash": true, "sh": true, "zsh": true, "ksh": true}
+
+var wrapperWords = map[string]bool{
+	"sudo": true, "env": true, "exec": true, "nohup": true, "setsid": true,
+	"time": true, "command": true, "builtin": true,
+}
+
+var sudoOptionsWithArg = map[string]bool{
+	"-c": true, "--close-from": true, "-g": true, "--group": true, "-h": true,
+	"--host": true, "-p": true, "--prompt": true, "-u": true, "--user": true,
+}
 
 func interpreterPayloads(marked string) []string {
 	var payloads []string
 	for _, line := range strings.Split(marked, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 || !interpreters[lowerBasename(fields[0])] {
+		words, ok := shellWords(line)
+		if !ok {
 			continue
 		}
-		for i := 1; i+1 < len(fields); i++ {
-			if fields[i] == "-c" {
-				payloads = append(payloads, unquote(fields[i+1]))
-				break
+		i, skipOpts, skipArg := 0, false, false
+		for ; i < len(words); i++ {
+			w := strings.ToLower(words[i])
+			switch {
+			case skipArg:
+				skipArg = false
+				continue
+			case skipOpts && strings.HasPrefix(w, "-"):
+				name, _, hasEq := strings.Cut(w, "=")
+				skipArg = !hasEq && sudoOptionsWithArg[name]
+				continue
+			case wrapperWords[w]:
+				skipOpts = w == "sudo" || w == "env"
+				continue
+			case isEnvAssignment(words[i]):
+				skipOpts = false
+				continue
 			}
+			break
+		}
+		if i >= len(words) || !interpreters[lowerBasename(words[i])] {
+			continue
+		}
+		if payload, found := bashExecPayload(words[i+1:]); found && payload != "" {
+			payloads = append(payloads, payload)
 		}
 	}
 	return payloads
 }
 
-func unquote(s string) string {
-	if len(s) >= 2 {
-		if (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"') {
-			return s[1 : len(s)-1]
+func isEnvAssignment(w string) bool {
+	eq := strings.IndexByte(w, '=')
+	if eq <= 0 {
+		return false
+	}
+	for i := 0; i < eq; i++ {
+		c := w[i]
+		if !(c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || i > 0 && c >= '0' && c <= '9') {
+			return false
 		}
 	}
-	return s
+	return true
+}
+
+const bashShortOptionLetters = "ilrsDcabefhkmnptuvxBCEHPTOo"
+
+// bashExecPayload finds bash's -c (alone or in an option bundle) and the
+// command string it owns, honouring -O/-o and the startup-file options that
+// consume the next word (the reference's _bash_exec_payload).
+func bashExecPayload(args []string) (string, bool) {
+	for index := 0; index < len(args); {
+		token := args[index]
+		if token == "--" || !(strings.HasPrefix(token, "-") || strings.HasPrefix(token, "+")) {
+			break
+		}
+		switch token {
+		case "-O", "+O", "-o", "+o", "--init-file", "--rcfile":
+			index += 2
+			continue
+		}
+		if strings.HasPrefix(token, "--") {
+			index++
+			continue
+		}
+		chars := token[1:]
+		if strings.Trim(chars, bashShortOptionLetters) != "" {
+			index++
+			continue
+		}
+		consumed := 0
+		if strings.ContainsAny(chars, "Oo") {
+			consumed = 1
+		}
+		if !strings.Contains(chars, "c") {
+			index += 1 + consumed
+			continue
+		}
+		if p := index + 1 + consumed; p < len(args) {
+			return args[p], true
+		}
+		return "", true
+	}
+	return "", false
+}
+
+// shellWords splits one command line into words the way POSIX shlex does for
+// quoting: single quotes literal, double quotes with backslash escaping only
+// " and \, a bare backslash escaping the next character. An unterminated
+// quote reports false.
+func shellWords(line string) ([]string, bool) {
+	var words []string
+	var cur strings.Builder
+	inWord := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f':
+			if inWord {
+				words = append(words, cur.String())
+				cur.Reset()
+				inWord = false
+			}
+		case c == '\'':
+			inWord = true
+			j := strings.IndexByte(line[i+1:], '\'')
+			if j < 0 {
+				return nil, false
+			}
+			cur.WriteString(line[i+1 : i+1+j])
+			i += j + 1
+		case c == '"':
+			inWord = true
+			closed := false
+			for i++; i < len(line); i++ {
+				d := line[i]
+				if d == '\\' && i+1 < len(line) && (line[i+1] == '"' || line[i+1] == '\\') {
+					i++
+					cur.WriteByte(line[i])
+					continue
+				}
+				if d == '"' {
+					closed = true
+					break
+				}
+				cur.WriteByte(d)
+			}
+			if !closed {
+				return nil, false
+			}
+		case c == '\\':
+			inWord = true
+			if i+1 >= len(line) {
+				return nil, false
+			}
+			i++
+			cur.WriteByte(line[i])
+		default:
+			inWord = true
+			cur.WriteByte(c)
+		}
+	}
+	if inWord {
+		words = append(words, cur.String())
+	}
+	return words, true
+}
+
+// maskQuotedNewlines writes a space for every raw newline inside quotes: it
+// is data to the shell, not a command separator (the reference's
+// _mask_quoted_newlines). Run on the raw command, before normalization.
+func maskQuotedNewlines(command string) string {
+	if !strings.Contains(command, "\n") {
+		return command
+	}
+	out := make([]byte, 0, len(command))
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		if quote != 0 {
+			if c == '\\' && quote == '"' && i+1 < len(command) {
+				out = append(out, c, command[i+1])
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			if c == '\n' {
+				c = ' '
+			}
+			out = append(out, c)
+			continue
+		}
+		if c == '\'' || c == '"' {
+			quote = c
+		} else if c == '\\' && i+1 < len(command) {
+			out = append(out, c, command[i+1])
+			i++
+			continue
+		}
+		out = append(out, c)
+	}
+	return string(out)
 }
 
 func lowerBasename(p string) string {
@@ -316,14 +534,16 @@ func Classify(command string) []Finding {
 }
 
 func classify(command string, depth int) []Finding {
-	normalized := normalize(command)
-	if parserLimitExceeded(normalized) {
+	if parserLimitExceeded(command) {
 		return []Finding{{Key: "parser-limit", Description: "command parser limit exceeded", Hardline: true}}
 	}
+	normalized := normalize(maskQuotedNewlines(command))
 	marked := markSegments(normalized)
 
 	findings := []Finding{}
-	if sudoStdinGuard.MatchString(marked) {
+	// The reference guards the command itself (not a bash -c payload) and
+	// normalizes without the newline mask.
+	if depth == 0 && sudoStdinGuard.MatchString(normalize(command)) {
 		findings = append(findings, Finding{Key: "sudo-stdin", Description: "sudo with -S (password via stdin)", Hardline: true})
 	}
 	findings = append(findings, hardlineFindings(normalized, marked)...)
@@ -355,10 +575,14 @@ func dedupeFindings(findings []Finding) []Finding {
 	seen := map[string]bool{}
 	out := findings[:0:0]
 	for _, f := range findings {
-		if seen[f.Key] {
+		id := f.Key
+		if f.Hardline {
+			id = "hardline:" + id
+		}
+		if seen[id] {
 			continue
 		}
-		seen[f.Key] = true
+		seen[id] = true
 		out = append(out, f)
 	}
 	return out
@@ -366,86 +590,70 @@ func dedupeFindings(findings []Finding) []Finding {
 
 // --- hardline patterns ---------------------------------------------------
 
-var sudoStdinGuard = regexp.MustCompile(`(?m)^\s*sudo\s+-S\b`)
+var sudoStdinGuard = regexp.MustCompile("(?i)(?:^|[;&|`\\n]|\\$\\()\\s*sudo\\s+-S\\b")
 
-// hardlineRM: `rm <flags> <path>` at segment start, where the path is the
-// filesystem root (with /.. and * variants), a system directory, or the
-// home directory — ported from _HARDLINE_RM_PATH and the system-dirs list.
-var hardlineRM = regexp.MustCompile(`(?i)^rm\s+(-\S+\s+)*(["\']?)(/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|(?:/home|/root|/etc|/usr|/var|/bin|/sbin|/boot|/lib)(?:/\*)?|(?:~|\$\{?HOME\}?)(?:/?|/\*)?)(["\']?)(?:[\s);|&]|$)`)
+// cmdPos is the Python _CMDPOS: the start of a command (start of text, after
+// a newline, backtick or `$(`), then optional sudo with flags, env with
+// VAR=VAL pairs and exec/nohup/setsid/time wrappers. The reference has no
+// timeout wrapper; the phase spec adds `timeout N`.
+const cmdPos = "(?:^|[\\n`]|\\$\\()" +
+	`\s*` +
+	`(?:sudo\s+(?:-[^\s]+\s+)*)?` +
+	`(?:env\s+(?:\w+=\S*\s+)*)?` +
+	`(?:(?:exec|nohup|setsid|time|timeout\s+\S+)\s+)*` +
+	`\s*`
 
-var hardlineSegmentPatterns = []struct {
+// hardlineRMPath is _hardline_rm_path: the path fully wrapped in a matching
+// quote pair, or bare with a terminator.
+func hardlineRMPath(alt string) string {
+	return `(?:["'](?:` + alt + `)["']|(?:` + alt + ")(?:\\s|$|[)`;|&]))"
+}
+
+const hardlineSystemDirs = `/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|` +
+	`/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*`
+
+const rmFlagPrefix = cmdPos + `rm\s+(-[^\s]*\s+)*`
+
+type hardlinePattern struct {
 	key, desc string
 	re        *regexp.Regexp
-}{
-	{"mkfs", "file system format (mkfs)", regexp.MustCompile(`(?i)^mkfs(\.[a-z0-9]+)?\b`)},
-	{"init-shutdown", "init 0/6 (shutdown/reboot)", regexp.MustCompile(`(?i)^init\s+[06]\b`)},
-	{"systemctl-shutdown", "systemctl poweroff/reboot", regexp.MustCompile(`(?i)^systemctl\s+(poweroff|reboot|halt|kexec)\b`)},
-	{"telinit-shutdown", "telinit 0/6 (shutdown/reboot)", regexp.MustCompile(`(?i)^telinit\s+[06]\b`)},
-	{"kill-all", "kill all processes", regexp.MustCompile(`(?i)^kill\s+(-[\s]+)*-1\b`)},
-	{"system-shutdown", "system shutdown/reboot", regexp.MustCompile(`(?i)^(shutdown|reboot|halt|poweroff)\b`)},
+	// whole: matched against the unmarked command (separators intact);
+	// otherwise against the command-start-marked one.
+	whole bool
 }
 
-var (
-	hardlineDD       = regexp.MustCompile(`(?i)\bdd\b[^\n]*\bof=/dev/(?:sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*`)
-	hardlineBlockDev = regexp.MustCompile(`(?i)>\s*/dev/(?:sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b`)
-	forkBomb         = regexp.MustCompile(`(?s):\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:`)
-)
-
-// stripWrappers removes the optional sudo/env/exec/nohup/setsid/time/timeout
-// prefixes that may precede a command at segment start.
-var (
-	wrapperSudo    = regexp.MustCompile(`(?i)^sudo\s+(-\S+\s+)*`)
-	wrapperEnv     = regexp.MustCompile(`(?i)^env\s+(\w+=\S*\s+)+`)
-	wrapperOnce    = regexp.MustCompile(`(?i)^(?:exec|nohup|setsid|time)\s+`)
-	wrapperTimeout = regexp.MustCompile(`(?i)^timeout\s+\S+\s+`)
-)
-
-func stripWrappers(segment string) string {
-	s := strings.TrimLeft(segment, " \t")
-	for i := 0; i < 8; i++ {
-		before := s
-		s = wrapperSudo.ReplaceAllString(s, "")
-		s = wrapperEnv.ReplaceAllString(s, "")
-		s = wrapperOnce.ReplaceAllString(s, "")
-		s = wrapperTimeout.ReplaceAllString(s, "")
-		s = strings.TrimLeft(s, " \t")
-		if s == before {
-			break
-		}
-	}
-	return s
+func hl(key, desc, pattern string, whole bool) hardlinePattern {
+	return hardlinePattern{key: key, desc: desc, re: regexp.MustCompile(`(?is)` + pattern), whole: whole}
 }
 
-// hardlineFindings returns the command-position hardline hits. The fork bomb,
-// dd and block-device-redirect checks run against the unmarked string (their
-// pipes would be split into newlines by marking); the rest run per segment.
+// hardlinePatterns is HARDLINE_PATTERNS from the reference, in order.
+var hardlinePatterns = []hardlinePattern{
+	hl("rm-fs-root", "recursive delete of root filesystem", rmFlagPrefix+hardlineRMPath(`/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*`), false),
+	hl("rm-system-dir", "recursive delete of system directory", rmFlagPrefix+hardlineRMPath(hardlineSystemDirs), false),
+	hl("rm-home-dir", "recursive delete of home directory", rmFlagPrefix+hardlineRMPath(`(?:~|\$\{?HOME\}?)(?:/?|/\*)?`), false),
+	hl("mkfs", "format filesystem (mkfs)", `\bmkfs(\.[a-z0-9]+)?\b`, true),
+	hl("dd-blockdev", "dd to a raw block device", `\bdd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*`, true),
+	hl("blockdev-write", "redirect to a raw block device", `>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b`, true),
+	hl("fork-bomb", "fork bomb", `:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:`, true),
+	hl("kill-all", "kill all processes", `\bkill\s+(-[^\s]+\s+)*-1\b`, true),
+	hl("system-shutdown", "system shutdown/reboot", cmdPos+`(shutdown|reboot|halt|poweroff)\b`, false),
+	hl("init-shutdown", "init 0/6 (shutdown/reboot)", cmdPos+`init\s+[06]\b`, false),
+	hl("systemctl-shutdown", "systemctl poweroff/reboot", cmdPos+`systemctl\s+(poweroff|reboot|halt|kexec)\b`, false),
+	hl("telinit-shutdown", "telinit 0/6 (shutdown/reboot)", cmdPos+`telinit\s+[06]\b`, false),
+}
+
+// hardlineFindings returns the hardline hits. The whole-command patterns run
+// on the normalized text; the command-position ones on the text with a
+// newline at every command start.
 func hardlineFindings(normalized, marked string) []Finding {
 	var out []Finding
-	// Whole-command hardlines (no command-position requirement).
-	if forkBomb.MatchString(normalized) {
-		out = append(out, Finding{Key: "fork-bomb", Description: "fork bomb", Hardline: true})
-	}
-	if hardlineDD.MatchString(normalized) {
-		out = append(out, Finding{Key: "dd-blockdev", Description: "dd to a raw block device", Hardline: true})
-	}
-	if hardlineBlockDev.MatchString(normalized) {
-		out = append(out, Finding{Key: "blockdev-write", Description: "redirect to a raw block device", Hardline: true})
-	}
-	// Command-position hardlines, one per segment.
-	for _, segment := range strings.Split(marked, "\n") {
-		s := stripWrappers(segment)
-		if s == "" {
-			continue
+	for _, p := range hardlinePatterns {
+		text := marked
+		if p.whole {
+			text = normalized
 		}
-		if hardlineRM.MatchString(s) {
-			out = append(out, Finding{Key: "rm-absolute", Description: "recursive delete of the filesystem root or a system directory", Hardline: true})
-			continue
-		}
-		for _, p := range hardlineSegmentPatterns {
-			if p.re.MatchString(s) {
-				out = append(out, Finding{Key: p.key, Description: p.desc, Hardline: true})
-				break
-			}
+		if p.re.MatchString(text) {
+			out = append(out, Finding{Key: p.key, Description: p.desc, Hardline: true})
 		}
 	}
 	return out
@@ -472,7 +680,7 @@ const (
 	fragCredentials     = `(?:~|\$home|\$\{home\})/\.(?:netrc|pgpass|npmrc|pypirc)\b`
 	fragSensitiveTarget = `(?:/etc/|/dev/sd|` + fragSSH + `|` + fragSOAEnv + `|` + fragSOAConfig + `|` + fragShellRC + `|` + fragCredentials + `)`
 	fragUserSensitive   = fragSSH + `|` + fragShellRC + `|` + fragCredentials
-	fragProjectTarget   = fragProjectEnv + `|` + fragProjectConfig
+	fragProjectTarget   = `(?:` + fragProjectEnv + `|` + fragProjectConfig + `)`
 	fragCommandTail     = `(?:\s*(?:&&|\|\||;).*)?$`
 	// The Python boundary is a lookahead; this is the RE2 equivalent,
 	// grouped so its alternation cannot leak out of the surrounding pattern.
@@ -485,13 +693,13 @@ func soft(key, desc, pattern string) dangerPattern {
 
 func dangerPatterns() []dangerPattern {
 	return []dangerPattern{
-		soft("rm-root", "delete in root path", `\brm\s+(-[\s]*\s+)*/`),
-		soft("rm-recursive", "recursive delete", `\brm\s+-[\s]*r`),
+		soft("rm-root", "delete in root path", `\brm\s+(-[^\s]*\s+)*/`),
+		soft("rm-recursive", "recursive delete", `\brm\s+-[^\s]*r`),
 		soft("rm-recursive-long", "recursive delete (long flag)", `\brm\s+--recursive\b`),
 		{key: "rm-flag-after-arg", description: "recursive delete (flag after argument)", custom: rmFlagAfterArg},
-		soft("chmod-writable", "world/other-writable permissions", `\bchmod\s+(-[\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b`),
+		soft("chmod-writable", "world/other-writable permissions", `\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b`),
 		soft("chmod-recursive-writable", "recursive world/other-writable (long flag)", `\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)`),
-		soft("chown-root-recursive", "recursive chown to root", `\bchown\s+(-[\s]*)?R\s+root`),
+		soft("chown-root-recursive", "recursive chown to root", `\bchown\s+(-[^\s]*)?R\s+root`),
 		soft("chown-root-recursive-long", "recursive chown to root (long flag)", `\bchown\s+--recur[a-z]*\b.*root`),
 		soft("mkfs", "file system format", `\bmkfs\b`),
 		soft("dd", "disk copy", `\bdd\s+.*if=`),
@@ -500,16 +708,16 @@ func dangerPatterns() []dangerPattern {
 		{key: "sql-delete-no-where", description: "SQL DELETE without WHERE", custom: deleteFromNoWhere},
 		soft("sql-truncate", "SQL TRUNCATE", `\bTRUNCATE\s+(TABLE)?\s*\w`),
 		soft("system-config-overwrite", "overwrite system config", `>\s*/etc/`),
-		soft("systemctl-stop", "stop/restart a system service", `\bsystemctl\s+(-[\s]+)*\s*(stop|restart|disable|mask)\b`),
+		soft("systemctl-stop", "stop/restart a system service", `\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b`),
 		soft("kill-all", "kill all processes", `\bkill\s+-9\s+-1\b`),
 		soft("pkill-9", "force kill a process", `\bpkill\s+-9\b`),
-		soft("killall-9", "force kill a process (killall -KILL)", `\bkillall\s+(-[\s]*\s+)*-(9|KILL|SIGKILL)\b`),
-		soft("killall-s-kill", "force kill a process (killall -s KILL)", `\bkillall\s+(-[\s]*\s+)*-s\s+(KILL|SIGKILL|9)\b`),
-		soft("killall-regex", "kill processes by regex (killall -r)", `\bkillall\s+(-[\s]*\s+)*-r\b`),
+		soft("killall-9", "force kill a process (killall -KILL)", `\bkillall\s+(-[^\s]*\s+)*-(9|KILL|SIGKILL)\b`),
+		soft("killall-s-kill", "force kill a process (killall -s KILL)", `\bkillall\s+(-[^\s]*\s+)*-s\s+(KILL|SIGKILL|9)\b`),
+		soft("killall-regex", "kill processes by regex (killall -r)", `\bkillall\s+(-[^\s]*\s+)*-r\b`),
 		soft("fork-bomb", "fork bomb", `:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:`),
 		soft("pipe-to-shell", "pipe remote content to shell", `\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)`),
 		soft("process-substitution", "execute a remote script via process substitution", `\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b`),
-		soft("cmdsub-remote", "execute remote content via command substitution", `\s*\$\s*\(\s*(curl|wget)\b`),
+		soft("cmdsub-remote", "execute remote content via command substitution", `(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`+"`"+`\s*)(?:curl|wget)\b`),
 		soft("decode-to-shell", "pipe decoded content to a shell (possible obfuscated command)", `\b(?:base64|base32|base16)\s+(?:-[dD]|--decode)\b.*\|\s*\b(?:bash|sh|zsh|ksh|dash)\b`),
 		soft("xxd-to-shell", "pipe xxd-decoded content to a shell (possible obfuscated command)", `\bxxd\s+-r\b.*\|\s*\b(?:bash|sh|zsh|ksh|dash)\b`),
 		soft("tr-to-shell", "pipe tr-transformed output to a shell (possible obfuscated command)", `\becho\b[^|]*\|\s*\btr\b[^|]*\|\s*\b(?:bash|sh|zsh|ksh|dash)\b`),
@@ -538,56 +746,76 @@ func dangerPatterns() []dangerPattern {
 		soft("cp-system", "copy/move a file into a system config path", `\b(?:cp|mv|install)\b.*\s`+fragSystemConfig),
 		soft("cp-project", "overwrite a project env/config file", `\b(?:cp|mv|install)\b.*\s["\']?`+fragProjectTarget+`["\']?`+fragCommandTail),
 		soft("cp-sensitive", "copy/move a file into a sensitive credentials/SSH/shell rc path", `\b(?:cp|mv|install)\b.*\s["\']?`+fragSensitiveTarget+`[^"\s']*["\']?`+fragCommandTail),
-		soft("sed-inplace-sensitive", "in-place edit of a sensitive credentials/SSH/shell rc path", `\bsed\s+-[\s]*i.*(?:`+fragUserSensitive+`)[^"\s']*`),
+		soft("sed-inplace-sensitive", "in-place edit of a sensitive credentials/SSH/shell rc path", `\bsed\s+-[^\s]*i.*(?:`+fragUserSensitive+`)[^"\s']*`),
 		soft("sed-inplace-sensitive-long", "in-place edit of a sensitive credentials/SSH/shell rc path (long flag)", `\bsed\s+--in-place\b.*(?:`+fragUserSensitive+`)[^"\s']*`),
-		soft("perl-ruby-inplace-sensitive", "in-place edit of a sensitive credentials/SSH/shell rc path (perl/ruby)", `\b(?:perl|ruby)\b.*(?:^|\s)-[\s]*i\b.*(?:`+fragUserSensitive+`)[^"\s']*`),
-		soft("sed-inplace-system", "in-place edit of a system config", `\bsed\s+-[\s]*i.*\s`+fragSystemConfig),
+		soft("perl-ruby-inplace-sensitive", "in-place edit of a sensitive credentials/SSH/shell rc path (perl/ruby)", `\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:`+fragUserSensitive+`)[^"\s']*`),
+		soft("sed-inplace-system", "in-place edit of a system config", `\bsed\s+-[^\s]*i.*\s`+fragSystemConfig),
 		soft("sed-inplace-system-long", "in-place edit of a system config (long flag)", `\bsed\s+--in-place\b.*\s`+fragSystemConfig),
-		soft("sed-inplace-soa", "in-place edit of son-of-anton config/env", `\bsed\s+-[\s]*i.*(?:`+fragSOAConfig+`|`+fragSOAEnv+`)`),
+		soft("sed-inplace-soa", "in-place edit of son-of-anton config/env", `\bsed\s+-[^\s]*i.*(?:`+fragSOAConfig+`|`+fragSOAEnv+`)`),
 		soft("sed-inplace-soa-long", "in-place edit of son-of-anton config/env (long flag)", `\bsed\s+--in-place\b.*(?:`+fragSOAConfig+`|`+fragSOAEnv+`)`),
-		soft("perl-ruby-inplace-soa", "in-place edit of son-of-anton config/env (perl/ruby)", `\b(?:perl|ruby)\b.*(?:^|\s)-[\s]*i\b.*(?:`+fragSOAConfig+`|`+fragSOAEnv+`)`),
+		soft("perl-ruby-inplace-soa", "in-place edit of son-of-anton config/env (perl/ruby)", `\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:`+fragSOAConfig+`|`+fragSOAEnv+`)`),
 		soft("shell-heredoc", "execute shell via heredoc", `\b(?:bash|sh|zsh|ksh)\s+<<`),
 		soft("git-reset-hard", "git reset --hard (destroys uncommitted changes)", `\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b`),
 		soft("git-push-force", "git force push (rewrites remote history)", `\bgit\s+push\b.*--forc[a-z]*\b`),
 		soft("git-push-f", "git force push short flag (rewrites remote history)", `\bgit\s+push\b.*-f\b`),
-		soft("git-clean-force", "git clean with force (deletes untracked files)", `\bgit\s+clean\s+-[\s]*f`),
+		soft("git-clean-force", "git clean with force (deletes untracked files)", `\bgit\s+clean\s+-[^\s]*f`),
 		soft("git-branch-d", "git branch force delete", `\bgit\s+branch\s+-D\b`),
 		soft("git-branch-df", "git branch force delete (long flag)", `\bgit\s+branch\b[^;|\&\n]*?(?:-d\b|--delete\b)[^;|\&\n]*?(?:-f\b|--force\b)`),
 		soft("git-branch-fd", "git branch force delete (long flag, force first)", `\bgit\s+branch\b[^;|\&\n]*?(?:-f\b|--force\b)[^;|\&\n]*?(?:-d\b|--delete\b)`),
 		soft("chmod-x-run", "chmod +x followed by immediate execution", `\bchmod\s+\+x\b.*[;&|]+\s*\./`),
 		soft("sudo-priv-flag", "sudo with privilege flag (stdin/askpass/shell/list)", `\bsudo\b[^;|\&\n]*?\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)`),
 		soft("sudo-combined-flag", "sudo with a combined-flag privilege escalation", `\bsudo\b[^;|\&\n]*?\s+-[a-z]*[sa][a-z]*\b`),
-		// The Python list leaves plain flagged sudo to the TTY-bound comment;
-		// this daemon has no TTY, so any flagged sudo is a privilege
-		// operation.
-		soft("sudo-flag", "sudo with a flag (privilege operation)", `\bsudo\s+-[a-zA-Z]`),
 	}
 }
 
 var compiledDangerPatterns = dangerPatterns()
 
-// rmFlagAfterArg: `rm <args> -r` where the args do not contain a `--`
-// terminator (the Python pattern's two lookaheads, as code).
-var rmFlagAfterArgRe = regexp.MustCompile(`(?is)\brm\s+([^\n"';|&]*)\s(?:-[a-z]*r[a-z]*\b|--recursive\b)`)
+// rmFlagAfterArg is the reference's "recursive delete (flags after
+// operands)" pattern, whose two lookaheads RE2 lacks:
+//
+//	\brm\s+(?!--(?:\s|$))(?:(?!\s--(?:\s|$))[^\n"';|&])*\s(?:-[a-z]*r[a-z]*\b|--recursive\b)
+//
+// For every `rm` word and every way its \s+ can end, the operand run is the
+// longest stretch that holds no separator or quote and does not cross a bare
+// " -- "; a recursive flag may follow any whitespace inside or right at the
+// end of that run.
+var (
+	rmWordRe     = regexp.MustCompile(`(?i)\brm(\s+)`)
+	rmRecFlagRe  = regexp.MustCompile(`(?i)^(?:-[a-z]*r[a-z]*\b|--recursive\b)`)
+	rmRunStopSet = "\n\"';|&"
+)
+
+func isRegexSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
+}
+
+// bareDashDash reports whether s[i:] is `--` followed by whitespace or the end.
+func bareDashDash(s string, i int) bool {
+	return strings.HasPrefix(s[i:], "--") && (i+2 == len(s) || isRegexSpace(s[i+2]))
+}
 
 func rmFlagAfterArg(s string) bool {
-	for _, m := range rmFlagAfterArgRe.FindAllStringSubmatch(s, -1) {
-		args := m[1]
-		if args == "" {
-			continue
-		}
-		if strings.HasPrefix(args, "--") && (len(args) == 2 || args[2] == ' ' || args[2] == '\t') {
-			continue
-		}
-		hasTerminator := false
-		for _, tok := range strings.Fields(args) {
-			if tok == "--" {
-				hasTerminator = true
-				break
+	for _, m := range rmWordRe.FindAllStringSubmatchIndex(s, -1) {
+		for start := m[2] + 1; start <= m[3]; start++ {
+			if bareDashDash(s, start) {
+				continue
 			}
-		}
-		if !hasTerminator {
-			return true
+			end := start
+			for end < len(s) {
+				c := s[end]
+				if strings.IndexByte(rmRunStopSet, c) >= 0 {
+					break
+				}
+				if isRegexSpace(c) && bareDashDash(s, end+1) {
+					break
+				}
+				end++
+			}
+			for k := start; k <= end && k < len(s); k++ {
+				if isRegexSpace(s[k]) && rmRecFlagRe.MatchString(s[k+1:]) {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -611,4 +839,17 @@ func deleteFromNoWhere(s string) bool {
 		}
 	}
 	return false
+}
+
+// PatternKeys lists the key of every hardline and dangerous pattern: what
+// Classify can report, without the parser limit.
+func PatternKeys() []string {
+	keys := []string{"sudo-stdin"}
+	for _, p := range hardlinePatterns {
+		keys = append(keys, p.key)
+	}
+	for _, p := range compiledDangerPatterns {
+		keys = append(keys, p.key)
+	}
+	return keys
 }

@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -11,6 +10,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -102,7 +102,6 @@ func (terminalTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 	out, newCwd, code, done := runShell(ctx, env.State.SnapshotPath(), cwd, a.Command, timeout)
 	out = stripANSI(out)
 	out = strings.TrimSpace(out)
-	out = truncateOutput(out)
 
 	result := map[string]any{"output": out, "exit_code": code}
 	if done && newCwd != "" && a.Workdir == "" && newCwd != env.State.Cwd() {
@@ -153,10 +152,13 @@ func runShell(ctx context.Context, snapshot, cwd, command string, timeoutSeconds
 	cmd.Dir = cwd
 	cmd.Env = append(append([]string{}, os.Environ()...), "SOA_D_CMD="+command)
 	cmd.Stdin = openNull()
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	buf := &boundedBuffer{}
+	cmd.Stdout = buf
+	cmd.Stderr = buf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// A background child that inherited stdout keeps the pipe open after the
+	// shell exits; give it a moment, then stop waiting for the copy.
+	cmd.WaitDelay = 2 * time.Second
 
 	if err := cmd.Start(); err != nil {
 		return "failed to start bash: " + err.Error(), "", 126, false
@@ -175,21 +177,22 @@ func runShell(ctx context.Context, snapshot, cwd, command string, timeoutSeconds
 		deadline.Stop()
 		killGroup(cmd)
 		<-waitCh
-		out := buf.String()
-		return out + "\n[Command interrupted]", "", 130, false
+		before, rest := buf.result(nonce)
+		return before + rest + "\n[Command interrupted]", "", 130, false
 	case <-waitCh:
 		deadline.Stop()
+		// A foreground call leaves nothing running: whatever the command
+		// left behind in its process group goes with it.
+		_ = killGroup(cmd)
 	}
 
-	out := buf.String()
-	markerIdx := findMarkerLine(out, nonce)
-	if markerIdx < 0 {
+	before, rest := buf.result(nonce)
+	if rest == "" {
 		if atomic.LoadInt32(&timedOut) == 1 {
-			return out + "\n[Command timed out after " + fmt.Sprint(timeoutSeconds) + "s]", "", 124, false
+			return before + "\n[Command timed out after " + fmt.Sprint(timeoutSeconds) + "s]", "", 124, false
 		}
-		return out, "", cmdExitCodeFromRun(cmd), false
+		return before, "", cmdExitCodeFromRun(cmd), false
 	}
-	before, rest := out[:markerIdx], out[markerIdx:]
 	newCwd := ""
 	// rest starts at the marker line; skip it, then the pwd line follows.
 	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
@@ -271,14 +274,81 @@ func stripANSI(s string) string {
 	return ansiRe.ReplaceAllString(s, "")
 }
 
-// truncateOutput caps output at 50,000 chars, keeping a 40% head and a 60%
-// tail around a notice.
-func truncateOutput(out string) string {
-	if len(out) <= terminalMaxOutput {
-		return out
+// The output cap is split 40% head, 60% tail around a notice.
+const (
+	terminalHeadKeep = terminalMaxOutput * 2 / 5
+	terminalTailKeep = terminalMaxOutput - terminalHeadKeep
+	// The tail window also holds the marker block the wrapper prints at the
+	// end, which is cut off before the tail is kept.
+	terminalTailWindow = terminalTailKeep + 4096
+)
+
+// boundedBuffer collects a command's output without holding all of it: the
+// first terminalHeadKeep bytes, a rolling window of the latest bytes, and the
+// total count. Memory stays within a small multiple of the cap whatever the
+// command prints.
+type boundedBuffer struct {
+	mu    sync.Mutex
+	head  []byte
+	tail  []byte
+	total int
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := len(p)
+	b.total += n
+	if room := terminalHeadKeep - len(b.head); room > 0 {
+		take := min(room, len(p))
+		b.head = append(b.head, p[:take]...)
+		p = p[take:]
 	}
-	head := terminalMaxOutput * 2 / 5
-	tail := terminalMaxOutput - head
-	notice := fmt.Sprintf("\n\n... [OUTPUT TRUNCATED - %d chars omitted out of %d total] ...\n\n", len(out)-head-tail, len(out))
-	return out[:head] + notice + out[len(out)-tail:]
+	b.tail = append(b.tail, p...)
+	if len(b.tail) > 2*terminalTailWindow {
+		b.tail = append(b.tail[:0], b.tail[len(b.tail)-terminalTailWindow:]...)
+	}
+	return n, nil
+}
+
+// result splits the output at the wrapper's marker line: before is what the
+// command printed (head, a notice, and the latest tail when it exceeded the
+// cap), rest is the marker block and what follows, empty when the marker
+// never came (timeout, kill).
+func (b *boundedBuffer) result(nonce string) (before, rest string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	headStr, tailStr := string(b.head), string(b.tail)
+	if b.total == len(b.head)+len(b.tail) {
+		// Nothing was dropped: the output is whole, and the marker may lie
+		// in either part.
+		all := headStr + tailStr
+		rest = ""
+		if idx := findMarkerLine(all, nonce); idx >= 0 {
+			all, rest = all[:idx], all[idx:]
+		}
+		if len(all) <= terminalMaxOutput {
+			return all, rest
+		}
+		return b.truncated(all[:terminalHeadKeep], all[terminalHeadKeep:], len(all)), rest
+	}
+	if len(tailStr) > terminalTailWindow {
+		tailStr = tailStr[len(tailStr)-terminalTailWindow:]
+	}
+	total := b.total
+	if idx := findMarkerLine(tailStr, nonce); idx >= 0 {
+		rest = tailStr[idx:]
+		tailStr = tailStr[:idx]
+		total -= len(rest)
+	}
+	return b.truncated(headStr, tailStr, total), rest
+}
+
+// truncated joins the head and the last part of the tail around the notice.
+func (b *boundedBuffer) truncated(head, tail string, total int) string {
+	if len(tail) > terminalTailKeep {
+		tail = tail[len(tail)-terminalTailKeep:]
+	}
+	notice := fmt.Sprintf("\n\n... [OUTPUT TRUNCATED - %d chars omitted out of %d total] ...\n\n", total-len(head)-len(tail), total)
+	return head + notice + tail
 }
