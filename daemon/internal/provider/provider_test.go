@@ -252,3 +252,33 @@ func TestToolChoiceIsSentOnlyWhenSet(t *testing.T) {
 		t.Fatal("an empty tool_choice must be omitted")
 	}
 }
+
+func TestASilentStreamHitsTheIdleTimeout(t *testing.T) {
+	// No byte at all: a transient failure, retried.
+	fake := fakellm.New(t, fakellm.Turn{Hang: true}, fakellm.Turn{Content: "second try"})
+	c := client(fake)
+	c.IdleTimeout = 200 * time.Millisecond
+	start := time.Now()
+	resp, err := c.Complete(context.Background(), basicRequest(), nil)
+	if err != nil || resp.Message.Content != "second try" || time.Since(start) > 5*time.Second {
+		t.Fatalf("resp %+v, err %v, after %v", resp, err, time.Since(start))
+	}
+
+	// Output, then silence: an error, and no retry (output already streamed).
+	stall := fakellm.New(t, fakellm.Turn{Content: "partial answer", ChunkRunes: 4, StallAfterFirst: true})
+	c = client(stall)
+	c.IdleTimeout = 200 * time.Millisecond
+	start = time.Now()
+	if _, err := c.Complete(context.Background(), basicRequest(), func(provider.Delta) {}); err == nil {
+		t.Fatal("a stream that goes silent mid-answer must fail")
+	}
+	if stall.Count() != 1 || time.Since(start) > 5*time.Second {
+		t.Fatalf("requests %d after %v", stall.Count(), time.Since(start))
+	}
+}
+
+func TestTheDefaultIdleTimeoutLeavesRoomToThink(t *testing.T) {
+	if c := provider.New("http://x/v1", "k"); c.IdleTimeout < 5*time.Minute {
+		t.Fatalf("IdleTimeout default %v: local reasoning models can be silent for minutes", c.IdleTimeout)
+	}
+}

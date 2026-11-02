@@ -11,6 +11,7 @@ import (
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/fakellm"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
+	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
 )
 
 // testHome is an instance home pointing at the fake model server; the key
@@ -145,8 +146,8 @@ func TestQueryRunsToolsInTheWorkingDirectory(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(work, "made.txt")); err != nil {
 		t.Fatal("the tool call must run in the query's working directory")
 	}
-	if tools, _ := fake.Request(0)["tools"].([]any); len(tools) != 5 {
-		t.Fatalf("query must offer the five builtin tools, got %d", len(tools))
+	if offered, _ := fake.Request(0)["tools"].([]any); len(offered) != len(tools.Builtin()) {
+		t.Fatalf("query must offer every builtin tool, got %d", len(offered))
 	}
 }
 

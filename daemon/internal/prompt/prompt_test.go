@@ -1,0 +1,235 @@
+package prompt_test
+
+// Prompt composition contract (SPEC section 7, "Prompt composition"): layers
+// in a fixed order, lean prompts without the user's context, project files
+// discovered like the Python fork, and the same bytes for the same inputs.
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
+)
+
+var now = time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
+
+type fixture struct {
+	home, repo, cwd string
+}
+
+// setup makes an instance home and a git repo with a subdirectory as cwd.
+func setup(t *testing.T) fixture {
+	t.Helper()
+	root := t.TempDir()
+	f := fixture{home: filepath.Join(root, "soa"), repo: filepath.Join(root, "repo")}
+	f.cwd = filepath.Join(f.repo, "pkg", "sub")
+	for _, d := range []string{filepath.Join(f.home, "memories"), f.cwd} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out, err := exec.Command("git", "init", "-q", f.repo).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	return f
+}
+
+func write(t *testing.T, p, s string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f fixture) opts(memory bool) prompt.Options {
+	return prompt.Options{Home: f.home, Cwd: f.cwd, Scope: "common", Memory: memory, Now: now, RulesCharLimit: 6000}
+}
+
+func build(t *testing.T, o prompt.Options) prompt.Result {
+	t.Helper()
+	r, err := prompt.Build(o)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	return r
+}
+
+const rules = `
+[[rule]]
+id = "plain-prose"
+text = "Write in plain English."
+scope = "common"
+source = "user"
+
+[[rule]]
+id = "never-delete"
+text = "Never delete user files."
+why = "Deletion is unrecoverable."
+scope = "common"
+source = "user"
+delegated = true
+
+[[rule]]
+id = "second-person"
+text = "Address the user as you."
+scope = "gateway"
+source = "user"
+`
+
+func TestIdentityComesFromSoulOrTheDefault(t *testing.T) {
+	f := setup(t)
+	r := build(t, f.opts(true))
+	if !strings.HasPrefix(r.Text, prompt.DefaultIdentity) {
+		t.Fatalf("no SOUL.md: the prompt must open with the default identity:\n%.200s", r.Text)
+	}
+	write(t, filepath.Join(f.home, "SOUL.md"), "You are fiona-test.\n")
+	if r := build(t, f.opts(true)); !strings.HasPrefix(r.Text, "You are fiona-test.") || strings.Contains(r.Text, prompt.DefaultIdentity) {
+		t.Fatalf("SOUL.md must replace the default identity:\n%.200s", r.Text)
+	}
+}
+
+func TestLeanPromptsLeaveOutTheUsersContext(t *testing.T) {
+	f := setup(t)
+	write(t, filepath.Join(f.home, "SOUL.md"), "You are fiona-test.\n")
+	write(t, filepath.Join(f.home, "memories", "rules.toml"), rules)
+	full := build(t, f.opts(true)).Text
+	lean := build(t, f.opts(false)).Text
+	if !strings.Contains(full, "You are fiona-test.") || !strings.Contains(full, "[plain-prose] Write in plain English.") {
+		t.Fatalf("the full prompt needs the identity and the rules:\n%s", full)
+	}
+	if strings.Contains(lean, "fiona-test") || strings.Contains(lean, prompt.DefaultIdentity) || strings.Contains(lean, "plain-prose") {
+		t.Fatalf("a lean prompt carries no identity and no ordinary rules:\n%s", lean)
+	}
+	if !strings.Contains(lean, "[never-delete] Never delete user files. (Deletion is unrecoverable.)") {
+		t.Fatalf("a lean prompt keeps delegated rules:\n%s", lean)
+	}
+	for _, p := range []string{full, lean} {
+		if !strings.Contains(p, prompt.Guidance) || !strings.Contains(p, "Current working directory: "+f.cwd) {
+			t.Fatalf("every prompt carries the guidance and the environment:\n%s", p)
+		}
+	}
+}
+
+func TestRulesFollowTheScope(t *testing.T) {
+	f := setup(t)
+	write(t, filepath.Join(f.home, "memories", "rules.toml"), rules)
+	common := build(t, f.opts(true)).Text
+	if strings.Contains(common, "second-person") {
+		t.Fatal("a common session must never see gateway rules")
+	}
+	o := f.opts(true)
+	o.Scope = "gateway"
+	gw := build(t, o).Text
+	if !strings.Contains(gw, "[second-person]") || !strings.Contains(gw, "[plain-prose]") {
+		t.Fatalf("a gateway session sees common and gateway rules:\n%s", gw)
+	}
+	if !strings.Contains(common, "STANDING RULES") {
+		t.Fatalf("the rules block has its header:\n%s", common)
+	}
+}
+
+func TestBadRulesWarnInsteadOfFailing(t *testing.T) {
+	f := setup(t)
+	write(t, filepath.Join(f.home, "memories", "rules.toml"), "[[rule]\nid=")
+	r := build(t, f.opts(true))
+	if strings.Contains(r.Text, "STANDING RULES") || len(r.Warnings) == 0 {
+		t.Fatalf("an unparseable rules.toml: no rules block and a warning; got warnings %v", r.Warnings)
+	}
+}
+
+func TestProjectContextFilesMergeFromTheGitRootDown(t *testing.T) {
+	f := setup(t)
+	write(t, filepath.Join(filepath.Dir(f.repo), "AGENTS.md"), "OUTSIDE THE REPO")
+	write(t, filepath.Join(f.repo, "AGENTS.md"), "ROOT RULES")
+	write(t, filepath.Join(f.repo, "pkg", "AGENTS.md"), "PKG RULES")
+	write(t, filepath.Join(f.repo, "pkg", "AGENTS.override.md"), "PKG OVERRIDE")
+	write(t, filepath.Join(f.cwd, "AGENTS.md"), "SUB RULES")
+	r := build(t, f.opts(true))
+	text := r.Text
+	if strings.Contains(text, "OUTSIDE THE REPO") {
+		t.Fatal("context files stop at the git root")
+	}
+	if strings.Contains(text, "PKG RULES") || !strings.Contains(text, "PKG OVERRIDE") {
+		t.Fatal("AGENTS.override.md wins over AGENTS.md in the same directory")
+	}
+	a, b, c := strings.Index(text, "ROOT RULES"), strings.Index(text, "PKG OVERRIDE"), strings.Index(text, "SUB RULES")
+	if a < 0 || b < a || c < b {
+		t.Fatalf("context files merge from the root down to cwd:\n%s", text)
+	}
+	if !strings.Contains(text, "# Project Context") || !strings.Contains(text, "## pkg/sub/AGENTS.md") {
+		t.Fatalf("the block has its heading and each file a relative label:\n%s", text)
+	}
+	if len(r.ContextFiles) != 3 {
+		t.Fatalf("ContextFiles = %v", r.ContextFiles)
+	}
+}
+
+func TestTheFirstKindOfContextFileWins(t *testing.T) {
+	f := setup(t)
+	write(t, filepath.Join(f.cwd, "AGENTS.md"), "AGENTS TEXT")
+	write(t, filepath.Join(f.cwd, "CLAUDE.md"), "CLAUDE TEXT")
+	if text := build(t, f.opts(true)).Text; !strings.Contains(text, "AGENTS TEXT") || strings.Contains(text, "CLAUDE TEXT") {
+		t.Fatal("AGENTS.md beats CLAUDE.md")
+	}
+	write(t, filepath.Join(f.repo, ".son-of-anton.md"), "SOA TEXT")
+	if text := build(t, f.opts(true)).Text; !strings.Contains(text, "SOA TEXT") || strings.Contains(text, "AGENTS TEXT") {
+		t.Fatal(".son-of-anton.md beats AGENTS.md")
+	}
+	g := setup(t)
+	write(t, filepath.Join(g.cwd, "CLAUDE.md"), "ONLY CLAUDE")
+	if text := build(t, g.opts(true)).Text; !strings.Contains(text, "ONLY CLAUDE") {
+		t.Fatal("CLAUDE.md is used when there is no AGENTS.md")
+	}
+}
+
+func TestHugeContextFilesAreTruncated(t *testing.T) {
+	f := setup(t)
+	write(t, filepath.Join(f.cwd, "AGENTS.md"), "HEAD-MARK"+strings.Repeat("x", 200_000)+"TAIL-MARK")
+	text := build(t, f.opts(true)).Text
+	if len(text) > 60_000 || !strings.Contains(text, "HEAD-MARK") || !strings.Contains(text, "TAIL-MARK") || !strings.Contains(text, "truncated") {
+		t.Fatalf("truncated prompt is %d chars", len(text))
+	}
+}
+
+func TestLayerOrderAndTheDateLine(t *testing.T) {
+	f := setup(t)
+	write(t, filepath.Join(f.home, "memories", "rules.toml"), rules)
+	write(t, filepath.Join(f.cwd, "AGENTS.md"), "PROJECT RULES")
+	text := build(t, f.opts(true)).Text
+	marks := []string{prompt.DefaultIdentity, prompt.Guidance, "Current working directory:", "PROJECT RULES", "STANDING RULES", "Conversation started: Monday, November 2, 2026"}
+	last := -1
+	for _, m := range marks {
+		i := strings.Index(text, m)
+		if i <= last {
+			t.Fatalf("layer %q is missing or out of order:\n%s", m, text)
+		}
+		last = i
+	}
+}
+
+func TestTheSameInputsGiveTheSameBytes(t *testing.T) {
+	f := setup(t)
+	write(t, filepath.Join(f.home, "memories", "rules.toml"), rules)
+	write(t, filepath.Join(f.cwd, "AGENTS.md"), "PROJECT RULES")
+	if a, b := build(t, f.opts(true)).Text, build(t, f.opts(true)).Text; a != b {
+		t.Fatal("Build must be deterministic")
+	}
+}
+
+func TestOutsideAGitRepoOnlyTheCwdIsRead(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(root, "plain", "dir")
+	write(t, filepath.Join(root, "plain", "AGENTS.md"), "PARENT")
+	write(t, filepath.Join(cwd, "AGENTS.md"), "HERE")
+	text := build(t, prompt.Options{Home: filepath.Join(root, "soa"), Cwd: cwd, Scope: "common", Memory: true, Now: now}).Text
+	if !strings.Contains(text, "HERE") || strings.Contains(text, "PARENT") {
+		t.Fatal("without git, only the cwd's context files are read")
+	}
+}

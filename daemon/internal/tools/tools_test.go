@@ -127,8 +127,14 @@ func TestBuiltinToolsAndSchemas(t *testing.T) {
 		}
 		names = append(names, s.Function.Name)
 	}
-	if strings.Join(names, ",") != "terminal,read_file,write_file,patch,search_files" {
-		t.Fatalf("builtin tools = %v", names)
+	// The five phase 1a tools, in this relative order (later phases add more).
+	last := -1
+	for _, want := range []string{"terminal", "read_file", "write_file", "patch", "search_files"} {
+		i := strings.Index(","+strings.Join(names, ",")+",", ","+want+",")
+		if i <= last {
+			t.Fatalf("builtin tools = %v; missing or out of order: %s", names, want)
+		}
+		last = i
 	}
 	for _, n := range names {
 		if tool, ok := reg.Lookup(n); !ok || tool.Schema().Function.Name != n {

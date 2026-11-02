@@ -49,6 +49,9 @@ type Turn struct {
 	// FailMidStream sends the first content delta, then ends the response
 	// without a finish_reason, usage or [DONE].
 	FailMidStream bool
+	// StallAfterFirst sends the first content delta, then goes silent until
+	// the client gives up (idle-timeout tests).
+	StallAfterFirst bool
 }
 
 // Server is a running fake. URL is the base URL, ending in /v1.
@@ -204,6 +207,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	for i, part := range split(turn.Content, turn.ChunkRunes) {
 		send(chunk(map[string]any{"content": part}, nil))
 		if turn.FailMidStream && i == 0 {
+			return
+		}
+		if turn.StallAfterFirst && i == 0 {
+			<-r.Context().Done()
 			return
 		}
 	}
