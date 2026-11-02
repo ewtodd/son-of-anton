@@ -632,3 +632,12 @@ func TestTerminalGoesThroughTheGate(t *testing.T) {
 		t.Fatal("an approved command must run")
 	}
 }
+
+func TestTerminalDoesNotWaitForAGrandchildHoldingThePipe(t *testing.T) {
+	f := setup(t, nil)
+	start := time.Now()
+	r := f.call(t, "terminal", map[string]any{"command": "bash -c 'sleep 30 &'; echo done", "timeout": 60})
+	if !strings.Contains(str(r, "output"), "done") || time.Since(start) > 10*time.Second {
+		t.Fatalf("a leftover child holding stdout must not hang the call: %v after %v", r, time.Since(start))
+	}
+}
