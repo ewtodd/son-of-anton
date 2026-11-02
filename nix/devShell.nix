@@ -17,6 +17,7 @@
           # the Go daemon (daemon/)
           pkgs.go
           pkgs.gopls
+          pkgs.ripgrep
         ]
         ++ package.passthru.devDeps;
 

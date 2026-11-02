@@ -10,9 +10,12 @@ import (
 	"strings"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
+	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
+	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
+	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
 )
 
 const version = "soa-d 0.0.1"
@@ -20,7 +23,7 @@ const version = "soa-d 0.0.1"
 const usage = `soa-d — the Son of Anton daemon
 
 usage:
-  soa-d query [--home DIR] [--model M] PROMPT
+  soa-d query [--home DIR] [--model M] [--yolo] PROMPT
   soa-d version
 `
 
@@ -48,6 +51,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func runQuery(args []string, stdout, stderr io.Writer) int {
 	home, model := "", ""
+	yolo := false
 	var promptWords []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -62,6 +66,8 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 				model = args[i+1]
 			}
 			i++
+		case "--yolo":
+			yolo = true
 		default:
 			promptWords = append(promptWords, args[i])
 		}
@@ -113,6 +119,10 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 		Model:           ep.Model,
 		ReasoningEffort: ep.ReasoningEffort,
 		Source:          "query",
+		Tools:           tools.NewRegistry(tools.Builtin()...),
+		Allowlist:       st.Allowlist(),
+		Policy:          paths.Policy{Home: userHome(), SoaHome: home},
+		Mode:            queryMode(cfg, yolo),
 		Prompt: func(context.Context, store.Session) (string, error) {
 			return promptText, nil
 		},
@@ -145,4 +155,21 @@ func soulPrompt(home string) (string, error) {
 		return "", err
 	}
 	return "You are Son of Anton, an always-on assistant daemon.", nil
+}
+
+// userHome is the OS user's home directory, for the path policy.
+func userHome() string {
+	if h, err := os.UserHomeDir(); err == nil {
+		return h
+	}
+	return ""
+}
+
+// queryMode resolves the permission mode for a query run: --yolo wins,
+// otherwise the config's [approvals] mode.
+func queryMode(cfg *config.Config, yolo bool) approval.Mode {
+	if yolo {
+		return approval.Yolo
+	}
+	return cfg.PermissionMode()
 }

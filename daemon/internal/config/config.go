@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
 )
 
 // Config is the subset of <home>/config.toml the daemon reads. Unknown keys
@@ -23,9 +25,31 @@ type Config struct {
 		ReasoningEffort    any            `toml:"reasoning_effort"`
 		ReasoningOverrides map[string]any `toml:"reasoning_overrides"`
 	} `toml:"agent"`
+	Approvals struct {
+		Mode string `toml:"mode"`
+	} `toml:"approvals"`
+	Security struct {
+		Lockdown bool `toml:"lockdown"`
+	} `toml:"security"`
 	CustomProviders map[string]CustomProvider `toml:"custom_providers"`
 
 	dotenv map[string]string
+}
+
+// PermissionMode resolves the [approvals] mode (and the [security] lockdown
+// override) into an approval.Mode. An unknown or empty mode is "default".
+func (c Config) PermissionMode() approval.Mode {
+	if c.Security.Lockdown {
+		return approval.Lockdown
+	}
+	switch c.Approvals.Mode {
+	case "manual":
+		return approval.Ask
+	case "off":
+		return approval.Yolo
+	default:
+		return approval.Default
+	}
 }
 
 // CustomProvider is one [custom_providers.<name>] table.

@@ -63,6 +63,7 @@ type Request struct {
 	Messages        []Message
 	Tools           []Tool
 	ReasoningEffort string
+	ToolChoice      string
 }
 
 // Delta is one streaming fragment.
@@ -135,6 +136,7 @@ type wireRequest struct {
 	Messages        []Message     `json:"messages"`
 	Tools           []Tool        `json:"tools,omitempty"`
 	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
+	ToolChoice      string        `json:"tool_choice,omitempty"`
 	Stream          bool          `json:"stream"`
 	StreamOptions   streamOptions `json:"stream_options"`
 }
@@ -154,6 +156,7 @@ func (c *Client) Complete(ctx context.Context, req Request, onDelta func(Delta))
 		Messages:        req.Messages,
 		Tools:           req.Tools,
 		ReasoningEffort: req.ReasoningEffort,
+		ToolChoice:      req.ToolChoice,
 		Stream:          true,
 		StreamOptions:   streamOptions{IncludeUsage: true},
 	})

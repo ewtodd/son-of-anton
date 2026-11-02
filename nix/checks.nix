@@ -125,8 +125,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         '';
 
         # Build the Go daemon (its check phase runs the Go contract tests)
-        # and smoke-run the binary.
-        build-soa-d = pkgs.runCommand "soa-d-build" { } ''
+        # and smoke-run the binary. bash/ripgrep/coreutils ride along so the
+        # terminal and search tools can run under the check.
+        build-soa-d = pkgs.runCommand "soa-d-build" {
+          nativeBuildInputs = [ pkgs.bash pkgs.ripgrep pkgs.coreutils ];
+        } ''
           ${self'.packages.soa-d}/bin/soa-d version
           echo "PASS: soa-d built and runs"
           mkdir -p $out

@@ -18,6 +18,12 @@
         subPackages = [ "cmd/soa-d" ];
         env.CGO_ENABLED = "0";
 
+        # The terminal and search tools shell out to bash and ripgrep (and
+        # use coreutils); the wrapper puts them on PATH at run time and the
+        # check phase needs them too.
+        nativeBuildInputs = [ pkgs.makeWrapper pkgs.bash pkgs.ripgrep pkgs.coreutils ];
+        nativeCheckInputs = [ pkgs.bash pkgs.ripgrep pkgs.coreutils ];
+
         # The contract tests live in internal/*, which subPackages would skip
         # in the default check phase; test the whole module instead.
         checkPhase = ''
@@ -26,7 +32,12 @@
           runHook postCheck
         '';
 
-        vendorHash = "sha256-XUngwF8oQLxqckVf2kPWcSeu+w8V9yt/kAfdqualE8s=";
+        postFixup = ''
+          wrapProgram $out/bin/soa-d --prefix PATH : \
+            "${pkgs.bash}/bin:${pkgs.ripgrep}/bin:${pkgs.coreutils}/bin"
+        '';
+
+        vendorHash = "sha256-BUcU0XPJRLUo4/ncM5iQ3F4w9MIqagMvDeLGtQlvDzY=";
       };
     in
     {

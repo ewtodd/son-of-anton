@@ -103,6 +103,11 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
 	content='messages',
 	content_rowid='rowid'
 );`,
+	`CREATE TABLE approval_allow (
+	key        TEXT PRIMARY KEY,
+	created_at TEXT NOT NULL
+);
+UPDATE schema_version SET version = 2;`,
 }
 
 func migrate(db *sql.DB) error {
@@ -399,6 +404,32 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]Hit, err
 		out = append(out, h)
 	}
 	return out, rows.Err()
+}
+
+// Allowlist is the durable set of approval pattern keys the user chose to
+// remember with "always". It persists across daemon restarts in soa-d.db.
+// It satisfies the approval.Allowlist interface.
+type Allowlist struct {
+	db *sql.DB
+}
+
+// Allowlist returns the store's approval allowlist.
+func (s *Store) Allowlist() *Allowlist { return &Allowlist{db: s.db} }
+
+// Has reports whether key was approved "always".
+func (a *Allowlist) Has(key string) bool {
+	var one int
+	err := a.db.QueryRow("SELECT 1 FROM approval_allow WHERE key = ?", key).Scan(&one)
+	return err == nil
+}
+
+// Add records key as approved "always". Adding a key twice is a no-op.
+func (a *Allowlist) Add(key string) error {
+	_, err := a.db.Exec(
+		"INSERT OR IGNORE INTO approval_allow (key, created_at) VALUES (?, ?)",
+		key, formatTime(time.Now()),
+	)
+	return err
 }
 
 func nullStr(s string) any {
