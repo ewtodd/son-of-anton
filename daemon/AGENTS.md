@@ -42,6 +42,8 @@ sees files in the git index.
 
 The repo's git config sets the author (`son-of-anton-bot`); do not change it.
 One summary line (`daemon: what changed`), a blank line, then a body saying
-what changed and why. No `Co-authored-by` trailers of any kind. Never push.
+what changed and why, ending with one line `Model: <id>` naming the model that
+wrote it (the exact id, never `auto`). No `Co-authored-by` trailers of any kind.
+Never push.
 Do not commit task scratch files (`TASK.md`, `REPORT.md`, `usage.json`,
 `final.txt`).

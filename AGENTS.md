@@ -135,6 +135,11 @@ nix shell nixpkgs#uv -c env UV_PYTHON=<nix-python-3.12> uv lock
   (repo git config already set — do not change it)
 - Sole authorship. No `Co-authored-by:` trailers, for anyone — not the repo owner,
   not the model, not an upstream account.
+- Name the model. A commit made by an agent ends its body with one line,
+  `Model: <id>`: the exact model that wrote the change (`Model: claude-opus-5-5`,
+  `Model: radiance/qwen3.8-27b`). Under `auto`, name the model that actually served
+  it, which maitred reports in its `x-maitred-model` response header, never `auto`.
+  It records provenance; it is not a co-author.
 - Message: a short summary line (`area: what changed`), a blank line, then a body that
   explains what changed and why. Never cram several changes into one long subject line.
 - Remote: `git@github.com:ewtodd/son-of-anton.git`, branch `main`
