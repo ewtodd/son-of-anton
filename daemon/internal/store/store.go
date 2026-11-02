@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -26,8 +27,15 @@ type Store struct {
 }
 
 // Open opens (creating if needed) the SQLite database at path, enables WAL
-// and migrates it to the latest schema version.
+// and migrates it to the latest schema version. The database holds
+// conversations and the prompt's rules, so it and its WAL files are owner-only.
 func Open(path string) (*Store, error) {
+	if f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, 0o600); err == nil {
+		_ = f.Close()
+	}
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		_ = os.Chmod(p, 0o600) // the WAL files may not exist yet
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -120,6 +128,10 @@ CREATE TABLE queue (
 );
 CREATE INDEX queue_session ON queue (session_id, n);
 UPDATE schema_version SET version = 3;`,
+	`ALTER TABLE sessions ADD COLUMN workspace TEXT;
+UPDATE sessions SET workspace = cwd WHERE workspace IS NULL;
+CREATE INDEX sessions_workspace ON sessions (workspace);
+UPDATE schema_version SET version = 4;`,
 }
 
 func migrate(db *sql.DB) error {
@@ -161,12 +173,14 @@ func appliedVersion(db *sql.DB) (int, error) {
 
 // Session is one stored conversation.
 type Session struct {
-	ID         string
-	Kind       string
-	ParentID   string
-	Source     string
-	Title      string
-	Cwd        string
+	ID       string
+	Kind     string
+	ParentID string
+	Source   string
+	Title    string
+	Cwd      string
+	// Workspace is where -c looks: the git root of Cwd, else Cwd itself.
+	Workspace  string
 	Model      string
 	PromptHash string
 	Created    time.Time
@@ -199,11 +213,11 @@ func (s *Store) CreateSession(ctx context.Context, sess Session) (Session, error
 		}
 		sess.ID = id
 		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO sessions (id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO sessions (id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sess.ID, sess.Kind, nullStr(sess.ParentID), nullStr(sess.Source), nullStr(sess.Title),
 			nullStr(sess.Cwd), nullStr(sess.Model), nullStr(sess.PromptHash),
-			formatTime(sess.Created), nullTime(sess.Ended), nullStr(sess.ReasoningEffort), nullStr(sess.Mode))
+			formatTime(sess.Created), nullTime(sess.Ended), nullStr(sess.ReasoningEffort), nullStr(sess.Mode), nullStr(sess.Workspace))
 		if err == nil {
 			return sess, nil
 		}
@@ -228,11 +242,12 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 		ended    sql.NullString
 		effort   sql.NullString
 		mode     sql.NullString
+		work     sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode
+		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace
 		 FROM sessions WHERE id = ?`, id).
-		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended, &effort, &mode)
+		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended, &effort, &mode, &work)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -247,6 +262,7 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 	sess.PromptHash = hash.String
 	sess.ReasoningEffort = effort.String
 	sess.Mode = mode.String
+	sess.Workspace = work.String
 	sess.Created, err = parseTime(created.String)
 	if err != nil {
 		return Session{}, err

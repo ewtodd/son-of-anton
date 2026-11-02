@@ -95,9 +95,19 @@ const previewMax = 100
 // ListSessions returns the top-level sessions of the given kinds, newest
 // activity first.
 func (s *Store) ListSessions(ctx context.Context, kinds []string, limit int) ([]Summary, error) {
+	return s.ListSessionsIn(ctx, kinds, "", limit)
+}
+
+// ListSessionsIn is ListSessions limited to one workspace (Session.Workspace);
+// an empty workspace means every session.
+func (s *Store) ListSessionsIn(ctx context.Context, kinds []string, workspace string, limit int) ([]Summary, error) {
 	var out []Summary
 	for _, kind := range kinds {
-		part, err := s.summaries(ctx, `s.parent_id IS NULL AND s.kind = ?`, kind)
+		where, args := `s.parent_id IS NULL AND s.kind = ?`, []any{kind}
+		if workspace != "" {
+			where, args = where+` AND s.workspace = ?`, append(args, workspace)
+		}
+		part, err := s.summaries(ctx, where, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -127,12 +137,12 @@ func (s *Store) SessionSummary(ctx context.Context, id string) (Summary, error) 
 	return got[0], nil
 }
 
-func (s *Store) summaries(ctx context.Context, where string, arg any) ([]Summary, error) {
+func (s *Store) summaries(ctx context.Context, where string, args ...any) ([]Summary, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT s.id,
 		(SELECT ts FROM messages WHERE session_id = s.id ORDER BY seq DESC LIMIT 1),
 		(SELECT content FROM messages WHERE session_id = s.id AND role = 'user' ORDER BY seq LIMIT 1),
 		(SELECT COUNT(*) FROM messages WHERE session_id = s.id)
-		FROM sessions s WHERE `+where, arg)
+		FROM sessions s WHERE `+where, args...)
 	if err != nil {
 		return nil, err
 	}

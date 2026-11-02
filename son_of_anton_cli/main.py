@@ -1046,8 +1046,8 @@ def _route_to_daemon(args) -> None:
         _daemon_flag_error("-c NAME", "(resume by name) has no meaning on soa-d; use -c or --resume ID")
     if isinstance(resume, str) and resume.strip().startswith("@"):
         _daemon_flag_error("--resume " + resume.strip(), "has no meaning on soa-d")
-    want_latest = bool(continue_last) or (isinstance(resume, str) and resume.strip().lower() == "latest")
-    resume_id = None if want_latest else resume
+    # -c: this workspace's newest session; --resume latest: the newest anywhere.
+    resume_id = "latest" if isinstance(resume, str) and resume.strip().lower() == "latest" else resume
     cwd = os.getcwd()
     in_dir = getattr(args, "in_dir", None)
     if in_dir:
@@ -1066,7 +1066,7 @@ def _route_to_daemon(args) -> None:
     from son_of_anton_tui.tui import run_app
 
     backend = DaemonBackend(
-        home=home, cwd=cwd, resume=resume_id, continue_last=want_latest,
+        home=home, cwd=cwd, resume=resume_id, continue_last=bool(continue_last),
         model=getattr(args, "model", None), yolo=bool(getattr(args, "yolo", False)),
         reasoning=getattr(args, "reasoning", None),
     )

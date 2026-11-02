@@ -158,10 +158,16 @@ class DaemonBackend:
             self._client = _daemon.connect(self.home)
             self._client.on_event(self._on_event)
             sid = self._resume
-            if not sid and self._continue_last:
-                listed = self._client.call("session.list", {"kinds": ["interactive"], "limit": 1})
-                rows = listed.get("sessions") or []
+            if sid == "latest" or (not sid and self._continue_last):
+                # -c continues this workspace's newest session (the daemon
+                # resolves the git root); --resume latest takes the newest anywhere.
+                query: dict = {"kinds": ["interactive"], "limit": 1}
+                if sid != "latest":
+                    query["cwd"] = self.cwd
+                rows = self._client.call("session.list", query).get("sessions") or []
                 sid = rows[0]["id"] if rows else None
+                if sid is None and self._continue_last:
+                    print(f"son-of-anton: no session to continue in {self.cwd}; starting a new one", file=sys.stderr)
             resumed = bool(sid)
             if not sid:
                 sid = self._client.call("session.create", {"cwd": self.cwd})["session"]["id"]

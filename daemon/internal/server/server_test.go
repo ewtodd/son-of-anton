@@ -835,3 +835,28 @@ func TestShutdownRecordsTheTurnAndCleansUp(t *testing.T) {
 		t.Fatalf("a turn cut by shutdown is recorded as interrupted: %+v", ms)
 	}
 }
+
+// session.list with cwd lists only that directory's workspace: the git
+// root when it is in a repository, else the directory itself (son-of-anton
+// -c never continues another directory's conversation).
+func TestSessionListFiltersByWorkspace(t *testing.T) {
+	h := newHarness(t, fakellm.New(t), "")
+	root := t.TempDir()
+	repo, sub, other := filepath.Join(root, "repo"), filepath.Join(root, "repo", "sub"), filepath.Join(root, "other")
+	for _, d := range []string{filepath.Join(repo, ".git"), sub, other} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := h.dial()
+	inRepo, inSub := c.create(repo), c.create(sub)
+	c.create(other)
+	got := objs(c.ok("session.list", map[string]any{"cwd": sub}), "sessions")
+	if len(got) != 2 || str(got[0], "id") != inSub || str(got[1], "id") != inRepo {
+		t.Fatalf("session.list cwd=%s = %v; want the repo's two sessions, newest first", sub, got)
+	}
+	if got := objs(c.ok("session.list", map[string]any{"cwd": other}), "sessions"); len(got) != 1 {
+		t.Fatalf("a plain directory is its own workspace: %v", got)
+	}
+	c.fails("session.list", map[string]any{"cwd": "relative"}, codeBadParams)
+}

@@ -398,6 +398,31 @@ def test_continue_resumes_the_newest_session(daemon_home, tmp_path) -> None:
         b.finish()
 
 
+def test_continue_never_crosses_into_another_workspace(daemon_home, tmp_path) -> None:
+    """-c continues this workspace's newest session (the git root, or the
+    directory itself); --resume latest takes the newest anywhere."""
+    home, _ = daemon_home([])
+    repo, elsewhere, empty = tmp_path / "repo", tmp_path / "elsewhere", tmp_path / "empty"
+    for d in (repo / ".git", repo / "sub", elsewhere, empty):
+        d.mkdir(parents=True)
+    c = _daemon.connect(home)
+    in_repo = c.call("session.create", {"cwd": str(repo)})["session"]["id"]
+    newest = c.call("session.create", {"cwd": str(elsewhere)})["session"]["id"]
+    c.close()
+    for cwd, kw, want in ((repo / "sub", {"continue_last": True}, in_repo),
+                          (repo, {"resume": "latest"}, newest)):
+        b = start_backend(home, cwd, **kw)
+        try:
+            assert b.session_id == want, (cwd, kw)
+        finally:
+            b.finish()
+    b = start_backend(home, empty, continue_last=True)
+    try:
+        assert b.session_id not in (in_repo, newest), "nothing to continue here: a new session"
+    finally:
+        b.finish()
+
+
 def test_model_reasoning_and_perm_commands(daemon_home, tmp_path) -> None:
     _textual()
     home, fake = daemon_home([{"content": "a"}], models=["test-model", "live-model"])

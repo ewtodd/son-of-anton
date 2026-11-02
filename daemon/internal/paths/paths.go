@@ -5,6 +5,7 @@ package paths
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -169,4 +170,18 @@ func (p Policy) CheckWrite(abs string) WriteCheck {
 // under reports whether abs is dir or inside it.
 func under(abs, dir string) bool {
 	return abs == dir || strings.HasPrefix(abs, dir+string(filepath.Separator))
+}
+
+// Workspace is the directory a session belongs to for -c: the nearest
+// ancestor of dir (inclusive) holding .git, else dir itself.
+func Workspace(dir string) string {
+	dir = filepath.Clean(dir)
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
+			return d
+		}
+		if filepath.Dir(d) == d {
+			return dir
+		}
+	}
 }

@@ -5,6 +5,7 @@ package store_test
 // per-session settings that survive a restart.
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -214,5 +215,41 @@ func TestSessionSettingsPersist(t *testing.T) {
 	}
 	if err := st.UpdateSessionSettings(ctx, "20260101_000000_000000", "m", "", ""); err == nil {
 		t.Fatal("updating an unknown session is an error")
+	}
+}
+
+// -c continues a session of this workspace only (the git root, or the
+// directory itself), never another directory's conversation.
+func TestSessionsListByWorkspace(t *testing.T) {
+	st := newStore(t)
+	a, _ := st.CreateSession(ctx, store.Session{Kind: "interactive", Cwd: "/repo/pkg", Workspace: "/repo"})
+	b, _ := st.CreateSession(ctx, store.Session{Kind: "interactive", Cwd: "/repo", Workspace: "/repo"})
+	_, _ = st.CreateSession(ctx, store.Session{Kind: "interactive", Cwd: "/elsewhere", Workspace: "/elsewhere"})
+	if got, _ := st.Session(ctx, a.ID); got.Workspace != "/repo" {
+		t.Fatalf("Workspace not stored: %+v", got)
+	}
+	list, err := st.ListSessionsIn(ctx, []string{"interactive"}, "/repo", 10)
+	if err != nil || len(list) != 2 || list[0].Session.ID != b.ID || list[1].Session.ID != a.ID {
+		t.Fatalf("ListSessionsIn(/repo) = %+v, %v", list, err)
+	}
+	if all, _ := st.ListSessionsIn(ctx, []string{"interactive"}, "", 10); len(all) != 3 {
+		t.Fatalf("an empty workspace lists everything: %d", len(all))
+	}
+}
+
+func TestTheDatabaseIsOwnerOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "soa-d.db")
+	if err := os.WriteFile(path, nil, 0o644); err != nil { // as an older soa-d left it
+		t.Fatal(err)
+	}
+	st := open(t, path)
+	s, _ := st.CreateSession(ctx, store.Session{Kind: "interactive"})
+	if _, err := st.AppendMessages(ctx, s.ID, store.Message{Role: "user", Content: "private"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{path, path + "-wal"} {
+		if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("%s: %v, %v; the database holds conversations and must be 0600", p, fi.Mode(), err)
+		}
 	}
 }

@@ -66,10 +66,11 @@ type Runner struct {
 // kind, cwd, model and source that will be created.
 func (r *Runner) NewSession(ctx context.Context, kind, cwd string) (*Session, error) {
 	pending := store.Session{
-		Kind:   kind,
-		Source: r.Source,
-		Cwd:    cwd,
-		Model:  r.Model,
+		Kind:      kind,
+		Source:    r.Source,
+		Cwd:       cwd,
+		Workspace: paths.Workspace(cwd),
+		Model:     r.Model,
 	}
 	text, err := r.Prompt(ctx, pending)
 	if err != nil {

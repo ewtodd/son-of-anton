@@ -12,6 +12,7 @@ import (
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
+	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 )
@@ -312,6 +313,7 @@ func (s *Server) list(params json.RawMessage, bad func(error) (any, *rpcError)) 
 	p := struct {
 		Kinds []string `json:"kinds"`
 		Limit int      `json:"limit"`
+		Cwd   string   `json:"cwd"` // only sessions of this directory's workspace
 	}{}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return bad(err)
@@ -322,7 +324,14 @@ func (s *Server) list(params json.RawMessage, bad func(error) (any, *rpcError)) 
 	if p.Limit <= 0 {
 		p.Limit = 50
 	}
-	sums, err := s.st.ListSessions(s.base, p.Kinds, p.Limit)
+	workspace := ""
+	if p.Cwd != "" {
+		if !filepath.IsAbs(p.Cwd) {
+			return nil, errf(codeBadParams, "cwd must be absolute")
+		}
+		workspace = paths.Workspace(p.Cwd)
+	}
+	sums, err := s.st.ListSessionsIn(s.base, p.Kinds, workspace, p.Limit)
 	if err != nil {
 		return nil, errf(codeInternal, "%v", err)
 	}

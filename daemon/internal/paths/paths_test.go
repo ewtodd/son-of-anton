@@ -147,3 +147,20 @@ func TestReadBlocks(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkspaceIsTheGitRootElseTheDirectory(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	sub := filepath.Join(repo, "pkg", "sub")
+	plain := filepath.Join(root, "plain", "dir")
+	for _, d := range []string{filepath.Join(repo, ".git"), sub, plain} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for dir, want := range map[string]string{repo: repo, sub: repo, plain: plain} {
+		if got := paths.Workspace(dir); got != want {
+			t.Errorf("Workspace(%s) = %s, want %s", dir, got, want)
+		}
+	}
+}
