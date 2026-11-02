@@ -68,6 +68,7 @@ type Server struct {
 	bodies  [][]byte
 	headers []http.Header
 	models  []string
+	meta    map[string]map[string]any
 }
 
 // New starts a fake that answers the given turns in order.
@@ -292,11 +293,26 @@ func (s *Server) SetModels(ids ...string) {
 	s.models = append([]string(nil), ids...)
 }
 
+// SetModelMeta adds fields (context_length, reasoning_efforts, ...) to a listed
+// model's /v1/models entry, as maitred reports them.
+func (s *Server) SetModelMeta(id string, meta map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.meta == nil {
+		s.meta = map[string]map[string]any{}
+	}
+	s.meta[id] = meta
+}
+
 func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	data := make([]any, 0, len(s.models))
 	for _, id := range s.models {
-		data = append(data, map[string]any{"id": id, "object": "model"})
+		entry := map[string]any{"id": id, "object": "model"}
+		for k, v := range s.meta[id] {
+			entry[k] = v
+		}
+		data = append(data, entry)
 	}
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")

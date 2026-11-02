@@ -548,3 +548,61 @@ def test_quiet_chat_stays_on_the_python_agent(daemon_home, tmp_path) -> None:
     assert r.returncode == 0, (r.stdout, r.stderr)
     assert _soa_d_sessions(home) == [], "the relay worker's chat -Q never reaches soa-d"
     assert any("python path please" in json.dumps(body) for body in fake.bodies), "the Python agent made the request"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3a: compaction and titles in the TUI
+# ---------------------------------------------------------------------------
+
+def test_compact_renders_and_survives_a_resume(daemon_home, tmp_path) -> None:
+    _textual()
+    aux = FakeLLM([{"content": "SUMMARY-BODY"}])
+    try:
+        home, fake = daemon_home(
+            [{"content": "A" * 4000}, {"content": "B"}],
+            extra=f'[auxiliary.compaction]\nbase_url = "{aux.url}"\nkey_env = "SOA_D_TEST_KEY"\nmodel = "summarizer"\n',
+        )
+        b = start_backend(home, tmp_path)
+
+        async def body(app, pilot):
+            await type_line(app, pilot, "a" * 4000)
+            assert await wait_for(pilot, lambda: len(fake.bodies) == 1 and app._busy is None)
+            await type_line(app, pilot, "b")
+            assert await wait_for(pilot, lambda: len(fake.bodies) == 2 and app._busy is None)
+            await type_line(app, pilot, "/compact")
+            assert await wait_for(pilot, lambda: "SUMMARY-BODY" in feed_text(app)), feed_text(app)
+            assert b.status_snapshot()["compactions"] == 1
+
+        run_app(b, body)
+        sid = b.session_id
+        b2 = start_backend(home, tmp_path, resume=sid)
+
+        async def history(app, pilot):
+            assert await wait_for(pilot, lambda: "SUMMARY-BODY" in feed_text(app)), "the compaction shows in the history"
+
+        run_app(b2, history)
+    finally:
+        aux.close()
+
+
+def test_the_title_and_context_use_reach_the_status(daemon_home, tmp_path) -> None:
+    _textual()
+    titles = FakeLLM([{"content": '{"title": "Fix login button on mobile"}'}])
+    try:
+        home, fake = daemon_home(
+            [{"content": "sure"}],
+            extra=(f'[auxiliary.title_generation]\nbase_url = "{titles.url}"\nkey_env = "SOA_D_TEST_KEY"\n'
+                   'model = "little-titles"\n\n[custom_providers.custom.models."ctx-model"]\ncontext_length = 1000\n'),
+        )
+        b = start_backend(home, tmp_path, model="ctx-model")
+
+        async def body(app, pilot):
+            await type_line(app, pilot, "the login button is broken on mobile")
+            assert await wait_for(pilot, lambda: b.status_snapshot()["session_title"] == "Fix login button on mobile")
+            assert await wait_for(pilot, lambda: b.status_snapshot()["context_tokens"] == 12)
+            snap = b.status_snapshot()
+            assert snap["context_length"] == 1000 and snap["context_percent"] == 1, snap
+
+        run_app(b, body)
+    finally:
+        titles.close()
