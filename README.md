@@ -12,837 +12,202 @@
 ██║  ██║  ██║ ╚████║    ██║    ╚██████╔╝ ██║ ╚████║
 ╚═╝  ╚═╝  ╚═╝  ╚═══╝    ╚═╝     ╚═════╝  ╚═╝  ╚═══╝
 ```
-<!---->
-An always-on agent you can talk to from a terminal or from Signal.
-It has two
-modes: the normal agent loop, and a physics research loop.
-<!---->
-## What it does
-<!---->
-All chat runs one agent loop, with terminal, files, web, memory, delegation
-and cron as its tools.
-<!---->
-Physics is a separate thing, and it is explicit. The Autophysicist — one
-research manager with append-only memory, a windowed scratchpad, a token
-budget and a `submit_final_answer` tool, dispatching ephemeral sub-agents that
-run code in a sandbox, with each iteration reviewed by a critic, in a
-git-versioned scratch directory — only runs when you ask for it.
-<!---->
-A message never starts a run by itself: there is no keyword routing.
-`son-of-anton problem create` writes a spec for a dataset from a data
-directory and a one-line goal, and `son-of-anton problem run` runs one (see
-[Physics runs](#physics-runs)). In a chat session — the TUI or the gateway —
-just ask the agent to create a problem for a dataset and run it; it drives
-the same subcommand through its terminal.
-<!---->
-Other things worth knowing:
-<!---->
-- Talks over Signal.
-One gateway process also runs cron.
-- The Textual TUI is the only interface. There is no `--tui` flag and no
-  fallback REPL; `son-of-anton "..."` still answers a single query without it.
-- `/perm default|ask|lockdown|yolo` sets how much it asks before running
-  commands.
-  Some things stay blocked even under yolo.
-- `/model NAME` pins a model for the session; `/model auto` drops the pin and
-  falls back to the configured default.
-- Sessions are scoped to where you are: bare `-c` continues the most recent
-  conversation in the current directory. See [Sessions](#sessions).
-- Memory is scoped too: shared facts are visible everywhere, personal context
-  stays on the messaging surfaces, and the terminal keeps its own notes. See
-  [Memory](#memory).
-<!---->
+
+An always-on agent you talk to from a terminal or from Signal, with a
+separate physics research mode that runs only when you ask for it.
+
+## Status: the Go rewrite
+
+The Python backend is being replaced, one phase at a time, by `soa-d`, a Go
+daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`).
+
+- **On soa-d now:** the terminal TUI (`son-of-anton`), `-q` and `-z`.
+- **Still Python:** the Signal gateway and its relay workers, cron, physics
+  runs.
+- **Not in the daemon yet:** compaction, titles, the memory tool, recall and
+  `session_search` (phase 3); subagents (4); `/handoff` and `/pickup` (5); MCP
+  servers and web tools (7); the Python sessions in `state.db` (imported in 8).
+
 ## Running it
-<!---->
+
 ```bash
-nix build      # sealed uv2nix venv, wrapper in result/bin/
-nix run .# --  # start the agent (Textual interface)
-nix run .# -- -c   # continue this directory's most recent session
+nix build            # result/bin/son-of-anton (soa-d is on its PATH)
+nix run .# --        # the TUI, on a new session in this directory
+nix run .# -- -c     # continue this workspace's latest session
 ```
-<!---->
-It reads `~/.son-of-anton/config.toml` for settings and `~/.son-of-anton/.env`
-for secrets.
-A local model endpoint is configured like any other
-OpenAI-compatible provider:
-<!---->
+
+Settings live in `~/.son-of-anton/config.toml`, secrets in `.env` next to it.
+One OpenAI-compatible provider serves everything:
+
 ```toml
 [model]
-default = "qwen3.8-27b-coding"   # what the CLI opens with
+default = "qwen3.8-27b"
 provider = "custom"
-
-[gateway]
-model = "gemma-4-26b"            # what the gateway answers with, if different
 
 [custom_providers.custom]
 base_url = "http://127.0.0.1:8080/v1"
-
-[physics]
-model = "qwen3.8-27b-coding"
-base_url = "http://127.0.0.1:8080/v1"
-```
-<!---->
-## Sessions
-<!---->
-The CLI and the gateway share one `state.db`, so there is a single conversation
-store rather than a sync problem. A session row records where it started
-(`cwd`), the git repo root and branch when it is inside one, its model and
-title, and when it was last active.
-<!---->
-Bare `son-of-anton -c` continues the most recent session **in the current
-workspace** — the git repo root when you are in a repository, otherwise the
-directory itself. It deliberately never resumes another directory's
-conversation: no match starts a fresh session, with a warning. `-c <name>` (or
-a session id) is the escape hatch for anything else, and `--resume latest`
-takes the global most-recently-used session. Resuming restores the session's
-working directory.
-<!---->
-For scripts, `son-of-anton sessions list --json --here`
-prints this workspace's sessions, most recently active first, with id, title,
-preview, cwd, branch and message count.
-<!---->
-### Coding from Signal: the relay
-<!---->
-On an instance with `gateway.single_user = true` (one person, sharing their
-`SON_OF_ANTON_HOME` with the terminal), the chat is a relay to your terminal
-sessions rather than a place where code gets written. Ask it to work on
-something and it hands the request to a terminal session — an existing one
-or a new one in a directory you name; it asks which — and runs that session
-headless (`son-of-anton chat -Q`) in the session's own directory, with the
-same prompt and tools the TUI would give it. A message sent while the session
-is busy waits and runs as its next turn. When a turn finishes, the chat tells
-you the result. It can also list your sessions, report what one is doing,
-and stop it.
-<!---->
-A dangerous command in that session asks you in the chat, with its id:
-answer `/approve <id>` (or `/deny <id> reason`). Nobody is at the terminal,
-so a question the session would have asked there comes back as its reply
-instead, and your answer goes to it as the next message.
-<!---->
-`/resume <session>` of a terminal session attaches it to the chat for this
-relaying; it does not move the conversation into the chat. Resuming a chat
-session, or any `/resume` on a shared instance, switches the chat as before.
-<!---->
-Leaving the terminal mid-task, type `/handoff` in the TUI. Nothing stops or
-moves: the TUI keeps running the session, and the chat you last talked to
-the bot in takes over the conversation side. It tells you it has the
-session, passes your messages in — each runs as the next turn, or steers the
-running one when you say it can't wait; a reply while the session is asking
-a question answers it — and reports each turn's result. A dangerous command
-asks in the TUI and in the chat at once; the first answer wins. Back at the
-terminal, `/pickup` ends the relaying (the chat is told);
-`son-of-anton --pickup` reopens the session most recently handed off or
-relayed and does the same. Quitting the TUI while handed off leaves the chat
-relaying the session through headless runs.
-<!---->
-If a headless run is in the middle of a turn when you pick the session up,
-the terminal takes that turn over: the run stops after the step it is in — a
-command that is running finishes; a reply the model is still writing is
-cancelled — and the TUI carries on the same turn from there, then runs
-whatever the chat sent meanwhile. Nothing is added to the conversation for
-the switch. While it waits it shows what is running; Ctrl+C stops waiting
-and leaves the run going. A command waiting for your approval in the chat
-is not run: the session asks you again at the terminal. `stop` from the
-chat remains the way to end a run outright.
-<!---->
-### The journal
-<!---->
-`session.journal` (default on) mirrors every message row, as it is persisted,
-to `~/.son-of-anton/journals/<session-id>.jsonl`: a header line, then one JSON
-object per message with the role, content, tool name and calls, and reasoning.
-It is a plain file you or the model can grep without a query interface; it is
-never read back into a context, and the session DB remains the source of truth.
-Large tool outputs are previewed in context and spilled in full to
-`~/.son-of-anton/cache/spillover/`; the journal records the row as persisted.
-The idea — a durable journal written as the turn runs, beside the transcript —
-comes from [goluckyryan/letsClaw](https://github.com/goluckyryan/letsClaw).
-<!---->
-## Memory
-<!---->
-Built-in memory persists across sessions in two kinds, in TOML files under
-`~/.son-of-anton/memories/`:
-<!---->
-- **Rules** (`rules.toml`): the user's standing instructions and core context.
-  They are in the system prompt, capped by `memory.rules_char_limit`, and every
-  add, change or removal needs your approval whatever `memory.write_approval`
-  says (inline in the TUI, or `/memory pending|approve|reject` elsewhere). A full
-  store refuses a new rule; it never evicts one.
-- **Facts** (`facts.toml`, `facts.gateway.toml`): knowledge that matters only when
-  its topic comes up. They are not in the system prompt. The agent writes them
-  freely (subject to `memory.write_approval`), each at most
-  `memory.fact_char_limit` characters.
-<!---->
-The rules are rendered into the system prompt when a session starts and frozen
-for its life, so mid-session writes never invalidate the prompt cache. Entries
-are addressed by id, never by substring. Both kinds are scoped:
-<!---->
-| Scope | Rules and facts | Visible from |
-|---|---|---|
-| `common` | rules with `scope = "common"`, `facts.toml` | every session |
-| `gateway` | rules with `scope = "gateway"`, `facts.gateway.toml` | Signal (and Signal-bound cron) |
-<!---->
-The active scope follows the surface — Signal → `gateway`, anything else
-(terminal, sub-agents, unknown front-ends) → `common`; a cron run follows where
-its job delivers. `memory.scope` pins it for a non-standard surface, and the
-`memory` tool takes an optional `scope`, so one surface can file an entry for
-another. A terminal session therefore carries no personal context. You can edit
-the files directly (a file that fails to parse is never overwritten). On NixOS and Home Manager,
-`services.son-of-anton.memoryRules` seeds `rules.toml` (a three-way merge by id
-that never clobbers what you or the agent changed). The old `MEMORY*.md` / `USER*.md` files are
-no longer read or written. Nothing reviews conversations in the background to add to them: an entry exists because the agent (or you)
-decided it was worth keeping.
-<!---->
-### Retrieval (optional)
-<!---->
-Set `memory.rag.enabled` to build a local vector index of session journals
-plus your notes. Embeddings come from an OpenAI-compatible `/v1/embeddings`
-endpoint (`base_url`, `model`, `api_key_env`) — for example Bifrost in front
-of the bge-m3 llama.cpp server:
-
-```toml
-[memory.rag]
-enabled = true
-base_url = "http://10.0.0.6:4002/v1"
-model = "bge-m3"
-api_key_env = "BIFROST_SOA_VK"
-top_k = 5
+key_env = "MY_ENDPOINT_KEY"     # read from the environment, then .env
 ```
 
-EmbeddingGemma 2 (`model = "embed/embeddinggemma-2"`) is trained with task
-prompts. `query_prompt` and `document_prompt` are prepended to queries and to
-chunks as they are sent to the endpoint (the stored text is unchanged); when
-the model name contains `embeddinggemma` they default to the model card's
-retrieval pair, otherwise to nothing, and an explicit value (`""` included)
-wins. `min_score` also follows the model (0.5; 0.65 for EmbeddingGemma, whose
-scores run higher), unless set. Changing a prompt rebuilds the index.
+The TUI is a client of the daemon. `son-of-anton` starts `soa-d serve` when
+none is running (log: `~/.son-of-anton/logs/soa-d.log`); sessions, queued
+messages and pending approvals live in the daemon, so quitting the TUI leaves a
+running turn going. After an update, `pkill -f 'soa-d serve'` and the next
+launch starts the new daemon.
 
-Notes need no file list. Drop a markdown file under
-`~/.son-of-anton/notes/<scope>/` — `shared`, `cli`, or `gateway` — and it is
-discovered and indexed with that scope; a directory symlink works too, so
-logs kept elsewhere can appear in the tree without moving. (`notes_dir`
-overrides the location; `memory.rag.sources` is only for files that must
-stay outside it.)
+## Sessions and the command line
 
-The index keeps itself fresh: the gateway's housekeeping loop, and each
-interactive CLI start, run a background incremental sync once the last one is
-older than `reindex_interval_minutes` (default 15; `0` turns it off). No cron
-job is needed. `son-of-anton rag index` forces a sync now, and `--rebuild`
-re-embeds from scratch. A sync embeds new complete journal lines
-(incremental by byte offset) and changed note files, commits each file on its
-own (a crash or endpoint failure loses only the batch in flight), and drops
-deleted sessions and notes from the index. Changing the embedding `model`,
-or the prompts below, rebuilds the index automatically. A single refresh embeds at most
-`max_chunks_per_refresh` new chunks (default 200; `0` uncapped) — a fresh
-install with a big journal backlog drains over several refreshes, newest
-first — and `max_chunk_chars` (default `0`, off) cuts every chunk to that
-many characters before it is embedded.
+- `-c` continues the latest session of this workspace (the git root, or the
+  directory itself) and never another directory's; with none it starts a new
+  one. `--resume ID` opens a session, `--resume latest` the newest anywhere.
+- `-q PROMPT` answers one query. `-z PROMPT` is a one-shot for scripts: stdout
+  is only the final answer, `--usage-file F` writes token use, and the prompt
+  is lean (no identity or memory, only rules marked `delegated`). Both take
+  `-m MODEL`, `--reasoning LEVEL` and `--yolo`; without `--yolo` a dangerous
+  command is denied, since nobody is there to approve it.
+- A message typed while a turn runs is queued in the daemon and survives a
+  restart.
+- The TUI's sessions are in `soa-d.db`; the gateway's and cron's are still in
+  `state.db`.
 
-One-shot (`-z`) runs are a session source of their own (`source="oneshot"`):
-they are local sessions, so `-c` / `--resume latest` find them like any other
-CLI session, and they record their launch directory. But they are disposable
-pipeline runs, not conversational memory: by default the indexer skips their
-journals (`index_oneshot`, default off — already-indexed chunks are pruned on
-the next refresh) and a one-shot turn retrieves nothing
-(`oneshot_retrieval`, default off).
-
-Retrieval happens per user turn: the closest chunks above `min_score`
-(default 0.5, or 0.65 for EmbeddingGemma) are appended to that turn's API copy only — never to the stored
-transcript or the frozen system prompt — so the prompt cache is preserved.
-The block is framed as reference data, not instructions, and secrets are
-redacted before anything is embedded. Visibility follows the memory scopes,
-plus per-chat isolation for messaging: a Signal chat recalls
-only its own conversations (and shared/gateway notes); a CLI session recalls
-CLI and shared content, never a chat; subagents and cron runs inherit the
-origin of their parent session or delivery target (a cron job that delivers
-nowhere takes the chat it was created in, or the CLI scope when it was made
-outside a chat), and a session whose origin cannot be established is not
-indexed. The live part of the current
-conversation is never recalled to itself; history compacted away from it is
-recalled like any other session. The query embedding has a short timeout
-(`search_timeout_seconds`, 3s); after a failure, retrieval pauses for
-`failure_cooldown_seconds` so a down endpoint does not stall every turn.
-Journals, including the reasoning and tool detail the transcript clips, are
-the main corpus. Deleting a session (`sessions delete`, `sessions prune`, the
-picker, `/exit --delete`) deletes its journal; retention auto-prune and the
-empty-session sweeps keep it, and it stays indexed under the identity
-resolved while its session row existed.
-<!---->
-## Physics runs
-<!---->
-The physics mode executes code the model wrote.
-Two things follow from that,
-and both are configured under `physics:`.
-<!---->
-### Computations run somewhere else, under something else
-<!---->
-They do **not** run in the agent's own interpreter. That venv deliberately
-ships no scientific stack — son-of-anton's dependency scope rule is "only
-packages every session uses", and most deployments never run a physics turn —
-so `physics.python` names a separate interpreter:
-<!---->
-```bash
-nix build .#physics-runtime
-```
-<!---->
-That gives you ROOT, `analysis_utilities`, NumPy, SciPy, SymPy, matplotlib,
-pandas, scikit-learn, xgboost and h5py in one wrapper, built
-from the [Analysis-Utilities](https://github.com/ewtodd/Analysis-Utilities)
-flake input rather than from this flake's nixpkgs — that project asks
-downstream flakes to leave its `nixpkgs` alone (overriding it defeats its
-binary cache), and its Python package has to be paired with the interpreter it
-was built against. Point `physics.python` at `.../bin/python3`, or set
-`SON_OF_ANTON_PHYSICS_PYTHON`. With neither set, computations fall back to the
-agent's own interpreter and are limited to the standard library.
-<!---->
-`analysis_utilities` is a thin Python layer over a much larger C++ library, and
-`load_cpp_library()` declares every one of its headers — so the waveform
-processors (`PulseIntegralProcessor`, `PulseHeightProcessor`), `FittingUtils`,
-`RooFitUtils` and the CAEN/WaveDump/SOLARIS binary readers are reachable from
-Python as well, not just
-the loaders and plotting bridge the Python package itself ships.
-<!---->
-The `execute_python` tool description is generated by probing that interpreter,
-so it advertises what is actually importable.
-Where a library carries house
-conventions the agent is also told how to use it — a model that merely knows
-`analysis_utilities` is importable still writes numpy and matplotlib, because
-that is what it has seen.
-`physics.runtime_notes` appends your own.
-<!---->
-### The sandbox is a sandbox
-<!---->
-Model-authored code runs under [bubblewrap](https://github.com/containers/bubblewrap):
-no network, no `$HOME`, a cleared environment (no API keys), fresh
-PID/IPC/UTS/cgroup namespaces, and a filesystem holding only the interpreter's
-store paths (read-only), the run's own workspace (read-write) and whatever
-`physics.data_dirs` declares (read-only).
-With `bwrap` missing it **fails
-closed** — `physics.sandbox: "off"` is the explicit opt-in to running
-unconfined.
-<!---->
-```toml
-[physics]
-model = "deepseek-v4-flash"       # the Research Manager: strategy, verification
-coder_model = "qwen3.8-27b"       # whoever is writing code — see below
-python = "/nix/store/…-son-of-anton-physics-runtime/bin/python3"
-sandbox = "bwrap"                 # auto | bwrap | off
-data_dirs = ["~/lab-data"]        # mounted read-only into every computation
-workspace_root = "~/runs"         # each run gets a fresh git-versioned subdir
-critique_every_n = 1              # review each iteration from outside
-
-[physics.mcp]
-server = "oracle"                 # an entry in the top-level mcp_servers
-
-[physics.mcp.roles]
-manager = ["arxiv", "context7"]   # strategy wants the literature
-subagent = ["context7"]           # writing a script wants the API
-```
-<!---->
-### The critic
-
-The Autophysicist is one agent that decides what to investigate, judges its own
-sub-agents and decides what is true — and its own prompt names that as the weak
-point. "Nothing is reliable until independently verified" is a norm with nothing
-enforcing it, and in practice iterations end with a confident plan and an empty
-permanent memory.
-
-So each iteration is reviewed from outside: one prompt, one answer, no tools, no
-verdict that gates anything. The critique goes into the next iteration's context
-and the Manager does what it likes with it; every one is kept in
-`CRITIQUE_LOG.md`. `physics.critique_every_n` sets the interval (0 = off).
-
-One call per iteration is a rounding error against a Manager that spends five
-rounds and several sub-agent dispatches, which makes this the one place a slow,
-more knowledgeable model earns its latency:
-
-```toml
-[physics.agent_models]
-critic = "deepseek-v4-flash-local"
-```
-
-For an attended run, `physics.critic.mode = "human"` hands the review to you
-instead. Each critique prints the iteration's activity and `git diff HEAD`,
-opens `$EDITOR` on a review buffer, and asks for free-text feedback plus one
-structured verdict (`progress`, `stalled`, `wrong_approach`, `needs_help`) and
-whether to block the next iteration. The feedback reaches the Manager through
-exactly the same channel as a model critique, so it cannot tell the two apart.
-Every critique — model or human — is also appended to `CRITIQUE_DATA.jsonl`
-with its source and verdict, which makes a human-critic run a labeled dataset
-for later analysis.
-
-```toml
-[physics.critic]
-mode = "human"   # "model" is the default
-```
-
-### Two models, split by role
-<!---->
-There are two jobs here, not two modes.
-**Reasoning**: read the state, decide
-strategy, judge what came back, decide what counts as verified.
-**Coding**:
-take one prompt and write one self-contained script.
-<!---->
-`physics.coder_model` routes the coding job to a second model, in both modes —
-the Autophysicist's `execute_code` sub-agents, and the pipeline's computer
-agent.
-Everything else stays on `physics.model`, including a sub-agent
-dispatched *without* `execute_code` (derive this, find the error in that, argue
-the other side): that is the reasoning job wearing a sub-agent's hat, and
-routing it to a coding model to save latency gives up what it was dispatched
-for.
-<!---->
-Code is also where the volume is: one call per script, plus up to three more
-each time a script fails. So if you have a fast strong coding model and a
-slower one with better physics, this is where the first pays for itself and the
-second is not missed.
-<!---->
-### Lookups
-
-`physics.mcp.roles` maps an agent role to the tools it may call, and the split
-is the point. The Manager decides strategy and wants the literature; a sub-agent
-writing one script wants the API signature it is about to get wrong, and nothing
-else. Handing every role everything is how an agent with a fifteen-call budget
-ends up browsing instead of working.
-
-An entry matches a whole tool name (`arxiv-get_abstract`) or a server, matching
-everything it prefixes (`context7`). A role with no entry gets no tools, and
-`roles: {}` turns lookups off entirely. Enforcement is role-scoped, so a
-sub-agent asking for a paper is refused rather than quietly served.
-
-Sub-agents get lookups on their retries too — that is precisely when the docs
-are worth reading, since the failure is usually an API that does not exist. The
-tool loop is lookups only, with no exit tool: the turn ends when the sub-agent
-stops calling tools and answers, exactly as it did before, so the "one Python
-code block" contract is unchanged.
-
-An unreachable endpoint degrades to no lookups rather than failing the run.
-
-Two lookups are always present and need no endpoint at all:
-`analysis_utilities_api_index` and `analysis_utilities_api_read` serve the lab
-library's own C++ headers — every class, struct, namespace and enum, and the
-exact declaration of any of them, as written. That is the API a physics script
-is most likely to get wrong, because PyROOT is a dynamic binding: a wrong guess
-is not a syntax error, it is an `AttributeError` a line late or a segfault
-inside a method that was never meant to be called alone. The headers are the
-ground truth and they are small, so they are served verbatim rather than
-paraphrased — a paraphrase is one more thing that drifts. They are found by
-asking `physics.python` where its own `ROOT_INCLUDE_PATH` points, so a runtime
-built from the Analysis-Utilities flake needs no configuration;
-`physics.analysis_utilities_include` overrides the search, and
-`physics.api_docs: false` turns them off.
-
-These are called by the agent process, so they are unaffected by the sandbox —
-computations still have no network.
-<!---->
-### Writing a problem spec
-<!---->
-A spec is a `problem.toml`: the task text, the `data:` paths to expose, and the
-numeric `checks` that score `RESULTS.txt`.
-`son-of-anton problem create`
-writes one from a dataset and a one-line goal:
-<!---->
-```bash
-son-of-anton problem create \
-    --data ~/lab-data/run42 \
-    --goal "measure the half-life; any fitting method is fine" \
-    --truth reference_results.txt \
-    -o problems/run42/problem.toml
-```
-<!---->
-The probe does the mechanical part deterministically — ROOT trees, branches and
-entry counts, `.npy` shapes, CSV headers — and runs inside the same sandbox the
-computations will, so what it sees is what the agent will see.
-The model gets
-only that summary and your goal, and returns the task text; with `--truth` it
-does not choose the expected values either.
-A spec whose checks score a key the
-task never asks for is rejected.
-`--no-llm` renders the whole thing from the
-probe plus `--truth`.
-<!---->
-### Running a problem spec
-<!---->
-```bash
-son-of-anton problem run problems/run42/problem.toml --max-iterations 5
-```
-<!---->
-It prints `ANSWER.md` and `FORMAL_EVAL.md` when it finishes.
-`--workspace DIR`
-continues an existing run rather than starting a fresh one.
-<!---->
-**Set `--max-iterations` on a first run.** Physics mode has no wall-clock or
-cost gate, so it is the only
-ceiling, and the default is 50 iterations of up to fifteen tool calls each.
-
-**Raise `--script-timeout` for large data.** One model-authored script gets 60 s
-by default, which came from a scaffold built for symbolic work. Reading a few
-hundred thousand waveforms out of a multi-GB file and training on them is
-legitimate work that does not fit in a minute, and the agent reads a timeout as
-"wrong approach" — so it retries something smaller instead of the thing that
-would have worked.
-
-Both are settable declaratively as `physics.max_iterations` and
-`physics.script_timeout`.
-
-**`--token-budget` is a spend cap per iteration** (`physics.token_budget`,
-default 64000). It charges new input plus output tokens, the Manager's and its
-sub-agents': a tool loop re-sends its whole conversation every round, and that
-re-sent history — or a prefix the endpoint reports as cached — is counted once,
-not every round. At the budget the Manager loses `dispatch_subagent` and is told
-to save its work and end the iteration; at 1.5× the iteration is cut off. It is
-not the model's context window.
-
-**The context window bounds each iteration's prompt.** Permanent memory is
-append-only, and it used to be injected in full every iteration — so a long run
-eventually built a prompt the model could not take, and every iteration after
-that failed. The window comes from `physics.context_length`, or the same
-resolution the main agent uses (a `custom_providers` per-model
-`context_length`, the endpoint's `/models` metadata), and an overflow error
-that names the real window corrects it. Permanent memory gets a quarter of
-it: past that, the newest entries are injected in full and the older ones as a
-digest kept in `PERMANENT_MEMORY_DIGEST.md`, written by the model (excerpts if
-that call fails) and extended only when the full-text part outgrows its
-share. `PERMANENT_MEMORY.md` is never rewritten, and the Manager is told to
-read it when it needs an old entry verbatim. Within an iteration, an overflow
-caps the reply to the room left or trims the oldest tool outputs and resends,
-a few times at most. A run whose opening prompt cannot fit — or that
-overflows two iterations in a row — stops with the reason in the console,
-`EVENT_LOG.jsonl` and the scratchpad, instead of failing every iteration
-left.
-<!---->
-The same thing is reachable from a chat turn — `/mode physics`, then the path —
-which is what the gateway does with a Signal message.
-Both go through the same
-runner.
-Either way the run copies the spec into its workspace, which is where
-the evaluator reads it from and where `resume` picks it up.
-<!---->
-Hand it plain prose instead of a path and it still runs; there is just nothing
-to score it against, and `FORMAL_EVAL.md` says so rather than claiming a pass.
-A path that *looks* like a spec but cannot be read warns rather than silently
-becoming the problem statement.
-<!---->
-## Cron
-<!---->
-A gateway process runs the cron scheduler; `son-of-anton cron <verb>` (or
-`/cron`) manages jobs, and the agent can schedule through the `cronjob` tool.
-<!---->
-Jobs without an explicit `--provider` / `--model` pin follow the global default,
-re-resolved from `config.toml` on every run. By default a **model-drift guard**
-fails those unpinned jobs closed: if the global default has changed since the job
-was created, the run is skipped (no inference call) and a one-time alert tells
-you to pin the axis. That protects an unattended job from silently inheriting a
-*paid* default — the guard exists because of a real overage, not a style choice.
-<!---->
-If your models are served locally and there is no spend to protect against, the
-guard is just friction. Turn it off and unpinned jobs track the live default
-model/provider at run time instead of `drift_skip`-ing:
-<!---->
-```toml
-[cron]
-model_drift_guard = false
-```
-<!---->
-Pinned jobs and `cron.model` / `cron.model_provider` fleet defaults are never
-affected — the guard only applies to axes that are unpinned, snapshotted at
-creation, and now resolve to a different value. See
-`tests/test_cron_model_drift_guard.py`.
-<!---->
-## One service per account
-<!---->
-The NixOS module runs a separate gateway for each account, as a system service,
-so they start at boot without anyone logging in.
-Each one runs *as* that
-account with `SON_OF_ANTON_HOME=~/.son-of-anton`.
-<!---->
-Sharing the home is what makes this useful.
-The service and your own
-`son-of-anton` in a terminal end up on one `state.db`.
-A conversation you start
-on Signal is sitting there in `/sessions` when you open the CLI, and you can
-pick it up.
-There is nothing to sync because there is only one copy.
-<!---->
-```nix
-services.son-of-anton.instances = {
-  work = {
-    enable = true;
-    user = "e-work";
-    managedAccount = true;                 # it's a real login account
-    son-of-antonHome = "/home/e-work/.son-of-anton";
-    workingDirectory = "/home/e-work";
-    environmentFiles = [ config.age.secrets.son-of-anton-work-env.path ];
-  };
-  play = {
-    enable = true;
-    user = "e-play";
-    managedAccount = true;
-    son-of-antonHome = "/home/e-play/.son-of-anton";
-    workingDirectory = "/home/e-play";
-    environmentFiles = [ config.age.secrets.son-of-anton-play-env.path ];
-  };
-};
-```
-<!---->
-`managedAccount = true` matters. Without it the module creates and chmods the
-directories it manages, which against a real home means `2770` on
-`/home/e-work`. That makes sshd's `StrictModes` stop accepting your
-`authorized_keys`, and it hands everyone else in your primary group write
-access to your whole home. With it, the module only touches `~/.son-of-anton`.
-<!---->
-### Everyone shares one Signal number
-<!---->
-All the services talk to one signal-cli daemon and all of them see every
-message, because signal-cli broadcasts events over SSE. What separates them is
-the group: each service answers exactly one Signal group and drops everything
-else before it does any work.
-<!---->
-So set up one group per service, put yourself and the bot in it, and give each
-service its group id:
-<!---->
-```bash
-curl -s -X POST http://YOUR-SIGNAL-HOST:7583/api/v1/rpc \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"listGroups","params":{},"id":"1"}' \
-  | jq -r '.result[] | "\(.name)\t\(.id)"'
-```
-<!---->
-Put the id in that instance's env file as `SIGNAL_GROUP_ALLOWED_USERS`, along
-with `SIGNAL_ALLOWED_USERS`, the list of people allowed to talk to it. That
-list is checked on group messages too, so it has to include you.
-<!---->
-Direct messages are dropped by default (`SIGNAL_DM_MODE=ignore`). A DM has no
-group id, so there is no way to tell which service should answer it. Leave it
-on and one DM gets you one reply from every running service.
-<!---->
-signal-cli opens attachment paths itself, as its own user and on its own
-machine. A file the gateway can read may be out of its reach: on another
-machine, or in a home directory the `signal-cli` user can't enter. When that
-happens the gateway resends the files inlined as data URIs, up to 16 MB per
-message. An attachment that still doesn't arrive is named in a warning in the
-chat.
-<!---->
-### A group with other people in it
-<!---->
-You can run an instance for a shared group, like household planning with a
-partner. Give it its own service account rather than a personal one:
-<!---->
-```nix
-services.son-of-anton.instances.house = {
-  enable = true;
-  user = "soa-house";
-  createUser = true;
-  stateDir = "/var/lib/soa-house";
-  son-of-antonHome = "/var/lib/soa-house/.son-of-anton";
-  workingDirectory = "/srv/household";
-  environmentFiles = [ config.age.secrets.son-of-anton-house-env.path ];
-  extraPackages = [ pkgs.pandoc pkgs.typst ];
-};
-```
-<!---->
-Its env file lists everyone in the group under `SIGNAL_ALLOWED_USERS`. Anyone
-not listed gets dropped even if they are in the group.
-<!---->
-Use a service account here, not your own. The agent acts for whoever is
-talking, so running it as `e-play` would hand the other people in that group
-`e-play`'s home directory, ssh keys, and git identity. Its working directory is
-the only thing it can reach.
-<!---->
-`extraPackages` is per-instance and lands on that service's `PATH`, which is
-how you give one instance tools the others don't have.
-<!---->
-### Giving an instance git access
-<!---->
-An instance that should clone or push to GitHub (a non-public repo the human
-added the bot account to, for example) gets a key instead of a login shell:
-<!---->
-```nix
-services.son-of-anton.instances.ricky = {
-  # ...
-  git.github = config.age.secrets.soa-ricky-github-key.path;
-};
-```
-<!---->
-`git.github` is a runtime path to a *private* SSH key (OpenSSH format) whose
-public half you register on GitHub — as a deploy key on the repos this
-instance works on, or on a bot account added to them. On activation the
-module installs it (and a small ssh config that routes `github.com` to it)
-into
-the instance's `HOME` and chowns both to the instance user; the service runs
-git with `GIT_SSH_COMMAND` pinned to that key. The agent's terminal tool
-inherits the same environment, so a plain `git clone`/`git push` works with no
-ssh-agent.
-<!---->
-Pass a runtime path, not a Nix path literal — a literal would copy the key into
-the store, where every user can read it. The key files are named
-`id_github` / `config-github` (not the defaults) so a `managedAccount`
-instance that shares a human's interactive `HOME` never clobbers their own
-identity or ssh config.
-<!---->
-A note on pandoc and PDFs: a plain `pandoc in.md -o out.pdf` fails under a
-systemd service. pandoc's typst template writes `font: <mainfont>` and typst
-rejects an empty font list, and the service has no fontconfig so typst finds no
-fonts at all. Wrap it:
-<!---->
-```nix
-md2pdf = pkgs.writeShellApplication {
-  name = "md2pdf";
-  runtimeInputs = [ pkgs.pandoc pkgs.typst ];
-  text = ''
-    out="''${2:-''${1%.*}.pdf}"
-    TYPST_FONT_PATHS=${pkgs.dejavu_fonts}/share/fonts \
-      pandoc "$1" -o "$out" --pdf-engine=typst -V mainfont="DejaVu Sans"
-    echo "$out"
-  '';
-};
-```
-<!---->
-### Home Manager
-<!---->
-There is also a Home Manager module for a CLI/TUI-only install: it puts the
-package on the profile, exports `SON_OF_ANTON_HOME`, and merges `settings` and
-`environmentFiles` into that home. Gateways run from the NixOS module.
-<!---->
-```nix
-imports = [ son-of-anton.homeManagerModules.default ];
-services.son-of-anton = {
-  enable = true;
-  environmentFiles = [ config.age.secrets."son-of-anton-env".path ];
-};
-```
-<!---->
-## What `settings` does to config.toml
-<!---->
-Son of Anton writes `config.toml` at runtime too — `/skin`, `/perm` — so
-activation merges into it rather than replacing it. The merge is three-way: it records what it wrote in
-`~/.son-of-anton/.nix-managed.json`, so the next activation can tell a key you
-have *dropped from Nix* from a key something wrote at runtime. Dropping a
-setting removes it from disk; runtime keys are never touched. Removals are
-named in the activation log.
-<!---->
-The first activation after that state file appears cannot attribute anything to
-Nix, so it removes nothing and instead lists the keys on disk that Nix does not
-declare. If they are leftovers from an older generation rather than runtime
-settings, `pruneUnmanagedSettings = true` for one rebuild clears them. Leave it
-on if you want `config.toml` purely declarative and are willing to lose runtime
-edits on every rebuild.
-<!---->
-## No installation commands
-<!---->
-This is not an imperative program. There is no `setup`, `update`, `uninstall`,
-`model`, `login`/`logout`, `doctor`, `config set`, or `gateway install|start|stop`:
-the deployment is declared by the NixOS or Home Manager module, `systemctl` runs
-the service, and that module's `settings` owns `config.toml`. `config` only
-shows (`show`, `get`, `path`, `env-path`); `gateway` has two actions, `run` and
-`status`.
-<!---->
-MCP servers are declared under `mcp_servers` in that same `settings`; nothing
-installs or adds one at runtime.
-<!---->
 ## Commands
-<!---->
+
 | Command | What it does |
 |---|---|
-| `/model auto\|NAME` | pin a model for the session, or drop the pin |
-| `/perm default\|ask\|lockdown\|yolo` | set the permission mode (shift+tab cycles it for the session) |
-| `/commit` | review the uncommitted diff, write a message in the repo's style, commit |
-| `/plan [task]` | write a plan to `.son-of-anton/plans/` in the project instead of doing the work (also on Signal) |
-| `/cancel` | pick messages queued behind the running turn to drop before they are sent |
-| `/sessions` | list sessions, including ones started on Signal |
-| `/q`, `:q`, `/exit` | quit the CLI |
-<!---->
-`/commit` and `/plan` hand the work to the agent as an ordinary turn, so it reads
-the diff or the project with the tools it already has, under your normal
-approvals. `/plan` with no task plans what the conversation is heading toward.
-By default `/commit` commits with whatever identity the repository or your global git
-config already sets. To author commits under a dedicated account instead —
-while keeping *you* as the committer, so the log reads "authored by the
-account, committed by you" — set both:
+| `/model [NAME]` | switch the session's model (bare: a picker) |
+| `/reasoning [LEVEL]` | set the reasoning effort (bare: a picker) |
+| `/perm default\|ask\|lockdown\|yolo` | how much it asks before running commands; shift+tab cycles |
+| `/new`, `/clear` | start a new session here |
+| `/resume [ID]`, `/sessions` | open a session (bare: a picker) |
+| `/commit [notes]` | review the uncommitted diff, write a message in the repo's style, commit |
+| `/stop` | kill the session's background processes |
+| `/sendnow [text]`, `/sendall` | steer the running turn onto this text or the oldest queued message; `/sendall` onto all of them |
+| `/cancel` | drop queued messages |
+| `/status`, `/help`, `/skin`, `/q` | |
 
-```toml
-[git]
-author_name = "some-bot"
-author_email = "12345+some-bot@users.noreply.github.com"
-```
-<!---->
-On the command line, `son-of-anton -c [name]` continues this directory's most
-recent session (see [Sessions](#sessions)); `son-of-anton problem create` builds
-a physics problem spec and `son-of-anton problem run` runs one.
-<!---->
-The Nix package installs bash, zsh and fish completion for `son-of-anton`,
-generated from the command tree at build time. Elsewhere,
-`son-of-anton completion [bash|zsh|fish]` prints the script.
-<!---->
-`/help` lists the rest.
-<!---->
-## Development
-<!---->
+`!cmd` runs a shell command in the session's directory. `/commit` authors as
+`[git] author_name` / `author_email` when both are set, and leaves you as the
+committer.
+
+## Signal
+
+Each instance's gateway answers one Signal group (all instances can share one
+signal-cli number) and also runs cron. On an instance with
+`gateway.single_user = true` the chat is a relay: project work goes to a
+headless terminal session in the directory you name (`son-of-anton chat -Q`),
+the chat reports each result, and a dangerous command asks there as
+`/approve <id>` / `/deny <id>`. Sessions started in the TUI cannot be relayed
+until phase 5.
+
+## Memory
+
+Two kinds, as TOML under `~/.son-of-anton/memories/`, addressed by id:
+
+- **Rules** (`rules.toml`): standing instructions, in the system prompt and
+  frozen for a session. Every change needs your approval, and a full store
+  refuses rather than evicts. `scope = "gateway"` keeps a rule on Signal;
+  `delegated = true` keeps it even in lean `-z` prompts.
+- **Facts** (`facts.toml`, `facts.gateway.toml`): knowledge recalled when its
+  topic comes up, never in the system prompt. Recall is on the Python side
+  only until phase 3b.
+
+The terminal never sees gateway memory. On NixOS, `memoryRules` seeds
+`rules.toml` (a three-way merge by id that never clobbers your edits), and
+`memoryRulesFile` takes rules from a runtime path such as an agenix secret.
+`memory.rag` adds embedding recall of facts and notes, and lets
+`session_search` match by meaning.
+
+## Physics runs
+
+Nothing routes a chat message into physics. `son-of-anton problem create`
+writes a spec for a dataset; `problem run` runs it and prints `ANSWER.md` and
+`FORMAL_EVAL.md`. A chat agent can drive both through its terminal.
+
 ```bash
-nix flake check   # package, both modules, venv import smoke
-nix develop       # python dev shell with the editable venv
+son-of-anton problem create --data ~/lab-data/run42 \
+    --goal "measure the half-life" -o problems/run42/problem.toml
+son-of-anton problem run problems/run42/problem.toml --max-iterations 5
 ```
-<!---->
-Run the test suite through the dev shell (`nix develop -c scripts/run_tests.sh`);
-it needs `SON_OF_ANTON_PYTHON` from the shell hook.
-<!---->
-One trap worth knowing if you edit and re-run in a loop: an edit that keeps a
-file the same size, made within the same second as the last one, can leave
-CPython using the old `.pyc`, because invalidation is on mtime plus size. Clear
-`__pycache__` between runs.
-<!---->
+
+- One research manager (memory, scratchpad, token budget,
+  `submit_final_answer`) dispatches sub-agents that run code, in a
+  git-versioned workspace; a critic reviews each iteration
+  (`physics.critique_every_n`).
+- Model code runs in a separate scientific interpreter (`nix build
+  .#physics-runtime`, then `physics.python`) under bubblewrap: no network, no
+  home, no secrets, data mounted read-only from `physics.data_dirs`. It fails
+  closed without `bwrap`.
+- `physics.model` reasons, `physics.coder_model` writes the scripts, and
+  `physics.mcp.roles` limits which lookups each role may use.
+- Set `--max-iterations` on a first run: there is no other ceiling (default 50).
+  Raise `--script-timeout` (default 60s) for large data.
+
+## Cron
+
+`son-of-anton cron <verb>` or `/cron` manages jobs, and the agent schedules
+with its `cronjob` tool. A job without a pinned model is skipped, with an
+alert, when the global default has changed since it was made, so an unattended
+job never drifts onto a paid model. Set `[cron] model_drift_guard = false` if
+your models cost nothing.
+
+## Deploying on NixOS
+
+The NixOS module runs one gateway per account as a system service, with
+`SON_OF_ANTON_HOME=~/.son-of-anton`, so the service and your terminal share a
+home:
+
+```nix
+services.son-of-anton.instances.work = {
+  enable = true;
+  user = "e-work";
+  son-of-antonHome = "/home/e-work/.son-of-anton";
+  environmentFiles = [ config.age.secrets.son-of-anton-work-env.path ];
+};
+```
+
+- An instance for a group with other people gets its own service account
+  (`createUser = true`); `git.github` gives one a key for GitHub.
+- `settings` is merged into `config.toml` three ways, so dropping a key from
+  Nix removes it and runtime writes survive; `pruneUnmanagedSettings = true`
+  makes the file purely declarative.
+- A Home Manager module covers a terminal-only install.
+- There are no installation commands (`setup`, `update`, `config set`,
+  `gateway install`): the module declares the deployment and `systemctl` runs
+  it.
+
+## Development
+
+```bash
+nix flake check                      # packages, modules, venv import sweep
+nix develop -c scripts/run_tests.sh  # the Python suite (never bare pytest)
+```
+
+The daemon's gates are in `daemon/AGENTS.md`, and the repo's rules for agents
+and contributors in `AGENTS.md`.
+
 ## Provenance
-<!---->
-Son of Anton is a hard fork of
-[Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
-v0.20.5 (upstream commit `fcbd1076a9`), stripped to an always-on daemon. The
-agent loop, memory, session search and cron started as upstream's and have been
-reworked since. Upstream's skills system, background review, profiles, plugin
-system and Ink interface are gone, as are every messaging platform but Signal
-and every model provider but an OpenAI-compatible endpoint.
-<!---->
-The Autophysicist mode began as a port of
+
+A hard fork of [Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
+v0.20.5 (`fcbd1076a9`), stripped to Signal and one OpenAI-compatible provider,
+and now being rewritten in Go. The physics mode began as a port of
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern)
-(commit `5553bb6`) and has since taken its own path. physics-intern was built
-for theoretical physics, where a sub-agent derives a result and there is
-nothing to look up; this one is built for experimental data, where the work is
-calibrating a detector and training a classifier on recorded waveforms, and the
-dominant failure is guessing at a library API. Physics runs now execute under a
-separate scientific interpreter inside a bubblewrap sandbox with the lab's data
-mounted read-only; the Manager can read its own workspace and look up
-literature; sub-agents can pull documentation; the reasoning and coding roles
-can run on different models; and every iteration is reviewed from outside by a
-critic. physics-intern's nine-agent research pipeline (surveyor, planner,
-orchestrator, researcher, computer, reviewer, critic, adjudicator, formatter)
-was ported and then removed as redundant, once the Autophysicist carried its own
-critic, its own sub-agent dispatch, and its own verdict-free review. The
-architecture is no longer theirs.
-<!---->
-The daemon design and permission modes come from the archived
-[temple](https://github.com/ewtodd/temple) harness. The terminal interface is
-modeled on [opencode](https://github.com/sst/opencode): the transcript column
-beside a 42-column sidebar, the left rail on messages and the prompt, the
-two-column tool icons, the identity row under the prompt, and the "system"
-theme that asks the terminal for its own background and generates its surfaces
-from it. The code is a from-scratch Textual port (Python, against this agent
-loop); the design is theirs — see `TUI_AESTHETICS.md` for the file-by-file
-mapping.
-<!---->
-The session journal follows the idea in
-[goluckyryan/letsClaw](https://github.com/goluckyryan/letsClaw), which writes a
-journal beside each archived transcript so reasoning and untruncated tool
-output survive a rollover.
-<!---->
+(`5553bb6`) and has been rebuilt for experimental data. The daemon design and
+permission modes come from the archived [temple](https://github.com/ewtodd/temple)
+harness. The TUI is a from-scratch Textual port of
+[opencode](https://github.com/sst/opencode)'s session layout
+(`TUI_AESTHETICS.md` maps it file by file). The session journal follows
+[goluckyryan/letsClaw](https://github.com/goluckyryan/letsClaw).
+
 ## AI Full Disclosure
-<!---->
+
 This software is developed with strong assistance from AI, with humans leading
 the ideas, testing, and debugging. This project is not my day job, so it is
 developed with as little actual coding from me as possible. If you are not
 happy with AI-developed code, this software is not for you. (This statement
 inspired by that of [antirez/ds4](https://github.com/antirez/ds4).)
-<!---->
+
 ## License
-<!---->
-MIT.
-Hermes Agent and physics-intern are the work of Nous Research and HuggingFace;
-letsClaw is the work of goluckyryan; opencode is the work of SST. See the
-upstream repositories for their contributor lists.
+
+MIT. Hermes Agent and physics-intern are the work of Nous Research and
+HuggingFace; letsClaw is the work of goluckyryan; opencode is the work of SST.
+See the upstream repositories for their contributor lists.
