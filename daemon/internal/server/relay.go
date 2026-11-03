@@ -53,11 +53,7 @@ func (s *Server) inWorkerHours(t time.Time) bool {
 	if !ok {
 		return true
 	}
-	h := t.In(workerZone()).Hour()
-	if start < end {
-		return h >= start && h < end
-	}
-	return h >= start || h < end
+	return hourIn(start, end, t)
 }
 
 // whenHours is what a send outside the hours is told ("" within them).
@@ -80,6 +76,9 @@ func (s *Server) watchWorkerHours() {
 		defer t.Stop()
 		for {
 			s.startWaitingWorkers()
+			if s.chats != nil && s.chats.started {
+				s.chats.offerHeld()
+			}
 			select {
 			case <-s.base.Done():
 				return
@@ -90,7 +89,7 @@ func (s *Server) watchWorkerHours() {
 }
 
 func (s *Server) startWaitingWorkers() {
-	if s.base.Err() != nil || !s.inWorkerHours(time.Now()) {
+	if s.base.Err() != nil || !s.inWorkerHours(now()) {
 		return
 	}
 	ids, err := s.st.QueuedWorkers(s.base)
@@ -235,7 +234,7 @@ type relaySent struct{ status, when, title string }
 // relaySend gives a worker the message: queued if a terminal has picked it
 // up or it is outside its hours, steered in with now, else run after the
 // current turn or at once.
-func (l *live) relaySend(text string, now bool) (relaySent, error) {
+func (l *live) relaySend(text string, steer bool) (relaySent, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.unloaded {
@@ -255,9 +254,9 @@ func (l *live) relaySend(text string, now bool) (relaySent, error) {
 	switch {
 	case l.driver != nil:
 		return queue(whenTerminal)
-	case l.srv.whenHours(time.Now()) != "":
-		return queue(l.srv.whenHours(time.Now()))
-	case busy && now && l.running:
+	case l.srv.whenHours(now()) != "":
+		return queue(l.srv.whenHours(now()))
+	case busy && steer && l.running:
 		l.steerWith(text)
 		return relaySent{"steered", "now", l.title}, nil
 	case busy:
@@ -406,7 +405,7 @@ func (s *Server) workerState(id string, queued int) string {
 	case running:
 		return "running"
 	case queued > 0:
-		when := s.whenHours(time.Now())
+		when := s.whenHours(now())
 		if when == "" {
 			when = "within a minute"
 		}

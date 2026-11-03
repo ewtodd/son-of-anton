@@ -129,6 +129,11 @@ its approvals and questions come to the chat. The chat takes `/new`, `/stop`,
 `/status`, `/sendnow [text]`, `/sendall`, `/approve [id] [always]` and
 `/deny [id] [reason]`; a typed `/new` no longer asks to confirm.
 
+With `[gateway] active_hours = [20, 7]` (local hours, wrapping midnight) a chat is
+answered only inside the window: outside it messages are saved and the chat is told
+once (`inactive_message` words that notice), and when the window opens the chat is
+shown what came in and asked whether to go ahead.
+
 With soa-d the chat's agent is fiona, the front desk of the instance
 (`[daemon] instance` names it). She has her own identity, takes real work to a
 worker rather than doing it, and has memory, session search, the web tools and

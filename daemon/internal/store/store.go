@@ -177,6 +177,16 @@ UPDATE schema_version SET version = 10;`,
 	PRIMARY KEY (source, foreign_id)
 );
 UPDATE schema_version SET version = 11;`,
+	`CREATE TABLE held_messages (
+	chat   TEXT NOT NULL,
+	seq    INTEGER NOT NULL,
+	sender TEXT NOT NULL,
+	text   TEXT NOT NULL,
+	ts     INTEGER NOT NULL,
+	PRIMARY KEY (chat, seq)
+);
+CREATE TABLE held_asked (chat TEXT PRIMARY KEY);
+UPDATE schema_version SET version = 12;`,
 }
 
 func migrate(db *sql.DB) error {

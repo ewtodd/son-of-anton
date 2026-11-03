@@ -299,7 +299,7 @@ func (l *live) next() {
 	if l.waiting {
 		return
 	}
-	if l.kind == "worker" && l.driver == nil && !l.srv.inWorkerHours(time.Now()) {
+	if l.kind == "worker" && l.driver == nil && !l.srv.inWorkerHours(now()) {
 		return // a worker nobody has picked up starts its queue only within its hours
 	}
 	items, err := l.srv.st.QueueItems(context.Background(), l.id)
