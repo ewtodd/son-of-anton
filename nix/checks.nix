@@ -180,8 +180,8 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           assert lib.hasSuffix "/bin/soa-d serve" (exec "work");
           assert lib.hasInfix "bin/son-of-anton gateway" (exec "house");
           assert inst.house.backend == "python";
-          assert inst.play.settings.daemon == { instance = "play"; signal = true; cron = true; autostart = false; };
-          assert inst.work.settings.daemon == { instance = "work"; signal = true; cron = false; autostart = false; };
+          assert inst.play.settings.daemon == { instance = "play"; signal = true; cron = true; autostart = false; import_python = true; };
+          assert inst.work.settings.daemon == { instance = "work"; signal = true; cron = false; autostart = false; import_python = true; };
           # An owner's own account on soa-d: no filesystem sandbox, never privileges.
           assert (sc "play").ProtectSystem == false && (sc "play").PrivateTmp == false;
           assert (sc "play").NoNewPrivileges;
