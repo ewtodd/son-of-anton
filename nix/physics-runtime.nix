@@ -1,11 +1,11 @@
 # nix/physics-runtime.nix — the interpreter physics computations run under.
 #
-# Deliberately NOT the agent's own venv. son-of-anton's `dependencies` carry a
-# scope rule — "only packages used by EVERY session" — and this stack is ROOT
-# plus a scientific Python environment, which would land on every deployment
-# that never runs a physics turn. The physics modes execute model-authored
-# scripts under a separate interpreter instead, named by `physics.python` in
-# config.toml and confined by bubblewrap.
+# Deliberately NOT the harness python (nix/physics-harness.nix), which carries
+# only what autophysicist itself imports. This stack is ROOT plus a scientific
+# Python environment, which would land on every deployment that never runs a
+# physics turn. The physics mode executes model-authored scripts under this
+# interpreter instead, named by `physics.python` in config.toml and confined by
+# bubblewrap.
 #
 # The lab's own library comes in as a flake input rather than being vendored or
 # reimplemented. Analysis-Utilities is where the house conventions already live

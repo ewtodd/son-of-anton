@@ -34,7 +34,12 @@ import os
 import time
 from typing import Any, Protocol
 
-import httpx2
+try:
+    # mcp 2 drives its transport with httpx2's client, mcp 1 with httpx's;
+    # the Nix harness environment carries nixpkgs' mcp 1 and no httpx2.
+    import httpx2 as _http
+except ImportError:
+    import httpx as _http
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -101,7 +106,7 @@ def is_allowed(tool_name: str, allow: list[str]) -> bool:
 
 
 async def _with_session(url: str, headers: dict, timeout: float, action):
-    client = httpx2.AsyncClient(headers=headers, timeout=timeout)
+    client = _http.AsyncClient(headers=headers, timeout=timeout)
     async with client:
         async with streamable_http_client(url, http_client=client) as streams:
             read, write = streams[0], streams[1]

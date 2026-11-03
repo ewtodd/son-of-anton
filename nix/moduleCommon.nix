@@ -65,20 +65,14 @@ let
       };
 
       backend = mkOption {
-        type = types.enum [
-          "python"
-          "soa-d"
-        ];
-        default = "python";
+        type = types.enum [ "soa-d" ];
+        default = "soa-d";
         description = ''
-          What serves the instance. `python` runs the Python gateway
-          (`son-of-anton gateway`). `soa-d` runs the Go daemon (`soa-d serve`:
-          Signal, cron and the socket the TUI attaches to) in the same unit, so
-          the Python gateway and soa-d never both serve one instance. The
-          module also seeds `settings.daemon` for `soa-d`
-          (signal and cron on, plus `instance` on NixOS); an explicit
-          `settings.daemon.*` wins key by key. Bring the Python sessions over
-          once with `soa-d import --from ~/.son-of-anton`.
+          What serves the instance. Only `soa-d` exists: the Go daemon
+          (`soa-d serve`: Signal, cron and the socket the TUI attaches to).
+          The option stays so existing configurations keep evaluating. The
+          module seeds `settings.daemon` (signal and cron on, plus `instance`
+          on NixOS); an explicit `settings.daemon.*` wins key by key.
         '';
       };
 
@@ -213,8 +207,7 @@ let
         description = ''
           The paths to environment files that contain secrets, for example
           API keys and tokens. Activation adds the contents of these files to
-          $SON_OF_ANTON_HOME/.env. Son of Anton reads that file at each start, with
-          load_son_of_anton_dotenv().
+          $SON_OF_ANTON_HOME/.env. Son of Anton reads that file at each start.
 
           Each activation writes .env again from the start. Thus a secret
           file cannot go into .env two times.
@@ -438,38 +431,28 @@ let
     '';
 
   # ── Process argv ────────────────────────────────────────────────────────
-  gatewayArgv =
-    cfg:
-    if cfg.backend == "soa-d" then
-      [
-        "${effectivePackage cfg}/bin/soa-d"
-        "serve"
-      ]
-    else
-      [
-        "${effectivePackage cfg}/bin/son-of-anton"
-        "gateway"
-      ];
+  daemonArgv = cfg: [
+    "${effectivePackage cfg}/bin/soa-d"
+    "serve"
+  ];
 
-  # The `daemon` settings that `backend = "soa-d"` seeds. mkBefore puts this
+  # The `daemon` settings the module seeds. mkBefore puts this
   # definition first in the settings merge (recursiveUpdate, later wins), so
   # an explicit `settings.daemon.*` replaces a key without dropping the rest,
   # which mkDefault would not do once any other setting exists.
   soadSettings =
     cfg: extra:
-    lib.mkIf (cfg.backend == "soa-d") (
-      lib.mkBefore {
-        daemon = {
-          signal = true;
-          cron = true;
-          # The unit serves this home: a TUI connects, never starts its own.
-          autostart = false;
-          # First start imports the Python state.db and retires it.
-          import_python = true;
-        }
-        // extra;
+    lib.mkBefore {
+      daemon = {
+        signal = true;
+        cron = true;
+        # The unit serves this home: a TUI connects, never starts its own.
+        autostart = false;
+        # First start imports the Python state.db and retires it.
+        import_python = true;
       }
-    );
+      // extra;
+    };
 
   # The environment that each Son of Anton process needs.
   #
@@ -507,7 +490,7 @@ in
   inherit
     deepConfigType
     effectivePackage
-    gatewayArgv
+    daemonArgv
     mkStateScript
     processEnvironment
     processPath

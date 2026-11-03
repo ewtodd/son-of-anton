@@ -1,34 +1,26 @@
-# nix/devShell.nix — Python-only dev shell
+# nix/devShell.nix — Go for the daemon, Python for the physics mode
 { ... }:
 {
   perSystem =
     { pkgs, self', ... }:
-    let
-      package = self'.packages.default;
-    in
     {
       devShells.default = pkgs.mkShell {
         packages = [
-          pkgs.uv
-          pkgs.pre-commit
-          # programmable completion (compgen/complete) for tests/test_shell_completion.py
-          pkgs.bashInteractive
-          package
-          # the Go daemon (daemon/)
           pkgs.go
           pkgs.gopls
+          # cgo, for the race-detector gate
+          pkgs.gcc
           pkgs.ripgrep
-        ]
-        ++ package.passthru.devDeps;
+          pkgs.bashInteractive
+          pkgs.git
+          # python3 with autophysicist installed and pytest
+          self'.packages.physics-harness-test
+        ];
 
         shellHook = ''
-          ${package.passthru.devShellHook}
-
-          # for the editable venv to pick up the src
-          export SON_OF_ANTON_PYTHON_SRC_ROOT=$(git rev-parse --show-toplevel)
-
-          echo "Son of Anton dev shell in $SON_OF_ANTON_PYTHON_SRC_ROOT"
-          echo "Run 'son-of-anton' to start."
+          # The daemon's execute_code and `son-of-anton problem` run this.
+          export SON_OF_ANTON_PYTHON=${self'.packages.physics-harness-test}/bin/python3
+          echo "Son of Anton dev shell. Go: cd daemon && go test ./...; physics: python3 -m pytest autophysicist/tests"
         '';
       };
     };

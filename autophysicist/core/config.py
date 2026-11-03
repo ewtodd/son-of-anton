@@ -8,12 +8,9 @@ from pathlib import Path
 
 def agent_config() -> dict:
     """The son-of-anton config.toml, or ``{}`` when it cannot be loaded."""
-    try:
-        from son_of_anton_cli.config import load_config
+    from ..support import load_config
 
-        return load_config() or {}
-    except Exception:
-        return {}
+    return load_config()
 
 
 def physics_config() -> dict:

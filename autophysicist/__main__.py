@@ -1,9 +1,7 @@
 """``python -m autophysicist problem``: the physics mode's own entry.
 
 The Go ``son-of-anton problem`` hands the physics mode to this entry until its
-Go port (daemon/phases/10a-son-of-anton-command.md). The options are the ones
-``son_of_anton_cli/subcommands/problem.py`` declares, and the actions do what
-``cmd_problem`` does; the code moves here when the Python command is deleted.
+Go port (daemon/phases/11). This is the mode's only command line.
 """
 
 from __future__ import annotations
@@ -84,11 +82,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # The model's key lives in the home's .env, which the Python command loaded
-    # at startup; the physics LLM layer reads it from the environment.
-    from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
+    # The model's key lives in the home's .env; the physics LLM layer reads it
+    # from the environment.
+    from autophysicist.support import load_dotenv
 
-    load_son_of_anton_dotenv()
+    load_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command != "problem":

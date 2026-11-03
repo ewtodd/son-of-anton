@@ -272,11 +272,11 @@
         ) inst.protectedPaths;
         PrivateTmp = true;
       }
-      # On soa-d the unit's daemon is also the owner's terminal agent when the
+      # The unit's daemon is also the owner's terminal agent when the
       # instance is their own account: it runs as them, as a TUI-started one
       # did, so the filesystem sandbox goes. NoNewPrivileges stays (and soa-d
       # sets no_new_privs itself): nothing it runs can use sudo.
-      // lib.optionalAttrs (inst.backend == "soa-d" && inst.managedAccount) {
+      // lib.optionalAttrs inst.managedAccount {
         ProtectSystem = false;
         PrivateTmp = false;
       };
@@ -318,13 +318,13 @@
 
         # REQUIRED for multi-instance on one Signal account.
         #
-        # gateway/platforms/signal.py acquires a scoped lock keyed on
-        # sha256(SIGNAL_ACCOUNT) — it exists precisely to stop two gateways
-        # listening to one Signal number, and connect() returns False when it
-        # cannot take it, so the losing instance never starts Signal at all.
-        # Here we deliberately DO run several gateways on one account and
+        # soa-d's Signal adapter (daemon/internal/signal/lock.go) acquires a
+        # scoped lock keyed on sha256(SIGNAL_ACCOUNT) — it exists precisely to
+        # stop two daemons listening to one Signal number, and the losing
+        # instance never starts Signal at all.
+        # Here we deliberately DO run several daemons on one account and
         # separate them by group id instead, so each needs its own lock
-        # namespace. gateway/status.py:_get_lock_dir falls back to
+        # namespace. The lock directory otherwise falls back to
         # $XDG_STATE_HOME (i.e. $HOME/.local/state), which is only accidentally
         # distinct and is not guaranteed writable under ProtectSystem=strict.
         # Pin it inside SON_OF_ANTON_HOME, which is always in ReadWritePaths.
@@ -530,18 +530,14 @@
           lib.mapAttrsToList (
             name: inst:
             lib.nameValuePair "son-of-anton-${name}" {
-              description =
-                if inst.backend == "soa-d" then
-                  "Son of Anton daemon (${name})"
-                else
-                  "Son of Anton Agent Gateway (${name})";
+              description = "Son of Anton daemon (${name})";
               wantedBy = [ "multi-user.target" ];
               after = [ "network-online.target" ];
               wants = [ "network-online.target" ];
 
               # inst.environment and inst.environmentFiles are written to
               # $SON_OF_ANTON_HOME/.env by the activation script.
-              # load_son_of_anton_dotenv() reads them at Python startup — no
+              # the daemon reads them at start — no
               # systemd EnvironmentFile needed.
               #
               # git over SSH for the agent's terminal tool: GIT_SSH_COMMAND
@@ -556,7 +552,7 @@
                 };
 
               serviceConfig = (serviceConfigFor inst) // {
-                ExecStart = lib.escapeShellArgs (common.gatewayArgv inst);
+                ExecStart = lib.escapeShellArgs (common.daemonArgv inst);
               };
 
               # A rebuild that changes the settings or the environment restarts

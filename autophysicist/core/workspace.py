@@ -18,7 +18,7 @@ def resolve_workspace_root(problem_name: str, model: str, kind: str) -> Path:
     Base directory: ``physics.workspace_root`` from config.toml when set,
     otherwise ``~/.son-of-anton/workspaces``.
     """
-    from son_of_anton_constants import get_son_of_anton_home
+    from ..support import home
 
     from .config import physics_config
 
@@ -26,7 +26,7 @@ def resolve_workspace_root(problem_name: str, model: str, kind: str) -> Path:
     if base:
         base_dir = Path(os.path.expanduser(base))
     else:
-        base_dir = Path(get_son_of_anton_home()) / "workspaces"
+        base_dir = home() / "workspaces"
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_problem = (problem_name or "session").replace("/", "-")[:60]

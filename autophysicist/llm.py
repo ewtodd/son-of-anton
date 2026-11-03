@@ -203,16 +203,13 @@ def resolve_context_window(config) -> int:
         window = 0
         if model:
             try:
-                from agent.model_metadata import get_model_context_length
+                from .support import context_length
 
-                window = int(
-                    get_model_context_length(
-                        str(model),
-                        base_url=base_url,
-                        api_key="" if api_key == "none" else api_key,
-                        unknown=0,
-                    )
-                    or 0
+                window = context_length(
+                    str(model),
+                    base_url=base_url,
+                    api_key="" if api_key == "none" else api_key,
+                    config=_load_agent_config(),
                 )
             except Exception:
                 window = 0
@@ -278,15 +275,15 @@ def _clamp_physics_reasoning_effort(effort: str, model: str, config) -> str:
     if not base_url:
         return effort
     try:
-        from son_of_anton_cli.config import get_custom_provider_reasoning_decl
-        decl = get_custom_provider_reasoning_decl(str(model), base_url) or {}
+        from .support import reasoning_decl
+        decl = reasoning_decl(str(model), base_url, _load_agent_config())
     except Exception:
         return effort
     efforts = decl.get("efforts")
     if not efforts:
         return effort
     try:
-        from agent.reasoning_effort import clamp_effort
+        from .support import clamp_effort
         return clamp_effort(effort, tuple(efforts)) or effort
     except Exception:
         return effort

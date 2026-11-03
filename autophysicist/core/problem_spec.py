@@ -17,7 +17,7 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
-from utils import dump_toml
+from ..support import dump_toml
 
 SPEC_SUFFIXES = (".toml",)
 

@@ -265,8 +265,7 @@ services.son-of-anton.instances.work = {
 ## Development
 
 ```bash
-nix flake check                      # packages, modules, venv import sweep
-nix develop -c scripts/run_tests.sh  # the Python suite (never bare pytest)
+nix flake check                      # packages, modules, Go tests, physics tests
 ```
 
 The daemon's gates are in `daemon/AGENTS.md`, and the repo's rules for agents

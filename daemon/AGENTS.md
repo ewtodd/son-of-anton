@@ -1,8 +1,9 @@
 # soa-d - working agreement for agents
 
 You are working on `soa-d`, the Go daemon that replaces son-of-anton's Python
-backend. The Python code in the parent directory is the running system and the
-behavioral reference; do not modify it unless a task says so.
+backend. The only Python left in the parent directory is the physics mode
+(`autophysicist/`), which stays until its Go port; do not modify it unless a
+task says so.
 
 Read `SPEC.md` (the approved master spec) before anything else. The current
 phase's task is in `phases/`.
@@ -28,12 +29,17 @@ phase's task is in `phases/`.
 
 ```bash
 cd daemon
-export CGO_ENABLED=0
 test -z "$(gofmt -l .)"
-go vet ./...
-go test ./...
-cd .. && nix build .#soa-d && nix flake check
+CGO_ENABLED=0 go vet ./...
+CGO_ENABLED=0 go test ./...
+# the race run needs cgo (gcc, in the dev shell)
+CGO_ENABLED=1 go test -race ./internal/server/ ./internal/tui/ ./internal/client/
+cd .. && nix build && nix build .#soa-d && nix flake check
 ```
+
+`nix flake check` also runs the physics-mode tests (pytest, in the Nix
+harness environment). No ruff, no `scripts/run_tests.sh`: the Python is
+`autophysicist/` only.
 
 `git add` new files before `nix build` / `nix flake check`: the flake only
 sees files in the git index.

@@ -5,7 +5,6 @@
     { pkgs, lib, self', ... }:
     let
       son-of-anton = self'.packages.default;
-      sonOfAntonVenv = son-of-anton.sonOfAntonVenv;
 
       # ── How the checks evaluate the modules ───────────────────────────
       # Both modules are evaluated for real. The NixOS module goes through
@@ -52,32 +51,8 @@
 
       nixosGatewayExec = eval: name:
         eval.config.systemd.services."son-of-anton-${name}".serviceConfig.ExecStart;
-
-      # Auto-generated config key reference — always in sync with Python.
-      configKeys = pkgs.runCommand "son-of-anton-config-keys" { } ''
-        set -euo pipefail
-        export HOME=$TMPDIR
-        ${sonOfAntonVenv}/bin/python3 -c '
-import json, sys
-from son_of_anton_cli.config import DEFAULT_CONFIG
-
-def leaf_paths(d, prefix=""):
-    paths = []
-    for k, v in sorted(d.items()):
-        path = f"{prefix}.{k}" if prefix else k
-        if isinstance(v, dict) and v:
-            paths.extend(leaf_paths(v, path))
-        else:
-            paths.append(path)
-    return paths
-
-json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
-' > $out
-      '';
     in
     {
-      packages.configKeys = configKeys;
-
       checks = {
         # Cross-platform evaluation — catches "not supported for interpreter"
         # errors without needing an aarch64 builder.
@@ -136,12 +111,11 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
-        # ── An instance on soa-d (phase 8b) ───────────────────────────────
-        # backend = "soa-d" makes the instance's unit run the Go daemon
-        # instead of the Python gateway (one unit, so the two can never both
-        # serve an instance), and seeds [daemon] for it; an explicit setting
-        # still wins. The package ships soa-d wrapped with the runtime tools
-        # and a Python for execute_code.
+        # ── An instance on soa-d ──────────────────────────────────────────
+        # Every instance's unit runs the Go daemon (backend = "soa-d" is the
+        # only value, and the default), and the module seeds [daemon] for it;
+        # an explicit setting still wins. The package ships soa-d wrapped with
+        # the runtime tools and the harness python for execute_code.
         nixos-soad-backend =
           let
             account = name: {
@@ -155,7 +129,6 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             eval = evalNixosModule {
               play = account "play" // { backend = "soa-d"; };
               work = account "work" // {
-                backend = "soa-d";
                 settings.daemon.cron = false;
                 settings.model.default = "auto";
               };
@@ -168,7 +141,6 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 stateDir = "/var/lib/soa-shop";
                 son-of-antonHome = "/var/lib/soa-shop/.son-of-anton";
                 workingDirectory = "/srv/shop";
-                backend = "soa-d";
               };
             };
             sc = name: units."son-of-anton-${name}".serviceConfig;
@@ -178,18 +150,18 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           in
           assert lib.hasSuffix "/bin/soa-d serve" (exec "play");
           assert lib.hasSuffix "/bin/soa-d serve" (exec "work");
-          assert lib.hasInfix "bin/son-of-anton gateway" (exec "house");
-          assert inst.house.backend == "python";
+          assert lib.hasSuffix "/bin/soa-d serve" (exec "house");
+          assert lib.hasSuffix "/bin/soa-d serve" (exec "shop");
+          assert inst.house.backend == "soa-d";
           assert inst.play.settings.daemon == { instance = "play"; signal = true; cron = true; autostart = false; import_python = true; };
           assert inst.work.settings.daemon == { instance = "work"; signal = true; cron = false; autostart = false; import_python = true; };
           # An owner's own account on soa-d: no filesystem sandbox, never privileges.
           assert (sc "play").ProtectSystem == false && (sc "play").PrivateTmp == false;
           assert (sc "play").NoNewPrivileges;
-          # A service account on soa-d, and the Python gateway, keep the sandbox.
+          # A service account keeps the sandbox.
           assert (sc "shop").ProtectSystem == "strict" && (sc "shop").PrivateTmp && (sc "shop").NoNewPrivileges;
-          assert (sc "house").ProtectSystem == "strict" && (sc "house").PrivateTmp;
           assert inst.work.settings.model.default == "auto";
-          assert !(inst.house.settings ? daemon);
+          assert inst.house.settings.daemon.instance == "house";
           assert units."son-of-anton-play".environment.SON_OF_ANTON_HOME == "/home/e-play/.son-of-anton";
           # Settings changes restart the process: the rendered config is a trigger,
           # so two instances with different settings have different triggers.
@@ -198,11 +170,83 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           pkgs.runCommand "son-of-anton-soad-backend" { } ''
             test -x ${son-of-anton}/bin/soa-d
             grep -q SON_OF_ANTON_PYTHON ${son-of-anton}/bin/soa-d
+            ! grep -qi venv ${son-of-anton}/bin/soa-d ${son-of-anton}/bin/son-of-anton
             grep -q ripgrep ${son-of-anton}/bin/soa-d
             ${son-of-anton}/bin/soa-d version
             echo "PASS: backend = soa-d runs the daemon, seeds [daemon], and soa-d is wrapped"
             mkdir -p $out
             echo "ok" > $out/result
+          '';
+
+        # ── The configuration shape /etc/nixos uses ──────────────────────
+        # Several instances with the full option surface (accounts, nested
+        # settings, secrets files, git deploy key, protected paths, extra
+        # packages), and the package's own override.
+        nixos-owner-shape =
+          let
+            owner = name: {
+              enable = true;
+              user = "e-${name}";
+              createUser = false;
+              managedAccount = true;
+              son-of-antonHome = "/home/e-${name}/.son-of-anton";
+              workingDirectory = "/home/e-${name}";
+              stateDir = "/home/e-${name}/.local/state/soa";
+              environmentFiles = [ "/run/agenix/${name}-env" ];
+              environment.SOA_CHECK = "1";
+              extraPackages = [ pkgs.hello ];
+              protectedPaths = [ ".gnupg" ".config/secret" ];
+              git.github = "/run/agenix/${name}-github";
+              memoryRulesFile = "/run/agenix/${name}-rules";
+              pruneUnmanagedSettings = true;
+              backend = "soa-d";
+              settings = {
+                model.default = "auto";
+                mcp_servers.search = {
+                  url = "http://127.0.0.1:9000/mcp";
+                  tools.include = [ "web_search" ];
+                };
+                gateway.model = "radiance/qwen3.8-27b";
+                relay.worker_hours = {
+                  start = "08:00";
+                  end = "22:00";
+                };
+                models.renamed = {
+                  old-name = "new-name";
+                };
+              };
+            };
+            eval = evalNixosModule {
+              play = owner "play";
+              work = owner "work" // { settings.daemon.cron = false; };
+            };
+            units = eval.config.systemd.services;
+            u = name: units."son-of-anton-${name}";
+            overridden = son-of-anton.override { extraPackages = [ pkgs.hello ]; };
+            activation = lib.concatStringsSep "\n" (
+              map (v: if builtins.isString v then v else v.text) (
+                builtins.attrValues (
+                  lib.filterAttrs (n: _: lib.hasPrefix "son-of-anton" n) eval.config.system.activationScripts
+                )
+              )
+            );
+          in
+          assert lib.hasSuffix "/bin/soa-d serve" (execStr (u "play").serviceConfig.ExecStart);
+          assert lib.hasSuffix "/bin/soa-d serve" (execStr (u "work").serviceConfig.ExecStart);
+          assert (u "play").serviceConfig.NoNewPrivileges && (u "work").serviceConfig.NoNewPrivileges;
+          assert (u "play").serviceConfig.ProtectSystem == false && (u "play").serviceConfig.PrivateTmp == false;
+          assert lib.elem "-/home/e-play/.config/secret" (u "play").serviceConfig.InaccessiblePaths;
+          assert lib.hasInfix "hello" (toString (u "play").path);
+          assert lib.hasInfix "/bin/soa-d config merge " activation && lib.hasInfix "/bin/soa-d rules merge " activation;
+          assert lib.hasInfix "--adopt" activation;
+          assert lib.hasInfix "/run/agenix/play-rules" activation;
+          assert (u "play").restartTriggers != (u "work").restartTriggers;
+          pkgs.runCommand "son-of-anton-owner-shape" { } ''
+            grep -q 'hello' ${overridden}/bin/soa-d
+            grep -q 'hello' ${overridden}/bin/son-of-anton
+            ${overridden}/bin/soa-d version
+            echo "PASS: the owner's option surface evaluates; override extraPackages works"
+            mkdir -p $out
           '';
 
         # ── The NixOS module ─────────────────────────────────────────────
@@ -252,7 +296,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               )
             );
           in
-          assert lib.hasInfix "bin/son-of-anton gateway" exec;
+          assert lib.hasSuffix "/bin/soa-d serve" exec;
 
           # Everything the merge path writes must be chowned to the instance.
           assert lib.hasInfix
@@ -425,41 +469,40 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             mkdir -p $out
           '';
 
-        # ── Bundled assets + venv smoke ──────────────────────────────────
-        bundled-assets = pkgs.runCommand "son-of-anton-bundled-assets" { } ''
+        # ── The package, smoke-run ───────────────────────────────────────
+        # Both commands exist and run, and `problem` reaches the physics mode
+        # through the harness python (SON_OF_ANTON_PYTHON), not a venv.
+        package-smoke = pkgs.runCommand "son-of-anton-package-smoke" { } ''
           set -euo pipefail
-          test -d ${son-of-anton}/share/son-of-anton/locales \
-            || (echo "FAIL: bundled locales missing"; exit 1)
-          ${son-of-anton}/bin/son-of-anton --help 2>&1 | grep -q "sessions" \
-            || (echo "FAIL: sessions subcommand missing"; exit 1)
-          echo "PASS: bundled locales present, binary works"
+          export HOME=$TMPDIR
+          ${son-of-anton}/bin/son-of-anton --version
+          ${son-of-anton}/bin/soa-d version
+          ${son-of-anton}/bin/son-of-anton problem --help | grep -q create
+          ${son-of-anton}/bin/son-of-anton problem run --help | grep -q -- --max-iterations
+          grep -q SON_OF_ANTON_PYTHON ${son-of-anton}/bin/son-of-anton
+          grep -q SOA_D_BIN ${son-of-anton}/bin/son-of-anton
+          echo "PASS: son-of-anton and soa-d run; problem reaches the physics harness"
           mkdir -p $out
         '';
 
-        venv-imports = pkgs.runCommand "son-of-anton-venv-imports" { } ''
+        # ── The physics mode's tests ─────────────────────────────────────
+        # Run under the harness environment (python3 with autophysicist and
+        # pytest), from a copy of the source tree so the tests see the source,
+        # not the installed copy. git and bubblewrap are what the mode's runs
+        # shell out to.
+        physics-tests = pkgs.runCommand "son-of-anton-physics-tests" {
+          nativeBuildInputs = [ self'.packages.physics-harness-test pkgs.git pkgs.bubblewrap ];
+        } ''
           set -euo pipefail
           export HOME=$TMPDIR
-          ${sonOfAntonVenv}/bin/python3 -c "
-import cli
-import run_agent
-import model_tools
-import gateway.run
-import cron.scheduler
-import son_of_anton_cli.main
-import son_of_anton_cli.cli_commands_mixin
-import son_of_anton_cli.commands
-import tools.terminal_tool
-import tools.approval
-import tools.web_tools
-import agent.system_prompt
-import agent.prompt_builder
-import gateway.platforms.signal
-import autophysicist.run
-import autophysicist.runner
-import agent.auxiliary_client
-print('imports ok')
-" || (echo "FAIL: core modules do not import from the sealed venv"; exit 1)
-          echo "PASS: core modules import from the sealed venv"
+          # The OpenAI client builds a TLS context at construction, even for
+          # the tests' loopback endpoints; the sandbox has no CA bundle.
+          export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+          cp -r ${../autophysicist} autophysicist
+          cp -r ${../problems} problems
+          chmod -R u+w .
+          python3 -m pytest -p no:cacheprovider -q autophysicist/tests
+          echo "PASS: physics tests"
           mkdir -p $out
         '';
       };
