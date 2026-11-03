@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 )
@@ -32,6 +33,9 @@ type MessageQuery struct {
 	Sort    string   // "" (relevance), "newest", "oldest"
 	Exclude string   // a session id to leave out (the caller's own)
 	Limit   int
+	// PerSession returns only each session's best hit, so Limit counts sessions
+	// and one session's many matches cannot crowd out the others.
+	PerSession bool
 }
 
 // SearchMessages full-text-searches message content. The wall, the roles and
@@ -77,20 +81,60 @@ func (s *Store) searchMessages(ctx context.Context, q MessageQuery, match string
 		where += ` AND m.session_id <> ?`
 		args = append(args, q.Exclude)
 	}
-	order := `rank`
+	// key orders best first: the FTS rank, or the row id for a time sort.
+	key := `rank`
 	switch q.Sort {
 	case "newest":
-		order = `m.rowid DESC`
+		key = `-m.rowid`
 	case "oldest":
-		order = `m.rowid ASC`
+		key = `m.rowid`
 	}
-	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT m.session_id, m.seq, snippet(messages_fts, 0, '«', '»', '…', 12), m.role, m.ts
-		 FROM messages_fts
+	from := ` FROM messages_fts
 		 JOIN messages m ON m.rowid = messages_fts.rowid
 		 JOIN sessions s ON s.id = m.session_id
-		 WHERE `+where+` ORDER BY `+order+` LIMIT ?`, args...)
+		 WHERE ` + where
+	sel := `SELECT m.session_id, m.seq, snippet(messages_fts, 0, '«', '»', '…', 12), m.role, m.ts, m.rowid`
+	if !q.PerSession {
+		return s.scanHits(ctx, sel+from+` ORDER BY `+key+` LIMIT ?`, append(args, limit)...)
+	}
+	// FTS5 cannot run snippet() beside a window function, so first pick each
+	// session's best row, then fetch the snippets of just those rows.
+	pick, err := s.db.QueryContext(ctx, `SELECT rid FROM (SELECT m.rowid AS rid, `+key+` AS k,
+		ROW_NUMBER() OVER (PARTITION BY m.session_id ORDER BY `+key+`) AS rn`+from+`)
+		WHERE rn = 1 ORDER BY k LIMIT ?`, append(append([]any{}, args...), limit)...)
+	if err != nil {
+		return nil, err
+	}
+	var rids []any
+	for pick.Next() {
+		var rid int64
+		if err := pick.Scan(&rid); err != nil {
+			pick.Close()
+			return nil, err
+		}
+		rids = append(rids, rid)
+	}
+	pick.Close()
+	if err := pick.Err(); err != nil || len(rids) == 0 {
+		return nil, err
+	}
+	hits, err := s.scanHits(ctx, sel+from+` AND m.rowid IN (`+strings.TrimSuffix(strings.Repeat("?,", len(rids)), ",")+`)`,
+		append(append([]any{}, args...), rids...)...)
+	if err != nil {
+		return nil, err
+	}
+	rank := map[int64]int{}
+	for i, rid := range rids {
+		rank[rid.(int64)] = i
+	}
+	sort.Slice(hits, func(i, j int) bool { return rank[hits[i].rowid] < rank[hits[j].rowid] })
+	return hits, nil
+}
+
+// scanHits runs a hit query whose columns are session id, seq, snippet,
+// role, ts and the row id.
+func (s *Store) scanHits(ctx context.Context, query string, args ...any) ([]Hit, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +143,7 @@ func (s *Store) searchMessages(ctx context.Context, q MessageQuery, match string
 	for rows.Next() {
 		var h Hit
 		var ts string
-		if err := rows.Scan(&h.SessionID, &h.Seq, &h.Snippet, &h.Role, &ts); err != nil {
+		if err := rows.Scan(&h.SessionID, &h.Seq, &h.Snippet, &h.Role, &ts, &h.rowid); err != nil {
 			return nil, err
 		}
 		if h.TS, err = time.Parse(time.RFC3339Nano, ts); err != nil {

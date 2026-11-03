@@ -250,3 +250,19 @@ func TestMeaningMatchesComeAfterTextMatches(t *testing.T) {
 		t.Fatalf("results = %v; text matches first (a), then meaning matches not already present (b), never a walled one", got)
 	}
 }
+
+// One long session full of matches must not hide every other session that
+// matches (review: discover took the first 200 raw hits, then grouped).
+func TestOneBusySessionDoesNotHideTheRest(t *testing.T) {
+	sf := sessionSetup(t)
+	quiet, _ := sf.st.CreateSession(ctx, store.Session{Kind: "interactive"})
+	_, _ = sf.st.AppendMessages(ctx, quiet.ID, store.Message{Role: "user", Content: "the capybara and something else entirely, said once at length"})
+	busy, _ := sf.st.CreateSession(ctx, store.Session{Kind: "interactive"})
+	for i := range 250 {
+		_, _ = sf.st.AppendMessages(ctx, busy.ID, store.Message{Role: "user", Content: fmt.Sprintf("capybara %d", i)})
+	}
+	got := sessionIDs(sf.call(t, "session_search", map[string]any{"query": "capybara", "limit": 3})["results"].([]any))
+	if len(got) != 2 {
+		t.Fatalf("discover found %v; both sessions that mention it", got)
+	}
+}

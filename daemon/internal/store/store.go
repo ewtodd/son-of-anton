@@ -449,6 +449,8 @@ type Hit struct {
 	Snippet   string
 	Role      string
 	TS        time.Time
+
+	rowid int64 // the message row, for ordering a per-session search
 }
 
 // Search full-text-searches message content.

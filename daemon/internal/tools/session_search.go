@@ -32,7 +32,6 @@ const (
 	readHead     = 20
 	readTail     = 10
 	browseMax    = 20
-	searchScan   = 200
 	defaultLimit = 3
 	maxLimit     = 10
 )
@@ -295,7 +294,7 @@ type found struct {
 
 func (sr *searcher) discover(ctx context.Context, query string, limit int, sortBy string, full bool) (string, error) {
 	hits, err := sr.env.Store.SearchMessages(ctx, store.MessageQuery{Query: query, Caller: sr.caller, Roles: sr.roles,
-		Sort: sortBy, Exclude: sr.env.SessionID, Limit: searchScan})
+		Sort: sortBy, Exclude: sr.env.SessionID, Limit: limit, PerSession: true})
 	if err != nil {
 		return searchFail("search failed: " + err.Error())
 	}
