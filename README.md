@@ -13,8 +13,7 @@
 ╚═╝  ╚═╝  ╚═╝  ╚═══╝    ╚═╝     ╚═════╝  ╚═╝  ╚═══╝
 ```
 
-An always-on agent you talk to from a terminal or from Signal, with a physics
-research mode that runs only when you ask for it.
+An always-on agent you talk to from a terminal or from Signal.
 
 One daemon per account, `soa-d`, written in Go, holds the sessions, runs the
 agent loop and its tools, serves Signal and runs scheduled jobs. The terminal
@@ -24,7 +23,7 @@ in front of local models). Linux and Nix only.
 
 ## Status
 
-Everything runs on soa-d. The physics mode is still Python until its Go port.
+Everything runs on soa-d. There is no Python left; the physics mode is being rebuilt in Go.
 Versions are dates: `son-of-anton --version` prints the day the build's
 commit was made, as `YY.MM.DD`.
 
@@ -36,7 +35,6 @@ son-of-anton "a question"       one answer, printed (also -q, --query-file FILE|
 son-of-anton -z "a task"        a delegated one-shot: lean prompt, no memory
 son-of-anton status             which daemon serves this home, Signal, cron, models
 son-of-anton sessions ...       list, rename, delete, import (Claude Code, Codex, opencode)
-son-of-anton problem ...        the physics mode
 ```
 
 `-m MODEL`, `--reasoning LEVEL` and `--yolo` apply to all three ways in. A
@@ -95,20 +93,9 @@ daemon runs the jobs and delivers to the chat that asked.
 
 ## Physics
 
-Nothing routes a message into physics: `son-of-anton problem create` writes a
-spec for a dataset, `problem run` runs it.
-
-```bash
-son-of-anton problem create --data ~/lab-data/run42 \
-    --goal "measure the half-life" -o problems/run42/problem.toml
-son-of-anton problem run problems/run42/problem.toml --max-iterations 5
-```
-
-A research manager dispatches sub-agents that run code in a git-versioned
-workspace, and a critic reviews each iteration. Model-written code runs under
-bubblewrap in a separate scientific interpreter (`physics.python`, from `nix
-build .#physics-runtime`) with no network, no home and the data read-only.
-Set `--max-iterations` on a first run.
+The physics mode is being rebuilt in Go (daemon/phases/11b); `son-of-anton
+problem` says so and exits 2. The interpreter it will run model-written code
+under is kept: `nix build .#physics-runtime`.
 
 ## NixOS
 
@@ -134,16 +121,16 @@ privileges: no sudo, on any instance.
 
 ```bash
 cd daemon && go test ./...    # the gates are in daemon/AGENTS.md
-nix flake check               # packages, modules, the physics tests
+nix flake check               # packages and modules
 ```
 
 ## Provenance
 
 Son of Anton began as a hard fork of
 [Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
-v0.20.5, and its physics mode as a port of
+v0.20.5, and its physics mode began as a port of
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern).
-The Python is gone except the physics mode: soa-d and its terminal UI are a
+The Python is gone, the physics mode included: soa-d and its terminal UI are a
 new implementation in Go, written against a spec with the Python as the
 behavioural reference, not a line-by-line port. Since November 2026 none of
 hermes-agent's code or text remains: the prompts, tool descriptions,
@@ -154,8 +141,7 @@ environment variables), so existing setups keep working.
 Two things are still borrowed. The terminal UI's layout is a port of
 [opencode](https://github.com/sst/opencode)'s session view, and some of its
 code follows opencode's closely (the palette, the subagent footer, small
-formatters); that stays. The physics mode is still physics-intern's
-Python, its manager prompt included, until its Go port. The daemon design and
+formatters); that stays. No code of physics-intern remains. The daemon design and
 permission modes come from the archived
 [temple](https://github.com/ewtodd/temple) harness.
 

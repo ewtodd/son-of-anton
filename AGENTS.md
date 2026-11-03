@@ -11,20 +11,16 @@ v0.20.5 (upstream commit `fcbd1076a9`), extended with the physics mode from
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern)
 (commit `5553bb6`). MIT licensed. It is the successor to the archived
 [temple](https://github.com/ewtodd/temple) harness. The Python agent is gone
-(phase 10b2); what remains is:
+(phase 10b2) and so is the Python physics mode (phase 11a); the repository has no
+Python files. What remains is:
 
 - **`daemon/`** - the Go daemon `soa-d` (always-on: Signal, cron, the socket the
   TUI attaches to) and the `son-of-anton` command (TUI client, `-q`, `-z`,
-  `sessions`, `status`, `problem`). The module is `daemon/go.mod`, packages are
+  `sessions`, `status`; `problem` only says the physics mode is being
+  rebuilt). The module is `daemon/go.mod`, packages are
   under `daemon/internal/`, binaries under `daemon/cmd/`. Read
   `daemon/AGENTS.md` (working agreement, gates) and `daemon/SPEC.md` (the
   approved design); each phase's task is in `daemon/phases/`.
-- **`autophysicist/`** (with `problems/`) - the physics mode, the only Python
-  left, until its Go port (phase 11). It is self-contained: its contact with the
-  home (config, `.env`, TOML writer, model route) is `autophysicist/support.py`.
-  It runs only on explicit invocation, `son-of-anton problem create|run`, which
-  execs `$SON_OF_ANTON_PYTHON -m autophysicist problem ...`; a chat message
-  never starts a run by itself. Its tests are `autophysicist/tests/`.
 - **`nix/`, `flake.nix`** - the packaging and the NixOS and Home Manager
   modules. Nix is the only build and install path; there is no pip or uv.
 
@@ -45,16 +41,14 @@ Two properties shape almost every design decision:
   phase). `packages.default` (also the overlay's `son-of-anton`) - the two
   commands wrapped with the runtime `PATH` (`bash`, `coreutils`, `git`,
   `ripgrep`, `bubblewrap`, ..., plus `.override { extraPackages = [...]; }`),
-  `SON_OF_ANTON_PYTHON` (the harness python) and `SOA_D_BIN`.
-- `packages.physics-harness` - nixpkgs `python3` with `autophysicist`
-  installed (`nix/physics-harness.nix`); `physics-harness-test` adds pytest.
-  `packages.physics-runtime` - the interpreter model-authored computations run
+  `SON_OF_ANTON_PYTHON` (plain nixpkgs `python3`, for `execute_code` and cron scripts) and `SOA_D_BIN`.
+- `packages.physics-runtime` - the interpreter model-authored computations run
   under (ROOT, Analysis-Utilities, the SciPy stack).
 - `nixosModules.default`, `homeManagerModules.default` - option interface
   unchanged for `/etc/nixos`; every instance runs `soa-d serve`.
 - Checks (`nix flake check`): the Go tests, the module evaluation checks, the
-  package smoke, and the physics tests under the harness.
-- `nix develop`: Go, gopls, gcc, the harness python with pytest.
+  package smoke.
+- `nix develop`: Go, gopls, gcc, plain `python3` (the Go tests of `execute_code` run it).
 
 The flake only sees files in the git index: `git add` a new file before
 `nix build` or `nix flake check`.
@@ -72,9 +66,7 @@ CGO_ENABLED=1 go test -race ./internal/server/ ./internal/tui/ ./internal/client
 cd .. && nix build && nix build .#soa-d && nix flake check
 ```
 
-Physics tests alone: `nix develop -c python3 -m pytest autophysicist/tests`.
-Tests must not touch a real home: the Go tests use `t.TempDir()` homes and the
-physics `conftest.py` points `SON_OF_ANTON_HOME` at a temp dir.
+Tests must not touch a real home: the Go tests use `t.TempDir()` homes.
 
 ### Commit convention
 
@@ -93,15 +85,10 @@ physics `conftest.py` points `SON_OF_ANTON_HOME` at a temp dir.
 - Remote: `git@github.com:ewtodd/son-of-anton.git`, branch `main`
 - Before merging anything, make sure the branch is up to date with `main`.
 
-## Physics runs
+## Physics
 
-A run lives in `<physics.workspace_root or $SON_OF_ANTON_HOME/workspaces>/<YYYYmmdd_HHMMSS>_<problem>_<model>_autophysicist/`
-(owner's work instance: /home/e-work/workspace-soa/runs) and is a git repo, one
-commit per iteration. `EVENT_LOG.jsonl` is the ground truth; `PERMANENT_MEMORY.md`,
-`SCRATCHPAD.md` and `CRITIQUE_LOG.md` are the Manager's and critic's own account -
-treat the Manager's explanation of a failure as a hypothesis and check it against
-`EVENT_LOG.jsonl` before changing the harness. Keep one dataset's quirks out of
-harness code and prompts. Runs are synchronous turns (a known limitation).
+The physics mode was removed in phase 11a and is being rebuilt in Go (phase 11b);
+`son-of-anton problem` says so. The old run directories under workspaces are history.
 
 ## Deployment (the owner's instances)
 

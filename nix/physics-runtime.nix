@@ -1,7 +1,7 @@
 # nix/physics-runtime.nix — the interpreter physics computations run under.
 #
-# Deliberately NOT the harness python (nix/physics-harness.nix), which carries
-# only what autophysicist itself imports. This stack is ROOT plus a scientific
+# Deliberately NOT the python of execute_code and cron scripts (plain nixpkgs
+# python3). This stack is ROOT plus a scientific
 # Python environment, which would land on every deployment that never runs a
 # physics turn. The physics mode executes model-authored scripts under this
 # interpreter instead, named by `physics.python` in config.toml and confined by

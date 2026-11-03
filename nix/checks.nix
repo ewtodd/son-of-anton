@@ -2,7 +2,7 @@
 #
 # Module checks evaluate the real NixOS and Home Manager module systems and
 # test the result with `holds`, which names the claim that fails. A check that
-# needs a build (running a binary, the Go and Python test suites) is a
+# needs a build (running a binary, the Go test suite) is a
 # derivation; the rest are evaluation-only and end in a trivial one.
 { inputs, ... }:
 {
@@ -154,20 +154,21 @@
               mkdir -p $out
             '';
 
-        # Both commands run and the wrapper has what they need. `problem`
-        # reaches the physics mode through the harness Python, not a venv.
+        # Both commands run and the wrapper has what they need, including a
+        # working python3 for execute_code and cron scripts.
         package-smoke = scriptCheck "son-of-anton-package-smoke" ''
           test "$(${package}/bin/son-of-anton --version)" = "son-of-anton ${version}"
           test "$(${package}/bin/soa-d version)" = "soa-d ${version}"
-          ${package}/bin/son-of-anton problem --help | grep -q create
-          ${package}/bin/son-of-anton problem run --help | grep -q -- --max-iterations
+          py=$(grep -o '/nix/store/[^: ]*/bin/python3' ${package}/bin/soa-d | head -n1)
+          test -n "$py"
+          test "$($py -c 'import sys; print(sys.version_info[0])')" = 3
           for wrapper in soa-d son-of-anton; do
             grep -q SON_OF_ANTON_PYTHON ${package}/bin/$wrapper
             ! grep -qi venv ${package}/bin/$wrapper
           done
           grep -q SOA_D_BIN ${package}/bin/son-of-anton
           grep -q ripgrep ${package}/bin/soa-d
-          echo "ok: both commands run, report ${version}, and reach the physics harness"
+          echo "ok: both commands run, report ${version}, and carry a working python3"
         '';
 
         # ── NixOS module ─────────────────────────────────────────────────────
@@ -504,33 +505,6 @@
             cmp before.toml mem/rules.toml || { echo "FAIL: a second run changed rules.toml"; exit 1; }
             echo "ok: memoryRules seed creates and re-merges rules.toml"
           '';
-
-        # ── Physics mode ─────────────────────────────────────────────────────
-        # pytest under the harness environment, on a copy of the source tree
-        # (so the tests import the source, not the installed copy). The mode's
-        # runs shell out to git and bubblewrap.
-        physics-tests =
-          pkgs.runCommand "son-of-anton-physics-tests"
-            {
-              nativeBuildInputs = [
-                self'.packages.physics-harness-test
-                pkgs.git
-                pkgs.bubblewrap
-              ];
-            }
-            ''
-              set -euo pipefail
-              export HOME=$TMPDIR
-              # The OpenAI client builds a TLS context even for loopback
-              # endpoints, and the sandbox has no CA bundle.
-              export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-              cp -r ${../autophysicist} autophysicist
-              cp -r ${../problems} problems
-              chmod -R u+w .
-              python3 -m pytest -p no:cacheprovider -q autophysicist/tests
-              echo "ok: physics tests"
-              mkdir -p $out
-            '';
       };
     };
 }

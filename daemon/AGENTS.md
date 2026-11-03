@@ -1,9 +1,7 @@
 # soa-d - working agreement for agents
 
 You are working on `soa-d`, the Go daemon that replaces son-of-anton's Python
-backend. The only Python left in the parent directory is the physics mode
-(`autophysicist/`), which stays until its Go port; do not modify it unless a
-task says so.
+backend. The repository has no Python files left.
 
 Read `SPEC.md` (the approved master spec) before anything else. The current
 phase's task is in `phases/`.
@@ -37,9 +35,7 @@ CGO_ENABLED=1 go test -race ./internal/server/ ./internal/tui/ ./internal/client
 cd .. && nix build && nix build .#soa-d && nix flake check
 ```
 
-`nix flake check` also runs the physics-mode tests (pytest, in the Nix
-harness environment). No ruff, no `scripts/run_tests.sh`: the Python is
-`autophysicist/` only.
+There is no Python to lint or test: no ruff, no pytest, no `scripts/run_tests.sh`.
 
 `git add` new files before `nix build` / `nix flake check`: the flake only
 sees files in the git index.

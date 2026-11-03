@@ -1,6 +1,6 @@
 // Command son-of-anton is the user's command: it runs soa-d for the terminal
-// UI, -q and -z, shows the daemon's status and sessions, and hands the physics
-// mode on (daemon/phases/10a-son-of-anton-command.md).
+// UI, -q and -z, shows the daemon's status and sessions (daemon/phases/10a-son-of-anton-command.md).
+// `problem` only says the physics mode is being rebuilt (phase 11a).
 package main
 
 import (
@@ -32,7 +32,6 @@ const usage = `usage:
   son-of-anton sessions rename ID TITLE...
   son-of-anton sessions delete ID [--yes]
   son-of-anton sessions import ARGS...          (soa-d import's flags)
-  son-of-anton problem ARGS...                  the physics mode
   son-of-anton --version
 
 flags: -m/--model M  --reasoning L  --yolo  --home DIR
@@ -168,7 +167,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	switch f.command {
 	case "problem":
-		return runProblem(f, stderr)
+		return runProblem(stderr)
 	case "status":
 		if len(f.rest) > 0 {
 			return usageErr(stderr, "status takes no arguments")
@@ -317,20 +316,10 @@ func runSoaD(f flags, stdin io.Reader, stderr io.Writer) int {
 	return execSoaD(argv, stderr)
 }
 
-// runProblem hands the physics mode to its Python entry.
-func runProblem(f flags, stderr io.Writer) int {
-	py := os.Getenv("SON_OF_ANTON_PYTHON")
-	if py == "" {
-		return fail(stderr, "the physics mode needs SON_OF_ANTON_PYTHON (the Nix package sets it)")
-	}
-	if f.home != "" {
-		if h, err := filepath.Abs(f.home); err == nil {
-			_ = os.Setenv("SON_OF_ANTON_HOME", h)
-		}
-	}
-	argv := append([]string{py, "-m", "autophysicist", "problem"}, f.rest...)
-	err := syscall.Exec(py, argv, os.Environ())
-	return fail(stderr, "running %s: %v", py, err)
+// runProblem: the physics mode was removed in phase 11a and is rebuilt in 11b.
+func runProblem(stderr io.Writer) int {
+	fmt.Fprintln(stderr, "the physics mode is being rebuilt (daemon/phases/11b); it is not in this version")
+	return 2
 }
 
 // ---- status ----

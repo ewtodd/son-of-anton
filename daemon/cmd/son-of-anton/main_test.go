@@ -182,18 +182,14 @@ func TestUsageErrors(t *testing.T) {
 	}
 }
 
-func TestProblemHandsOnToThePhysicsPython(t *testing.T) {
+func TestProblemIsBeingRebuilt(t *testing.T) {
 	h := home(t, "")
-	bin, record := stub(t)
-	if r := cli(t, t.TempDir(), "", []string{"SON_OF_ANTON_PYTHON=" + bin}, "--home", h, "problem", "run", "spec.toml", "--max-iterations", "2"); r.code != 0 {
-		t.Fatalf("problem: %d %s", r.code, r.errOut)
+	r := cli(t, t.TempDir(), "", nil, "--home", h, "problem", "run", "spec.toml")
+	if r.code != 2 || strings.TrimSpace(r.errOut) != "the physics mode is being rebuilt (daemon/phases/11b); it is not in this version" {
+		t.Fatalf("problem: %d %q", r.code, r.errOut)
 	}
-	want := []string{"-m", "autophysicist", "problem", "run", "spec.toml", "--max-iterations", "2"}
-	if got := argv(t, record); strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("problem ran %q, want %q", got, want)
-	}
-	if r := cli(t, t.TempDir(), "", []string{"SON_OF_ANTON_PYTHON="}, "--home", h, "problem", "run", "x"); r.code != 1 || !strings.Contains(r.errOut, "needs SON_OF_ANTON_PYTHON") {
-		t.Fatalf("problem without python: %d %q", r.code, r.errOut)
+	if r := cli(t, t.TempDir(), "", nil, "--help"); strings.Contains(r.out, "problem") {
+		t.Errorf("usage still lists problem: %q", r.out)
 	}
 }
 

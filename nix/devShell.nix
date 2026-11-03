@@ -1,8 +1,8 @@
-# nix/devShell.nix — Go for the daemon, Python for the physics mode
+# nix/devShell.nix — Go for the daemon, plain python3 for execute_code's tests
 { ... }:
 {
   perSystem =
-    { pkgs, self', ... }:
+    { pkgs, ... }:
     {
       devShells.default = pkgs.mkShell {
         packages = [
@@ -13,14 +13,13 @@
           pkgs.ripgrep
           pkgs.bashInteractive
           pkgs.git
-          # python3 with autophysicist installed and pytest
-          self'.packages.physics-harness-test
+          # the Go tests of execute_code run Python
+          pkgs.python3
         ];
 
         shellHook = ''
-          # The daemon's execute_code and `son-of-anton problem` run this.
-          export SON_OF_ANTON_PYTHON=${self'.packages.physics-harness-test}/bin/python3
-          echo "Son of Anton dev shell. Go: cd daemon && go test ./...; physics: python3 -m pytest autophysicist/tests"
+          export SON_OF_ANTON_PYTHON=${pkgs.python3}/bin/python3
+          echo "Son of Anton dev shell. Go: cd daemon && go test ./..."
         '';
       };
     };

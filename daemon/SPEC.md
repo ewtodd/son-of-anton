@@ -45,6 +45,7 @@ copy.
   slash commands never typed.
 - Physics (`autophysicist/`) stays a separate Python CLI
   (`son-of-anton problem create|run`), run by the agent through its terminal.
+  (Removed in phase 11a; it is rebuilt in Go in phase 11b.)
 
 ## 3. Shape
 

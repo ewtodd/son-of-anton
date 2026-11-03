@@ -1,8 +1,8 @@
 # nix/son-of-anton.nix — the two commands, wrapped to run anywhere.
 #
 # soa-d and son-of-anton (built in packages.nix) get the tools they shell out
-# to on PATH, and SON_OF_ANTON_PYTHON, the interpreter of the physics mode and
-# of execute_code. The CLI also learns where its daemon is (SOA_D_BIN).
+# to on PATH, and SON_OF_ANTON_PYTHON, the interpreter of execute_code and
+# cron script jobs. The CLI also learns where its daemon is (SOA_D_BIN).
 #
 #   pkgs.son-of-anton.override { extraPackages = [ ... ]; }
 {
@@ -19,8 +19,8 @@
   ffmpeg,
   # Both commands, unwrapped (packages.nix).
   soa-d,
-  # python3 with autophysicist importable (nix/physics-harness.nix).
-  physicsHarness,
+  # Plain nixpkgs python3 (SON_OF_ANTON_PYTHON): execute_code and cron scripts.
+  python3,
   # More tools on PATH, such as the language servers an editor config enables.
   extraPackages ? [ ],
 }:
@@ -32,7 +32,7 @@ let
     ripgrep
     openssh # git over ssh
     poppler-utils # web_extract reads PDFs with pdftotext
-    bubblewrap # the physics mode will not run model code without it
+    bubblewrap # sandboxes model-authored code
     ffmpeg # agents convert audio and video in the terminal
   ]
   ++ extraPackages;
@@ -44,7 +44,7 @@ let
     (lib.makeBinPath tools)
     "--set"
     "SON_OF_ANTON_PYTHON"
-    "${physicsHarness}/bin/python3"
+    "${python3}/bin/python3"
   ];
 in
 stdenv.mkDerivation {
@@ -68,11 +68,11 @@ stdenv.mkDerivation {
 
   passthru = {
     runtimeDeps = tools;
-    inherit physicsHarness;
+    inherit python3;
   };
 
   meta = {
-    description = "Always-on agent harness with physics research modes";
+    description = "Always-on agent daemon (Signal, cron, a terminal UI) and its command";
     homepage = "https://github.com/ewtodd/son-of-anton";
     mainProgram = "son-of-anton";
     license = lib.licenses.mit;

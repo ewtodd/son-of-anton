@@ -1,5 +1,5 @@
 {
-  description = "son-of-anton: an always-on agent daemon (Signal, cron, a terminal UI) with physics research modes";
+  description = "son-of-anton: an always-on agent daemon (Signal, cron, a terminal UI)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
