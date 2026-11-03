@@ -96,16 +96,17 @@ func TestADragCopiesTheSelection(t *testing.T) {
 	d := newDaemon(t, fakellm.New(t))
 	a := open(t, d, tui.Options{})
 	send(a, "!echo a line worth selecting")
-	s := waitScreen(t, a, "a line worth selecting")
-	row := -1
-	col := 0
-	for i, l := range strings.Split(s, "\n") {
-		if strings.TrimSpace(l) == "a line worth selecting" {
-			row, col = i, len([]rune(l))-len([]rune(strings.TrimLeft(l, " ")))
+	// The echo of the ! line holds the same words: wait for the output's own row.
+	row, col := -1, 0
+	for deadline := time.Now().Add(waitFor); row < 0; time.Sleep(20 * time.Millisecond) {
+		for i, l := range strings.Split(a.Screen(), "\n") {
+			if strings.TrimSpace(l) == "a line worth selecting" {
+				row, col = i, len([]rune(l))-len([]rune(strings.TrimLeft(l, " ")))
+			}
 		}
-	}
-	if row < 0 {
-		t.Fatalf("no output row:\n%s", s)
+		if row < 0 && time.Now().After(deadline) {
+			t.Fatalf("no output row:\n%s", a.Screen())
+		}
 	}
 	if a.Copied() != "" {
 		t.Fatal("something was copied before any drag")

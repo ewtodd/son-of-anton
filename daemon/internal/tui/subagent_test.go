@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/fakellm"
 	"github.com/ewtodd/son-of-anton/daemon/internal/tui"
@@ -78,14 +79,30 @@ func TestSteppingBetweenSiblings(t *testing.T) {
 	send(a, "look twice")
 	waitScreen(t, a, "both done")
 	idle(t, a)
+	// The two calls run at once, so which child the daemon made first is a
+	// race: the view opens on the newest, whichever that is, and steps
+	// between the two, wrapping.
 	a.Press("ctrl+x", "down")
-	waitScreen(t, a, "(2 of 2)", "answer two")
+	newest, older := "", ""
+	for deadline := time.Now().Add(waitFor); newest == ""; time.Sleep(20 * time.Millisecond) {
+		switch s := a.Screen(); {
+		case !strings.Contains(s, "(2 of 2)"):
+		case strings.Contains(s, "answer one"):
+			newest, older = "answer one", "answer two"
+		case strings.Contains(s, "answer two"):
+			newest, older = "answer two", "answer one"
+		}
+		if newest == "" && time.Now().After(deadline) {
+			t.Fatalf("the newest child's view never showed its answer:\n%s", a.Screen())
+		}
+	}
+	waitScreen(t, a, "(2 of 2)", newest)
 	a.Press("right")
-	waitScreen(t, a, "(1 of 2)", "answer one")
+	waitScreen(t, a, "(1 of 2)", older)
 	a.Press("right")
-	waitScreen(t, a, "(2 of 2)", "answer two")
+	waitScreen(t, a, "(2 of 2)", newest)
 	a.Press("left")
-	waitScreen(t, a, "(1 of 2)", "answer one")
+	waitScreen(t, a, "(1 of 2)", older)
 	a.Press("up")
 	waitScreen(t, a, "Message Son of Anton…")
 }

@@ -3,6 +3,7 @@ package tui
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -42,6 +43,8 @@ type App struct {
 	lastStyled  string
 	lastSession string
 	interactive bool // the program owns a terminal (so an editor can take it over)
+	out         io.Writer
+	copied      string
 }
 
 func (a *App) send(msg tea.Msg) { a.p.Send(msg) }
@@ -83,13 +86,13 @@ func Start(c *client.Client, o Options, in io.Reader, out io.Writer) (*App, erro
 		res.Session = sr.Session
 	}
 
-	a := &App{done: make(chan struct{}), interactive: in != nil}
+	a := &App{done: make(chan struct{}), interactive: in != nil, out: out}
 	m := newModel(a, c, o, res, resumed, startTheme(o, out))
 	opts := []tea.ProgramOption{tea.WithOutput(out)}
 	if in == nil {
 		opts = append(opts, tea.WithInput(nil), tea.WithoutSignalHandler())
 	} else {
-		opts = append(opts, tea.WithInput(in), tea.WithAltScreen())
+		opts = append(opts, tea.WithInput(in), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	}
 	a.p = tea.NewProgram(m, opts...)
 	go func() {
@@ -153,6 +156,7 @@ func attachFirst(ctx context.Context, c *client.Client, o Options) (res attachRe
 		}
 		return
 	}
+	loadKids(ctx, c, id, &res)
 	return res, resumed && len(res.Messages) > 0, nil
 }
 
@@ -251,3 +255,44 @@ func (a *App) Press(keys ...string) {
 
 // Resize tells the program the terminal's size.
 func (a *App) Resize(w, h int) { a.p.Send(tea.WindowSizeMsg{Width: w, Height: h}) }
+
+// Click is a left press and release at a cell (0-based screen column and row).
+func (a *App) Click(x, y int) {
+	a.p.Send(tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, Type: tea.MouseLeft})
+	a.p.Send(tea.MouseMsg{X: x, Y: y, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, Type: tea.MouseRelease})
+}
+
+// Drag is a left press, motion and release.
+func (a *App) Drag(x0, y0, x1, y1 int) {
+	a.p.Send(tea.MouseMsg{X: x0, Y: y0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, Type: tea.MouseLeft})
+	a.p.Send(tea.MouseMsg{X: x1, Y: y1, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, Type: tea.MouseMotion})
+	a.p.Send(tea.MouseMsg{X: x1, Y: y1, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, Type: tea.MouseRelease})
+}
+
+// Wheel turns the wheel at a cell: notches > 0 scroll down, < 0 up.
+func (a *App) Wheel(x, y, notches int) {
+	b, ty := tea.MouseButtonWheelDown, tea.MouseWheelDown
+	if notches < 0 {
+		b, ty, notches = tea.MouseButtonWheelUp, tea.MouseWheelUp, -notches
+	}
+	for range notches {
+		a.p.Send(tea.MouseMsg{X: x, Y: y, Button: b, Action: tea.MouseActionPress, Type: ty})
+	}
+}
+
+// Copied is the text of the last copy, "" before one.
+func (a *App) Copied() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.copied
+}
+
+// copy puts text on the clipboard: OSC 52 to the terminal.
+func (a *App) copy(text string) {
+	a.mu.Lock()
+	a.copied = text
+	a.mu.Unlock()
+	if a.interactive && a.out != nil {
+		_, _ = io.WriteString(a.out, "\x1b]52;c;"+base64.StdEncoding.EncodeToString([]byte(text))+"\x07")
+	}
+}

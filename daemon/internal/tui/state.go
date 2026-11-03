@@ -2,15 +2,18 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // sessState is the part of the daemon's session object the screen shows.
 type sessState struct {
-	ID, Cwd, Title, Model, Served, Effort, Mode, Status string
-	Started, Created                                    time.Time
-	CtxTokens, CtxLen, In, Out, Calls, Compactions, Bg  int
+	ID, Cwd, Title, Model, Served, Effort, Mode, Status, Agent string
+	Started, Created                                           time.Time
+	CtxTokens, CtxLen, In, Out, Calls, Compactions, Bg         int
 }
 
 func str(m map[string]any, k string) string {
@@ -27,7 +30,7 @@ func parseSession(o map[string]any, prev sessState) sessState {
 	s := sessState{
 		ID: str(o, "id"), Cwd: str(o, "cwd"), Title: str(o, "title"), Model: str(o, "model"),
 		Served: str(o, "served_model"), Effort: str(o, "reasoning_effort"), Mode: str(o, "mode"),
-		Status: str(o, "status"), CtxTokens: num(o, "context_tokens"), CtxLen: num(o, "context_length"),
+		Status: str(o, "status"), Agent: str(o, "agent"), CtxTokens: num(o, "context_tokens"), CtxLen: num(o, "context_length"),
 		Compactions: num(o, "compactions"), Bg: num(o, "background_processes"),
 	}
 	if u, ok := o["usage"].(map[string]any); ok {
@@ -66,19 +69,31 @@ func modelShort(model, served string) string {
 	return r
 }
 
+type toolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// callsTask reports whether any of the calls is a task.
+func callsTask(calls []toolCall) bool {
+	for _, c := range calls {
+		if c.Name == "task" {
+			return true
+		}
+	}
+	return false
+}
+
 // message is a stored row as session.attach and session.history return it.
 type message struct {
-	Seq       int64  `json:"seq"`
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	Reasoning string `json:"reasoning"`
-	ToolCalls []struct {
-		ID        string `json:"id"`
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"tool_calls"`
-	ToolCallID string `json:"tool_call_id"`
-	ToolName   string `json:"tool_name"`
+	Seq        int64      `json:"seq"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	Reasoning  string     `json:"reasoning"`
+	ToolCalls  []toolCall `json:"tool_calls"`
+	ToolCallID string     `json:"tool_call_id"`
+	ToolName   string     `json:"tool_name"`
 }
 
 type queueItem struct {
@@ -93,11 +108,13 @@ type attachResult struct {
 		ThroughSeq int64  `json:"through_seq"`
 		Summary    string `json:"summary"`
 	} `json:"compactions"`
-	Messages   []message   `json:"messages"`
-	MoreBefore bool        `json:"more_before"`
-	Gap        bool        `json:"gap"`
-	Queue      []queueItem `json:"queue"`
-	Role       string      `json:"role"`
+	Kids       []map[string]any `json:"-"` // session.children, when the rows call task
+	HaveKids   bool             `json:"-"`
+	Messages   []message        `json:"messages"`
+	MoreBefore bool             `json:"more_before"`
+	Gap        bool             `json:"gap"`
+	Queue      []queueItem      `json:"queue"`
+	Role       string           `json:"role"`
 }
 
 // toolSummary is one line for a stored tool call (the daemon's summary, for
@@ -106,6 +123,9 @@ func toolSummary(name, arguments string) string {
 	var args map[string]any
 	if json.Unmarshal([]byte(arguments), &args) != nil {
 		args = nil
+	}
+	if name == "task" {
+		return ellipsizeRunes(squash(taskLabel(args)), 120)
 	}
 	key := map[string]string{
 		"terminal": "command", "read_file": "path", "write_file": "path", "patch": "path",
@@ -148,3 +168,86 @@ func resultIsError(content string) bool {
 	}
 	return true
 }
+
+// titlecase upper-cases each letter that starts a word (opencode's Locale.titlecase).
+func titlecase(s string) string {
+	var b strings.Builder
+	prevWord := false
+	for _, r := range s {
+		word := unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+		if word && !prevWord {
+			r = unicode.ToUpper(r)
+		}
+		prevWord = word
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// taskLabel is a task call's row label, as the daemon's summary has it.
+func taskLabel(args map[string]any) string {
+	agent, _ := args["subagent_type"].(string)
+	if agent == "" {
+		agent = "general"
+	}
+	bg := ""
+	if b, _ := args["background"].(bool); b {
+		bg = " (background)"
+	}
+	desc, _ := args["description"].(string)
+	return titlecase(agent) + " Task" + bg + " — " + desc
+}
+
+// subagentDuration is opencode's Locale.duration.
+func subagentDuration(ms int) string {
+	switch {
+	case ms < 1000:
+		return fmt.Sprintf("%dms", ms)
+	case ms < 60_000:
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	case ms < 3_600_000:
+		return fmt.Sprintf("%dm %ds", ms/60_000, ms%60_000/1000)
+	case ms < 86_400_000:
+		return fmt.Sprintf("%dh %dm", ms/3_600_000, ms%3_600_000/60_000)
+	}
+	return fmt.Sprintf("%dd %dh", ms/86_400_000, ms%86_400_000/3_600_000)
+}
+
+// doneDetail is the line under a finished task row.
+func doneDetail(toolCalls, ms int) string {
+	d := subagentDuration(ms)
+	switch toolCalls {
+	case 0:
+		return "↳ " + d
+	case 1:
+		return "↳ 1 toolcall · " + d
+	}
+	return fmt.Sprintf("↳ %d toolcalls · %s", toolCalls, d)
+}
+
+var (
+	taskResultRE = regexp.MustCompile(`^<task id="([^"]+)" state="([^"]+)"`)
+	childTitleRE = regexp.MustCompile(`^(.*) \(@(.+) subagent\)$`)
+)
+
+// kid is a child session as session.children and child.created report it.
+type kid struct {
+	ID, Title, Agent, Status string
+	ToolCalls, DurationMS    int
+}
+
+func parseKid(o map[string]any) kid {
+	return kid{ID: str(o, "id"), Title: str(o, "title"), Agent: str(o, "agent"), Status: str(o, "status"),
+		ToolCalls: num(o, "tool_calls"), DurationMS: num(o, "duration_ms")}
+}
+
+// taskTitle is "<Agent> Task — <description>" for a child, read from its title.
+func (k kid) taskTitle() string {
+	if f := childTitleRE.FindStringSubmatch(k.Title); f != nil {
+		return titlecase(f[2]) + " Task — " + f[1]
+	}
+	return "Subagent"
+}
+
+// taskRes is a task result found in the stored rows.
+type taskRes struct{ callID, childID, state string }

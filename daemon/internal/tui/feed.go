@@ -16,6 +16,7 @@ const (
 	bkAssistant
 	bkReasoning
 	bkTool
+	bkHint
 )
 
 type noteLine struct {
@@ -37,7 +38,9 @@ type block struct {
 	started             time.Time
 	took                time.Duration
 
-	folded bool // reasoning
+	folded   bool   // reasoning
+	expanded bool   // tool rows: the whole label, wrapped
+	detail   string // tool rows: a muted second line
 
 	ver   int // bumped on every change that alters the drawing
 	cth   *theme
@@ -132,15 +135,24 @@ func (f *feed) count(w int, th *theme, now time.Time, spin int) int {
 	return n
 }
 
+// rowRef says which block, and which of its lines, a drawn row shows; b is
+// nil for the blank row between blocks.
+type rowRef struct {
+	b    *block
+	line int
+}
+
 // window returns rows rows of the feed starting at row top, each already
-// inset by the content margin.
-func (f *feed) window(w int, th *theme, now time.Time, spin, top, rows int) []string {
+// inset by the content margin, and what each row shows.
+func (f *feed) window(w int, th *theme, now time.Time, spin, top, rows int) ([]string, []rowRef) {
 	out := make([]string, 0, rows)
+	refs := make([]rowRef, 0, rows)
 	pos := 0
 	var prev *block
-	emit := func(l string) {
+	emit := func(l string, b *block, line int) {
 		if pos >= top && len(out) < rows {
 			out = append(out, l)
+			refs = append(refs, rowRef{b, line})
 		}
 		pos++
 	}
@@ -149,19 +161,19 @@ func (f *feed) window(w int, th *theme, now time.Time, spin, top, rows int) []st
 			break
 		}
 		if gapBefore(prev, b) {
-			emit("")
+			emit("", nil, 0)
 		}
 		ls := b.lines(w, th, now, spin)
 		if pos+len(ls) <= top { // wholly above the window
 			pos += len(ls)
 		} else {
-			for _, l := range ls {
-				emit(l)
+			for i, l := range ls {
+				emit(l, b, i)
 			}
 		}
 		prev = b
 	}
-	return out
+	return out, refs
 }
 
 // lines draws the block at content width w.
@@ -196,6 +208,8 @@ func (b *block) lines(w int, th *theme, now time.Time, spin int) []string {
 		ls = b.drawReasoning(w, th)
 	case bkTool:
 		ls = b.drawTool(w, th, now, spin)
+	case bkHint:
+		ls = []string{th.plain.Render("ctrl+x down") + th.mut.Render(" view subagents")}
 	}
 	b.cache, b.cw, b.cver, b.cth = ls, w, b.ver, th
 	return ls
@@ -265,25 +279,69 @@ func (b *block) drawReasoning(w int, th *theme) []string {
 	return ls
 }
 
-// drawTool is one row: icon, summary, and how long it took (or is taking).
+// drawTool is the row: icon, summary, and how long it took (or is taking),
+// then a muted detail line. A task row shows no time of its own: its child
+// has it. An expanded row wraps its whole label, continuation rows indented 2.
 func (b *block) drawTool(w int, th *theme, now time.Time, spin int) []string {
-	label := b.label
 	suffix := ""
+	task := b.name == "task"
 	switch {
 	case b.running:
-		if s := int(now.Sub(b.started).Seconds()); s >= 1 {
+		if s := int(now.Sub(b.started).Seconds()); s >= 1 && !task {
 			suffix = fmt.Sprintf("  %ds", s)
 		}
-	case b.took > 0:
+	case b.took > 0 && !task:
 		suffix = fmt.Sprintf("  %.1fs", b.took.Seconds())
 	}
 	room := max(w-2-textWidth(suffix), 1)
-	label = ellipsize(label, room)
-	switch {
-	case b.running:
-		return []string{th.toolS.Render(spinnerFrame(spin)) + " " + label + th.mut.Render(suffix)}
-	case b.isErr:
-		return []string{th.errS.Render("✗ " + label + suffix)}
+	parts := []string{ellipsize(b.label, room)}
+	if b.expanded {
+		parts = hardWrap(b.label, room)
 	}
-	return []string{th.toolS.Render(toolIcon(b.name)) + th.mut.Render(" "+label+suffix)}
+	var ls []string
+	for i, p := range parts {
+		sfx := ""
+		if i == len(parts)-1 {
+			sfx = suffix
+		}
+		first := i == 0
+		switch {
+		case b.running:
+			head := "  "
+			if first {
+				head = th.toolS.Render(spinnerFrame(spin)) + " "
+			}
+			ls = append(ls, head+p+th.mut.Render(sfx))
+		case b.isErr:
+			head := "  "
+			if first {
+				head = "✗ "
+			}
+			ls = append(ls, th.errS.Render(head+p+sfx))
+		default:
+			if first {
+				ls = append(ls, th.toolS.Render(toolIcon(b.name))+th.mut.Render(" "+p+sfx))
+			} else {
+				ls = append(ls, th.mut.Render("  "+p+sfx))
+			}
+		}
+	}
+	if b.detail != "" {
+		ls = append(ls, "  "+th.mut.Render(ellipsize(b.detail, max(w-2, 1))))
+	}
+	return ls
+}
+
+// hardWrap cuts s into rows of at most w columns, wherever the column falls.
+func hardWrap(s string, w int) []string {
+	var out []string
+	for textWidth(s) > w {
+		c := cut(s, w)
+		if c == "" {
+			break
+		}
+		out = append(out, c)
+		s = s[len(c):]
+	}
+	return append(out, s)
 }

@@ -31,6 +31,9 @@ func (m *model) sidebarState() (show, inline bool) {
 
 // room is the width the feed column has.
 func (m *model) room() int {
+	if m.inPane { // a child's view has no sidebar
+		return m.w
+	}
 	if _, inline := m.sidebarState(); inline {
 		return m.w - sidebarWidth
 	}
@@ -100,6 +103,9 @@ func b2i(b bool) int {
 
 // feedRows is the number of rows left for the feed, and the dock's height.
 func (m *model) feedRows() (dock, rows int) {
+	if m.inPane {
+		return childFooterRows, max(m.h-childFooterRows, 0)
+	}
 	dock = 8 + m.taRows() + m.queueRows() + m.compRows()
 	return dock, max(m.h-dock, 0)
 }
@@ -135,6 +141,14 @@ func (m *model) statusLine(cw int, now time.Time) string {
 		}
 		idleRight()
 	}
+	var pre []seg
+	if len(m.running) > 0 {
+		pre = append(pre, seg{"ctrl+x down", th.bld}, seg{" view subagents  ·  ", th.plain})
+	}
+	if m.copyShown(now) {
+		pre = append(pre, seg{fmt.Sprintf("copied %d chars  ·  ", m.copiedN), th.mut})
+	}
+	right = append(pre, right...)
 	var suffix []seg
 	if n := len(m.queue); n > 0 {
 		suffix = []seg{{fmt.Sprintf("  · %d queued", n), th.mut}}
@@ -208,6 +222,9 @@ func (m *model) queueStrip(cw int) []string {
 
 // render draws the whole screen: exactly m.h rows.
 func (m *model) render() []string {
+	if m.view != nil {
+		return m.renderChild()
+	}
 	w, h := m.w, m.h
 	th := m.th
 	cw := m.contentWidth()
@@ -249,40 +266,9 @@ func (m *model) render() []string {
 	}
 	_, rows := m.feedRows()
 	rows = min(rows, max(h-len(dock), 0))
-	total := m.feed.count(cw, th, now, m.spin)
-	top := max(total-rows, 0)
-	if !m.follow {
-		top = min(max(m.top, 0), top)
-	}
-	feedLines := m.feed.window(cw, th, now, m.spin, top, rows)
-	lines := make([]string, 0, h)
-	for _, l := range feedLines {
-		lines = append(lines, margin+l)
-	}
-	for i := len(feedLines); i < rows; i++ { // a short feed starts at the top
-		lines = append(lines, "")
-	}
+	lines := m.paneRows(cw, rows, now)
 	lines = append(lines, dock...)
-
-	var box []string
-	switch {
-	case len(m.modals) > 0:
-		box = m.modals[0].view(cw, th)
-	case m.picker != nil:
-		box = m.picker.view(cw, h, th)
-	}
-	if box != nil {
-		start := min(max((rows-len(box))/2, 0), max(len(lines)-len(box), 0))
-		bw := 0
-		for _, l := range box {
-			bw = max(bw, lipgloss.Width(l))
-		}
-		for i, l := range box {
-			if start+i < len(lines) {
-				lines[start+i] = margin + strings.Repeat(" ", max((cw-bw)/2, 0)) + l
-			}
-		}
-	}
+	m.overlay(lines, rows, cw)
 	switch {
 	case len(lines) > h:
 		lines = lines[len(lines)-h:]
@@ -415,4 +401,50 @@ func (m *model) suggestRow(sg string, w int) string {
 	}
 	cursor := m.th.r.NewStyle().Reverse(true).Render(string(r[0]))
 	return v + cursor + m.th.mut.Render(string(r[1:]))
+}
+
+// paneRows draws the feed of the pane in place: exactly rows rows, each with
+// its margin, a short feed starting at the top. It remembers what each row
+// shows, for the mouse.
+func (m *model) paneRows(cw, rows int, now time.Time) []string {
+	th := m.th
+	total := m.feed.count(cw, th, now, m.spin)
+	top := max(total-rows, 0)
+	if !m.follow {
+		top = min(max(m.top, 0), top)
+	}
+	feedLines, refs := m.feed.window(cw, th, now, m.spin, top, rows)
+	m.lay = feedLayout{top: top, rows: rows, refs: refs, cw: cw}
+	lines := make([]string, 0, rows)
+	for i, l := range feedLines {
+		lines = append(lines, m.selected(margin+l, top+i))
+	}
+	for i := len(feedLines); i < rows; i++ {
+		lines = append(lines, "")
+	}
+	return lines
+}
+
+// overlay draws the open modal or picker over the feed rows of lines.
+func (m *model) overlay(lines []string, rows, cw int) {
+	var box []string
+	switch {
+	case len(m.modals) > 0:
+		box = m.modals[0].view(cw, m.th)
+	case m.picker != nil:
+		box = m.picker.view(cw, m.h, m.th)
+	}
+	if box == nil {
+		return
+	}
+	start := min(max((rows-len(box))/2, 0), max(len(lines)-len(box), 0))
+	bw := 0
+	for _, l := range box {
+		bw = max(bw, lipgloss.Width(l))
+	}
+	for i, l := range box {
+		if start+i < len(lines) {
+			lines[start+i] = margin + strings.Repeat(" ", max((cw-bw)/2, 0)) + l
+		}
+	}
 }

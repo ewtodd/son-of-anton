@@ -380,6 +380,7 @@ func (m *model) switchSession(pick func(context.Context, *client.Client) (string
 			}
 			return fail(err)
 		}
+		loadKids(ctx, c, id, &res)
 		if id != old {
 			_ = c.Call(ctx, "session.detach", map[string]any{"session": old}, nil)
 		}

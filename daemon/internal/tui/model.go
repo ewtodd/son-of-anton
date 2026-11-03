@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -92,6 +93,24 @@ type model struct {
 	// live tail right after the attach reply, before the switch is applied.
 	held []client.Event
 
+	// subagents: the session's children in creation order, the task row each
+	// child belongs to, the children running, the child on show (if any)
+	kids     []kid
+	taskRows map[string]string
+	running  map[string]bool
+	view     *childView
+	leaderAt time.Time
+	inPane   bool // a child's pane is swapped in (see swap)
+	initCmd  tea.Cmd
+
+	// the mouse: the last drawn feed, the selection, the last copy
+	lay     feedLayout
+	press   *cell
+	sel     *selection
+	copied  string
+	copiedN int
+	copyAt  time.Time
+
 	spin       int
 	ticking    bool
 	lastCtrlC  time.Time
@@ -121,11 +140,11 @@ func newModel(a *App, c *client.Client, o Options, res attachResult, resumed boo
 	m.setTheme(th)
 	m.hist = ReadHistory(m.histPath)
 	m.histPos = len(m.hist)
-	m.adopt(res, resumed)
+	m.initCmd = m.adopt(res, resumed)
 	return m
 }
 
-func (m *model) Init() tea.Cmd { return m.afterAttach() }
+func (m *model) Init() tea.Cmd { return tea.Batch(m.afterAttach(), m.initCmd) }
 
 // adopt makes the attached session the current one and redraws the feed,
 // then plays the events it sent meanwhile.
@@ -141,10 +160,13 @@ func (m *model) adopt(res attachResult, resumed bool) tea.Cmd {
 	m.feed = newFeed()
 	m.feed.add(&block{kind: bkLogo})
 	m.addIntro()
-	m.drawHistory(res, resumed)
+	m.kids, m.taskRows, m.running = nil, map[string]string{}, map[string]bool{}
+	m.sel, m.press = nil, nil
+	var cmds []tea.Cmd
+	cmds = append(cmds, m.dropView())
+	m.fillTasks(m.drawHistory(res, resumed), res)
 	held := m.held
 	m.held = nil
-	var cmds []tea.Cmd
 	for _, ev := range held {
 		if ev.Session == m.sess.ID {
 			cmds = append(cmds, m.onEvent(ev))
@@ -194,9 +216,9 @@ const (
 	failedText      = "[response failed]"
 )
 
-func (m *model) drawHistory(res attachResult, resumed bool) {
+func (m *model) drawHistory(res attachResult, resumed bool) (tasks []taskRes) {
 	if len(res.Messages) == 0 {
-		return
+		return nil
 	}
 	if resumed {
 		note := "resumed session " + m.sess.ID
@@ -209,9 +231,14 @@ func (m *model) drawHistory(res attachResult, resumed bool) {
 	for _, c := range res.Compactions {
 		after[c.ThroughSeq] = c.Summary
 	}
+	hint := false // the message just drawn called task: its hint follows its tool rows
 	for _, msg := range res.Messages {
 		m.lastSeq = max(m.lastSeq, msg.Seq)
 		content := strings.TrimSpace(msg.Content)
+		if hint && msg.Role != "tool" {
+			m.feed.add(&block{kind: bkHint})
+			hint = false
+		}
 		switch msg.Role {
 		case "user":
 			if strings.HasPrefix(content, "[Background process") {
@@ -233,16 +260,31 @@ func (m *model) drawHistory(res attachResult, resumed bool) {
 			for _, c := range msg.ToolCalls {
 				m.feed.add(&block{kind: bkTool, callID: c.ID, name: c.Name, label: toolSummary(c.Name, c.Arguments)})
 			}
+			hint = callsTask(msg.ToolCalls)
 		case "tool":
-			if b := m.feed.calls[msg.ToolCallID]; b != nil && resultIsError(msg.Content) {
-				b.isErr = true
-				b.ver++
+			b := m.feed.calls[msg.ToolCallID]
+			if b == nil {
+				break
 			}
+			if b.name == "task" {
+				if f := taskResultRE.FindStringSubmatch(msg.Content); f != nil {
+					tasks = append(tasks, taskRes{msg.ToolCallID, f[1], f[2]})
+					b.isErr = b.isErr || f[2] == "error"
+				}
+			}
+			if resultIsError(msg.Content) {
+				b.isErr = true
+			}
+			b.ver++
 		}
 		if summary, ok := after[msg.Seq]; ok {
 			m.addCompaction(summary, 0)
 		}
 	}
+	if hint {
+		m.feed.add(&block{kind: bkHint})
+	}
+	return tasks
 }
 
 func (m *model) addCompaction(summary string, before int) {
@@ -265,9 +307,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyMsg:
 		return m, m.key(msg)
+	case tea.MouseMsg:
+		return m, m.mouse(msg)
+	case copyExpiredMsg:
+		// the next frame no longer shows the copy
 	case evMsg:
 		if msg.c == m.cl && !m.quitting {
 			if msg.ev.Session != m.sess.ID {
+				if v := m.view; v != nil && v.loaded && msg.ev.Session == v.id {
+					return m, m.onChildEvent(msg.ev)
+				}
 				if m.held = append(m.held, msg.ev); len(m.held) > maxHeld {
 					m.held = m.held[len(m.held)-maxHeld:]
 				}
@@ -303,7 +352,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // startTick runs the spinner while a turn runs; nothing ticks while idle.
 func (m *model) startTick() tea.Cmd {
-	if !m.busy() || m.ticking {
+	if !(m.busy() || m.viewBusy()) || m.ticking {
 		return nil
 	}
 	m.ticking = true
@@ -388,6 +437,15 @@ func (m *model) onEvent(ev client.Event) tea.Cmd {
 		}
 		m.feed.add(&block{kind: bkTool, callID: id, name: str(p, "name"), label: squash(clean(str(p, "summary"))),
 			running: true, started: time.Now()})
+		if str(p, "name") == "task" {
+			// A call that continues a child has no child.created: its row is this one.
+			var args struct {
+				TaskID string `json:"task_id"`
+			}
+			if json.Unmarshal([]byte(str(p, "arguments")), &args) == nil && args.TaskID != "" {
+				m.taskRows[args.TaskID] = id
+			}
+		}
 	case "tool.end":
 		id := str(p, "call_id")
 		b := m.feed.calls[id]
@@ -406,6 +464,10 @@ func (m *model) onEvent(ev client.Event) tea.Cmd {
 	case "message":
 		if msg, ok := p["message"].(map[string]any); ok {
 			m.lastSeq = max(m.lastSeq, int64(num(msg, "seq")))
+			// Its tool rows are all drawn by now: the step is stored after the tools ran.
+			if str(msg, "role") == "assistant" && messageCallsTask(msg) {
+				m.feed.add(&block{kind: bkHint})
+			}
 		}
 	case "turn.end":
 		m.flush()
@@ -447,7 +509,13 @@ func (m *model) onEvent(ev client.Event) tea.Cmd {
 	case "notice":
 		m.feed.note(str(p, "text"), str(p, "level") == "info")
 	case "approval.request", "question.request":
-		m.openModal(newModal(ev.Kind, p))
+		md := newModal(ev.Kind, p)
+		if cs := str(p, "child_session"); cs != "" && !md.question {
+			md.title = m.kidTitle(cs) + ": " + md.title
+		}
+		m.openModal(md)
+	case "child.created", "child.progress", "child.done":
+		m.onChild(ev.Kind, p)
 	case "approval.resolved":
 		m.closeModal(str(p, "approval_id"))
 	case "question.resolved":
@@ -470,6 +538,8 @@ func (m *model) finishTools() {
 
 func (m *model) onLost() tea.Cmd {
 	m.modals, m.picker = nil, nil
+	m.view, m.sel, m.press, m.leaderAt = nil, nil, nil, time.Time{}
+	m.running = map[string]bool{}
 	m.finishTools()
 	m.sess.Status = "idle"
 	m.flush()
@@ -504,6 +574,7 @@ func (m *model) tryReconnect() tea.Cmd {
 			_ = c.Close()
 			return reconnectedMsg{err: err}
 		}
+		loadKids(ctx, c, sid, &res)
 		return reconnectedMsg{c: c, res: res}
 	}
 }
@@ -529,16 +600,18 @@ func (m *model) onReconnected(msg reconnectedMsg) tea.Cmd {
 	m.cl, m.reconnect = msg.c, false
 	_ = old.Close()
 	go m.app.pump(msg.c)
+	var tasks []taskRes
 	if msg.res.Gap {
 		m.feed.clearKeepIntro()
-		m.drawHistory(msg.res, false)
+		tasks = m.drawHistory(msg.res, false)
 	} else {
-		m.drawHistory(attachResult{Messages: msg.res.Messages, Compactions: msg.res.Compactions}, false)
+		tasks = m.drawHistory(attachResult{Messages: msg.res.Messages, Compactions: msg.res.Compactions}, false)
 	}
 	m.sess = parseSession(msg.res.Session, m.sess)
 	m.queue, m.qitems = queueTexts(msg.res.Queue), msg.res.Queue
 	m.role = msg.res.Role
 	m.feed.note("reconnected to soa-d", true)
+	m.fillTasks(tasks, msg.res)
 	return m.startTick()
 }
 

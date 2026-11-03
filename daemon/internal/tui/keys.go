@@ -26,11 +26,24 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	s := k.String()
+	m.sel, m.press = nil, nil
 	if len(m.modals) > 0 && s != "ctrl+c" && s != "ctrl+q" {
 		return m.modalKey(k)
 	}
 	if m.picker != nil && s != "ctrl+c" && s != "ctrl+q" && s != "ctrl+p" {
 		return m.pickerKey(k)
+	}
+	leader := !m.leaderAt.IsZero() && time.Since(m.leaderAt) < leaderWindow
+	m.leaderAt = time.Time{}
+	if s == "ctrl+x" {
+		m.leaderAt = time.Now()
+		return nil
+	}
+	if leader && s == "down" && m.view == nil {
+		return m.openNewestChild()
+	}
+	if m.view != nil {
+		return m.childKey(k)
 	}
 	if m.comp != nil {
 		if cmd, ok := m.compKey(s); ok {
@@ -175,13 +188,7 @@ func (m *model) ctrlC() tea.Cmd {
 // scroll pages the feed: dir -1 up (stops following), 1 down (follows again at the bottom).
 func (m *model) scroll(dir int) {
 	_, rows := m.feedRows()
-	total := m.feed.count(m.contentWidth(), m.th, time.Now(), m.spin)
-	bottom := max(total-rows, 0)
-	if m.follow {
-		m.top = bottom
-	}
-	m.top = min(max(m.top+dir*max(rows-1, 1), 0), bottom)
-	m.follow = m.top >= bottom
+	m.scrollBy(dir * max(rows-1, 1))
 }
 
 // quit detaches and closes the connection, leaving any turn running; with
