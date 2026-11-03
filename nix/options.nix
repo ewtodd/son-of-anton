@@ -14,8 +14,8 @@ let
   # one definition, so they are folded with recursiveUpdate instead (later
   # definitions win key by key).
   settingsType = types.mkOptionType {
-    name = "son-of-anton-config-attrs";
-    description = "Son of Anton TOML config (attrset), merged deeply via lib.recursiveUpdate.";
+    name = "son-of-anton-settings";
+    description = "settings for config.toml, combined key by key across definitions";
     check = builtins.isAttrs;
     merge = _loc: defs: lib.foldl' lib.recursiveUpdate { } (map (d: d.value) defs);
   };
@@ -144,7 +144,7 @@ in
           defaults as `memoryRules`). It is merged exactly like `memoryRules`,
           but its contents never enter the Nix store: only the path is in the
           activation script. Use it for rules that must stay out of a public
-          repository, from agenix or sops for example. Cannot be combined
+          repository, such as an agenix secret. Cannot be combined
           with `memoryRules`. If the file is missing, unreadable or has a bad
           entry, activation warns and changes nothing.
         '';
@@ -167,7 +167,7 @@ in
       environmentFiles = mkOption {
         # A string, never a path: a path literal is copied into the Nix store,
         # which every user can read. Give a run-time location such as
-        # config.sops.secrets."x".path.
+        # config.age.secrets.son-of-anton-env.path.
         type = types.listOf types.str;
         default = [ ];
         description = ''
@@ -176,7 +176,7 @@ in
           which the program reads when it starts. The file is rebuilt from
           scratch every time, so nothing is appended twice.
         '';
-        example = literalExpression ''[ config.sops.secrets."son-of-anton/env".path ]'';
+        example = literalExpression ''[ config.age.secrets.son-of-anton-env.path ]'';
       };
 
       environment = mkOption {
@@ -331,7 +331,7 @@ in
           `stateDir`; here the directory is named whole, so an existing one
           keeps working under any name.
         '';
-        example = "/home/alice/.son-of-anton-work";
+        example = "/srv/lab/agent-home";
       };
 
       installPackage = mkOption {

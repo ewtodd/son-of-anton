@@ -12,7 +12,7 @@
 #   services.son-of-anton = {
 #     enable = true;
 #     settings.model.default = "...";
-#     environmentFiles = [ config.sops.secrets."son-of-anton/env".path ];
+#     environmentFiles = [ "/run/agenix/son-of-anton-env" ];
 #   };
 { inputs, ... }:
 {
@@ -52,9 +52,9 @@
             };
 
             # Runs once the home.file links exist and the generation is
-            # linked, so a secret that sops-nix wrote during its own
-            # activation is already in place.
-            home.activation.son-of-antonAgentSetup = lib.hm.dag.entryAfter [ "writeBoundary" "linkGeneration" ] (
+            # linked, so secrets that another activation step writes are
+            # already in place.
+            home.activation.sonOfAntonState = lib.hm.dag.entryAfter [ "writeBoundary" "linkGeneration" ] (
               state.setupScript {
                 inherit pkgs cfg;
                 home = cfg.son-of-antonHome;

@@ -1,9 +1,9 @@
-# nix/overlays.nix — pkgs.son-of-anton for configurations outside this flake.
+# nix/overlays.nix: adds `son-of-anton` to pkgs, for configurations that use
+# this flake through an overlay.
 #
-# It is this flake's own package, not a rebuild against the consumer's nixpkgs,
-# so `pkgs.son-of-anton`, `nix build .#default` and the modules' default
-# package are one derivation. `.override { extraPackages = [ ... ]; }` still
-# works on it.
+# The attribute is packages.default itself, not a rebuild with the importing
+# nixpkgs: the overlay, the modules' default and `nix build` give one store
+# path, and `.override { extraPackages = [ ... ]; }` behaves the same on it.
 { inputs, ... }:
 {
   flake.overlays.default = final: _prev: {

@@ -63,7 +63,7 @@ let
         if [ -r "$secrets" ]; then
           { echo; cat "$secrets"; } >> "$dest"
         else
-          echo "son-of-anton: WARNING cannot read environmentFile $secrets" >&2
+          echo "son-of-anton: skipping $secrets in .env: it cannot be read" >&2
         fi
       done
     '';

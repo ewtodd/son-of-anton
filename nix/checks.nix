@@ -33,7 +33,7 @@
         name: claims: message:
         holds claims (
           pkgs.runCommand name { } ''
-            echo "PASS: ${message}"
+            echo "ok: ${message}"
             mkdir -p $out
           ''
         );
@@ -78,8 +78,8 @@
             inputs.self.homeManagerModules.default
             {
               home = {
-                username = "son-of-anton-check";
-                homeDirectory = "/home/son-of-anton-check";
+                username = "soa-checker";
+                homeDirectory = "/home/soa-checker";
                 stateVersion = "24.11";
               };
               services.son-of-anton = settings;
@@ -95,7 +95,7 @@
             lib.filterAttrs (n: _: lib.hasPrefix "son-of-anton" n) eval.config.system.activationScripts
           )
         );
-      hmActivationOf = eval: eval.config.home.activation.son-of-antonAgentSetup.data;
+      hmActivationOf = eval: eval.config.home.activation.sonOfAntonState.data;
       failedAssertions = eval: lib.filter (a: !a.assertion) eval.config.assertions;
 
       # An instance running as a login account (what /etc/nixos does).
@@ -128,12 +128,12 @@
           ] "package evaluates on ${toString (builtins.length systems)} platforms";
 
         build-package = pkgs.runCommand "son-of-anton-build-package" { } ''
-          echo "PASS: package built at ${package}"
+          echo "ok: the package builds (${package})"
           mkdir -p $out
         '';
 
         build-devshell = pkgs.runCommand "son-of-anton-build-devshell" { } ''
-          echo "PASS: dev shell built at ${self'.devShells.default}"
+          echo "ok: the dev shell builds (${self'.devShells.default})"
           mkdir -p $out
         '';
 
@@ -167,7 +167,7 @@
           done
           grep -q SOA_D_BIN ${package}/bin/son-of-anton
           grep -q ripgrep ${package}/bin/soa-d
-          echo "PASS: both commands run, report ${version}, and reach the physics harness"
+          echo "ok: both commands run, report ${version}, and reach the physics harness"
         '';
 
         # ── NixOS module ─────────────────────────────────────────────────────
@@ -323,7 +323,7 @@
                   grep -q hello ${overridden}/bin/$wrapper
                 done
                 ${overridden}/bin/soa-d version
-                echo "PASS: the owner's option surface evaluates; override extraPackages works"
+                echo "ok: the owner's option surface evaluates; override extraPackages works"
               ''
             );
 
@@ -429,7 +429,7 @@
             [
               [
                 "the state record is beside config.toml"
-                (lib.hasInfix "--state /home/son-of-anton-check/.son-of-anton/.nix-managed.json" activation)
+                (lib.hasInfix "--state /home/soa-checker/.son-of-anton/.nix-managed.json" activation)
               ]
               [ "config merge in activation" (lib.hasInfix "/bin/soa-d config merge " activation) ]
               [ "rules merge in activation" (lib.hasInfix "/bin/soa-d rules merge " activation) ]
@@ -437,7 +437,7 @@
               [ "rules state record" (lib.hasInfix "memories/.nix-rules.json" activation) ]
               [
                 "session variable"
-                (eval.config.home.sessionVariables.SON_OF_ANTON_HOME == "/home/son-of-anton-check/.son-of-anton")
+                (eval.config.home.sessionVariables.SON_OF_ANTON_HOME == "/home/soa-checker/.son-of-anton")
               ]
             ]
             "activation and session environment are correct";
@@ -502,7 +502,7 @@
             cp mem/rules.toml before.toml
             ${merge}
             cmp before.toml mem/rules.toml || { echo "FAIL: a second run changed rules.toml"; exit 1; }
-            echo "PASS: memoryRules seed creates and re-merges rules.toml"
+            echo "ok: memoryRules seed creates and re-merges rules.toml"
           '';
 
         # ── Physics mode ─────────────────────────────────────────────────────
@@ -528,7 +528,7 @@
               cp -r ${../problems} problems
               chmod -R u+w .
               python3 -m pytest -p no:cacheprovider -q autophysicist/tests
-              echo "PASS: physics tests"
+              echo "ok: physics tests"
               mkdir -p $out
             '';
       };
