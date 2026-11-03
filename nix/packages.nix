@@ -33,7 +33,7 @@
             "${pkgs.bash}/bin:${pkgs.ripgrep}/bin:${pkgs.coreutils}/bin"
         '';
 
-        vendorHash = "sha256-BUcU0XPJRLUo4/ncM5iQ3F4w9MIqagMvDeLGtQlvDzY=";
+        vendorHash = "sha256-MSix6HMa7NttemtLTpgFeGXuKQ0+UCPu2Suz+bF72uY=";
       };
 
       package = pkgs.callPackage ./son-of-anton.nix {

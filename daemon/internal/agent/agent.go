@@ -74,6 +74,8 @@ type Runner struct {
 	SearchMessages tools.MessageSearch
 	// WallChat walls session_search to one chat (tools.Env.WallChat).
 	WallChat string
+	// Web configures web_search and web_extract (tools.Env.Web).
+	Web *tools.Web
 	// Scope and Chat stamp the sessions NewSession creates ("" Scope is common).
 	Scope, Chat string
 }
@@ -480,7 +482,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emitEvent func(Event), maxChars int) []store.Message {
 	base := tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
 		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval,
-		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, WallChat: s.runner.WallChat}
+		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, WallChat: s.runner.WallChat, Web: s.runner.Web}
 	var emitMu sync.Mutex
 	emit := func(e Event) {
 		emitMu.Lock()
@@ -501,12 +503,14 @@ func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls [
 			result = s.runOneCall(ctx, &env, call, maxChars)
 		}
 		emit(Event{Kind: "tool.end", Tool: call.Function.Name, CallID: call.ID, Text: result, Duration: time.Since(began)})
+		// Web and MCP results are stored wrapped as data, so they replay byte for byte.
+		stored := tools.WrapUntrusted(call.Function.Name, result)
 		rows[i] = store.Message{
 			Role:       "tool",
 			ToolCallID: call.ID,
 			ToolName:   call.Function.Name,
-			Content:    result,
-			APIContent: result,
+			Content:    stored,
+			APIContent: stored,
 		}
 	}
 	for i := 0; i < len(calls); {

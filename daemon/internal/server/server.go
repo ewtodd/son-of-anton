@@ -80,6 +80,7 @@ type Server struct {
 	reg     *tools.Registry // the builtin tools (a child's are drawn from it)
 	regTask *tools.Registry // reg plus the task tool: an interactive session's
 	regChat *tools.Registry // a chat session's: memory, session_search, clarify, todo
+	web     *tools.Web      // the web tools' settings, shared by every session
 	chats   *chatHub        // nil: Signal is off
 	mem     *memory.Store
 	idx     *recall.Index   // nil: recall is off
@@ -118,6 +119,7 @@ func New(o Options) (*Server, error) {
 		meta: map[string]map[string]int{}, learned: map[string]int{}}
 	s.regTask = tools.NewRegistry(append(tools.Builtin(), subagent.Tool(subagent.Builtin(), true, s.spawnTask))...)
 	s.regChat = s.reg.Only("todo", "clarify", "memory", "session_search")
+	s.web = WebConfig(cfg, o.Home)
 	s.chats = s.newChatHub()
 	s.base, s.stop = context.WithCancel(context.Background())
 	return s, nil
@@ -223,6 +225,7 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 		Memory:          s.mem,
 		MemoryScope:     "common", // every soa-d session is common until phase 5
 		MemoryApproval:  s.cfg.Memory.WriteApproval,
+		Web:             s.web,
 		Prompt: func(_ context.Context, ss store.Session) (string, error) {
 			r, err := prompt.Build(prompt.Options{
 				Home: s.opt.Home, Cwd: ss.Cwd, Scope: "common", Memory: true,

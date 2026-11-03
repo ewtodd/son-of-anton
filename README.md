@@ -25,7 +25,7 @@ daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`).
   Signal chats (off until an instance moves; `[daemon] signal = true`).
 - **Still Python:** the relay workers, cron, physics runs.
 - **Not in the daemon yet:** `/handoff` and `/pickup` (5); MCP
-  servers and web tools (7); the Python sessions in `state.db` (imported in 8).
+  servers (7); the Python sessions in `state.db` (imported in 8).
 
 ## Running it
 
@@ -71,6 +71,9 @@ launch starts the new daemon.
   transcript, `←`/`→` move between them, `↑` comes back.
 - The TUI's sessions are in `soa-d.db`; the gateway's and cron's are still in
   `state.db`.
+- Web search falls back from SearXNG (`SEARXNG_URL`) to DuckDuckGo, and
+  `web_extract` reads pages directly, then through `WEB_EXTRACT_URL`, then any
+  opt-in `web.extract_fallbacks` (`"wayback"`, `"jina"`).
 
 ## Commands
 

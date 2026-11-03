@@ -166,6 +166,7 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 		Memory:          mem,
 		MemoryScope:     "common",
 		MemoryApproval:  cfg.Memory.WriteApproval,
+		Web:             server.WebConfig(cfg, home),
 		Prompt: func(_ context.Context, s store.Session) (string, error) {
 			if o.system != "" {
 				return string(system), nil

@@ -56,6 +56,14 @@ type Config struct {
 	Terminal struct {
 		Cwd string `toml:"cwd"`
 	} `toml:"terminal"`
+	Web struct {
+		SearchFallback   string   `toml:"search_fallback"` // "duckduckgo" (default) or "none"
+		DuckDuckGoURL    string   `toml:"duckduckgo_url"`
+		ExtractFallbacks []string `toml:"extract_fallbacks"` // opt-in: "wayback", "jina"
+		WaybackURL       string   `toml:"wayback_url"`
+		JinaURL          string   `toml:"jina_url"`
+		AllowPrivateURLs bool     `toml:"allow_private_urls"`
+	} `toml:"web"`
 	Platforms struct {
 		Signal struct {
 			RequireMention  any `toml:"require_mention"`

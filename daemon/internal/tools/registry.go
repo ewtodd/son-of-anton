@@ -44,6 +44,9 @@ type Env struct {
 	// WallChat walls a gateway caller to one chat's sessions and the common
 	// ones; "" lets it read every session.
 	WallChat string
+	// Web configures web_search and web_extract (nil: they say they are not
+	// configured).
+	Web *Web
 	// CallID is the id of the tool call being run.
 	CallID string
 }
@@ -122,6 +125,8 @@ func Builtin() []Tool {
 		clarifyTool{},
 		memoryTool{},
 		sessionSearchTool{},
+		webSearchTool{},
+		webExtractTool{},
 	}
 }
 
