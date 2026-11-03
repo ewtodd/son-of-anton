@@ -24,7 +24,7 @@ daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`).
 - **On soa-d now:** the terminal TUI (`son-of-anton`), `-q` and `-z`.
 - **Still Python:** the Signal gateway and its relay workers, cron, physics
   runs.
-- **Not in the daemon yet:** subagents (4); `/handoff` and `/pickup` (5); MCP
+- **Not in the daemon yet:** `/handoff` and `/pickup` (5); MCP
   servers and web tools (7); the Python sessions in `state.db` (imported in 8).
 
 ## Running it
@@ -66,6 +66,9 @@ launch starts the new daemon.
   command is denied, since nobody is there to approve it.
 - A message typed while a turn runs is queued in the daemon and survives a
   restart.
+- The agent can hand work to subagents (`explore` searches and reads; `general`
+  has the agent's tools), several at once. `ctrl+x ↓` opens the newest one's
+  transcript, `←`/`→` move between them, `↑` comes back.
 - The TUI's sessions are in `soa-d.db`; the gateway's and cron's are still in
   `state.db`.
 

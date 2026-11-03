@@ -329,6 +329,9 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 	if err != nil {
 		return Result{}, err
 	}
+	// began stamps the user message, so a turn's span runs from its start even
+	// though its first step is stored whole when the step ends.
+	began := time.Now()
 	var total Result
 	first := true
 	autoTried, retried := false, false
@@ -353,7 +356,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 	// closeTurn records a turn that did not end with a final answer: the
 	// user message if it is not stored yet, then a closing assistant row.
 	closeTurn := func(row store.Message, cause error) (Result, error) {
-		if err := s.persistStep(ctx, text, apiText, first, row, nil, emit); err != nil {
+		if err := s.persistStep(ctx, text, apiText, first, began, row, nil, emit); err != nil {
 			return total, err
 		}
 		return total, cause
@@ -434,7 +437,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 				Content:   resp.Message.Content,
 				Reasoning: resp.Reasoning,
 			}
-			if err := s.persistStep(ctx, text, apiText, first, assistant, nil, emit); err != nil {
+			if err := s.persistStep(ctx, text, apiText, first, began, assistant, nil, emit); err != nil {
 				return total, err
 			}
 			total.Content, total.Reasoning = resp.Message.Content, resp.Reasoning
@@ -447,7 +450,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			Reasoning: resp.Reasoning,
 			ToolCalls: marshalToolCalls(resp.Message.ToolCalls),
 		}
-		if err := s.persistStep(ctx, text, apiText, first, assistant, rows, emit); err != nil {
+		if err := s.persistStep(ctx, text, apiText, first, began, assistant, rows, emit); err != nil {
 			return total, err
 		}
 		first = false
@@ -561,10 +564,10 @@ func (s *Session) runOneCall(ctx context.Context, env *tools.Env, call provider.
 // persistStep stores one completed step and announces each stored row. It
 // uses a context that is not cancelled: an interrupted turn must still keep
 // its steps.
-func (s *Session) persistStep(ctx context.Context, text, apiText string, first bool, assistant store.Message, toolRows []store.Message, emit func(Event)) error {
+func (s *Session) persistStep(ctx context.Context, text, apiText string, first bool, began time.Time, assistant store.Message, toolRows []store.Message, emit func(Event)) error {
 	msgs := make([]store.Message, 0, 2+len(toolRows))
 	if first {
-		msgs = append(msgs, store.Message{Role: "user", Content: text, APIContent: apiText})
+		msgs = append(msgs, store.Message{Role: "user", Content: text, APIContent: apiText, TS: began})
 	}
 	msgs = append(msgs, assistant)
 	msgs = append(msgs, toolRows...)

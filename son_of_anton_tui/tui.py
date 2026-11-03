@@ -48,7 +48,7 @@ try:
     from textual.command import DiscoveryHit, Hit, Hits, Provider
     from textual.containers import Container, Horizontal, Vertical, VerticalScroll
     from textual.message import Message
-    from textual.screen import ModalScreen
+    from textual.screen import ModalScreen, Screen
     from textual.widgets import (
         Input,
         OptionList,
@@ -58,6 +58,7 @@ try:
     )
     from textual.widgets.option_list import Option
 
+    from son_of_anton_tui.backend import titlecase
     from son_of_anton_tui.feed import FeedStyle, VirtualFeed, note_width
     from son_of_anton_tui import completion as _completion
 
@@ -71,7 +72,7 @@ except Exception:  # pragma: no cover - import-time guard
     DiscoveryHit = Hit = Hits = Provider = None  # type: ignore
     Container = Horizontal = Vertical = VerticalScroll = None  # type: ignore
     Message = None  # type: ignore
-    ModalScreen = None  # type: ignore
+    ModalScreen = Screen = None  # type: ignore
     Input = OptionList = SelectionList = Static = TextArea = None  # type: ignore
     Option = None  # type: ignore
     FeedStyle = VirtualFeed = None  # type: ignore
@@ -739,6 +740,328 @@ if _TEXTUAL_AVAILABLE:
                     )
 
     # ------------------------------------------------------------------
+    # One transcript and what draws events into it
+    # ------------------------------------------------------------------
+    class FeedView:
+        """A ``VirtualFeed`` and the streaming state that backend events draw into it.
+
+        The main transcript and a subagent's view each own one; the backend's
+        events for either are drawn by these same handlers (``ev_*``).
+        """
+
+        def __init__(self, feed: Optional[Any] = None) -> None:
+            self.feed = feed
+            self.transcript = ""  # concatenated assistant text (tests / recap)
+            self.frame = _SPINNER[0]
+            self.md_block: Optional[Any] = None
+            self.reasoning: Optional[Any] = None
+            self.tool_gen_line: Optional[Any] = None
+            self.tool_lines: dict[str, list[Any]] = {}
+            self.running_tools: list[Any] = []
+            # A task row by its call id, kept after it finishes: a background
+            # task's detail line goes on following its child.
+            self.task_rows: dict[str, Any] = {}
+
+        def handle(self, kind: str, payload: dict) -> bool:
+            handler = getattr(self, f"ev_{kind}", None)
+            if handler is None:
+                return False
+            handler(**payload)
+            return True
+
+        def handles(self, kind: str) -> bool:
+            return hasattr(self, f"ev_{kind}")
+
+        def tick(self, frame: str) -> None:
+            self.frame = frame
+            for row in self.running_tools:
+                row.frame = frame
+                row.dirty = True
+            if self.tool_gen_line is not None:
+                self.tool_gen_line.frame = frame
+                self.tool_gen_line.dirty = True
+            self.feed.flush()
+
+        def scroll(self) -> None:
+            self.feed.scroll_end(animate=False)
+            self.feed.anchor()
+
+        def note(self, text: str, *, muted: bool = False) -> None:
+            """Append one ANSI/plain line, merging consecutive lines into a block."""
+            if not text.strip():
+                return
+            rich = Text.from_ansi(text.rstrip())
+            if muted:
+                rich.stylize("dim")
+            self.feed.add_note(rich)
+
+        def clear(self) -> None:
+            self.feed.clear()
+            self.transcript = ""
+            self.md_block = None
+            self.reasoning = None
+            self.tool_gen_line = None
+            self.tool_lines.clear()
+            self.running_tools.clear()
+            self.task_rows.clear()
+
+        def ev_clear(self) -> None:
+            self.clear()
+
+        def ev_ansi(self, text: str = "", stderr: bool = False) -> None:
+            self.note(text, muted=stderr)
+
+        def ev_rich(self, renderable: Any = None) -> None:
+            if renderable is None:
+                return
+            if isinstance(renderable, Text) and not renderable.plain.strip():
+                return
+            self.feed.reset_note()
+            self.feed.add_rich(renderable)
+
+        def ev_compaction(self, text: str = "", stats: Optional[dict] = None) -> None:
+            """opencode's compaction entry: a titled rule, then what the model now remembers."""
+            from rich.rule import Rule
+
+            if not (text or "").strip():
+                return
+            self.close_assistant()
+            self.feed.reset_note()
+            self.feed.add_rich(Rule(title="Compaction", style="dim"))
+            self.feed.add_markdown(text)
+            line = _compaction_stats_line(stats or {})
+            if line:
+                self.feed.add_rich(Text(line, style="dim"))
+            self.scroll()
+
+        def ev_assistant_start(self) -> None:
+            self.close_assistant()
+            self.md_block = self.feed.open_markdown()
+
+        def ev_assistant_delta(self, text: str = "") -> None:
+            if not text:
+                return
+            if self.md_block is None:
+                self.ev_assistant_start()
+            self.transcript += text
+            self.md_block.append(text)
+
+        def ev_assistant_end(self) -> None:
+            self.close_assistant()
+
+        def close_assistant(self) -> None:
+            self.md_block = None
+
+        def ev_reasoning_start(self) -> None:
+            self.finish_reasoning()
+            self.reasoning = self.feed.open_reasoning()
+
+        def ev_reasoning_delta(self, text: str = "") -> None:
+            if self.reasoning is None:
+                self.ev_reasoning_start()
+            self.reasoning.append(text)
+
+        def ev_reasoning_end(self) -> None:
+            self.finish_reasoning()
+
+        def finish_reasoning(self) -> None:
+            block, self.reasoning = self.reasoning, None
+            if block is not None:
+                block.finish()
+                self.feed.changed(block)
+
+        def ev_tool_gen(self, name: str = "") -> None:
+            line = self.feed.open_tool(name)
+            line.frame = self.frame
+            line.dirty = True
+            self.tool_gen_line = line
+
+        def ev_tool_start(
+            self, name: str = "", label: str = "", hidden: bool = False, call_id: str = ""
+        ) -> None:
+            line = self.tool_gen_line
+            self.tool_gen_line = None
+            if hidden:
+                if line is not None:
+                    self.feed.remove_block(line)
+                return
+            if line is None:
+                line = self.feed.open_tool(name)
+            line.label = label or name
+            line.icon = _tool_icon(name)
+            line.dirty = True
+            self.tool_lines.setdefault(call_id or name, []).append(line)
+            self.running_tools.append(line)
+            if name == "task" and call_id:
+                self.task_rows[call_id] = line
+
+        def ev_tool_done(
+            self,
+            name: str = "",
+            label: str = "",
+            line: str = "",
+            duration: float = 0.0,
+            is_error: bool = False,
+            hidden: bool = False,
+            call_id: str = "",
+        ) -> None:
+            key = call_id or name
+            rows = self.tool_lines.get(key)
+            row = rows.pop(0) if rows else None
+            if rows is not None and not rows:
+                self.tool_lines.pop(key, None)
+            if row is not None and row in self.running_tools:
+                self.running_tools.remove(row)
+            if hidden:
+                if row is not None:
+                    self.feed.remove_block(row)
+                return
+            if row is None:
+                if not (label or line):
+                    return
+                row = self.feed.open_tool(name)
+                if name == "task" and call_id:
+                    self.task_rows[call_id] = row
+            row.finish(_tool_icon(name), label or name, is_error, duration)
+            self.feed.changed(row)
+
+        def ev_tool_detail(self, call_id: str = "", detail: str = "") -> None:
+            """Set the line under a task row (its child's progress or result)."""
+            row = self.task_rows.get(call_id)
+            if row is not None and row.detail != detail:
+                row.detail = detail
+                row.dirty = True
+                self.feed.changed(row)
+
+        def ev_hint(self) -> None:
+            """opencode's line after an assistant message that called ``task``."""
+            self.feed.reset_note()
+            self.feed.add_rich(Text.assemble("ctrl+x down", (" view subagents", "dim")))
+
+        def ev_user(self, text: str = "") -> None:
+            self.close_assistant()
+            self.finish_reasoning()
+            self.feed.add_user(text)
+            self.scroll()
+
+        def ev_markdown(self, text: str = "") -> None:
+            if text.strip():
+                self.feed.add_markdown(text)
+
+        def ev_reasoning_block(self, text: str = "") -> None:
+            block = self.feed.open_reasoning()
+            block.append(text)
+            block.finish()
+            self.feed.changed(block)
+
+        def ev_turn_end(self) -> None:
+            self.close_assistant()
+            self.finish_reasoning()
+            if self.tool_gen_line is not None:
+                self.feed.remove_block(self.tool_gen_line)
+                self.tool_gen_line = None
+            tasks = list(self.task_rows.values())
+            for row in self.running_tools:
+                if not row.done:
+                    # A task row shows no time of its own: its child has it.
+                    row.finish(row.icon, row.label, False, 0.0 if row in tasks else time.monotonic() - row.started)
+                    self.feed.changed(row)
+            self.running_tools.clear()
+            self.tool_lines.clear()
+            self.feed.reset_note()
+            self.feed.flush()
+
+    # ------------------------------------------------------------------
+    # The subagent view
+    # ------------------------------------------------------------------
+    class SubagentScreen(Screen):
+        """One child's transcript (opencode's subagent session view).
+
+        No prompt and no sidebar: the child's feed above a footer that names
+        the agent, its place among its siblings and its context. The backend
+        attaches the child as a viewer and draws its history and live events
+        here through the same ``FeedView`` handlers as the main feed.
+        """
+
+        # Priority: the feed would otherwise scroll on the arrow keys first.
+        BINDINGS = [
+            Binding("up", "parent", "Parent", priority=True, show=False),
+            Binding("left", "sibling(-1)", "Prev", priority=True, show=False),
+            Binding("right", "sibling(1)", "Next", priority=True, show=False),
+        ]
+
+        def __init__(self, child_id: str) -> None:
+            super().__init__()
+            self.child_id = child_id
+            self.state: dict = {}  # the child's session object, as last reported
+            self.view = FeedView()
+
+        def compose(self) -> ComposeResult:
+            with Vertical(id="content"):
+                yield VirtualFeed(self.app._feed_style())  # type: ignore[attr-defined]
+                yield Static("", id="subagent-footer")
+
+        def on_mount(self) -> None:
+            self.view.feed = self.query_one("#feed", VirtualFeed)
+            self.view.feed.anchor()
+            self.refresh_footer()
+            app = self.app
+            app._bg(partial(app.backend.view, self.child_id))  # type: ignore[attr-defined]
+
+        def on_resize(self, event: Any) -> None:
+            self.refresh_footer()
+
+        def set_state(self, state: dict) -> None:
+            self.state = state
+            self.refresh_footer()
+
+        def refresh_footer(self) -> None:
+            """opencode's SubagentFooter: who, which of how many, how full; the keys on the right."""
+            try:
+                footer = self.query_one("#subagent-footer", Static)
+            except Exception:
+                return
+            kids = self.app.backend.children() if self.app.backend is not None else []  # type: ignore[attr-defined]
+            index = next((i for i, k in enumerate(kids) if k.get("id") == self.child_id), -1)
+            agent = self.state.get("agent") or (kids[index].get("agent") if index >= 0 else "")
+            left = Text()
+            left.append(titlecase(agent) if agent else "Subagent", style="bold")
+            if index >= 0:
+                left.append(f" ({index + 1} of {len(kids)})", style="dim")
+            tokens = int(self.state.get("context_tokens") or 0)
+            if tokens > 0:
+                length = int(self.state.get("context_length") or 0)
+                left.append(f" {_fmt_tokens(tokens)}" + (f" ({round(100 * tokens / length)}%)" if length else ""), style="dim")
+            right = Text()
+            for i, (name, arrow) in enumerate((("Parent", "↑"), ("Prev", "←"), ("Next", "→"))):
+                right.append(("   " if i else "") + name + " ")
+                right.append(arrow, style="dim")
+            room = footer.content_size.width or self.size.width
+            line = Text.assemble(left, " " * max(2, room - left.cell_len - right.cell_len), right)
+            footer.update(line)
+
+        def draw(self, event: str, args: dict) -> None:
+            """A backend event for this child: its state, or a line of its transcript."""
+            if event == "state":
+                self.set_state(args.get("state") or {})
+            elif self.view.feed is not None:
+                self.view.handle(event, args)
+
+        def action_parent(self) -> None:
+            self.app.close_child_view()  # type: ignore[attr-defined]
+
+        def action_sibling(self, step: int) -> None:
+            backend = self.app.backend  # type: ignore[attr-defined]
+            ids = [k.get("id") for k in backend.children()]
+            if self.child_id not in ids or len(ids) < 2:
+                return
+            self.child_id = ids[(ids.index(self.child_id) + step) % len(ids)]
+            self.state = {}
+            self.view.clear()
+            self.refresh_footer()
+            self.app._bg(partial(backend.view, self.child_id))  # type: ignore[attr-defined]
+
+    # ------------------------------------------------------------------
     # The app
     # ------------------------------------------------------------------
     class SonOfAntonTUIApp(App):
@@ -769,6 +1092,12 @@ if _TEXTUAL_AVAILABLE:
             scrollbar-size-vertical: 1;
             scrollbar-color: $text-muted; scrollbar-color-hover: $primary; scrollbar-color-active: $primary;
             scrollbar-background: transparent;
+        }
+
+        /* opencode SubagentFooter: a left rail on the panel surface. */
+        #subagent-footer {
+            height: auto; padding: 1 1 1 2; border-left: wide $primary;
+            background: $panel; margin-bottom: 1;
         }
 
         /* The dock: completion popup, the prompt block, then the status row. */
@@ -855,6 +1184,9 @@ if _TEXTUAL_AVAILABLE:
             Binding("pageup", "feed_page_up", show=False, priority=True),
             Binding("pagedown", "feed_page_down", show=False, priority=True),
             Binding("escape", "escape", show=False),
+            # opencode's leader: ctrl+x, then a key within two seconds.
+            Binding("ctrl+x", "leader", "Leader", priority=True, show=False),
+            Binding("down", "leader_down", "View subagents", priority=True, show=False),
         ]
 
         def __init__(
@@ -879,15 +1211,12 @@ if _TEXTUAL_AVAILABLE:
                 except Exception:
                     self._surfaces = {}
             self._theme = _theme_name(terminal_colors)
-            self._transcript = ""  # concatenated assistant text (tests / recap)
+            self._main = FeedView()  # the main transcript; the feed is bound at mount
+            self._leader_until = 0.0
+            self._subagents_running = 0
             self._status = "ready"
             self._busy: Optional[str] = None
             self._sidebar_forced: Optional[bool] = None
-            self._md_block: Optional[Any] = None
-            self._reasoning: Optional[Any] = None
-            self._tool_gen_line: Optional[Any] = None
-            self._tool_lines: dict[str, list[Any]] = {}
-            self._running_tools: list[Any] = []
             self._refresh_scheduled = False
             self._modal_open = False
             self._serviced: dict[str, Any] = {}  # attr -> the state object already shown
@@ -915,6 +1244,25 @@ if _TEXTUAL_AVAILABLE:
             self._log_handlers: list[tuple[logging.Handler, Any]] = []
             super().__init__(**kwargs)
             self.theme = self._theme
+
+        def _get_dom_base(self) -> Any:
+            """Query the screen on show: a subagent's view has its own ``#feed``.
+
+            Textual's app queries the default screen whatever is pushed on it.
+            """
+            try:
+                return self.screen
+            except Exception:
+                return super()._get_dom_base()
+
+        @property
+        def _transcript(self) -> str:
+            """The main transcript's assistant text (tests / recap)."""
+            return self._main.transcript
+
+        @property
+        def _md_block(self) -> Optional[Any]:
+            return self._main.md_block
 
         # ---------------- theme ----------------
         def get_css_variables(self) -> dict[str, str]:
@@ -1000,6 +1348,7 @@ if _TEXTUAL_AVAILABLE:
 
         def on_mount(self) -> None:
             self._feed = self.query_one("#feed", VirtualFeed)
+            self._main.feed = self._feed
             self._prompt = self.query_one("#input", PromptArea)
             self._queued_strip = self.query_one("#queued-strip", Static)
             self._prompt.prompt_history = PromptHistory(getattr(self.backend, "_history_file", None))
@@ -1160,24 +1509,20 @@ if _TEXTUAL_AVAILABLE:
 
         def _note(self, text: str, *, muted: bool = False) -> None:
             """Append one ANSI/plain line, merging consecutive lines into a block."""
-            if not text.strip():
-                return
-            rich = Text.from_ansi(text.rstrip())
-            if muted:
-                rich.stylize("dim")
-            self._feed.add_note(rich)
+            self._main.note(text, muted=muted)
 
         def _add_user_turn(self, text: str) -> None:
             self._feed.add_user(text)
             self._transcript_scroll()
 
         def _transcript_scroll(self) -> None:
-            self._feed.scroll_end(animate=False)
-            self._feed.anchor()
+            self._main.scroll()
 
         # ---------------- backend events ----------------
         async def on_tui_event(self, event: TuiEvent) -> None:
             kind, p = event.kind, event.payload
+            if self._main.handle(kind, p):
+                return
             handler = getattr(self, f"_ev_{kind}", None)
             if handler is None:
                 return
@@ -1194,140 +1539,12 @@ if _TEXTUAL_AVAILABLE:
                 self.refresh_css()
             except Exception:
                 pass
-            try:
-                self._feed.restyle(self._feed_style())
-            except Exception:
-                pass
+            for feed in [self._feed] + [sc.view.feed for sc in self.screen_stack if isinstance(sc, SubagentScreen)]:
+                try:
+                    feed.restyle(self._feed_style())
+                except Exception:
+                    pass
             self._schedule_refresh()
-
-        def _ev_ansi(self, text: str = "", stderr: bool = False) -> None:
-            self._note(text, muted=stderr)
-
-        def _ev_rich(self, renderable: Any = None) -> None:
-            if renderable is None:
-                return
-            if isinstance(renderable, Text) and not renderable.plain.strip():
-                return
-            self._reset_note_block()
-            self._feed.add_rich(renderable)
-
-        async def _ev_compaction(self, text: str = "", stats: Optional[dict] = None) -> None:
-            """opencode's compaction entry: a titled rule, then what the model now remembers."""
-            from rich.rule import Rule
-
-            if not (text or "").strip():
-                return
-            self._close_assistant()
-            self._reset_note_block()
-            self._feed.add_rich(Rule(title="Compaction", style="dim"))
-            self._feed.add_markdown(text)
-            line = _compaction_stats_line(stats or {})
-            if line:
-                self._feed.add_rich(Text(line, style="dim"))
-            self._transcript_scroll()
-
-        def _ev_assistant_start(self) -> None:
-            self._close_assistant()
-            self._md_block = self._feed.open_markdown()
-
-        def _ev_assistant_delta(self, text: str = "") -> None:
-            if not text:
-                return
-            if self._md_block is None:
-                self._ev_assistant_start()
-            self._transcript += text
-            self._md_block.append(text)
-
-        def _ev_assistant_end(self) -> None:
-            self._close_assistant()
-
-        def _close_assistant(self) -> None:
-            self._md_block = None
-
-        def _ev_reasoning_start(self) -> None:
-            self._finish_reasoning()
-            self._reasoning = self._feed.open_reasoning()
-
-        def _ev_reasoning_delta(self, text: str = "") -> None:
-            if self._reasoning is None:
-                self._ev_reasoning_start()
-            self._reasoning.append(text)
-
-        def _ev_reasoning_end(self) -> None:
-            self._finish_reasoning()
-
-        def _finish_reasoning(self) -> None:
-            block, self._reasoning = self._reasoning, None
-            if block is not None:
-                block.finish()
-                self._feed.changed(block)
-
-        def _ev_tool_gen(self, name: str = "") -> None:
-            line = self._feed.open_tool(name)
-            line.frame = _SPINNER[self._spin]
-            line.dirty = True
-            self._tool_gen_line = line
-
-        def _ev_tool_start(
-            self, name: str = "", label: str = "", hidden: bool = False, call_id: str = ""
-        ) -> None:
-            line = self._tool_gen_line
-            self._tool_gen_line = None
-            if hidden:
-                if line is not None:
-                    self._feed.remove_block(line)
-                return
-            if line is None:
-                line = self._feed.open_tool(name)
-            line.label = label or name
-            line.icon = _tool_icon(name)
-            line.dirty = True
-            self._tool_lines.setdefault(call_id or name, []).append(line)
-            self._running_tools.append(line)
-
-        def _ev_tool_done(
-            self,
-            name: str = "",
-            label: str = "",
-            line: str = "",
-            duration: float = 0.0,
-            is_error: bool = False,
-            hidden: bool = False,
-            call_id: str = "",
-        ) -> None:
-            key = call_id or name
-            rows = self._tool_lines.get(key)
-            row = rows.pop(0) if rows else None
-            if rows is not None and not rows:
-                self._tool_lines.pop(key, None)
-            if row is not None and row in self._running_tools:
-                self._running_tools.remove(row)
-            if hidden:
-                if row is not None:
-                    self._feed.remove_block(row)
-                return
-            if row is None:
-                if not (label or line):
-                    return
-                row = self._feed.open_tool(name)
-            row.finish(_tool_icon(name), label or name, is_error, duration)
-            self._feed.changed(row)
-
-        # ---- events from the daemon backend ----
-        def _ev_user(self, text: str = "") -> None:
-            self._close_assistant()
-            self._finish_reasoning()
-            self._add_user_turn(text)
-
-        def _ev_markdown(self, text: str = "") -> None:
-            if text.strip():
-                self._feed.add_markdown(text)
-
-        def _ev_reasoning_block(self, text: str = "") -> None:
-            block = self._feed.open_reasoning()
-            block.append(text)
-            block.finish()
-            self._feed.changed(block)
 
         def _ev_status(self, running: bool = False) -> None:
             self._busy = "turn" if running else None
@@ -1339,9 +1556,10 @@ if _TEXTUAL_AVAILABLE:
             self._update_status()
 
         def _ev_approval(self, approval_id: str = "", subject: str = "", reasons: Optional[list] = None,
-                         choices: Optional[list] = None, approval_kind: str = "") -> None:
+                         choices: Optional[list] = None, approval_kind: str = "", subagent: str = "") -> None:
             self._add_prompt("approval", approval_id,
-                             {"kind": approval_kind, "subject": subject, "reasons": reasons or [], "choices": choices or []})
+                             {"kind": approval_kind, "subject": subject, "reasons": reasons or [], "choices": choices or [],
+                              "subagent": subagent})
 
         def _ev_approval_resolved(self, approval_id: str = "") -> None:
             self._resolve_prompt("approval", approval_id)
@@ -1354,22 +1572,29 @@ if _TEXTUAL_AVAILABLE:
         def _ev_question_resolved(self, question_id: str = "") -> None:
             self._resolve_prompt("question", question_id)
 
+        def _ev_subagents(self, running: int = 0) -> None:
+            self._subagents_running = running
+            self._update_status()
+
+        def _ev_view(self, sid: str = "", event: str = "", args: Optional[dict] = None) -> None:
+            """A viewed child's event, for its screen if it is still the one shown."""
+            for screen in self.screen_stack:
+                if isinstance(screen, SubagentScreen) and screen.child_id == sid:
+                    screen.draw(event, args or {})
+
+        def _ev_view_close(self) -> None:
+            """The backend dropped the child view (the connection, a session switch)."""
+            for screen in list(self.screen_stack):
+                if isinstance(screen, SubagentScreen) and screen is self.screen:
+                    self.pop_screen()
+
         def _ev_prompts_clear(self) -> None:
             entries, self._prompts = self._prompts, []
             for entry in entries:
                 self._dismiss_modal_of(entry)
 
         def _clear_feed(self) -> None:
-            self._feed.clear()
-            self._transcript = ""
-            self._md_block = None
-            self._reasoning = None
-            self._tool_gen_line = None
-            self._tool_lines.clear()
-            self._running_tools.clear()
-
-        def _ev_clear(self) -> None:
-            self._clear_feed()
+            self._main.clear()
 
         def _ev_pick(self, purpose: str = "", title: str = "", rows: Optional[list] = None,
                      default: int = 0, filterable: bool = False) -> None:
@@ -1377,21 +1602,6 @@ if _TEXTUAL_AVAILABLE:
 
         def _ev_pick_many(self, purpose: str = "", title: str = "", rows: Optional[list] = None) -> None:
             self._open_pick_many(purpose, title, [tuple(r) for r in rows or []])
-
-        def _ev_turn_end(self) -> None:
-            self._close_assistant()
-            self._finish_reasoning()
-            if self._tool_gen_line is not None:
-                self._feed.remove_block(self._tool_gen_line)
-                self._tool_gen_line = None
-            for row in self._running_tools:
-                if not row.done:
-                    row.finish(row.icon, row.label, False, time.monotonic() - row.started)
-                    self._feed.changed(row)
-            self._running_tools.clear()
-            self._tool_lines.clear()
-            self._reset_note_block()
-            self._feed.flush()
 
         # ---------------- chrome ----------------
         def _schedule_refresh(self) -> None:
@@ -1402,13 +1612,10 @@ if _TEXTUAL_AVAILABLE:
 
         def _tick_spinner(self) -> None:
             self._spin = (self._spin + 1) % len(_SPINNER)
-            for row in self._running_tools:
-                row.frame = _SPINNER[self._spin]
-                row.dirty = True
-            if self._tool_gen_line is not None:
-                self._tool_gen_line.frame = _SPINNER[self._spin]
-                self._tool_gen_line.dirty = True
-            self._feed.flush()
+            self._main.tick(_SPINNER[self._spin])
+            for screen in self.screen_stack:
+                if isinstance(screen, SubagentScreen) and screen.view.feed is not None:
+                    screen.view.tick(_SPINNER[self._spin])
             if self._busy:
                 self._update_status()
 
@@ -1454,6 +1661,9 @@ if _TEXTUAL_AVAILABLE:
             self._update_queued_strip()
 
             right = Text()
+            if self._subagents_running:
+                right.append("ctrl+x down", style="bold")
+                right.append(" view subagents  ·  ")
             if self._busy:
                 right.append("ctrl+c", style="bold")
                 right.append(" interrupt")
@@ -1493,8 +1703,8 @@ if _TEXTUAL_AVAILABLE:
                 meta.append("  ·  ", style="dim")
                 meta.append(f"reasoning {effort}", style="dim")
             try:
-                self.query_one("#prompt-meta-left", Static).update(meta)
-                self.query_one("#prompt-meta-right", Static).update(
+                self.screen_stack[0].query_one("#prompt-meta-left", Static).update(meta)
+                self.screen_stack[0].query_one("#prompt-meta-right", Static).update(
                     Text(f"{len(self._attached())} attached") if self._attached() else Text()
                 )
             except Exception:
@@ -1563,29 +1773,29 @@ if _TEXTUAL_AVAILABLE:
             backend = self.backend
             cwd = _short_path(self._cwd())
             if backend is None:
-                self.query_one("#ctx-title", Static).update(self.agent_name)
-                self.query_one("#ctx-cwd", Static).update(cwd)
+                self.screen_stack[0].query_one("#ctx-title", Static).update(self.agent_name)
+                self.screen_stack[0].query_one("#ctx-cwd", Static).update(cwd)
                 return
             snap = self._snapshot()
-            self.query_one("#ctx-title", Static).update(snap.get("session_title") or "untitled")
-            self.query_one("#ctx-session-id", Static).update(str(getattr(backend, "session_id", "") or ""))
-            self.query_one("#ctx-cwd", Static).update(cwd)
-            self.query_one("#ctx-mode", Static).update(backend.permission_mode())
-            self.query_one("#ctx-reasoning", Static).update(
+            self.screen_stack[0].query_one("#ctx-title", Static).update(snap.get("session_title") or "untitled")
+            self.screen_stack[0].query_one("#ctx-session-id", Static).update(str(getattr(backend, "session_id", "") or ""))
+            self.screen_stack[0].query_one("#ctx-cwd", Static).update(cwd)
+            self.screen_stack[0].query_one("#ctx-mode", Static).update(backend.permission_mode())
+            self.screen_stack[0].query_one("#ctx-reasoning", Static).update(
                 snap.get("reasoning_label") or "medium (default)"
             )
             pct = snap.get("context_percent")
             if pct is None:
-                self.query_one("#ctx-bar", Static).update(Text("▱▱▱▱▱▱▱▱▱▱  —", style="dim"))
-                self.query_one("#ctx-tokens", Static).update("no turns yet")
+                self.screen_stack[0].query_one("#ctx-bar", Static).update(Text("▱▱▱▱▱▱▱▱▱▱  —", style="dim"))
+                self.screen_stack[0].query_one("#ctx-tokens", Static).update("no turns yet")
             else:
                 filled = max(0, min(10, round(pct / 10)))
-                self.query_one("#ctx-bar", Static).update(f"{'▰' * filled}{'▱' * (10 - filled)}  {pct}%")
-                self.query_one("#ctx-tokens", Static).update(
+                self.screen_stack[0].query_one("#ctx-bar", Static).update(f"{'▰' * filled}{'▱' * (10 - filled)}  {pct}%")
+                self.screen_stack[0].query_one("#ctx-tokens", Static).update(
                     f"{_fmt_tokens(snap.get('context_tokens', 0))} / {_fmt_tokens(snap.get('context_length') or 0)}"
                     + (f" · {snap['compactions']} compacted" if snap.get("compactions") else "")
                 )
-            self.query_one("#ctx-usage", Static).update(
+            self.screen_stack[0].query_one("#ctx-usage", Static).update(
                 f"in {_fmt_tokens(snap.get('session_input_tokens', 0))} · out {_fmt_tokens(snap.get('session_output_tokens', 0))}"
                 f" · {snap.get('session_api_calls', 0)} calls"
             )
@@ -1597,8 +1807,8 @@ if _TEXTUAL_AVAILABLE:
             if snap.get("active_background_subagents"):
                 bg.append(f"{snap['active_background_subagents']} subagents")
             bg_text = " · ".join(bg)
-            bg_label = self.query_one("#ctx-bg-label", Static)
-            bg_value = self.query_one("#ctx-bg", Static)
+            bg_label = self.screen_stack[0].query_one("#ctx-bg-label", Static)
+            bg_value = self.screen_stack[0].query_one("#ctx-bg", Static)
             bg_value.update(bg_text)
             # Nothing running is not "idle" — hide the row rather than imply
             # the whole session is parked while the user is mid-conversation.
@@ -1606,7 +1816,7 @@ if _TEXTUAL_AVAILABLE:
             if bg_label.display != want_row:
                 bg_label.display = want_row
                 bg_value.display = want_row
-            self.query_one("#ctx-elapsed", Static).update(f"session {snap.get('duration', '')}".rstrip())
+            self.screen_stack[0].query_one("#ctx-elapsed", Static).update(f"session {snap.get('duration', '')}".rstrip())
 
         # ---------------- modal servicing ----------------
         def _add_prompt(self, kind: str, prompt_id: str, data: dict) -> None:
@@ -1686,7 +1896,10 @@ if _TEXTUAL_AVAILABLE:
             reasons = "; ".join(str(r) for r in data.get("reasons") or [])
             if reasons:
                 detail.append("\n" + reasons, style="dim")
-            screen = ChoiceModal("Save to memory?" if memory else "The agent wants to run a command", choices, detail, accent="warning")
+            title = "Save to memory?" if memory else "The agent wants to run a command"
+            if data.get("subagent"):
+                title = f"{data['subagent']}: {title}"
+            screen = ChoiceModal(title, choices, detail, accent="warning")
 
             def _answer(result: Any) -> None:
                 if entry in self._prompts:
@@ -2150,11 +2363,60 @@ if _TEXTUAL_AVAILABLE:
             self._apply_sidebar(self.size.width)
             self._update_context()
 
+        def _shown_feed(self) -> Any:
+            screen = self.screen
+            return screen.view.feed if isinstance(screen, SubagentScreen) and screen.view.feed else self._feed
+
         def action_feed_page_up(self) -> None:
-            self._feed.scroll_page_up()
+            self._shown_feed().scroll_page_up()
 
         def action_feed_page_down(self) -> None:
-            self._feed.scroll_page_down()
+            self._shown_feed().scroll_page_down()
+
+        # ---------------- subagents ----------------
+        def _leader_active(self) -> bool:
+            return time.monotonic() < self._leader_until
+
+        def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
+            # "down" is the leader's only while it is waiting and the main
+            # transcript is showing; any other time it belongs to the widget.
+            if action == "leader_down":
+                return self._leader_active() and self.screen is self.screen_stack[0]
+            return True
+
+        def action_leader(self) -> None:
+            self._leader_until = time.monotonic() + 2.0
+
+        def action_leader_down(self) -> None:
+            self._leader_until = 0.0
+            if self.backend is not None:
+                self._bg(self._open_newest_child)
+
+        def _open_newest_child(self) -> None:
+            """opencode's moveFirstChild: its children are newest first, ours oldest first."""
+            kids = self.backend.children(refresh=True)
+            if kids:
+                self.call_from_thread(self._push_child, kids[-1]["id"])
+
+        def _push_child(self, child_id: str) -> None:
+            if self.screen is self.screen_stack[0]:
+                self.push_screen(SubagentScreen(child_id))
+
+        def close_child_view(self) -> None:
+            """Back to the parent: stop showing the child and detach it."""
+            if not isinstance(self.screen, SubagentScreen):
+                return
+            self.pop_screen()
+            child = self.backend.release_view()
+            if child:
+                self._bg(partial(self.backend.detach_session, child))
+
+        async def on_event(self, event: events.Event) -> None:
+            await super().on_event(event)
+            # Any key but the leader's own ends leader mode (the one that
+            # follows it has already been dispatched by now).
+            if isinstance(event, events.Key) and event.key != "ctrl+x":
+                self._leader_until = 0.0
 
 else:
     SonOfAntonTUIApp = None  # type: ignore

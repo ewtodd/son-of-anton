@@ -70,6 +70,7 @@ type live struct {
 	announced           int64
 	usage               usageTotals
 	ctxTokens           int
+	toolCalls           int // a child's tool calls so far, those of earlier runs included
 	title               string
 	compactions         int
 	compacting          bool // a manual compaction is running
@@ -85,6 +86,7 @@ func newLive(s *Server, rec store.Session, sum store.Summary) *live {
 	return &live{
 		srv: s, id: rec.ID, kind: rec.Kind, cwd: rec.Cwd, parent: rec.ParentID, agent: rec.Agent, bg: map[string]context.CancelFunc{},
 		created: rec.Created, updated: sum.Updated, preview: sum.Preview,
+		usage: usageTotals{rec.Usage.Input, rec.Usage.Output, rec.Usage.Cached, rec.Usage.Reasoning, rec.Usage.Calls}, ctxTokens: rec.ContextTokens,
 		viewers: map[*conn]bool{}, waiting: true,
 		approvals: map[string]*pendingApproval{}, questions: map[string]*pendingQuestion{}, resolved: map[string]bool{},
 	}
@@ -159,16 +161,35 @@ func (l *live) startTurn(text string) {
 
 // onAgent receives the agent loop's events (no lock held on entry).
 func (l *live) onAgent(e agent.Event) {
+	if p := l.onAgentLocked(e); p != nil {
+		// A child's tool starting is news to its parent. The child's lock is
+		// released first: the parent's is taken on its own.
+		if parent := l.srv.loaded(l.parent); parent != nil {
+			parent.mu.Lock()
+			parent.emit("child.progress", p)
+			parent.mu.Unlock()
+		}
+	}
+}
+
+// onAgentLocked handles e under the lock and returns the child.progress
+// payload when e is a child's tool start.
+func (l *live) onAgentLocked(e agent.Event) (progress map[string]any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	switch e.Kind {
 	case "assistant.delta", "reasoning.delta":
 		l.emit(e.Kind, map[string]any{"text": e.Text})
 	case "tool.start":
-		l.emit("tool.start", map[string]any{"call_id": e.CallID, "name": e.Tool, "arguments": e.Text, "summary": summarize(e.Tool, e.Text)})
+		summary := summarize(e.Tool, e.Text)
+		l.emit("tool.start", map[string]any{"call_id": e.CallID, "name": e.Tool, "arguments": e.Text, "summary": summary})
+		l.toolCalls++
+		if l.parent != "" {
+			progress = map[string]any{"child_id": l.id, "name": e.Tool, "summary": summary, "tool_calls": l.toolCalls}
+		}
 	case "tool.end":
 		l.emit("tool.end", map[string]any{"call_id": e.CallID, "name": e.Tool, "result": e.Text,
-			"is_error": isError(e.Text), "duration_ms": e.Duration.Milliseconds()})
+			"is_error": isError(e.Tool, e.Text), "duration_ms": e.Duration.Milliseconds()})
 	case "compaction":
 		l.compacted(*e.Compaction)
 	case "warning":
@@ -188,6 +209,7 @@ func (l *live) onAgent(e agent.Event) {
 		}
 		l.tail = open
 	}
+	return progress
 }
 
 // finish records the end of a turn and decides what runs next.
@@ -210,6 +232,10 @@ func (l *live) finish(res agent.Result, err error) {
 	l.usage.calls += res.APICalls
 	if res.APICalls > 0 {
 		l.ctxTokens = res.Last.PromptTokens + res.Last.CompletionTokens
+	}
+	if err := l.srv.st.AddUsage(context.Background(), l.id, store.Usage{Input: res.Usage.PromptTokens, Output: res.Usage.CompletionTokens,
+		Cached: res.Usage.CachedTokens, Reasoning: res.Usage.ReasoningTokens, Calls: res.APICalls}, l.ctxTokens); err != nil {
+		l.emit("notice", map[string]any{"level": "warning", "text": "storing usage: " + err.Error()})
 	}
 	if n := l.sess.ContextLength(); n != l.ctxKnown {
 		// An overflow error stated the real window: keep it for the session's life.

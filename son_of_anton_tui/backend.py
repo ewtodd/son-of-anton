@@ -71,11 +71,50 @@ def tool_summary(name: str, arguments: Any) -> str:
         "search_files": "pattern", "clarify": "question",
     }.get(name)
     text = str(args.get(pick, "")) if pick else ""
+    if name == "task":
+        text = _task_label(args)
     if not text:
         raw = arguments if isinstance(arguments, str) else json.dumps(args)
         text = raw or name
     text = " ".join(text.split())
     return text[:120]
+
+
+def titlecase(text: str) -> str:
+    """opencode's ``Locale.titlecase``: each letter that starts a word, upper-cased."""
+    return re.sub(r"\b\w", lambda m: m.group().upper(), text)
+
+
+def _task_label(args: dict) -> str:
+    """A task row's label, as the daemon's summary has it."""
+    agent = titlecase(str(args.get("subagent_type") or "general"))
+    background = " (background)" if args.get("background") is True else ""
+    return f"{agent} Task{background} — {args.get('description') or ''}"
+
+
+def subagent_duration(ms: Any) -> str:
+    """opencode's ``Locale.duration``."""
+    ms = int(ms or 0)
+    if ms < 1000:
+        return f"{ms}ms"
+    if ms < 60_000:
+        return f"{ms / 1000:.1f}s"
+    if ms < 3_600_000:
+        return f"{ms // 60_000}m {ms % 60_000 // 1000}s"
+    if ms < 86_400_000:
+        return f"{ms // 3_600_000}h {ms % 3_600_000 // 60_000}m"
+    return f"{ms // 86_400_000}d {ms % 86_400_000 // 3_600_000}h"
+
+
+def _done_detail(tool_calls: Any, duration_ms: Any) -> str:
+    """The line under a finished task row (opencode's formatCompletedSubagentDetail)."""
+    n = int(tool_calls or 0)
+    duration = subagent_duration(duration_ms)
+    return f"↳ {duration}" if n == 0 else f"↳ {n} toolcall{'' if n == 1 else 's'} · {duration}"
+
+
+_TASK_RESULT = re.compile(r'<task id="([^"]+)" state="([^"]+)"')
+_CHILD_TITLE = re.compile(r"(.*) \(@(.+) subagent\)")
 
 
 def _parse_time(value: Any) -> Optional[float]:
@@ -125,6 +164,194 @@ def _result_is_error(content: Any) -> bool:
     return isinstance(obj, dict) and bool(obj.get("error"))
 
 
+class _Stream:
+    """What turns one attached session's daemon events into typed ones.
+
+    The parent (the driver) and a viewed child each have their own: the open
+    block, the open tool calls, the last row seen and the events held while
+    an attach is in flight are per session, not per connection.
+    """
+
+    def __init__(self, sid: Optional[str], emit: Callable[..., None]) -> None:
+        self.sid = sid
+        self.emit = emit
+        self.open: Optional[str] = None  # "assistant" | "reasoning"
+        self.calls: dict = {}  # call_id -> (name, summary)
+        self.action = ""
+        self.last_seq = 0
+        self._lock = threading.Lock()  # guards attaching/held
+        self.attaching = False
+        self.held: list = []
+
+    def note(self, text: str, muted: bool = True) -> None:
+        self.emit("ansi", text=text, stderr=muted)
+
+    def reset(self) -> None:
+        self.open = None
+        self.calls.clear()
+        self.action = ""
+
+    # ---- events arriving while an attach is in flight are held ----
+    def begin(self) -> None:
+        with self._lock:
+            self.attaching = True
+            self.held = []
+
+    def deliver(self, p: dict, handle: Callable[[dict], None]) -> None:
+        with self._lock:
+            if self.attaching:
+                self.held.append(p)
+                return
+        handle(p)
+
+    def end(self, handle: Callable[[dict], None]) -> None:
+        """Handle what was held, in order, then deliver directly again."""
+        while True:
+            with self._lock:
+                if not self.held:
+                    self.attaching = False
+                    return
+                p = self.held.pop(0)
+            handle(p)
+
+    # ---- history ----
+    def history(self, messages: list, *, more_before: bool = False, resumed: bool = False,
+                compactions: Optional[list] = None) -> list:
+        """Draw stored rows. Returns the task results among them as
+        ``(call_id, child_id, state)``."""
+        results: list = []
+        if not messages:
+            return results
+        # A compaction is drawn after the row it summarizes up to.
+        after_seq = {int(c.get("through_seq") or 0): c for c in compactions or []}
+        if resumed:
+            hidden = " · earlier messages not shown" if more_before else ""
+            self.note(f"resumed session {self.sid}{hidden}")
+        open_calls: dict = {}
+        hint = False  # the message just drawn called task: its hint follows its tool rows
+        for m in messages:
+            self.last_seq = max(self.last_seq, int(m.get("seq") or 0))
+            role = m.get("role")
+            content = (m.get("content") or "").strip()
+            if hint and role != "tool":
+                self.emit("hint")
+                hint = False
+            if role == "user":
+                if content.startswith("[Background process"):
+                    self.note(content.splitlines()[0][:200])
+                elif content:
+                    self.emit("user", text=content)
+            elif role == "assistant":
+                if content in (INTERRUPTED_TEXT, FAILED_TEXT):
+                    self.note(content)
+                else:
+                    self._render_assistant(m, content, open_calls)
+                    hint = _calls_task(m)
+            elif role == "tool":
+                cid = m.get("tool_call_id", "")
+                name, label = open_calls.pop(cid, (m.get("tool_name", ""), ""))
+                found = _TASK_RESULT.match(m.get("content") or "") if name == "task" else None
+                if found:
+                    results.append((cid, found.group(1), found.group(2)))
+                self.emit("tool_done", name=name, label=label, duration=0.0,
+                          is_error=_result_is_error(m.get("content")) or bool(found and found.group(2) == "error"),
+                          call_id=cid)
+            done = after_seq.get(int(m.get("seq") or 0))
+            if done is not None:
+                self.emit("compaction", text=done.get("summary", ""), stats={})
+        if hint:
+            self.emit("hint")
+        for cid, (name, label) in open_calls.items():
+            self.emit("tool_done", name=name, label=label, duration=0.0, is_error=False, call_id=cid)
+        return results
+
+    def _render_assistant(self, m: dict, content: str, open_calls: dict) -> None:
+        if (m.get("reasoning") or "").strip():
+            self.emit("reasoning_block", text=m["reasoning"])
+        if content:
+            self.emit("markdown", text=content)
+        for call in m.get("tool_calls") or []:
+            name = call.get("name", "")
+            label = tool_summary(name, call.get("arguments"))
+            open_calls[call.get("id", "")] = (name, label)
+            self.emit("tool_start", name=name, label=label, call_id=call.get("id", ""))
+
+    # ---- live events ----
+    def close_open(self) -> None:
+        if self.open == "assistant":
+            self.emit("assistant_end")
+        elif self.open == "reasoning":
+            self.emit("reasoning_end")
+        self.open = None
+
+    def event(self, p: dict) -> bool:
+        """Translate a transcript event; False when ``p`` is not one."""
+        kind = p.get("kind")
+        if kind == "turn.start":
+            text = p.get("text") or ""
+            self.close_open()
+            if text.startswith("[Background process"):
+                self.note(text.splitlines()[0][:200])
+            else:
+                self.emit("user", text=text)
+        elif kind == "reasoning.delta":
+            if self.open != "reasoning":
+                self.close_open()
+                self.open = "reasoning"
+                self.emit("reasoning_start")
+            self.emit("reasoning_delta", text=p.get("text", ""))
+        elif kind == "assistant.delta":
+            if self.open != "assistant":
+                self.close_open()
+                self.open = "assistant"
+                self.emit("assistant_start")
+            self.emit("assistant_delta", text=p.get("text", ""))
+        elif kind == "tool.start":
+            self.close_open()
+            cid, name, summary = p.get("call_id", ""), p.get("name", ""), p.get("summary", "")
+            self.calls[cid] = (name, summary)
+            self.action = summary or name
+            self.emit("tool_start", name=name, label=summary, call_id=cid)
+        elif kind == "tool.end":
+            cid = p.get("call_id", "")
+            name, summary = self.calls.pop(cid, (p.get("name", ""), ""))
+            self.action = ""
+            name = name or p.get("name", "")
+            # A task row's own time is its child's: the row shows none.
+            self.emit("tool_done", name=name, label=summary,
+                      duration=0.0 if name == "task" else float(p.get("duration_ms") or 0) / 1000.0,
+                      is_error=bool(p.get("is_error")), call_id=cid)
+        elif kind == "message":
+            self.close_open()
+            m = p.get("message") or {}
+            self.last_seq = max(self.last_seq, int(m.get("seq") or 0))
+            # Its tool rows are all drawn by now: the step is stored after the tools ran.
+            if m.get("role") == "assistant" and _calls_task(m):
+                self.emit("hint")
+        elif kind == "turn.end":
+            self.close_open()
+            self.calls.clear()
+            self.action = ""
+            self.emit("turn_end")
+            status = p.get("status")
+            if status == "interrupted":
+                self.note("interrupted")
+            elif status == "error":
+                self.note(f"error: {p.get('error') or 'the turn failed'}", muted=False)
+        elif kind == "compaction":
+            self.close_open()
+            self.emit("compaction", text=p.get("summary", ""), stats={"before_tokens": p.get("before_tokens")})
+        elif kind == "notice":
+            self.note(p.get("text", ""), muted=p.get("level", "info") == "info")
+        else:
+            return False
+        return True
+
+
+def _calls_task(message: dict) -> bool:
+    return any(c.get("name") == "task" for c in message.get("tool_calls") or [])
+
+
 class DaemonBackend:
     def __init__(self, home: str, cwd: str, *, resume: Optional[str] = None,
                  continue_last: bool = False, model: Optional[str] = None, yolo: bool = False,
@@ -145,14 +372,15 @@ class DaemonBackend:
         self._sink: Optional[Sink] = None
         self._pending: list = []  # (kind, payload) emitted before the app mounted
         self._elock = threading.RLock()
-        self._lock = threading.Lock()  # guards _attaching/_held
-        self._attaching = False
-        self._held: list = []
-        self._last_seq = 0
+        self._main = _Stream(None, self.emit)
         self._queue: list = []  # [{id, kind, text}]
-        self._open: Optional[str] = None  # "assistant" | "reasoning"
-        self._calls: dict = {}  # call_id -> (name, summary)
-        self._action = ""
+        # The subagent view: the child attached as a viewer, beside the driven
+        # session, on the same connection. ``view_id`` is None when none is shown.
+        self.view_id: Optional[str] = None
+        self._view: Optional[_Stream] = None
+        self._kids: list = []  # the session's children (session objects), in creation order
+        self._task_rows: dict = {}  # child id -> the call id of its task row
+        self._running_kids: set = set()
         self._closing = False
         self._reconnecting = False
 
@@ -277,9 +505,8 @@ class DaemonBackend:
         params: dict = {"session": sid, "as": "driver"}
         if after_seq:
             params["after_seq"] = after_seq
-        with self._lock:
-            self._attaching = True
-            self._held = []
+        st = self._main
+        st.begin()
         previous = self.session_id
         self.session_id = sid
         try:
@@ -288,76 +515,32 @@ class DaemonBackend:
             except BaseException:
                 self.session_id = previous
                 raise
-            self._open = None
-            self._calls.clear()
-            self._action = ""
+            st.reset()
+            st.sid = sid
+            if sid != previous:
+                self._kids, self._task_rows = [], {}
+                self._set_running(set())
             self.role = res.get("role", "driver")
             self._queue = list(res.get("queue") or [])
             if res.get("gap") or clear:
                 self.emit("clear")
             self._update_session(res.get("session") or {})
             self.emit("queue", items=[q.get("text", "") for q in self._queue])
-            self._render_history(res.get("messages") or [], more_before=bool(res.get("more_before")),
-                                 resumed=resumed,
-                                 compactions=res.get("compactions") or [])
+            results = st.history(res.get("messages") or [], more_before=bool(res.get("more_before")),
+                                 resumed=resumed, compactions=res.get("compactions") or [])
+            self._fill_task_details(results)
         finally:
-            while True:
-                with self._lock:
-                    if not self._held:
-                        self._attaching = False
-                        break
-                    p = self._held.pop(0)
-                if self.session_id == sid:
-                    self._handle(p)
+            st.end(lambda p: self._handle(p) if self.session_id == sid else None)
 
-    # ------------------------------------------------------------------
-    # History
-    # ------------------------------------------------------------------
-    def _render_history(self, messages: list, *, more_before: bool, resumed: bool,
-                        compactions: Optional[list] = None) -> None:
-        if not messages:
-            return
-        # A compaction is drawn after the row it summarizes up to.
-        after_seq = {int(c.get("through_seq") or 0): c for c in compactions or []}
-        if resumed:
-            hidden = " · earlier messages not shown" if more_before else ""
-            self.note(f"resumed session {self.session_id}{hidden}")
-        open_calls: dict = {}
-        for m in messages:
-            self._last_seq = max(self._last_seq, int(m.get("seq") or 0))
-            role = m.get("role")
-            content = (m.get("content") or "").strip()
-            if role == "user":
-                if content.startswith("[Background process"):
-                    self.note(content.splitlines()[0][:200])
-                elif content:
-                    self.emit("user", text=content)
-            elif role == "assistant":
-                if content in (INTERRUPTED_TEXT, FAILED_TEXT):
-                    self.note(content)
-                else:
-                    self._render_assistant(m, content, open_calls)
-            elif role == "tool":
-                cid = m.get("tool_call_id", "")
-                name, label = open_calls.pop(cid, (m.get("tool_name", ""), ""))
-                self.emit("tool_done", name=name, label=label, duration=0.0,
-                          is_error=_result_is_error(m.get("content")), call_id=cid)
-            done = after_seq.get(int(m.get("seq") or 0))
-            if done is not None:
-                self.emit("compaction", text=done.get("summary", ""), stats={})
-        for cid, (name, label) in open_calls.items():
-            self.emit("tool_done", name=name, label=label, duration=0.0, is_error=False, call_id=cid)
-
-    def _render_assistant(self, m: dict, content: str, open_calls: dict) -> None:
-        if (m.get("reasoning") or "").strip():
-            self.emit("reasoning_block", text=m["reasoning"])
-        if content:
-            self.emit("markdown", text=content)
-        for call in m.get("tool_calls") or []:
-            name = call.get("name", "")
-            label = tool_summary(name, call.get("arguments"))
-            open_calls[call.get("id", "")] = (name, label)
-            self.emit("tool_start", name=name, label=label, call_id=call.get("id", ""))
+    def _fill_task_details(self, results: list) -> None:
+        """Map the history's task rows to their children, and write what each did."""
+        kids = {k.get("id"): k for k in self.children(refresh=True)}
+        for call_id, child_id, state in results:
+            self._task_rows[child_id] = call_id
+            kid = kids.get(child_id)
+            if state in ("completed", "running") and kid is not None and kid.get("status") != "running":
+                self.emit("tool_detail", call_id=call_id,
+                          detail=_done_detail(kid.get("tool_calls"), kid.get("duration_ms")))
 
     # ------------------------------------------------------------------
     # Events
@@ -366,75 +549,27 @@ class DaemonBackend:
         if p.get("kind") == "connection.lost":
             self._lost()
             return
-        if p.get("session") != self.session_id:
-            return
-        with self._lock:
-            if self._attaching:
-                self._held.append(p)
-                return
-        self._handle(p)
-
-    def _close_open(self) -> None:
-        if self._open == "assistant":
-            self.emit("assistant_end")
-        elif self._open == "reasoning":
-            self.emit("reasoning_end")
-        self._open = None
+        sid = p.get("session")
+        if sid == self.session_id:
+            self._main.deliver(p, self._handle)
+        elif sid is not None and sid == self.view_id:
+            view = self._view
+            if view is not None:
+                view.deliver(p, lambda q: self._handle_view(view, q))
 
     def _handle(self, p: dict) -> None:
         kind = p.get("kind")
-        if kind == "turn.start":
-            text = p.get("text") or ""
-            self._close_open()
-            if text.startswith("[Background process"):
-                self.note(text.splitlines()[0][:200])
-            else:
-                self.emit("user", text=text)
-        elif kind == "reasoning.delta":
-            if self._open != "reasoning":
-                self._close_open()
-                self._open = "reasoning"
-                self.emit("reasoning_start")
-            self.emit("reasoning_delta", text=p.get("text", ""))
-        elif kind == "assistant.delta":
-            if self._open != "assistant":
-                self._close_open()
-                self._open = "assistant"
-                self.emit("assistant_start")
-            self.emit("assistant_delta", text=p.get("text", ""))
-        elif kind == "tool.start":
-            self._close_open()
-            cid, name, summary = p.get("call_id", ""), p.get("name", ""), p.get("summary", "")
-            self._calls[cid] = (name, summary)
-            self._action = summary or name
-            self.emit("tool_start", name=name, label=summary, call_id=cid)
-        elif kind == "tool.end":
-            cid = p.get("call_id", "")
-            name, summary = self._calls.pop(cid, (p.get("name", ""), ""))
-            self._action = ""
-            self.emit("tool_done", name=name or p.get("name", ""), label=summary,
-                      duration=float(p.get("duration_ms") or 0) / 1000.0,
-                      is_error=bool(p.get("is_error")), call_id=cid)
-        elif kind == "message":
-            self._close_open()
-            m = p.get("message") or {}
-            self._last_seq = max(self._last_seq, int(m.get("seq") or 0))
-        elif kind == "turn.end":
-            self._close_open()
-            self._calls.clear()
-            self._action = ""
-            self.emit("turn_end")
-            status = p.get("status")
-            if status == "interrupted":
-                self.note("interrupted")
-            elif status == "error":
-                self.note(f"error: {p.get('error') or 'the turn failed'}", muted=False)
-        elif kind == "compaction":
-            self._close_open()
-            self.emit("compaction", text=p.get("summary", ""), stats={"before_tokens": p.get("before_tokens")})
-        elif kind == "notice":
-            self.note(p.get("text", ""), muted=p.get("level", "info") == "info")
-        elif kind == "queue.updated":
+        if kind == "tool.start" and p.get("name") == "task":
+            # A call that continues a child has no child.created: its row is this one.
+            try:
+                resumed = json.loads(p.get("arguments") or "{}").get("task_id")
+            except (ValueError, AttributeError):
+                resumed = None
+            if resumed:
+                self._task_rows[str(resumed)] = p.get("call_id", "")
+        if self._main.event(p):
+            return
+        if kind == "queue.updated":
             self._queue = list(p.get("items") or [])
             self.emit("queue", items=[q.get("text", "") for q in self._queue])
         elif kind == "session.updated":
@@ -445,8 +580,10 @@ class DaemonBackend:
             if self.role != "driver":
                 self.note("another client is now the driver of this session")
         elif kind == "approval.request":
+            child = p.get("child_session") or ""
             self.emit("approval", approval_id=p.get("approval_id", ""), approval_kind=p.get("approval_kind", ""), subject=p.get("subject", ""),
-                      reasons=p.get("reasons") or [], choices=p.get("choices") or [])
+                      reasons=p.get("reasons") or [], choices=p.get("choices") or [],
+                      subagent=self._task_title(child) if child else "")
         elif kind == "approval.resolved":
             self.emit("approval_resolved", approval_id=p.get("approval_id", ""))
         elif kind == "question.request":
@@ -454,6 +591,38 @@ class DaemonBackend:
                       choices=p.get("choices") or [], multi_select=bool(p.get("multi_select")))
         elif kind == "question.resolved":
             self.emit("question_resolved", question_id=p.get("question_id", ""))
+        elif kind == "child.created":
+            child = p.get("child") or {}
+            if child.get("id"):
+                self._task_rows[child["id"]] = p.get("call_id", "")
+                if not any(k.get("id") == child["id"] for k in self._kids):
+                    self._kids.append(child)
+                self._set_running(self._running_kids | {child["id"]})
+        elif kind == "child.progress":
+            call_id = self._task_rows.get(p.get("child_id", ""))
+            if call_id:
+                self.emit("tool_detail", call_id=call_id, detail=f"↳ {p.get('name', '')} {p.get('summary', '')}".rstrip())
+        elif kind == "child.done":
+            child_id = p.get("child_id", "")
+            self._set_running(self._running_kids - {child_id})
+            call_id = self._task_rows.get(child_id)
+            if call_id:
+                detail = _done_detail(p.get("tool_calls"), p.get("duration_ms")) if p.get("status") == "done" else ""
+                self.emit("tool_detail", call_id=call_id, detail=detail)
+
+    def _set_running(self, ids: set) -> None:
+        if ids != self._running_kids:
+            self._running_kids = ids
+            self.emit("subagents", running=len(ids))
+
+    def _task_title(self, child_id: str) -> str:
+        """``<Agent> Task — <description>`` for a child, read from its title."""
+        for k in self._kids:
+            if k.get("id") == child_id:
+                found = _CHILD_TITLE.fullmatch(k.get("title") or "")
+                if found:
+                    return f"{titlecase(found.group(2))} Task — {found.group(1)}"
+        return "Subagent"
 
     # ------------------------------------------------------------------
     # Connection loss
@@ -462,7 +631,10 @@ class DaemonBackend:
         if self._closing or self._reconnecting:
             return
         self._reconnecting = True
-        self._open = None
+        self._main.open = None
+        if self.view_id is not None:
+            self.view_id, self._view = None, None
+            self.emit("view_close")
         self.emit("prompts_clear")
         self.emit("status", running=False)
         self.note("lost the connection to soa-d; reconnecting…", muted=False)
@@ -479,7 +651,7 @@ class DaemonBackend:
                     client = _daemon.connect(self.home)
                     client.on_event(self._on_event)
                     self._client = client
-                    self._attach(self.session_id or "", after_seq=self._last_seq, resumed=False)
+                    self._attach(self.session_id or "", after_seq=self._main.last_seq, resumed=False)
                     self.note("reconnected to soa-d")
                     return
                 except _daemon.DaemonError as exc:
@@ -490,6 +662,60 @@ class DaemonBackend:
                     delay = min(delay * 2, 10.0)
         finally:
             self._reconnecting = False
+
+    # ------------------------------------------------------------------
+    # Subagents
+    # ------------------------------------------------------------------
+    def children(self, refresh: bool = False) -> list:
+        """The session's children in creation order (session objects)."""
+        if refresh and self.session_id:
+            try:
+                kids = self._call("session.children", self._sess()).get("children") or []
+            except _daemon.DaemonError:
+                return list(self._kids)
+            self._kids = list(kids)
+            self._set_running({k["id"] for k in kids if k.get("status") == "running"})
+        return list(self._kids)
+
+    def _view_emit(self, cid: str) -> Callable[..., None]:
+        return lambda kind, **payload: self.emit("view", sid=cid, event=kind, args=payload)
+
+    def view(self, cid: str) -> None:
+        """Show a child's transcript: attach it as a viewer, beside the driven session."""
+        old, self.view_id = self.view_id, cid
+        st = self._view = _Stream(cid, self._view_emit(cid))
+        if old and old != cid:
+            self.detach_session(old)
+        st.begin()
+        try:
+            res = self._call("session.attach", {"session": cid, "as": "viewer"})
+            if self.view_id != cid:  # released while the call was in flight
+                return
+            st.reset()
+            self.emit("view", sid=cid, event="state", args={"state": res.get("session") or {}})
+            st.history(res.get("messages") or [], compactions=res.get("compactions") or [])
+        except _daemon.DaemonError as exc:
+            self.note(f"could not open the subagent: {exc.message}", muted=False)
+        finally:
+            st.end(lambda p: self._handle_view(st, p) if self.view_id == cid else None)
+
+    def _handle_view(self, st: _Stream, p: dict) -> None:
+        if p.get("kind") == "session.updated":
+            if isinstance(p.get("state"), dict):
+                st.emit("state", state=p["state"])
+        else:
+            st.event(p)
+
+    def release_view(self) -> Optional[str]:
+        """Stop showing the child now; returns its id, to detach with ``detach_session``."""
+        old, self.view_id, self._view = self.view_id, None, None
+        return old
+
+    def detach_session(self, sid: str) -> None:
+        try:
+            self._call("session.detach", {"session": sid}, timeout=5.0)
+        except _daemon.DaemonError:
+            pass
 
     # ------------------------------------------------------------------
     # What the app asks for
@@ -548,7 +774,7 @@ class DaemonBackend:
         return self.permission_mode()
 
     def status_action(self) -> str:
-        return self._action
+        return self._main.action
 
     def prompt_start_time(self) -> Optional[float]:
         if self.session.get("status") != "running":
@@ -785,13 +1011,18 @@ class DaemonBackend:
 
     def _switch(self, sid: str, *, resumed: bool) -> None:
         old = self.session_id
-        saved_seq = self._last_seq
-        self._last_seq = 0
+        saved_seq = self._main.last_seq
+        self._main.last_seq = 0
+        gone = self.release_view()
+        if gone:
+            self.emit("view_close")
         try:
             self._attach(sid, resumed=resumed, clear=True)
         except _daemon.DaemonError:
-            self._last_seq = saved_seq
+            self._main.last_seq = saved_seq
             raise
+        if gone:
+            self.detach_session(gone)
         if old and old != sid:
             try:
                 self._call("session.detach", {"session": old}, timeout=5.0)

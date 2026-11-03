@@ -427,9 +427,10 @@ class _ToolBlock(_Block):
 
     The row is one line, cut to the feed width; a click unfolds it to the
     whole call, wrapped under the label, and a second click folds it again.
+    A row may carry a ``detail`` line under it, which stays when it finishes.
     """
 
-    __slots__ = ("label", "icon", "done", "is_error", "duration", "started", "frame", "expanded")
+    __slots__ = ("label", "icon", "done", "is_error", "duration", "started", "frame", "expanded", "detail")
 
     def __init__(self, name: str) -> None:
         super().__init__("tool")
@@ -441,6 +442,7 @@ class _ToolBlock(_Block):
         self.started = time.monotonic()
         self.frame = " "
         self.expanded = False
+        self.detail = ""  # a second, muted line under the label (a task row's subagent)
 
     def toggle(self) -> None:
         """Unfold or fold the row in place (a click on it)."""
@@ -483,6 +485,11 @@ class _ToolBlock(_Block):
             row.no_wrap = True
             row.overflow = "ellipsis"
             self.lines = _to_strips(row, width - _TEXT_MARGIN)
+        if self.detail:
+            sub = Text.assemble(" " * cell_len(icon.plain), (self.detail, styles.muted))
+            sub.no_wrap = True
+            sub.overflow = "ellipsis"
+            self.lines = self.lines + _to_strips(sub, width - _TEXT_MARGIN)
         self.height = len(self.lines)
         self.dirty = False
 

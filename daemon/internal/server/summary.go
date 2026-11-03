@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 )
@@ -31,6 +32,8 @@ func summarize(tool, args string) string {
 		if items, ok := a["todos"].([]any); ok {
 			out = itemCount(len(items))
 		}
+	case "task":
+		out = taskLabel(a)
 	}
 	if out == "" {
 		out = args
@@ -50,8 +53,13 @@ func itemCount(n int) string {
 }
 
 // isError reports whether a tool result is a JSON object with a non-empty
-// error field.
-func isError(result string) bool {
+// error field, or a task result whose state is error.
+func isError(tool, result string) bool {
+	if tool == "task" && strings.HasPrefix(result, `<task id="`) {
+		if line, _, _ := strings.Cut(result, "\n"); strings.Contains(line, `state="error"`) {
+			return true
+		}
+	}
 	var r struct {
 		Error any `json:"error"`
 	}
@@ -71,4 +79,32 @@ func isError(result string) bool {
 func usageObj(u provider.Usage) map[string]any {
 	return map[string]any{"prompt_tokens": u.PromptTokens, "completion_tokens": u.CompletionTokens,
 		"reasoning_tokens": u.ReasoningTokens, "cached_tokens": u.CachedTokens}
+}
+
+// taskLabel is a task call's row: "<Agent> Task — <description>", with
+// "(background)" after "Task" for a background one.
+func taskLabel(a map[string]any) string {
+	typ, _ := a["subagent_type"].(string)
+	if typ == "" {
+		typ = "general"
+	}
+	desc, _ := a["description"].(string)
+	bg := ""
+	if b, _ := a["background"].(bool); b {
+		bg = " (background)"
+	}
+	return Titlecase(typ) + " Task" + bg + " — " + desc
+}
+
+// Titlecase upper-cases each letter that starts a word (opencode's titlecase).
+func Titlecase(s string) string {
+	r := []rune(s)
+	start := true
+	for i, c := range r {
+		if start {
+			r[i] = unicode.ToUpper(c)
+		}
+		start = !(c == '_' || unicode.IsLetter(c) || unicode.IsDigit(c))
+	}
+	return string(r)
 }

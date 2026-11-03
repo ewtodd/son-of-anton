@@ -152,6 +152,13 @@ ALTER TABLE sessions ADD COLUMN chat TEXT;
 UPDATE schema_version SET version = 6;`,
 	`ALTER TABLE sessions ADD COLUMN agent TEXT;
 UPDATE schema_version SET version = 7;`,
+	`ALTER TABLE sessions ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN api_calls INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0;
+UPDATE schema_version SET version = 8;`,
 }
 
 func migrate(db *sql.DB) error {
@@ -217,7 +224,14 @@ type Session struct {
 	Chat  string
 	// Agent is a child session's subagent type ("explore"); "" otherwise.
 	Agent string
+	// Usage is the session's token totals over all its turns; ContextTokens is
+	// what its last request held.
+	Usage         Usage
+	ContextTokens int
 }
+
+// Usage is a session's token and request totals.
+type Usage struct{ Input, Output, Cached, Reasoning, Calls int }
 
 // newSessionID returns YYYYmmdd_HHMMSS_ plus six random hex chars (local
 // time).
@@ -279,9 +293,10 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 		agent    sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, title_source, scope, chat, agent
+		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, title_source, scope, chat, agent, input_tokens, output_tokens, cached_tokens, reasoning_tokens, api_calls, context_tokens
 		 FROM sessions WHERE id = ?`, id).
-		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended, &effort, &mode, &work, &tsource, &sess.Scope, &chat, &agent)
+		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended, &effort, &mode, &work, &tsource, &sess.Scope, &chat, &agent,
+			&sess.Usage.Input, &sess.Usage.Output, &sess.Usage.Cached, &sess.Usage.Reasoning, &sess.Usage.Calls, &sess.ContextTokens)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -351,7 +366,8 @@ type Message struct {
 
 // AppendMessages appends messages to a session's transcript in one
 // transaction, numbering them from 1 per session. It returns the assigned
-// seqs. Appending to an unknown session fails and writes nothing.
+// seqs. A message with a TS keeps it; the others are stamped with the time of
+// the call. Appending to an unknown session fails and writes nothing.
 func (s *Store) AppendMessages(ctx context.Context, sessionID string, msgs ...Message) ([]int64, error) {
 	if len(msgs) == 0 {
 		return nil, nil
@@ -382,11 +398,15 @@ func (s *Store) AppendMessages(ctx context.Context, sessionID string, msgs ...Me
 	for i := range msgs {
 		nextSeq++
 		m := &msgs[i]
+		ts := now
+		if !m.TS.IsZero() {
+			ts = m.TS
+		}
 		res, err := tx.ExecContext(ctx,
 			`INSERT INTO messages (session_id, seq, role, content, api_content, reasoning, tool_calls, tool_call_id, tool_name, ts)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sessionID, nextSeq, m.Role, m.Content, nullStr(m.APIContent), nullStr(m.Reasoning),
-			nullStr(string(m.ToolCalls)), nullStr(m.ToolCallID), nullStr(m.ToolName), formatTime(now))
+			nullStr(string(m.ToolCalls)), nullStr(m.ToolCallID), nullStr(m.ToolName), formatTime(ts))
 		if err != nil {
 			return nil, err
 		}
@@ -399,7 +419,7 @@ func (s *Store) AppendMessages(ctx context.Context, sessionID string, msgs ...Me
 			return nil, err
 		}
 		m.Seq = nextSeq
-		m.TS = now
+		m.TS = ts
 		seqs = append(seqs, nextSeq)
 	}
 	return seqs, tx.Commit()
@@ -561,4 +581,55 @@ func (s *Store) Children(ctx context.Context, parentID string) ([]Session, error
 		out = append(out, sess)
 	}
 	return out, nil
+}
+
+// AddUsage adds u to the session's totals and, when contextTokens is above
+// zero, sets the session's context to it.
+func (s *Store) AddUsage(ctx context.Context, id string, u Usage, contextTokens int) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET input_tokens = input_tokens + ?, output_tokens = output_tokens + ?,
+		 cached_tokens = cached_tokens + ?, reasoning_tokens = reasoning_tokens + ?, api_calls = api_calls + ?,
+		 context_tokens = CASE WHEN ? > 0 THEN ? ELSE context_tokens END WHERE id = ?`,
+		u.Input, u.Output, u.Cached, u.Reasoning, u.Calls, contextTokens, contextTokens, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("store: unknown session %q", id)
+	}
+	return nil
+}
+
+// RunStats is a session's tool calls and how long its transcript spans.
+type RunStats struct {
+	ToolCalls int
+	Duration  time.Duration
+}
+
+// RunStats counts the session's tool rows and measures its first row to its
+// last (0 under two rows).
+func (s *Store) RunStats(ctx context.Context, id string) (RunStats, error) {
+	var rs RunStats
+	var first, last sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT (SELECT COUNT(*) FROM messages WHERE session_id = ?1 AND role = 'tool'),
+		        (SELECT ts FROM messages WHERE session_id = ?1 ORDER BY seq LIMIT 1),
+		        (SELECT ts FROM messages WHERE session_id = ?1 ORDER BY seq DESC LIMIT 1)`, id).
+		Scan(&rs.ToolCalls, &first, &last)
+	if err != nil {
+		return RunStats{}, err
+	}
+	if !first.Valid || first.String == last.String {
+		return rs, nil
+	}
+	t0, err := parseTime(first.String)
+	if err != nil {
+		return RunStats{}, err
+	}
+	t1, err := parseTime(last.String)
+	if err != nil {
+		return RunStats{}, err
+	}
+	rs.Duration = t1.Sub(t0)
+	return rs, nil
 }

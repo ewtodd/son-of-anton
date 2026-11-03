@@ -292,6 +292,13 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 	}
 	l := newLive(s, rec, sum)
 	l.title = rec.Title
+	if rec.Kind == "child" {
+		rs, err := s.st.RunStats(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		l.toolCalls = rs.ToolCalls
+	}
 	comps, err := s.st.Compactions(ctx, id)
 	if err != nil {
 		return nil, err

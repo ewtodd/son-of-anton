@@ -360,8 +360,9 @@ func summaryObj(sum store.Summary) map[string]any {
 		"id": ss.ID, "kind": ss.Kind, "title": ss.Title, "cwd": ss.Cwd,
 		"model": ss.Model, "reasoning_effort": ss.ReasoningEffort, "mode": ss.Mode,
 		"status": "idle", "created": ss.Created.Format(time.RFC3339), "updated": sum.Updated.Format(time.RFC3339),
-		"preview": sum.Preview, "context_tokens": 0, "background_processes": 0, "parent_id": ss.ParentID, "agent": ss.Agent,
-		"usage": map[string]any{"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0, "reasoning_tokens": 0, "api_calls": 0},
+		"preview": sum.Preview, "context_tokens": ss.ContextTokens, "background_processes": 0, "parent_id": ss.ParentID, "agent": ss.Agent,
+		"usage": map[string]any{"input_tokens": ss.Usage.Input, "output_tokens": ss.Usage.Output, "cached_tokens": ss.Usage.Cached,
+			"reasoning_tokens": ss.Usage.Reasoning, "api_calls": ss.Usage.Calls},
 	}
 }
 

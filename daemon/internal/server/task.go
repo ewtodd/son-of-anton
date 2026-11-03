@@ -28,13 +28,18 @@ func (s *Server) children(id string) (any, *rpcError) {
 	for i, k := range kids {
 		if l := s.loaded(k.ID); l != nil {
 			out[i] = l.snapshot()
-			continue
+		} else {
+			sum, err := s.st.SessionSummary(s.base, k.ID)
+			if err != nil {
+				return nil, errf(codeInternal, "%v", err)
+			}
+			out[i] = summaryObj(sum)
 		}
-		sum, err := s.st.SessionSummary(s.base, k.ID)
+		rs, err := s.st.RunStats(s.base, k.ID)
 		if err != nil {
 			return nil, errf(codeInternal, "%v", err)
 		}
-		out[i] = summaryObj(sum)
+		out[i]["tool_calls"], out[i]["duration_ms"] = rs.ToolCalls, rs.Duration.Milliseconds()
 	}
 	return map[string]any{"children": out}, nil
 }
@@ -172,12 +177,14 @@ func waitChild(ctx context.Context, child *live, ended <-chan childEnd) childEnd
 // childDone announces a child's end on its parent. A steered turn counts as
 // interrupted.
 func (l *live) childDone(child, status string) {
+	rs, _ := l.srv.st.RunStats(context.Background(), child)
 	if status == "steered" {
 		status = "interrupted"
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.emit("child.done", map[string]any{"child_id": child, "status": status})
+	l.emit("child.done", map[string]any{"child_id": child, "status": status,
+		"tool_calls": rs.ToolCalls, "duration_ms": rs.Duration.Milliseconds()})
 }
 
 // runTask starts a turn with text on an idle session, calling w when the
