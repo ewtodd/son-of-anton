@@ -93,11 +93,11 @@ func taskLabel(a map[string]any) string {
 	if b, _ := a["background"].(bool); b {
 		bg = " (background)"
 	}
-	return Titlecase(typ) + " Task" + bg + " — " + desc
+	return titlecase(typ) + " Task" + bg + " — " + desc
 }
 
-// Titlecase upper-cases each letter that starts a word (opencode's titlecase).
-func Titlecase(s string) string {
+// titlecase upper-cases each letter that starts a word (opencode's titlecase).
+func titlecase(s string) string {
 	r := []rune(s)
 	start := true
 	for i, c := range r {

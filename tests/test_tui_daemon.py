@@ -670,12 +670,13 @@ def block_text(b) -> str:
 
 
 def view_text(app) -> str:
-    """Everything in the feed on screen (the child's, in a child view)."""
-    return "\n".join(block_text(b) for b in app.query_one("#feed")._blocks)
+    """Everything in the feed on screen (the child's, in a child view). The
+    app's own queries search its main screen whatever is pushed on it."""
+    return "\n".join(block_text(b) for b in app.screen.query_one("#feed")._blocks)
 
 
 def task_rows(app) -> list:
-    return [b for b in app.query_one("#feed")._blocks if b.kind == "tool" and " Task" in b.label]
+    return [b for b in app.screen.query_one("#feed")._blocks if b.kind == "tool" and " Task" in b.label]
 
 
 def static_text(widget) -> str:

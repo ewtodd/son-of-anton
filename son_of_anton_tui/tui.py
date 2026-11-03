@@ -1245,16 +1245,6 @@ if _TEXTUAL_AVAILABLE:
             super().__init__(**kwargs)
             self.theme = self._theme
 
-        def _get_dom_base(self) -> Any:
-            """Query the screen on show: a subagent's view has its own ``#feed``.
-
-            Textual's app queries the default screen whatever is pushed on it.
-            """
-            try:
-                return self.screen
-            except Exception:
-                return super()._get_dom_base()
-
         @property
         def _transcript(self) -> str:
             """The main transcript's assistant text (tests / recap)."""
@@ -1703,8 +1693,8 @@ if _TEXTUAL_AVAILABLE:
                 meta.append("  ·  ", style="dim")
                 meta.append(f"reasoning {effort}", style="dim")
             try:
-                self.screen_stack[0].query_one("#prompt-meta-left", Static).update(meta)
-                self.screen_stack[0].query_one("#prompt-meta-right", Static).update(
+                self.query_one("#prompt-meta-left", Static).update(meta)
+                self.query_one("#prompt-meta-right", Static).update(
                     Text(f"{len(self._attached())} attached") if self._attached() else Text()
                 )
             except Exception:
@@ -1773,29 +1763,29 @@ if _TEXTUAL_AVAILABLE:
             backend = self.backend
             cwd = _short_path(self._cwd())
             if backend is None:
-                self.screen_stack[0].query_one("#ctx-title", Static).update(self.agent_name)
-                self.screen_stack[0].query_one("#ctx-cwd", Static).update(cwd)
+                self.query_one("#ctx-title", Static).update(self.agent_name)
+                self.query_one("#ctx-cwd", Static).update(cwd)
                 return
             snap = self._snapshot()
-            self.screen_stack[0].query_one("#ctx-title", Static).update(snap.get("session_title") or "untitled")
-            self.screen_stack[0].query_one("#ctx-session-id", Static).update(str(getattr(backend, "session_id", "") or ""))
-            self.screen_stack[0].query_one("#ctx-cwd", Static).update(cwd)
-            self.screen_stack[0].query_one("#ctx-mode", Static).update(backend.permission_mode())
-            self.screen_stack[0].query_one("#ctx-reasoning", Static).update(
+            self.query_one("#ctx-title", Static).update(snap.get("session_title") or "untitled")
+            self.query_one("#ctx-session-id", Static).update(str(getattr(backend, "session_id", "") or ""))
+            self.query_one("#ctx-cwd", Static).update(cwd)
+            self.query_one("#ctx-mode", Static).update(backend.permission_mode())
+            self.query_one("#ctx-reasoning", Static).update(
                 snap.get("reasoning_label") or "medium (default)"
             )
             pct = snap.get("context_percent")
             if pct is None:
-                self.screen_stack[0].query_one("#ctx-bar", Static).update(Text("▱▱▱▱▱▱▱▱▱▱  —", style="dim"))
-                self.screen_stack[0].query_one("#ctx-tokens", Static).update("no turns yet")
+                self.query_one("#ctx-bar", Static).update(Text("▱▱▱▱▱▱▱▱▱▱  —", style="dim"))
+                self.query_one("#ctx-tokens", Static).update("no turns yet")
             else:
                 filled = max(0, min(10, round(pct / 10)))
-                self.screen_stack[0].query_one("#ctx-bar", Static).update(f"{'▰' * filled}{'▱' * (10 - filled)}  {pct}%")
-                self.screen_stack[0].query_one("#ctx-tokens", Static).update(
+                self.query_one("#ctx-bar", Static).update(f"{'▰' * filled}{'▱' * (10 - filled)}  {pct}%")
+                self.query_one("#ctx-tokens", Static).update(
                     f"{_fmt_tokens(snap.get('context_tokens', 0))} / {_fmt_tokens(snap.get('context_length') or 0)}"
                     + (f" · {snap['compactions']} compacted" if snap.get("compactions") else "")
                 )
-            self.screen_stack[0].query_one("#ctx-usage", Static).update(
+            self.query_one("#ctx-usage", Static).update(
                 f"in {_fmt_tokens(snap.get('session_input_tokens', 0))} · out {_fmt_tokens(snap.get('session_output_tokens', 0))}"
                 f" · {snap.get('session_api_calls', 0)} calls"
             )
@@ -1807,8 +1797,8 @@ if _TEXTUAL_AVAILABLE:
             if snap.get("active_background_subagents"):
                 bg.append(f"{snap['active_background_subagents']} subagents")
             bg_text = " · ".join(bg)
-            bg_label = self.screen_stack[0].query_one("#ctx-bg-label", Static)
-            bg_value = self.screen_stack[0].query_one("#ctx-bg", Static)
+            bg_label = self.query_one("#ctx-bg-label", Static)
+            bg_value = self.query_one("#ctx-bg", Static)
             bg_value.update(bg_text)
             # Nothing running is not "idle" — hide the row rather than imply
             # the whole session is parked while the user is mid-conversation.
@@ -1816,7 +1806,7 @@ if _TEXTUAL_AVAILABLE:
             if bg_label.display != want_row:
                 bg_label.display = want_row
                 bg_value.display = want_row
-            self.screen_stack[0].query_one("#ctx-elapsed", Static).update(f"session {snap.get('duration', '')}".rstrip())
+            self.query_one("#ctx-elapsed", Static).update(f"session {snap.get('duration', '')}".rstrip())
 
         # ---------------- modal servicing ----------------
         def _add_prompt(self, kind: str, prompt_id: str, data: dict) -> None:
