@@ -194,6 +194,11 @@ UPDATE schema_version SET version = 12;`,
 	`DROP TABLE held_messages;
 DROP TABLE held_asked;
 UPDATE schema_version SET version = 13;`,
+	// v14: a chat's empty model means it follows the instance's chat model
+	// (gateway.model) until /model chooses one. Chats could not choose before,
+	// so every stored chat model was the config of its day.
+	`UPDATE sessions SET model = '', reasoning_effort = '' WHERE kind = 'chat';
+UPDATE schema_version SET version = 14;`,
 }
 
 func migrate(db *sql.DB) error {

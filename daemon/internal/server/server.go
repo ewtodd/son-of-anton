@@ -332,6 +332,10 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 	if err != nil {
 		return nil, err
 	}
+	if rec.Kind == "chat" && rec.Model == "" {
+		// The chat follows the instance's chat model until /model chooses one.
+		rec.Model, rec.ReasoningEffort = s.chatModel(), ""
+	}
 	ep, err := s.cfg.Endpoint(rec.Model)
 	if err != nil {
 		return nil, err

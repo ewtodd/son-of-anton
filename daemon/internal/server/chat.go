@@ -493,7 +493,8 @@ func (s *Server) createChat(ctx context.Context, stamp string) (string, error) {
 		return "", err
 	}
 	defer sess.Close()
-	if err := s.st.UpdateSessionSettings(ctx, sess.ID(), ep.Model, ep.ReasoningEffort, string(mode)); err != nil {
+	// No model of its own: the chat follows the instance's chat model.
+	if err := s.st.UpdateSessionSettings(ctx, sess.ID(), "", "", string(mode)); err != nil {
 		return "", err
 	}
 	return sess.ID(), nil

@@ -65,9 +65,13 @@ func deadPinText(old, def string) string {
 // is already on it) and tells its viewers.
 func (s *Server) deadPin(l *live, old string, def agent.Fallback) {
 	l.mu.Lock()
-	mode := l.mode
+	mode, kind := l.mode, l.kind
 	l.mu.Unlock()
-	if err := s.st.UpdateSessionSettings(s.base, l.id, def.Model, def.Effort, mode); err != nil {
+	stored, storedEffort := def.Model, def.Effort
+	if kind == "chat" {
+		stored, storedEffort = "", "" // back to following the instance's chat model
+	}
+	if err := s.st.UpdateSessionSettings(s.base, l.id, stored, storedEffort, mode); err != nil {
 		log.Printf("session %s: storing the fallback from %s: %v", l.id, old, err)
 	}
 	ep, epErr := s.cfg.Endpoint(def.Model)
@@ -107,10 +111,7 @@ func (s *Server) applyRenames() {
 func (h *chatHub) modelCommand(cs *chatState, name string) string {
 	s := h.srv
 	if name == "" {
-		model, served := s.cfg.ChatModel(), ""
-		if model == "" {
-			model = s.cfg.Model.Default
-		}
+		model, served := s.chatModel(), ""
 		if id, err := s.st.ChatSession(s.base, cs.stamp); err == nil {
 			if rec, err := s.st.Session(s.base, id); err == nil && rec.Model != "" {
 				model = rec.Model
@@ -126,7 +127,11 @@ func (h *chatHub) modelCommand(cs *chatState, name string) string {
 		if served != "" {
 			text += "; the last reply came from " + served
 		}
-		return text + ". /model <name> switches this chat (e.g. /model auto)."
+		return text + ". /model <name> switches this chat (e.g. /model auto); /model default follows this instance's model again."
+	}
+	follow := name == "default"
+	if follow {
+		name = s.chatModel()
 	}
 	names := sortedKeys(s.modelRoutes())
 	known := false
@@ -146,7 +151,25 @@ func (h *chatHub) modelCommand(cs *chatState, name string) string {
 	if _, e := s.set(l, params, func(err error) (any, *rpcError) { return nil, errf(codeBadParams, "%v", err) }); e != nil {
 		return "Sorry, that failed: " + e.Message
 	}
+	if follow {
+		// Stored empty, so the chat keeps following the instance's model.
+		l.mu.Lock()
+		mode := l.mode
+		l.mu.Unlock()
+		if err := s.st.UpdateSessionSettings(s.base, l.id, "", "", mode); err != nil {
+			return "Sorry, that failed: " + err.Error()
+		}
+		return "Model: " + name + " (this instance's model), from the next message."
+	}
 	return "Model: " + name + ", from the next message."
+}
+
+// chatModel is the model chats follow: gateway.model, else model.default.
+func (s *Server) chatModel() string {
+	if m := s.cfg.ChatModel(); m != "" {
+		return m
+	}
+	return s.cfg.Model.Default
 }
 
 // lastServed is the model that answered the session's latest reply in this
