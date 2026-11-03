@@ -87,6 +87,8 @@ type Runner struct {
 	Fallback *Fallback
 	// MCP reaches the MCP servers (tools.Env.MCP).
 	MCP *mcp.Manager
+	// Cron backs the cronjob tool for this session (nil: unavailable).
+	Cron *tools.Cron
 	// Scope and Chat stamp the sessions NewSession creates ("" Scope is common).
 	Scope, Chat string
 }
@@ -509,7 +511,7 @@ func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls [
 	base := tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
 		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval,
 		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, WallChat: s.runner.WallChat, Web: s.runner.Web, MCP: s.runner.MCP,
-		Vision: s.runner.Vision, NoScripts: s.runner.NoScripts}
+		Vision: s.runner.Vision, NoScripts: s.runner.NoScripts, Cron: s.runner.Cron}
 	var emitMu sync.Mutex
 	emit := func(e Event) {
 		emitMu.Lock()

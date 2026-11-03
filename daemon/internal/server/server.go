@@ -81,9 +81,11 @@ type Server struct {
 	reg     *tools.Registry // the builtin tools (a child's are drawn from it)
 	regTask *tools.Registry // reg plus the task tool: an interactive session's
 	regChat *tools.Registry // a chat session's: notes, memory, recall, web; no terminal
-	web     *tools.Web      // the web tools' settings, shared by every session
-	mcp     *mcp.Manager    // nil: no MCP server is enabled
-	chats   *chatHub        // nil: Signal is off
+	regCron *tools.Registry // a cron job's: every builtin tool but clarify
+	cron    *cronSched
+	web     *tools.Web   // the web tools' settings, shared by every session
+	mcp     *mcp.Manager // nil: no MCP server is enabled
+	chats   *chatHub     // nil: Signal is off
 	mem     *memory.Store
 	idx     *recall.Index   // nil: recall is off
 	base    context.Context // cancelled when shutdown starts
@@ -124,8 +126,17 @@ func New(o Options) (*Server, error) {
 	s := &Server{opt: o, cfg: cfg, st: st, reg: tools.NewRegistry(base...), mcp: mcpm, mem: mem, idx: idx,
 		live: map[string]*live{}, indexed: map[string]int64{}, conns: map[*conn]struct{}{},
 		meta: map[string]map[string]int{}, learned: map[string]int{}}
-	s.regTask = tools.NewRegistry(append(base, subagent.Tool(subagent.Builtin(), true, s.spawnTask))...)
+	s.cron = s.newCron()
+	cronTool := tools.CronJob(o.Home)
+	s.regTask = tools.NewRegistry(append(base, subagent.Tool(subagent.Builtin(), true, s.spawnTask), cronTool)...)
 	s.regChat = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "clarify", "memory", "session_search", "web_search", "web_extract")
+	var cronTools []string
+	for _, n := range s.reg.Names() {
+		if n != "clarify" {
+			cronTools = append(cronTools, n)
+		}
+	}
+	s.regCron = s.reg.Only(cronTools...)
 	s.web = WebConfig(cfg, o.Home)
 	s.chats = s.newChatHub()
 	s.base, s.stop = context.WithCancel(context.Background())
@@ -135,6 +146,9 @@ func New(o Options) (*Server, error) {
 // Serve accepts connections until ctx is done, then shuts down cleanly.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	s.backfill()
+	if s.cfg.Daemon.Cron {
+		s.cron.start()
+	}
 	if s.chats != nil {
 		s.chats.start()
 	}
@@ -175,6 +189,7 @@ func (s *Server) shutdown() {
 	}
 	s.mu.Unlock()
 	s.stop()
+	s.cron.stop()
 	for _, c := range conns {
 		c.close()
 	}
@@ -238,6 +253,7 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 		Web:             s.web,
 		MCP:             s.mcp,
 		Vision:          VisionConfig(s.cfg, ep),
+		Cron:            s.cronHost(""),
 		Prompt: func(_ context.Context, ss store.Session) (string, error) {
 			r, err := prompt.Build(prompt.Options{
 				Home: s.opt.Home, Cwd: ss.Cwd, Scope: "common", Memory: true,

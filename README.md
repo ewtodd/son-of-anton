@@ -22,10 +22,10 @@ The Python backend is being replaced, one phase at a time, by `soa-d`, a Go
 daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`).
 
 - **On soa-d now:** the terminal TUI (`son-of-anton`), `-q` and `-z`, and
-  Signal chats (off until an instance moves; `[daemon] signal = true`).
-- **Still Python:** the relay workers, cron, physics runs.
-- **Not in the daemon yet:** `/handoff` and `/pickup` (5); the Python
-  sessions in `state.db` (imported in 8).
+  Signal chats (off until an instance moves; `[daemon] signal = true`) and
+  cron (off until an instance moves; `[daemon] cron = true`).
+- **Still Python:** the relay workers, physics runs.
+- **Not in the daemon yet:** `/handoff` and `/pickup` (5).
 - **MCP:** servers in `[mcp_servers.<name>]` are found with `tool_search` and
   run with `tool_call`.
 
@@ -175,6 +175,13 @@ with its `cronjob` tool. A job without a pinned model is skipped, with an
 alert, when the global default has changed since it was made, so an unattended
 job never drifts onto a paid model. Set `[cron] model_drift_guard = false` if
 your models cost nothing.
+
+With soa-d, `[daemon] cron = true` makes the daemon run the jobs: it reads the
+same `cron/jobs.json` and takes the same locks as the Python, so the two never
+tick at once, and it delivers to Signal through its own client. The daemon
+leaves out the monitor, `context_from`, notepad, `attach_to_session` and
+`enabled_toolsets` extras (a job keeps them in the file) and has no drift
+guard. A job without its own model uses `[cron] model`, else `model.default`.
 
 ## Deploying on NixOS
 

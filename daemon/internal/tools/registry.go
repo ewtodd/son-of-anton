@@ -50,6 +50,8 @@ type Env struct {
 	Web *Web
 	// MCP reaches the MCP servers (nil: none is configured).
 	MCP *mcp.Manager
+	// Cron backs the cronjob tool (nil: unavailable).
+	Cron *Cron
 	// CallID is the id of the tool call being run.
 	CallID string
 	// Call runs one of the session's tools as a direct call would, through the

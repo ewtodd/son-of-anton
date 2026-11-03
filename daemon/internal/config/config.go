@@ -47,9 +47,14 @@ type Config struct {
 		Threshold float64 `toml:"threshold"`
 	} `toml:"compaction"`
 	Daemon struct {
-		Signal   bool   `toml:"signal"`   // serve this instance's Signal chats
-		Instance string `toml:"instance"` // the instance's name, for fiona's identity
+		Signal   bool   `toml:"signal"`    // serve this instance's Signal chats
+		Instance string `toml:"instance"`  // the instance's name, for fiona's identity
+		Cron     bool   `toml:"cron"`      // run the instance's scheduled jobs
+		CronTick int    `toml:"cron_tick"` // seconds between ticks (default 60; for tests)
 	} `toml:"daemon"`
+	Cron struct {
+		Model string `toml:"model"` // the model of jobs that pin none
+	} `toml:"cron"`
 	Relay struct {
 		WorkerHours any `toml:"worker_hours"` // [start, end] hours; see WorkerHours
 	} `toml:"relay"`
