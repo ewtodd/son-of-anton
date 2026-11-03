@@ -14,7 +14,8 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 )
 
-var fixtures = filepath.Join("..", "..", "internal", "foreign", "testdata")
+// fixtures is absolute: runIn changes into a temp directory first.
+var fixtures, _ = filepath.Abs(filepath.Join("..", "..", "internal", "foreign", "testdata"))
 
 func TestImportFromClaudeCodexAndOpencode(t *testing.T) {
 	home := t.TempDir()
