@@ -79,7 +79,7 @@ type Server struct {
 	st      *store.Store
 	reg     *tools.Registry // the builtin tools (a child's are drawn from it)
 	regTask *tools.Registry // reg plus the task tool: an interactive session's
-	regChat *tools.Registry // a chat session's: memory, session_search, clarify, todo
+	regChat *tools.Registry // a chat session's: notes, memory, recall, web; no terminal
 	web     *tools.Web      // the web tools' settings, shared by every session
 	chats   *chatHub        // nil: Signal is off
 	mem     *memory.Store
@@ -118,7 +118,7 @@ func New(o Options) (*Server, error) {
 		live: map[string]*live{}, indexed: map[string]int64{}, conns: map[*conn]struct{}{},
 		meta: map[string]map[string]int{}, learned: map[string]int{}}
 	s.regTask = tools.NewRegistry(append(tools.Builtin(), subagent.Tool(subagent.Builtin(), true, s.spawnTask))...)
-	s.regChat = s.reg.Only("todo", "clarify", "memory", "session_search")
+	s.regChat = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "clarify", "memory", "session_search", "web_search", "web_extract")
 	s.web = WebConfig(cfg, o.Home)
 	s.chats = s.newChatHub()
 	s.base, s.stop = context.WithCancel(context.Background())

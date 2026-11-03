@@ -216,7 +216,10 @@ func (c *Client) Complete(ctx context.Context, req Request, onDelta func(Delta))
 			return resp, nil
 		}
 		lastErr = err
-		if delivered || !retryable(err) {
+		if delivered {
+			return nil, &partialError{err}
+		}
+		if !retryable(err) {
 			return nil, err
 		}
 		if attempt == attempts-1 {
@@ -227,6 +230,18 @@ func (c *Client) Complete(ctx context.Context, req Request, onDelta func(Delta))
 		}
 	}
 	return nil, lastErr
+}
+
+// partialError marks a failure after some output reached the caller.
+type partialError struct{ error }
+
+func (e *partialError) Unwrap() error { return e.error }
+
+// Fallbackable reports whether err from Complete is one a request may be
+// sent again on another model after: retryable, and before any output.
+func Fallbackable(err error) bool {
+	var p *partialError
+	return !errors.As(err, &p) && retryable(err)
 }
 
 // doOnce performs a single request and fully reads the stream. It reports

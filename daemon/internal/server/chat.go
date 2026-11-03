@@ -386,18 +386,42 @@ func questionText(q tools.Question) string {
 
 // ---- chat sessions (the server's side) ----
 
-// chatRunner makes r a chat session's runner: gateway scope, the small chat
-// toolset, recall and session_search as the chat's own.
+// notesDir is fiona's notes folder: the chat's directory and the only place
+// its file tools reach. Recall indexes it in the gateway scope.
+func (s *Server) notesDir() string { return filepath.Join(s.opt.Home, "notes", "gateway") }
+
+// chatRunner makes r a chat session's runner: gateway scope, the chat
+// toolset, file tools confined to the notes folder, fiona's identity, recall
+// and session_search as the chat's own, and the default model as the fallback
+// when the chat's own route is down.
 func (s *Server) chatRunner(r *agent.Runner, stamp string) {
 	r.Scope, r.Chat, r.MemoryScope = "gateway", stamp, "gateway"
+	r.Policy.Confine = s.notesDir()
+	if chat := s.cfg.ChatModel(); chat != "" && chat != s.cfg.Model.Default && r.Model == chat {
+		if ep, err := s.cfg.Endpoint(""); err == nil {
+			r.Fallback = &agent.Fallback{Client: r.Client, Model: ep.Model, Effort: ep.ReasoningEffort}
+		}
+	}
 	r.Tools = s.regChat
 	r.AsyncDelivery = false
 	if !s.cfg.Gateway.SingleUser {
 		r.WallChat = stamp
 	}
 	r.Prompt = func(_ context.Context, ss store.Session) (string, error) {
+		var hours *[2]int
+		start, end, ok, warn := s.cfg.WorkerHours()
+		if ok {
+			hours = &[2]int{start, end}
+		}
+		if warn != "" {
+			log.Printf("signal: %s", warn)
+		}
+		identity, err := prompt.FionaIdentity(s.opt.Home, strings.TrimSpace(s.cfg.Daemon.Instance), hours)
+		if err != nil {
+			return "", err
+		}
 		res, err := prompt.Build(prompt.Options{
-			Home: s.opt.Home, Cwd: ss.Cwd, Scope: "gateway", Memory: true,
+			Home: s.opt.Home, Cwd: ss.Cwd, Scope: "gateway", Memory: true, Identity: identity,
 			Now: time.Now().In(prompt.LocalZone()), RulesCharLimit: s.cfg.Memory.RulesCharLimit,
 		})
 		for _, w := range res.Warnings {
@@ -420,9 +444,9 @@ func (s *Server) createChat(ctx context.Context, stamp string) (string, error) {
 	mode := s.cfg.PermissionMode()
 	r := s.runner(&live{}, ep, mode, "signal", nil)
 	s.chatRunner(r, stamp)
-	cwd := s.cfg.ChatCwd(s.userHome())
-	if fi, err := os.Stat(cwd); err != nil || !fi.IsDir() {
-		cwd = s.userHome()
+	cwd := s.notesDir()
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
+		return "", err
 	}
 	sess, err := r.NewSession(ctx, "chat", cwd)
 	if err != nil {

@@ -14,6 +14,9 @@ import (
 type Policy struct {
 	Home    string // the user's home
 	SoaHome string // the instance home (~/.son-of-anton)
+	// Confine, when set, limits reads and writes to this directory, symlinks
+	// resolved (a link inside that points out is outside).
+	Confine string
 }
 
 // WriteCheck is the result of CheckWrite.
@@ -82,8 +85,31 @@ var procReadFiles = map[string]bool{
 	"auxv": true, "pagemap": true, "cmdline": true,
 }
 
+// CheckConfined reports why abs is outside Confine; nil when it is inside or
+// nothing is confined.
+func (p Policy) CheckConfined(abs string) error {
+	if p.Confine == "" {
+		return nil
+	}
+	dir, err := p.Resolve("", p.Confine)
+	if err != nil {
+		return err
+	}
+	real, err := p.Resolve("", abs)
+	if err != nil {
+		return err
+	}
+	if !under(real, dir) {
+		return fmt.Errorf("%s is outside the notes folder (%s); the chat's file tools reach only it.", abs, p.Confine)
+	}
+	return nil
+}
+
 // CheckRead reports why a read is blocked; nil means allowed.
 func (p Policy) CheckRead(abs string) error {
+	if err := p.CheckConfined(abs); err != nil {
+		return err
+	}
 	if readBlockedBasenames[filepath.Base(abs)] {
 		return fmt.Errorf("denied: %s is a secret file", filepath.Base(abs))
 	}

@@ -46,8 +46,12 @@ type Config struct {
 		Threshold float64 `toml:"threshold"`
 	} `toml:"compaction"`
 	Daemon struct {
-		Signal bool `toml:"signal"` // serve this instance's Signal chats
+		Signal   bool   `toml:"signal"`   // serve this instance's Signal chats
+		Instance string `toml:"instance"` // the instance's name, for fiona's identity
 	} `toml:"daemon"`
+	Relay struct {
+		WorkerHours any `toml:"worker_hours"` // [start, end] hours; see WorkerHours
+	} `toml:"relay"`
 	Gateway struct {
 		Model                string `toml:"model"`
 		SingleUser           bool   `toml:"single_user"`
@@ -350,15 +354,36 @@ func (c *Config) Getenv(name string) string { return c.envKey(name) }
 // default model ("").
 func (c *Config) ChatModel() string { return strings.TrimSpace(c.Gateway.Model) }
 
-// ChatCwd is the directory a chat session works in: terminal.cwd, and for
-// "", "." , "auto" or "cwd" the user's home.
-func (c *Config) ChatCwd(home string) string {
-	switch cwd := strings.TrimSpace(c.Terminal.Cwd); cwd {
-	case "", ".", "auto", "cwd":
-		return home
-	default:
-		return cwd
+// WorkerHours is relay.worker_hours: the hour workers may start and the hour
+// they stop (0-23, wrapping midnight). ok is false when workers may run at
+// any time: the key is absent or empty, the hours are equal, or the value is
+// malformed (warn then says so).
+func (c *Config) WorkerHours() (start, end int, ok bool, warn string) {
+	v := c.Relay.WorkerHours
+	if v == nil {
+		return 0, 0, false, ""
 	}
+	list, isList := v.([]any)
+	if isList && len(list) == 0 {
+		return 0, 0, false, ""
+	}
+	var hours [2]int
+	valid := isList && len(list) == 2
+	for i := 0; valid && i < 2; i++ {
+		n, isInt := list[i].(int64)
+		if !isInt || n < 0 || n > 23 {
+			valid = false
+			break
+		}
+		hours[i] = int(n)
+	}
+	if !valid {
+		return 0, 0, false, fmt.Sprintf("relay.worker_hours = %v is not two hours (0-23); workers may run at any time", v)
+	}
+	if hours[0] == hours[1] {
+		return 0, 0, false, ""
+	}
+	return hours[0], hours[1], true, ""
 }
 
 // SignalSetting reads a Signal setting that config.toml may spell as a

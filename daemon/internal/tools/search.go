@@ -86,6 +86,9 @@ func (searchFilesTool) Run(ctx context.Context, env *Env, args json.RawMessage) 
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	if err := env.Policy.CheckConfined(abs); err != nil {
+		return errorResult(err.Error()), nil
+	}
 	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
 		return errorResult("path does not exist: " + a.Path), nil
 	}

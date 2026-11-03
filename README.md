@@ -112,6 +112,15 @@ its approvals and questions come to the chat. The chat takes `/new`, `/stop`,
 `/status`, `/sendnow [text]`, `/sendall`, `/approve [id] [always]` and
 `/deny [id] [reason]`; a typed `/new` no longer asks to confirm.
 
+With soa-d the chat's agent is fiona, the front desk of the instance
+(`[daemon] instance` names it). She has her own identity, takes real work to a
+worker rather than doing it, and has memory, session search, the web tools and
+file tools that reach only her notes folder, `~/.son-of-anton/notes/gateway`.
+Her model is `gateway.model`; when that route is down (after the provider's
+retries, before any output) the one request is sent again on `model.default`,
+and the next request tries `gateway.model` first. `[relay] worker_hours =
+[start, end]` tells her when workers may run.
+
 ## Memory
 
 Two kinds, as TOML under `~/.son-of-anton/memories/`, addressed by id:

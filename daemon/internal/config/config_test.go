@@ -252,3 +252,24 @@ func TestPermissionMode(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerHours(t *testing.T) {
+	for _, c := range []struct {
+		toml       string
+		start, end int
+		ok, warn   bool
+	}{
+		{"", 0, 0, false, false},
+		{"[relay]\nworker_hours = []\n", 0, 0, false, false},
+		{"[relay]\nworker_hours = [20, 7]\n", 20, 7, true, false},
+		{"[relay]\nworker_hours = [5, 5]\n", 0, 0, false, false},
+		{"[relay]\nworker_hours = [20]\n", 0, 0, false, true},
+		{"[relay]\nworker_hours = [20, 24]\n", 0, 0, false, true},
+		{"[relay]\nworker_hours = \"night\"\n", 0, 0, false, true},
+	} {
+		start, end, ok, warn := load(t, home(t, c.toml, "")).WorkerHours()
+		if start != c.start || end != c.end || ok != c.ok || (warn != "") != c.warn {
+			t.Errorf("%q: got %d, %d, %v, %q", c.toml, start, end, ok, warn)
+		}
+	}
+}

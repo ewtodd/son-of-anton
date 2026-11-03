@@ -76,8 +76,19 @@ type Runner struct {
 	WallChat string
 	// Web configures web_search and web_extract (tools.Env.Web).
 	Web *tools.Web
+	// Fallback, when set, takes a request that fails on Model after the
+	// client's own retries (before any output); the next request tries Model
+	// again. A session switched to another model has no fallback.
+	Fallback *Fallback
 	// Scope and Chat stamp the sessions NewSession creates ("" Scope is common).
 	Scope, Chat string
+}
+
+// Fallback is the route a request is sent again on.
+type Fallback struct {
+	Client *provider.Client
+	Model  string
+	Effort string
 }
 
 // NewSession builds the prompt (exactly once), stores it, and creates the
@@ -398,7 +409,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 		}
 
 		var content, reasoning strings.Builder
-		resp, err := client.Complete(reqCtx, req, func(d provider.Delta) {
+		onDelta := func(d provider.Delta) {
 			content.WriteString(d.Content)
 			reasoning.WriteString(d.Reasoning)
 			if d.Content != "" {
@@ -407,7 +418,15 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			if d.Reasoning != "" {
 				emit(Event{Kind: "reasoning.delta", Text: d.Reasoning})
 			}
-		})
+		}
+		resp, err := client.Complete(reqCtx, req, onDelta)
+		if fb := r.Fallback; err != nil && fb != nil && model == r.Model && !stopped() && provider.Fallbackable(err) {
+			req.Model, req.ReasoningEffort = fb.Model, fb.Effort
+			resp, err = fb.Client.Complete(reqCtx, req, onDelta)
+			if err == nil && resp.ServedModel == "" {
+				resp.ServedModel = fb.Model
+			}
+		}
 		if err != nil {
 			if !stopped() && !retried && s.overflowCompact(reqCtx, err, emit) {
 				retried = true
@@ -427,11 +446,11 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			return closeTurn(store.Message{Role: "assistant", Content: FailedText}, err)
 		}
 		retried = false
-		if resp.ServedModel != "" {
-			s.mu.Lock()
-			s.served = resp.ServedModel
-			s.mu.Unlock()
-		}
+		// Unconditional: a request back on the primary route after a fallback
+		// must not keep naming the fallback model.
+		s.mu.Lock()
+		s.served = resp.ServedModel
+		s.mu.Unlock()
 		total.APICalls++
 		s.noteResponse(resp.Usage.PromptTokens, emit)
 		total.Last = resp.Usage
