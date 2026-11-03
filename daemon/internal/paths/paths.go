@@ -17,6 +17,8 @@ type Policy struct {
 	// Confine, when set, limits reads and writes to this directory, symlinks
 	// resolved (a link inside that points out is outside).
 	Confine string
+	// ReadAlso lists directories a confined policy may read but never write.
+	ReadAlso []string
 }
 
 // WriteCheck is the result of CheckWrite.
@@ -85,13 +87,25 @@ var procReadFiles = map[string]bool{
 	"auxv": true, "pagemap": true, "cmdline": true,
 }
 
-// CheckConfined reports why abs is outside Confine; nil when it is inside or
-// nothing is confined.
+// CheckConfined reports why abs is outside Confine and ReadAlso; nil when it
+// is inside one or nothing is confined.
 func (p Policy) CheckConfined(abs string) error {
+	err := p.checkIn(abs, p.Confine)
+	for _, d := range p.ReadAlso {
+		if err != nil && p.checkIn(abs, d) == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+// checkIn reports why abs is outside confine; nil when it is inside or
+// nothing is confined.
+func (p Policy) checkIn(abs, confine string) error {
 	if p.Confine == "" {
 		return nil
 	}
-	dir, err := p.Resolve("", p.Confine)
+	dir, err := p.Resolve("", confine)
 	if err != nil {
 		return err
 	}
@@ -143,6 +157,9 @@ var (
 // CheckWrite classifies a write target: denied (never), protected (approval
 // in every mode), or ordinary.
 func (p Policy) CheckWrite(abs string) WriteCheck {
+	if err := p.checkIn(abs, p.Confine); err != nil {
+		return WriteCheck{Denied: true, Reason: err.Error()}
+	}
 	if err := p.CheckRead(abs); err != nil {
 		return WriteCheck{Denied: true, Reason: err.Error()}
 	}

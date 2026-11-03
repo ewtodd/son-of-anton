@@ -425,6 +425,8 @@ func (s *Server) notesDir() string { return filepath.Join(s.opt.Home, "notes", "
 func (s *Server) chatRunner(r *agent.Runner, stamp string) {
 	r.Scope, r.Chat, r.MemoryScope = "gateway", stamp, "gateway"
 	r.Policy.Confine = s.notesDir()
+	r.Policy.ReadAlso = []string{filepath.Join(s.opt.Home, "cache", "signal")}
+	r.Cron = s.cronHost(stamp)
 	if chat := s.cfg.ChatModel(); chat != "" && chat != s.cfg.Model.Default && r.Model == chat {
 		if ep, err := s.cfg.Endpoint(""); err == nil {
 			r.Fallback = &agent.Fallback{Client: r.Client, Model: ep.Model, Effort: ep.ReasoningEffort}

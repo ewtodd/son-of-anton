@@ -51,3 +51,22 @@ func TestConfineKeepsPathsInTheFolder(t *testing.T) {
 		t.Fatalf("no Confine, no confinement: %v", err)
 	}
 }
+
+// ReadAlso is readable and never writable; the rest stays outside.
+func TestReadAlsoIsReadOnly(t *testing.T) {
+	notes, extra, other := t.TempDir(), t.TempDir(), t.TempDir()
+	p := paths.Policy{Confine: notes, ReadAlso: []string{extra}}
+	f := filepath.Join(extra, "a.txt")
+	if err := p.CheckRead(f); err != nil {
+		t.Errorf("read in ReadAlso: %v", err)
+	}
+	if c := p.CheckWrite(f); !c.Denied {
+		t.Errorf("write in ReadAlso allowed: %+v", c)
+	}
+	if c := p.CheckWrite(filepath.Join(notes, "n.md")); c.Denied {
+		t.Errorf("write in notes denied: %+v", c)
+	}
+	if err := p.CheckRead(filepath.Join(other, "x")); err == nil {
+		t.Error("read outside both allowed")
+	}
+}

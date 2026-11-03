@@ -81,7 +81,7 @@ type Server struct {
 	st      *store.Store
 	reg     *tools.Registry // the builtin tools (a child's are drawn from it)
 	regTask *tools.Registry // reg plus the task tool: an interactive session's
-	regChat *tools.Registry // a chat session's: notes, memory, recall, web, relay; no terminal
+	regChat *tools.Registry // a chat session's: notes, memory, recall, web, vision, cron, relay; no terminal
 	regCron *tools.Registry // a cron job's: every builtin tool but clarify
 	cron    *cronSched
 	web     *tools.Web   // the web tools' settings, shared by every session
@@ -132,7 +132,7 @@ func New(o Options) (*Server, error) {
 	s.cron = s.newCron()
 	cronTool := tools.CronJob(o.Home)
 	s.regTask = tools.NewRegistry(append(base, subagent.Tool(subagent.Builtin(), true, s.spawnTask), cronTool)...)
-	s.regChat = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "clarify", "memory", "session_search", "web_search", "web_extract").With(tools.RelayTool())
+	s.regChat = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "clarify", "memory", "session_search", "web_search", "web_extract", "vision_analyze").With(cronTool, tools.RelayTool())
 	var cronTools []string
 	for _, n := range s.reg.Names() {
 		if n != "clarify" {
