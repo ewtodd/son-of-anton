@@ -339,7 +339,7 @@ hardening invariants in AGENTS.md "Cron". Reference: `cron/jobs.py`,
 - MCP client: the official Go SDK, stdio servers (the socat bridges) and HTTP
   with headers; tools reached through the deferred trio.
 - LSP: servers found on PATH; diagnostics after edits. Reference `agent/lsp/`.
-- Foreign session import (Claude Code, Codex, opencode JSONL), read-only on the
+- Foreign session import (Claude Code and Codex JSONL, opencode's SQLite database), read-only on the
   source. Reference: `son_of_anton_cli/foreign_sessions.py`.
 - Web: SearXNG search; page extraction through `WEB_EXTRACT_URL`.
 
