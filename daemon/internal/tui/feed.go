@@ -4,14 +4,13 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 type blockKind int
 
 const (
-	bkIntro blockKind = iota
+	bkLogo blockKind = iota
+	bkIntro
 	bkNote
 	bkUser
 	bkAssistant
@@ -22,6 +21,7 @@ const (
 type noteLine struct {
 	text  string
 	muted bool
+	err   bool
 }
 
 // block is one thing in the transcript.
@@ -40,6 +40,7 @@ type block struct {
 	folded bool // reasoning
 
 	ver   int // bumped on every change that alters the drawing
+	cth   *theme
 	cw    int
 	cver  int
 	cache []string
@@ -64,29 +65,35 @@ func (f *feed) add(b *block) *block {
 }
 
 // note adds muted or plain lines; consecutive notes share one block.
-func (f *feed) note(text string, isMuted bool) {
+func (f *feed) note(text string, isMuted bool) { f.addNote(text, isMuted, false) }
+
+// errNote adds lines in the error colour.
+func (f *feed) errNote(text string) { f.addNote(text, false, true) }
+
+func (f *feed) addNote(text string, isMuted, isErr bool) {
 	lines := strings.Split(clean(text), "\n")
 	if n := len(f.blocks); n > 0 && f.blocks[n-1].kind == bkNote && len(f.blocks[n-1].notes)+len(lines) <= maxNoteLines {
 		b := f.blocks[n-1]
 		for _, l := range lines {
-			b.notes = append(b.notes, noteLine{l, isMuted})
+			b.notes = append(b.notes, noteLine{l, isMuted, isErr})
 		}
 		b.ver++
 		return
 	}
 	b := &block{kind: bkNote}
 	for _, l := range lines {
-		b.notes = append(b.notes, noteLine{l, isMuted})
+		b.notes = append(b.notes, noteLine{l, isMuted, isErr})
 	}
 	f.add(b)
 }
 
-// reset drops everything but the first block when it is the intro.
+// clearKeepIntro drops everything but the wordmark and the intro at the top.
 func (f *feed) clearKeepIntro() {
-	var keep []*block
-	if len(f.blocks) > 0 && f.blocks[0].kind == bkIntro {
-		keep = f.blocks[:1]
+	n := 0
+	for n < len(f.blocks) && (f.blocks[n].kind == bkLogo || f.blocks[n].kind == bkIntro) {
+		n++
 	}
+	keep := f.blocks[:n]
 	f.blocks = keep
 	f.calls = map[string]*block{}
 }
@@ -103,7 +110,7 @@ func gapBefore(prev, cur *block) bool {
 	switch prev.kind {
 	case bkUser, bkAssistant, bkReasoning:
 		return true
-	case bkIntro:
+	case bkLogo, bkIntro:
 		return true
 	case bkNote:
 		return len(prev.notes) > 1
@@ -112,14 +119,14 @@ func gapBefore(prev, cur *block) bool {
 }
 
 // count is the total number of rows at content width w.
-func (f *feed) count(w int, now time.Time, spin int) int {
+func (f *feed) count(w int, th *theme, now time.Time, spin int) int {
 	n := 0
 	var prev *block
 	for _, b := range f.blocks {
 		if gapBefore(prev, b) {
 			n++
 		}
-		n += len(b.lines(w, now, spin))
+		n += len(b.lines(w, th, now, spin))
 		prev = b
 	}
 	return n
@@ -127,7 +134,7 @@ func (f *feed) count(w int, now time.Time, spin int) int {
 
 // window returns rows rows of the feed starting at row top, each already
 // inset by the content margin.
-func (f *feed) window(w int, now time.Time, spin, top, rows int) []string {
+func (f *feed) window(w int, th *theme, now time.Time, spin, top, rows int) []string {
 	out := make([]string, 0, rows)
 	pos := 0
 	var prev *block
@@ -144,7 +151,7 @@ func (f *feed) window(w int, now time.Time, spin, top, rows int) []string {
 		if gapBefore(prev, b) {
 			emit("")
 		}
-		ls := b.lines(w, now, spin)
+		ls := b.lines(w, th, now, spin)
 		if pos+len(ls) <= top { // wholly above the window
 			pos += len(ls)
 		} else {
@@ -158,42 +165,73 @@ func (f *feed) window(w int, now time.Time, spin, top, rows int) []string {
 }
 
 // lines draws the block at content width w.
-func (b *block) lines(w int, now time.Time, spin int) []string {
+func (b *block) lines(w int, th *theme, now time.Time, spin int) []string {
 	if b.kind == bkTool && b.running {
-		return b.drawTool(w, now, spin)
+		return b.drawTool(w, th, now, spin)
 	}
-	if b.cache != nil && b.cw == w && b.cver == b.ver {
+	if b.cache != nil && b.cw == w && b.cver == b.ver && b.cth == th {
 		return b.cache
 	}
 	var ls []string
 	switch b.kind {
+	case bkLogo:
+		ls = drawLogo(w, th)
 	case bkIntro, bkNote:
 		for _, n := range b.notes {
 			for _, l := range wrapText(n.text, w-6) {
-				if n.muted || b.kind == bkIntro {
-					l = muted.Render(l)
+				switch {
+				case n.err:
+					l = th.errS.Render(l)
+				case n.muted || b.kind == bkIntro:
+					l = th.mut.Render(l)
 				}
 				ls = append(ls, "   "+l)
 			}
 		}
 	case bkUser:
-		ls = b.drawUser(w)
+		ls = b.drawUser(w, th)
 	case bkAssistant:
-		for _, l := range wrapText(strings.TrimRight(strings.TrimLeft(b.shown, "\n"), " \n"), w-6) {
-			ls = append(ls, "   "+l)
-		}
+		ls = markdownRows(th, strings.TrimRight(strings.TrimLeft(b.shown, "\n"), " \n"), w)
 	case bkReasoning:
-		ls = b.drawReasoning(w)
+		ls = b.drawReasoning(w, th)
 	case bkTool:
-		ls = b.drawTool(w, now, spin)
+		ls = b.drawTool(w, th, now, spin)
 	}
-	b.cache, b.cw, b.cver = ls, w, b.ver
+	b.cache, b.cw, b.cver, b.cth = ls, w, b.ver, th
 	return ls
 }
 
-func (b *block) drawUser(w int) []string {
-	bg := lipgloss.NewStyle().Background(panelBg)
-	rail := bg.Foreground(lipgloss.Color("220")).Render("▎")
+// wordmark is the largest form of the name that fits w columns.
+func wordmark(w int) string {
+	switch {
+	case w >= 109:
+		return logoWide
+	case w >= 52:
+		return logoStacked
+	}
+	return "SON OF ANTON"
+}
+
+// drawLogo is the wordmark, bold in the accent colour, every line with the
+// same left pad so the art's tapering rows stay under the rows above them.
+func drawLogo(w int, th *theme) []string {
+	lines := strings.Split(wordmark(w), "\n")
+	widest := 0
+	for _, l := range lines {
+		widest = max(widest, textWidth(l))
+	}
+	pad := strings.Repeat(" ", max((w-widest)/2, 0))
+	st := th.acc.Bold(true)
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = pad + st.Render(cut(l, max(w-len(pad), 0)))
+	}
+	return out
+}
+
+func (b *block) drawUser(w int, th *theme) []string {
+	bg := th.r.NewStyle().Background(th.panel)
+	rail := bg.Foreground(th.accent).Render("▎")
 	row := func(text string) string {
 		if text == "" {
 			return rail + bg.Render(strings.Repeat(" ", max(w-1, 0)))
@@ -208,7 +246,7 @@ func (b *block) drawUser(w int) []string {
 	return append(ls, row(""))
 }
 
-func (b *block) drawReasoning(w int) []string {
+func (b *block) drawReasoning(w int, th *theme) []string {
 	text := strings.TrimSpace(b.shown)
 	if b.folded {
 		n := len(strings.Split(strings.TrimSpace(b.text), "\n"))
@@ -216,19 +254,19 @@ func (b *block) drawReasoning(w int) []string {
 		if n != 1 {
 			s = "lines"
 		}
-		return []string{"   " + thinking.Render(fmt.Sprintf("▶ reasoning · %d %s", n, s))}
+		return []string{"   " + th.think.Render(fmt.Sprintf("▶ reasoning · %d %s", n, s))}
 	}
-	ls := []string{"   " + thinking.Render("▼ reasoning")}
+	ls := []string{"   " + th.think.Render("▼ reasoning")}
 	if text != "" {
 		for _, l := range wrapText(text, w-10) {
-			ls = append(ls, "     "+thinking.Render(l))
+			ls = append(ls, "     "+th.think.Render(l))
 		}
 	}
 	return ls
 }
 
 // drawTool is one row: icon, summary, and how long it took (or is taking).
-func (b *block) drawTool(w int, now time.Time, spin int) []string {
+func (b *block) drawTool(w int, th *theme, now time.Time, spin int) []string {
 	label := b.label
 	suffix := ""
 	switch {
@@ -243,9 +281,9 @@ func (b *block) drawTool(w int, now time.Time, spin int) []string {
 	label = ellipsize(label, room)
 	switch {
 	case b.running:
-		return []string{toolSt.Render(spinnerFrame(spin)) + " " + label + muted.Render(suffix)}
+		return []string{th.toolS.Render(spinnerFrame(spin)) + " " + label + th.mut.Render(suffix)}
 	case b.isErr:
-		return []string{errSt.Render("✗ " + label + suffix)}
+		return []string{th.errS.Render("✗ " + label + suffix)}
 	}
-	return []string{muted.Render(toolIcon(b.name)+" "+label) + muted.Render(suffix)}
+	return []string{th.toolS.Render(toolIcon(b.name)) + th.mut.Render(" "+label+suffix)}
 }

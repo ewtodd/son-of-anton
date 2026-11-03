@@ -42,6 +42,11 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		return nil
 	case "shift+tab":
 		return m.setMode(nextMode(m.sess.Mode))
+	case "ctrl+b":
+		show, _ := m.sidebarState()
+		show = !show
+		m.sbForced = &show
+		return nil
 	case "ctrl+l":
 		m.feed.clearKeepIntro()
 		m.curAsst, m.curReason = nil, nil
@@ -141,7 +146,7 @@ func (m *model) ctrlC() tea.Cmd {
 // scroll pages the feed: dir -1 up (stops following), 1 down (follows again at the bottom).
 func (m *model) scroll(dir int) {
 	_, rows := m.feedRows()
-	total := m.feed.count(m.contentWidth(), time.Now(), m.spin)
+	total := m.feed.count(m.contentWidth(), m.th, time.Now(), m.spin)
 	bottom := max(total-rows, 0)
 	if m.follow {
 		m.top = bottom

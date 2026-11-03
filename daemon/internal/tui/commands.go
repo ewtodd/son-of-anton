@@ -44,7 +44,7 @@ func (m *model) interrupt() tea.Cmd {
 	return call(m.cl, 5*time.Second, "turn.interrupt", map[string]any{"session": m.sess.ID}, nil,
 		func(m *model, err error) tea.Cmd {
 			if err != nil {
-				m.feed.note("could not interrupt: "+err.Error(), false)
+				m.feed.errNote("could not interrupt: " + err.Error())
 			}
 			return nil
 		})
@@ -58,7 +58,7 @@ func (m *model) setMode(mode string) tea.Cmd {
 	return call(m.cl, 10*time.Second, "session.set", map[string]any{"session": m.sess.ID, "mode": mode}, &res,
 		func(m *model, err error) tea.Cmd {
 			if err != nil {
-				m.feed.note("could not switch permission mode: "+err.Error(), false)
+				m.feed.errNote("could not switch permission mode: " + err.Error())
 				return nil
 			}
 			m.sess = parseSession(res.Session, m.sess)
@@ -97,7 +97,7 @@ func (m *model) send(text, mode string) tea.Cmd {
 	return call(m.cl, 30*time.Second, "turn.send", map[string]any{"session": m.sess.ID, "text": text, "mode": mode}, nil,
 		func(m *model, err error) tea.Cmd {
 			if err != nil {
-				m.feed.note("could not send: "+err.Error(), false)
+				m.feed.errNote("could not send: " + err.Error())
 			}
 			return nil
 		})
@@ -169,6 +169,7 @@ const helpText = `commands:
   /sendnow [text] — steer the running turn now
   /sendall — send everything queued now
   /cancel — drop the queued messages
+  /skin [name] — show the skins or switch to one
   /status — session, model, mode and usage
   /quit — leave (/exit, /q)
   !cmd runs a shell command here · :q quits`
@@ -181,7 +182,7 @@ func (m *model) command(name, args, line string) tea.Cmd {
 	m.feed.note("⚙ "+line, true)
 	c, sid := m.cl, m.sess.ID
 	fail := func(m *model, err error) {
-		m.feed.note("/"+name+": "+err.Error(), false)
+		m.feed.errNote("/" + name + ": " + err.Error())
 	}
 	switch name {
 	case "help":
@@ -314,6 +315,7 @@ func (m *model) command(name, args, line string) tea.Cmd {
 					fail(m, err)
 				} else {
 					m.feed.note(fmt.Sprintf("killed %d background process(es)", res.Killed), false)
+					return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return refreshMsg{} }) // the processes are gone a moment after the kill
 				}
 				return nil
 			})
@@ -383,6 +385,8 @@ func (m *model) command(name, args, line string) tea.Cmd {
 				}
 				return nil
 			})
+	case "skin":
+		m.skinCommand(args)
 	case "status":
 		s := m.sess
 		m.feed.note(fmt.Sprintf("session %s · %s · mode %s · in %s out %s · %s calls",
@@ -471,4 +475,51 @@ func (m *model) switchSession(pick func(context.Context, *client.Client) (string
 			return tea.Batch(m.adopt(res, resumed && len(res.Messages) > 0), m.afterAttach())
 		}}
 	}
+}
+
+// skinCommand is /skin: list the skins, or draw everything in one at once. It
+// is not saved (config.toml is Nix-managed).
+func (m *model) skinCommand(name string) {
+	skins := loadSkins(m.o.Home)
+	if name == "" {
+		lines := []string{"skin: " + m.th.name}
+		for _, sk := range skins {
+			mark := "    "
+			if sk.name == m.th.name {
+				mark = "  ● "
+			}
+			lines = append(lines, mark+sk.name+" — "+sk.desc)
+		}
+		m.feed.note(strings.Join(lines, "\n"), false)
+		return
+	}
+	for _, sk := range skins {
+		if sk.name == name {
+			m.setTheme(newTheme(m.th.r, sk, m.th.pal))
+			m.feed.note("skin: "+name, false)
+			return
+		}
+	}
+	m.feed.note("unknown skin: "+name, false)
+}
+
+// refreshSession reads the session's state afresh, for the sidebar: the daemon
+// announces a kill before the processes are gone.
+func (m *model) refreshSession() tea.Cmd {
+	var res struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	id := m.sess.ID
+	return call(m.cl, 10*time.Second, "session.list", map[string]any{"cwd": m.sess.Cwd, "limit": 50}, &res,
+		func(m *model, err error) tea.Cmd {
+			if err != nil || m.sess.ID != id {
+				return nil
+			}
+			for _, s := range res.Sessions {
+				if str(s, "id") == id {
+					m.sess = parseSession(s, m.sess)
+				}
+			}
+			return nil
+		})
 }

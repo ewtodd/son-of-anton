@@ -66,6 +66,9 @@ type Config struct {
 	Terminal struct {
 		Cwd string `toml:"cwd"`
 	} `toml:"terminal"`
+	Display struct {
+		Skin string `toml:"skin"` // the TUI's skin; empty is "default"
+	} `toml:"display"`
 	Web struct {
 		SearchFallback   string   `toml:"search_fallback"` // "duckduckgo" (default) or "none"
 		DuckDuckGoURL    string   `toml:"duckduckgo_url"`

@@ -9,8 +9,8 @@ import (
 // sessState is the part of the daemon's session object the screen shows.
 type sessState struct {
 	ID, Cwd, Title, Model, Served, Effort, Mode, Status string
-	Started                                             time.Time
-	CtxTokens, CtxLen, In, Out, Calls                   int
+	Started, Created                                    time.Time
+	CtxTokens, CtxLen, In, Out, Calls, Compactions, Bg  int
 }
 
 func str(m map[string]any, k string) string {
@@ -28,9 +28,13 @@ func parseSession(o map[string]any, prev sessState) sessState {
 		ID: str(o, "id"), Cwd: str(o, "cwd"), Title: str(o, "title"), Model: str(o, "model"),
 		Served: str(o, "served_model"), Effort: str(o, "reasoning_effort"), Mode: str(o, "mode"),
 		Status: str(o, "status"), CtxTokens: num(o, "context_tokens"), CtxLen: num(o, "context_length"),
+		Compactions: num(o, "compactions"), Bg: num(o, "background_processes"),
 	}
 	if u, ok := o["usage"].(map[string]any); ok {
 		s.In, s.Out, s.Calls = num(u, "input_tokens"), num(u, "output_tokens"), num(u, "api_calls")
+	}
+	if t, err := time.Parse(time.RFC3339, str(o, "created")); err == nil {
+		s.Created = t
 	}
 	if s.Status == "running" {
 		if t, err := time.Parse(time.RFC3339, str(o, "turn_started")); err == nil {

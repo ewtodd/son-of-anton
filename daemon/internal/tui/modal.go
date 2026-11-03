@@ -242,10 +242,10 @@ func (m *model) pickOption(md *modal, i, other int) tea.Cmd {
 }
 
 // view draws the modal as a bordered box no wider than w.
-func (md *modal) view(w int) []string {
+func (md *modal) view(w int, th *theme) []string {
 	bw := min(76, w)
 	inner := max(bw-4, 1)
-	border := accent
+	border := th.acc
 	var body []string
 	add := func(s string) { body = append(body, s) }
 	row := func(i, sel int, text, desc string, mark string) {
@@ -256,21 +256,21 @@ func (md *modal) view(w int) []string {
 		}
 		line = ellipsize(line, inner)
 		if i == sel {
-			add(bold.Render(accent.Render(line)))
+			add(th.bld.Render(th.acc.Render(line)))
 		} else {
 			add(line)
 		}
 	}
 	if md.question {
-		add(bold.Render("Son of Anton needs your input"))
+		add(th.bld.Render("Son of Anton needs your input"))
 		add("")
 		for _, l := range wrapText(clean(md.text), inner) {
 			add(l)
 		}
 		add("")
 		if md.typing {
-			add(muted.Render("your answer"))
-			add(accent.Render("> ") + ellipsize(md.input, inner-3) + "▏")
+			add(th.mut.Render("your answer"))
+			add(th.acc.Render("> ") + ellipsize(md.input, inner-3) + "▏")
 		} else {
 			for i, o := range md.options {
 				mark := ""
@@ -291,17 +291,17 @@ func (md *modal) view(w int) []string {
 		if md.typing {
 			hint = "enter send · esc dismiss"
 		}
-		add(muted.Render(ellipsize(hint, inner)))
+		add(th.mut.Render(ellipsize(hint, inner)))
 	} else {
-		border = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-		add(bold.Render(md.title))
+		border = th.warnS
+		add(th.bld.Render(md.title))
 		add("")
 		for _, l := range wrapText(clean(md.subject), inner) {
-			add(bold.Render(l))
+			add(th.bld.Render(l))
 		}
 		if len(md.reasons) > 0 {
 			for _, l := range wrapText(clean(strings.Join(md.reasons, "; ")), inner) {
-				add(muted.Render(l))
+				add(th.mut.Render(l))
 			}
 		}
 		add("")
@@ -309,9 +309,9 @@ func (md *modal) view(w int) []string {
 			row(i, md.sel, c.label, c.desc, "")
 		}
 		add("")
-		add(muted.Render(ellipsize("1-9 pick · ↑↓ move · enter pick · esc cancel", inner)))
+		add(th.mut.Render(ellipsize("1-9 pick · ↑↓ move · enter pick · esc cancel", inner)))
 	}
-	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border.GetForeground()).
+	box := th.r.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border.GetForeground()).
 		Padding(0, 1).Width(bw - 2).Render(strings.Join(body, "\n"))
 	return strings.Split(box, "\n")
 }

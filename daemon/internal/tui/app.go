@@ -18,16 +18,17 @@ import (
 
 // Options configure Start.
 type Options struct {
-	Home      string    // the daemon's home
-	Cwd       string    // a new session's directory, and -c's workspace (default: the working directory)
-	Continue  bool      // -c
-	Resume    string    // a session id, or "latest"
-	Model     string    // -m
-	Reasoning string    // --reasoning
-	Yolo      bool      // --yolo
-	Version   string    // shown in the intro
-	Autostart bool      // reconnect with client.Connect rather than client.Dial
-	Stderr    io.Writer // -c's "nothing to continue" line; nil means os.Stderr
+	Home       string    // the daemon's home
+	Cwd        string    // a new session's directory, and -c's workspace (default: the working directory)
+	Continue   bool      // -c
+	Resume     string    // a session id, or "latest"
+	Model      string    // -m
+	Reasoning  string    // --reasoning
+	Yolo       bool      // --yolo
+	Version    string    // shown in the intro
+	Autostart  bool      // reconnect with client.Connect rather than client.Dial
+	Stderr     io.Writer // -c's "nothing to continue" line; nil means os.Stderr
+	Background string    // the terminal's background as #rrggbb; empty: ask the terminal
 }
 
 // App is a running TUI.
@@ -38,6 +39,7 @@ type App struct {
 	mu          sync.Mutex
 	err         error
 	lastScreen  string
+	lastStyled  string
 	lastSession string
 }
 
@@ -81,7 +83,7 @@ func Start(c *client.Client, o Options, in io.Reader, out io.Writer) (*App, erro
 	}
 
 	a := &App{done: make(chan struct{})}
-	m := newModel(a, c, o, res, resumed)
+	m := newModel(a, c, o, res, resumed, startTheme(o, out))
 	opts := []tea.ProgramOption{tea.WithOutput(out)}
 	if in == nil {
 		opts = append(opts, tea.WithInput(nil), tea.WithoutSignalHandler())
@@ -94,7 +96,8 @@ func Start(c *client.Client, o Options, in io.Reader, out io.Writer) (*App, erro
 		a.mu.Lock()
 		a.err = err
 		if fm, ok := final.(*model); ok {
-			a.lastScreen = stripANSI(strings.Join(fm.render(), "\n"))
+			styled := strings.Join(fm.render(), "\n")
+			a.lastScreen, a.lastStyled = stripANSI(styled), styled
 			a.lastSession = fm.sess.ID
 		}
 		a.mu.Unlock()
@@ -186,6 +189,12 @@ func (a *App) ask(fn func(*model) string, last func() string) string {
 func (a *App) Screen() string {
 	return a.ask(func(m *model) string { return stripANSI(strings.Join(m.render(), "\n")) },
 		func() string { return a.lastScreen })
+}
+
+// Styled is the frame as painted: Screen with its styling.
+func (a *App) Styled() string {
+	return a.ask(func(m *model) string { return strings.Join(m.render(), "\n") },
+		func() string { return a.lastStyled })
 }
 
 // Session is the id of the current session.

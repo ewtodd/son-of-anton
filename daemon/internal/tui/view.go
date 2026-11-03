@@ -2,15 +2,42 @@ package tui
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const margin = "  "
 
-func (m *model) contentWidth() int { return max(m.w-4, 1) }
+const (
+	sidebarWidth     = 42  // columns
+	sidebarThreshold = 120 // the sidebar shows by itself on a screen wider than this
+)
+
+// sidebarState reports whether the sidebar is drawn, and whether it takes
+// room from the feed (else it is drawn over the right 42 columns).
+func (m *model) sidebarState() (show, inline bool) {
+	wide := m.w > sidebarThreshold
+	show = wide
+	if m.sbForced != nil {
+		show = *m.sbForced
+	}
+	return show, show && wide
+}
+
+// room is the width the feed column has.
+func (m *model) room() int {
+	if _, inline := m.sidebarState(); inline {
+		return m.w - sidebarWidth
+	}
+	return m.w
+}
+
+func (m *model) contentWidth() int { return max(m.room()-4, 1) }
 
 // seg is a styled piece of a row.
 type seg struct {
@@ -43,8 +70,6 @@ func renderSegs(ss []seg, w int) string {
 	}
 	return b.String()
 }
-
-var plain = lipgloss.NewStyle()
 
 // taRows is the height of the text area: it grows with the draft, to ten rows
 // at most and never so far that fewer than three feed rows remain.
@@ -80,6 +105,7 @@ func (m *model) feedRows() (dock, rows int) {
 }
 
 func (m *model) statusLine(cw int, now time.Time) string {
+	th := m.th
 	var left, right []seg
 	if m.busy() {
 		label := "thinking"
@@ -93,19 +119,19 @@ func (m *model) statusLine(cw int, now time.Time) string {
 		if !m.sess.Started.IsZero() {
 			secs = max(int(now.Sub(m.sess.Started).Seconds()), 0)
 		}
-		left = []seg{{spinnerFrame(m.spin), bold}, {" ", plain}, {label, plain}, {fmt.Sprintf("  %ds", secs), muted}}
-		right = []seg{{"ctrl+c", bold}, {" interrupt", plain}}
+		left = []seg{{spinnerFrame(m.spin), th.bld}, {" ", th.plain}, {label, th.plain}, {fmt.Sprintf("  %ds", secs), th.mut}}
+		right = []seg{{"ctrl+c", th.bld}, {" interrupt", th.plain}}
 	} else {
-		left = []seg{{tilde(m.sess.Cwd), plain}}
+		left = []seg{{tilde(m.sess.Cwd), th.plain}}
 		if m.sess.CtxLen > 0 {
 			pct := (100*m.sess.CtxTokens + m.sess.CtxLen/2) / m.sess.CtxLen
-			right = append(right, seg{fmt.Sprintf("%d%% context  ·  ", pct), muted})
+			right = append(right, seg{fmt.Sprintf("%d%% context  ·  ", pct), th.mut})
 		}
-		right = append(right, seg{"/help", bold}, seg{" commands", plain})
+		right = append(right, seg{"/help", th.bld}, seg{" commands", th.plain})
 	}
 	var suffix []seg
 	if n := len(m.queue); n > 0 {
-		suffix = []seg{{fmt.Sprintf("  · %d queued", n), muted}}
+		suffix = []seg{{fmt.Sprintf("  · %d queued", n), th.mut}}
 	}
 	rw := segsWidth(right)
 	if rw+1 > cw { // too narrow for both: the right side alone
@@ -131,41 +157,43 @@ func (m *model) statusLine(cw int, now time.Time) string {
 }
 
 func (m *model) metaLine(w int) string {
-	mode := plain
+	th := m.th
+	mode := th.plain
 	switch m.sess.Mode {
 	case "yolo":
-		mode = errSt.Bold(true)
+		mode = th.errS.Bold(true)
 	case "lockdown":
-		mode = toolSt
+		mode = th.toolS
 	}
 	effort := m.sess.Effort
 	if effort == "" {
 		effort = "default"
 	}
-	sep := seg{"  ·  ", muted}
+	sep := seg{"  ·  ", th.mut}
 	return renderSegs([]seg{
 		{m.sess.Mode, mode}, sep,
-		{modelShort(m.sess.Model, m.sess.Served), bold}, sep,
-		{"reasoning " + effort, muted},
+		{modelShort(m.sess.Model, m.sess.Served), th.bld}, sep,
+		{"reasoning " + effort, th.mut},
 	}, w)
 }
 
 func (m *model) queueStrip(cw int) []string {
+	th := m.th
 	if len(m.queue) == 0 {
 		return nil
 	}
 	var out []string
 	for _, q := range m.queue[:min(len(m.queue), 3)] {
-		out = append(out, muted.Render("↳ ")+ellipsize(squash(q), max(cw-5, 1)))
+		out = append(out, th.mut.Render("↳ ")+ellipsize(squash(q), max(cw-5, 1)))
 	}
 	if n := len(m.queue) - 3; n > 0 {
-		out = append(out, muted.Render(fmt.Sprintf("   +%d more", n)))
+		out = append(out, th.mut.Render(fmt.Sprintf("   +%d more", n)))
 	}
 	hint := "/sendnow sends this now"
 	if len(m.queue) > 1 {
 		hint = "/sendnow sends the oldest · /sendall sends all"
 	}
-	out = append(out, muted.Render(ellipsize(hint, cw)))
+	out = append(out, th.mut.Render(ellipsize(hint, cw)))
 	for i := range out {
 		out[i] = "   " + out[i]
 	}
@@ -175,6 +203,7 @@ func (m *model) queueStrip(cw int) []string {
 // render draws the whole screen: exactly m.h rows.
 func (m *model) render() []string {
 	w, h := m.w, m.h
+	th := m.th
 	cw := m.contentWidth()
 	now := time.Now()
 	ta := m.taRows()
@@ -182,17 +211,24 @@ func (m *model) render() []string {
 	m.ta.SetHeight(ta)
 	m.ta, _ = m.ta.Update(nil) // keep the cursor in view
 
-	rail := accent.Render("▎")
+	rail := th.acc.Render("▎")
 	var dock []string
 	if q := m.queueStrip(cw); q != nil {
 		dock = append(dock, "")
 		dock = append(dock, q...)
 	}
-	dock = append(dock, "", rail)
-	for _, l := range strings.Split(m.ta.View(), "\n") {
-		dock = append(dock, rail+"  "+l)
+	// The prompt frame, from its first rail to its last, is on the surface.
+	frame := func(l string) string {
+		if th.surface == nil {
+			return l
+		}
+		return th.paint(l, th.surface, cw)
 	}
-	dock = append(dock, rail, rail+"  "+m.metaLine(max(cw-3, 0)), rail, "", m.statusLine(cw, now), "")
+	dock = append(dock, "", frame(rail))
+	for _, l := range strings.Split(m.ta.View(), "\n") {
+		dock = append(dock, frame(rail+"  "+l))
+	}
+	dock = append(dock, frame(rail), frame(rail+"  "+m.metaLine(max(cw-3, 0))), frame(rail), "", m.statusLine(cw, now), "")
 	for i, l := range dock {
 		if l != "" {
 			dock[i] = margin + l
@@ -200,23 +236,23 @@ func (m *model) render() []string {
 	}
 	_, rows := m.feedRows()
 	rows = min(rows, max(h-len(dock), 0))
-	total := m.feed.count(cw, now, m.spin)
+	total := m.feed.count(cw, th, now, m.spin)
 	top := max(total-rows, 0)
 	if !m.follow {
 		top = min(max(m.top, 0), top)
 	}
-	feedLines := m.feed.window(cw, now, m.spin, top, rows)
+	feedLines := m.feed.window(cw, th, now, m.spin, top, rows)
 	lines := make([]string, 0, h)
-	for i := len(feedLines); i < rows; i++ {
-		lines = append(lines, "")
-	}
 	for _, l := range feedLines {
 		lines = append(lines, margin+l)
+	}
+	for i := len(feedLines); i < rows; i++ { // a short feed starts at the top
+		lines = append(lines, "")
 	}
 	lines = append(lines, dock...)
 
 	if len(m.modals) > 0 {
-		box := m.modals[0].view(cw)
+		box := m.modals[0].view(cw, th)
 		start := max((rows-len(box))/2, 0)
 		bw := 0
 		for _, l := range box {
@@ -234,8 +270,116 @@ func (m *model) render() []string {
 	case len(lines) < h:
 		lines = append(make([]string, h-len(lines)), lines...)
 	}
-	_ = w
+	if show, _ := m.sidebarState(); show && w > sidebarWidth {
+		sb := m.sidebar(h, now)
+		left := w - sidebarWidth
+		for i, l := range lines {
+			if lipgloss.Width(l) > left {
+				l = ansi.Truncate(l, left, "")
+			}
+			lines[i] = l + strings.Repeat(" ", max(left-lipgloss.Width(l), 0)) + sb[i]
+		}
+	}
+	for i, l := range lines {
+		lines[i] = th.fix(l)
+	}
 	return lines
 }
 
 func (m *model) View() string { return strings.Join(m.render(), "\n") }
+
+// ---- the sidebar ----
+
+func fmtTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fK", float64(n)/1e3)
+	}
+	return strconv.Itoa(n)
+}
+
+// fmtDuration is a session's age: 45s, 12m, 3h 5m, 2d 4h.
+func fmtDuration(d time.Duration) string {
+	s := max(int(d.Seconds()), 0)
+	switch {
+	case s < 60:
+		return fmt.Sprintf("%ds", s)
+	case s < 3600:
+		return fmt.Sprintf("%dm", s/60)
+	case s < 86400:
+		return fmt.Sprintf("%dh %dm", s/3600, s%3600/60)
+	}
+	return fmt.Sprintf("%dd %dh", s/86400, s%86400/3600)
+}
+
+// sidebar is the 42 columns at the right edge: h rows on the panel colour.
+func (m *model) sidebar(h int, now time.Time) []string {
+	th, s := m.th, m.sess
+	const inner = sidebarWidth - 5 // the border, then 2 columns of padding either side
+	var body []string
+	add := func(text string, st lipgloss.Style) { body = append(body, st.Render(ellipsize(text, inner))) }
+	label := func(text string) {
+		body = append(body, "")
+		add(text, th.mut)
+	}
+	title := s.Title
+	if title == "" {
+		title = "untitled"
+	}
+	add(title, th.bld)
+	add(s.ID, th.mut)
+	add(tilde(s.Cwd), th.mut)
+	label("mode")
+	add(s.Mode, th.plain)
+	label("reasoning")
+	effort := s.Effort
+	if effort == "" {
+		effort = "default"
+	}
+	add(effort, th.mut)
+	label("context")
+	if s.CtxLen > 0 && s.CtxTokens > 0 {
+		pct := (100*s.CtxTokens + s.CtxLen/2) / s.CtxLen
+		filled := min(max(int(math.RoundToEven(float64(pct)/10)), 0), 10)
+		add(strings.Repeat("▰", filled)+strings.Repeat("▱", 10-filled)+fmt.Sprintf("  %d%%", pct), th.acc)
+		tokens := fmtTokens(s.CtxTokens) + " / " + fmtTokens(s.CtxLen)
+		if s.Compactions > 0 {
+			tokens += fmt.Sprintf(" · %d compacted", s.Compactions)
+		}
+		add(tokens, th.mut)
+	} else {
+		add("▱▱▱▱▱▱▱▱▱▱  —", th.mut)
+		add("no turns yet", th.mut)
+	}
+	label("session usage")
+	add(fmt.Sprintf("in %s · out %s · %d calls", fmtTokens(s.In), fmtTokens(s.Out), s.Calls), th.mut)
+	if s.Bg > 0 {
+		label("background")
+		add(fmt.Sprintf("%d processes", s.Bg), th.mut)
+	}
+	elapsed := "session"
+	if !s.Created.IsZero() {
+		elapsed += " " + fmtDuration(now.Sub(s.Created))
+	}
+	add(elapsed, th.mut)
+
+	footer := th.okS.Render("•") + " " + th.bld.Render("Son of Anton")
+	if v := m.o.Version; v != "" {
+		footer += " " + th.mut.Render(ellipsize(v, max(inner-14, 1)))
+	}
+	rows := make([]string, h)
+	border := th.acc.Render("│")
+	for i := range rows {
+		var content string
+		switch {
+		case i == h-2:
+			content = footer
+		case i >= 1 && i-1 < len(body) && i < h-2:
+			content = body[i-1]
+		}
+		rows[i] = th.paint(border+"  "+content, th.panel, sidebarWidth)
+	}
+	return rows
+}

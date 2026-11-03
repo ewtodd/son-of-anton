@@ -1,18 +1,5 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
-
-// The default skin's colour roles (skins are phase 9b).
-var (
-	accent   = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
-	thinking = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	toolSt   = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
-	errSt    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	muted    = lipgloss.NewStyle().Faint(true)
-	bold     = lipgloss.NewStyle().Bold(true)
-	panelBg  = lipgloss.AdaptiveColor{Light: "254", Dark: "236"}
-)
-
 const spinnerFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 func spinnerFrame(i int) string {

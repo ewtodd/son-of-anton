@@ -45,7 +45,8 @@ type (
 		res attachResult
 		err error
 	}
-	quitMsg struct{}
+	quitMsg    struct{}
+	refreshMsg struct{}
 )
 
 type model struct {
@@ -73,6 +74,9 @@ type model struct {
 	draft    string
 	histPath string
 
+	th       *theme
+	sbForced *bool // set by the first ctrl+b; after that a resize never shows or hides the sidebar
+
 	modals []*modal
 	// held are events of other sessions: the one being switched to sends its
 	// live tail right after the attach reply, before the switch is applied.
@@ -87,7 +91,7 @@ type model struct {
 	giveUp     bool
 }
 
-func newModel(a *App, c *client.Client, o Options, res attachResult, resumed bool) *model {
+func newModel(a *App, c *client.Client, o Options, res attachResult, resumed bool, th *theme) *model {
 	ta := textarea.New()
 	ta.Prompt = ""
 	ta.ShowLineNumbers = false
@@ -96,15 +100,15 @@ func newModel(a *App, c *client.Client, o Options, res attachResult, resumed boo
 	for _, st := range []*textarea.Style{&ta.FocusedStyle, &ta.BlurredStyle} {
 		st.CursorLine = lipgloss.NewStyle()
 		st.Text = lipgloss.NewStyle()
-		st.Placeholder = muted
 		st.EndOfBuffer = lipgloss.NewStyle()
 	}
 	ta.Cursor.SetMode(cursor.CursorStatic)
 	ta.Focus()
 	m := &model{
-		app: a, o: o, cl: c, w: 100, h: 30, feed: newFeed(), follow: true, ta: ta,
+		app: a, o: o, cl: c, w: 100, h: 30, feed: newFeed(), follow: true, ta: ta, th: th,
 		histPath: o.Home + "/.son_of_anton_history",
 	}
+	m.setTheme(th)
 	m.hist = ReadHistory(m.histPath)
 	m.histPos = len(m.hist)
 	m.adopt(res, resumed)
@@ -124,6 +128,7 @@ func (m *model) adopt(res attachResult, resumed bool) tea.Cmd {
 	m.lastSeq = 0
 	m.follow = true
 	m.feed = newFeed()
+	m.feed.add(&block{kind: bkLogo})
 	m.addIntro()
 	m.drawHistory(res, resumed)
 	held := m.held
@@ -153,8 +158,8 @@ func (m *model) busy() bool { return m.sess.Status == "running" }
 func (m *model) addIntro() {
 	b := &block{kind: bkIntro}
 	b.notes = []noteLine{
-		{"v" + m.o.Version + "  ·  " + modelShort(m.sess.Model, m.sess.Served) + "  ·  session " + m.sess.ID + "  ·  " + tilde(m.sess.Cwd), true},
-		{"/help for commands · :q to quit", true},
+		{"v" + m.o.Version + "  ·  " + modelShort(m.sess.Model, m.sess.Served) + "  ·  session " + m.sess.ID + "  ·  " + tilde(m.sess.Cwd), true, false},
+		{"/help for commands · :q to quit", true, false},
 	}
 	m.feed.add(b)
 }
@@ -281,6 +286,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.onReconnected(msg)
 	case quitMsg:
 		return m, tea.Quit
+	case refreshMsg:
+		if !m.quitting {
+			return m, m.refreshSession()
+		}
 	}
 	return m, nil
 }
@@ -406,7 +415,7 @@ func (m *model) onEvent(ev client.Event) tea.Cmd {
 			if e == "" {
 				e = "the turn failed"
 			}
-			m.feed.note("error: "+e, false)
+			m.feed.errNote("error: " + e)
 		}
 	case "session.updated":
 		if st, ok := p["state"].(map[string]any); ok {
@@ -524,4 +533,12 @@ func (m *model) onReconnected(msg reconnectedMsg) tea.Cmd {
 	m.role = msg.res.Role
 	m.feed.note("reconnected to soa-d", true)
 	return m.startTick()
+}
+
+// setTheme draws everything in th from the next frame on.
+func (m *model) setTheme(th *theme) {
+	m.th = th
+	for _, st := range []*textarea.Style{&m.ta.FocusedStyle, &m.ta.BlurredStyle} {
+		st.Placeholder = th.mut
+	}
 }
