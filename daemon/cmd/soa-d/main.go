@@ -35,6 +35,7 @@ usage:
   soa-d query [--home DIR] [--model M] [--reasoning LEVEL] [--yolo] [--system FILE] [--memory | --no-memory] PROMPT
   soa-d oneshot [--home DIR] [--model M] [--reasoning LEVEL] [--yolo] [--system FILE] [--memory | --no-memory] [--usage-file PATH] PROMPT
   soa-d serve [--home DIR]
+  soa-d import --from DIR [--home DIR]
   soa-d version
 `
 
@@ -56,6 +57,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runQuery(args[1:], stdout, stderr)
 	case "oneshot":
 		return runOneshot(args[1:], stdout, stderr)
+	case "import":
+		return runImport(args[1:], stdout, stderr)
 	case "serve":
 		return runServe(args[1:], stderr)
 	default:

@@ -248,34 +248,49 @@ func newSessionID() (string, error) {
 	return time.Now().Format("20060102_150405") + "_" + hex.EncodeToString(b), nil
 }
 
-// CreateSession stores a new session, generating its ID and Created.
+// CreateSession stores a new session, generating its ID and Created. A
+// session that comes with an ID keeps it, and a taken ID is an error.
 func (s *Store) CreateSession(ctx context.Context, sess Session) (Session, error) {
 	for {
-		id, err := newSessionID()
-		if err != nil {
-			return Session{}, err
+		given := sess.ID != ""
+		if !given {
+			id, err := newSessionID()
+			if err != nil {
+				return Session{}, err
+			}
+			sess.ID = id
 		}
 		if sess.Created.IsZero() {
 			sess.Created = time.Now()
 		}
-		sess.ID = id
 		if sess.Scope == "" {
 			sess.Scope = "common"
 		}
-		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO sessions (id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, scope, chat, title_source, agent)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			sess.ID, sess.Kind, nullStr(sess.ParentID), nullStr(sess.Source), nullStr(sess.Title),
-			nullStr(sess.Cwd), nullStr(sess.Model), nullStr(sess.PromptHash),
-			formatTime(sess.Created), nullTime(sess.Ended), nullStr(sess.ReasoningEffort), nullStr(sess.Mode), nullStr(sess.Workspace), sess.Scope, nullStr(sess.Chat), nullStr(sess.TitleSource), nullStr(sess.Agent))
+		err := insertSession(ctx, s.db, sess)
 		if err == nil {
 			return sess, nil
 		}
-		if !strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if given || !strings.Contains(err.Error(), "UNIQUE constraint failed") {
 			return Session{}, err
 		}
 		// ID collision: draw a new one.
+		sess.ID = ""
 	}
+}
+
+// execer is what a *sql.DB and a *sql.Tx share.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func insertSession(ctx context.Context, ex execer, sess Session) error {
+	_, err := ex.ExecContext(ctx,
+		`INSERT INTO sessions (id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, scope, chat, title_source, agent)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sess.ID, sess.Kind, nullStr(sess.ParentID), nullStr(sess.Source), nullStr(sess.Title),
+		nullStr(sess.Cwd), nullStr(sess.Model), nullStr(sess.PromptHash),
+		formatTime(sess.Created), nullTime(sess.Ended), nullStr(sess.ReasoningEffort), nullStr(sess.Mode), nullStr(sess.Workspace), sess.Scope, nullStr(sess.Chat), nullStr(sess.TitleSource), nullStr(sess.Agent))
+	return err
 }
 
 // Session loads one session by ID.
@@ -398,6 +413,15 @@ func (s *Store) AppendMessages(ctx context.Context, sessionID string, msgs ...Me
 		return nil, err
 	}
 
+	seqs, err := insertMessages(ctx, tx, sessionID, nextSeq, msgs)
+	if err != nil {
+		return nil, err
+	}
+	return seqs, tx.Commit()
+}
+
+// insertMessages writes msgs (and their search rows) after seq nextSeq.
+func insertMessages(ctx context.Context, tx *sql.Tx, sessionID string, nextSeq int64, msgs []Message) ([]int64, error) {
 	now := time.Now()
 	seqs := make([]int64, 0, len(msgs))
 	for i := range msgs {
@@ -427,7 +451,7 @@ func (s *Store) AppendMessages(ctx context.Context, sessionID string, msgs ...Me
 		m.TS = ts
 		seqs = append(seqs, nextSeq)
 	}
-	return seqs, tx.Commit()
+	return seqs, nil
 }
 
 // Messages returns the session's transcript in seq order.

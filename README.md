@@ -73,6 +73,8 @@ launch starts the new daemon.
   transcript, `←`/`→` move between them, `↑` comes back.
 - The TUI's sessions are in `soa-d.db`; the gateway's and cron's are still in
   `state.db`.
+- `soa-d import --from ~/.son-of-anton` brings the Python's sessions into the
+  TUI (safe to run again; sessions already imported are skipped).
 - Web search falls back from SearXNG (`SEARXNG_URL`) to DuckDuckGo, and
   `web_extract` reads pages directly, then through `WEB_EXTRACT_URL`, then any
   opt-in `web.extract_fallbacks` (`"wayback"`, `"jina"`).
