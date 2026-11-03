@@ -197,7 +197,7 @@ func TestAnswersRenderAsMarkdown(t *testing.T) {
 	d := newDaemon(t, fake)
 	a := open(t, d, tui.Options{})
 	send(a, "plan it")
-	s := waitScreen(t, a, "• one", "▎code here", "| a | b |", "| 1 | 2 |")
+	s := waitScreen(t, a, "• one", "▎code here", "| a   | b   |", "| 1   | 2   |") // MT pads columns to 3
 	if strings.Contains(s, "**one**") || strings.Contains(s, "## Plan") || !hasLine(s, "Plan") {
 		t.Fatalf("markdown was drawn as source:\n%s", s)
 	}

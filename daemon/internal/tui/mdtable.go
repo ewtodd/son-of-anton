@@ -9,9 +9,9 @@ import (
 // are rebuilt with column widths in terminal cells, and a table too wide for
 // the room becomes "Header: value" blocks.
 
-// A column is at least one cell wide: its divider is then 3 dashes, enough for
-// the table to stay a table (MT's minimum of 3 cells padded every narrow column).
-const minColWidth = 1
+// A column is at least 3 cells wide, matching the divider's minimum dash run
+// (MT's _MIN_COL_WIDTH).
+const minColWidth = 3
 
 func splitTableRow(row string) []string {
 	s := strings.TrimSpace(row)

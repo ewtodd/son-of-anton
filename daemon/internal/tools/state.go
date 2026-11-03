@@ -28,6 +28,7 @@ type State struct {
 	notes   []note
 	todos   []todoItem
 	onNote  func() // called, with no lock held, after a notice is queued
+	onExit  func() // called, with no lock held, after a background process exits
 }
 
 // NewState creates the per-session state. The cwd need not exist yet.
@@ -100,6 +101,14 @@ func (s *State) SetNotify(f func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onNote = f
+}
+
+// SetOnExit registers f to run (on any goroutine, with no State lock held)
+// each time a background process exits, killed or not.
+func (s *State) SetOnExit(f func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onExit = f
 }
 
 // BackgroundRunning counts the background processes still running.

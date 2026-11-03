@@ -269,6 +269,10 @@ func (s *Session) KillBackground() int { return s.state.KillBackground() }
 // queued. Drain with TakeNotifications.
 func (s *Session) OnNotify(f func()) { s.state.SetNotify(f) }
 
+// OnBackgroundExit registers f, called (on any goroutine) each time one of
+// the session's background processes exits.
+func (s *Session) OnBackgroundExit(f func()) { s.state.SetOnExit(f) }
+
 // ID returns the session ID.
 func (s *Session) ID() string { return s.id }
 

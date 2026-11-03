@@ -153,10 +153,13 @@ func startBackground(env *Env, cwd, command string, notify bool) (string, error)
 				"[Background process %s exited with code %d. Command: %s. Output (last %d chars):\n%s]",
 				p.id, code, p.command, procExitedChars, cleanOutput(p.buf.String(), procExitedChars))})
 		}
-		cb := st.onNote
+		cb, exit := st.onNote, st.onExit
 		st.mu.Unlock()
 		if queued && cb != nil {
 			cb()
+		}
+		if exit != nil {
+			exit()
 		}
 	}()
 	return p.id, nil

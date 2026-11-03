@@ -315,7 +315,6 @@ func (m *model) command(name, args, line string) tea.Cmd {
 					fail(m, err)
 				} else {
 					m.feed.note(fmt.Sprintf("killed %d background process(es)", res.Killed), false)
-					return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return refreshMsg{} }) // the processes are gone a moment after the kill
 				}
 				return nil
 			})
@@ -501,25 +500,4 @@ func (m *model) skinCommand(name string) {
 		}
 	}
 	m.feed.note("unknown skin: "+name, false)
-}
-
-// refreshSession reads the session's state afresh, for the sidebar: the daemon
-// announces a kill before the processes are gone.
-func (m *model) refreshSession() tea.Cmd {
-	var res struct {
-		Sessions []map[string]any `json:"sessions"`
-	}
-	id := m.sess.ID
-	return call(m.cl, 10*time.Second, "session.list", map[string]any{"cwd": m.sess.Cwd, "limit": 50}, &res,
-		func(m *model, err error) tea.Cmd {
-			if err != nil || m.sess.ID != id {
-				return nil
-			}
-			for _, s := range res.Sessions {
-				if str(s, "id") == id {
-					m.sess = parseSession(s, m.sess)
-				}
-			}
-			return nil
-		})
 }

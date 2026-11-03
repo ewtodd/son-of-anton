@@ -45,8 +45,7 @@ type (
 		res attachResult
 		err error
 	}
-	quitMsg    struct{}
-	refreshMsg struct{}
+	quitMsg struct{}
 )
 
 type model struct {
@@ -286,10 +285,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.onReconnected(msg)
 	case quitMsg:
 		return m, tea.Quit
-	case refreshMsg:
-		if !m.quitting {
-			return m, m.refreshSession()
-		}
 	}
 	return m, nil
 }

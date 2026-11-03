@@ -387,6 +387,13 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 	l.model, l.effort, l.mode = ep.Model, ep.ReasoningEffort, string(mode)
 	l.ctxKnown = sess.ContextLength()
 	sess.OnNotify(l.drainNotices)
+	// The count of running processes is part of the session object: a kill
+	// or a process ending on its own is news to the clients.
+	sess.OnBackgroundExit(func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.emitSession()
+	})
 	s.live[id] = l
 	return l, nil
 }
