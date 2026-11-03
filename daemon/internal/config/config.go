@@ -68,7 +68,8 @@ type Config struct {
 		JinaURL          string   `toml:"jina_url"`
 		AllowPrivateURLs bool     `toml:"allow_private_urls"`
 	} `toml:"web"`
-	Platforms struct {
+	MCPServers map[string]MCPServer `toml:"mcp_servers"`
+	Platforms  struct {
 		Signal struct {
 			RequireMention  any `toml:"require_mention"`
 			TypingIndicator any `toml:"typing_indicator"`
@@ -401,4 +402,22 @@ func SignalSetting(v any) (value, set bool) {
 		}
 	}
 	return false, false
+}
+
+// MCPServer is one [mcp_servers.<name>] table. Timeouts are in seconds.
+// Values in env and headers may be any TOML scalar; they are used as text.
+type MCPServer struct {
+	Command        string         `toml:"command"`
+	Args           []string       `toml:"args"`
+	Env            map[string]any `toml:"env"`
+	Cwd            string         `toml:"cwd"`
+	URL            string         `toml:"url"`
+	Headers        map[string]any `toml:"headers"`
+	Enabled        *bool          `toml:"enabled"`
+	Timeout        any            `toml:"timeout"`
+	ConnectTimeout any            `toml:"connect_timeout"`
+	Tools          struct {
+		Include []string `toml:"include"`
+		Exclude []string `toml:"exclude"`
+	} `toml:"tools"`
 }

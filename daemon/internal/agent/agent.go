@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
+	"github.com/ewtodd/son-of-anton/daemon/internal/mcp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/memory"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
@@ -80,6 +81,8 @@ type Runner struct {
 	// client's own retries (before any output); the next request tries Model
 	// again. A session switched to another model has no fallback.
 	Fallback *Fallback
+	// MCP reaches the MCP servers (tools.Env.MCP).
+	MCP *mcp.Manager
 	// Scope and Chat stamp the sessions NewSession creates ("" Scope is common).
 	Scope, Chat string
 }
@@ -501,7 +504,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emitEvent func(Event), maxChars int) []store.Message {
 	base := tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
 		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval,
-		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, WallChat: s.runner.WallChat, Web: s.runner.Web}
+		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, WallChat: s.runner.WallChat, Web: s.runner.Web, MCP: s.runner.MCP}
 	var emitMu sync.Mutex
 	emit := func(e Event) {
 		emitMu.Lock()

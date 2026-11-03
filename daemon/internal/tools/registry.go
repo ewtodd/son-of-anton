@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
+	"github.com/ewtodd/son-of-anton/daemon/internal/mcp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/memory"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
@@ -47,6 +48,8 @@ type Env struct {
 	// Web configures web_search and web_extract (nil: they say they are not
 	// configured).
 	Web *Web
+	// MCP reaches the MCP servers (nil: none is configured).
+	MCP *mcp.Manager
 	// CallID is the id of the tool call being run.
 	CallID string
 }

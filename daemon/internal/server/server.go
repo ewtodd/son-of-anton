@@ -22,6 +22,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
+	"github.com/ewtodd/son-of-anton/daemon/internal/mcp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/memory"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
@@ -81,6 +82,7 @@ type Server struct {
 	regTask *tools.Registry // reg plus the task tool: an interactive session's
 	regChat *tools.Registry // a chat session's: notes, memory, recall, web; no terminal
 	web     *tools.Web      // the web tools' settings, shared by every session
+	mcp     *mcp.Manager    // nil: no MCP server is enabled
 	chats   *chatHub        // nil: Signal is off
 	mem     *memory.Store
 	idx     *recall.Index   // nil: recall is off
@@ -114,10 +116,15 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	mem, idx := recall.Memory(cfg, o.Home, true)
-	s := &Server{opt: o, cfg: cfg, st: st, reg: tools.NewRegistry(tools.Builtin()...), mem: mem, idx: idx,
+	mcpm := MCPManager(cfg, o.Home)
+	base := tools.Builtin()
+	if mcpm != nil {
+		base = append(base, tools.MCPTools(mcpm.Names())...)
+	}
+	s := &Server{opt: o, cfg: cfg, st: st, reg: tools.NewRegistry(base...), mcp: mcpm, mem: mem, idx: idx,
 		live: map[string]*live{}, indexed: map[string]int64{}, conns: map[*conn]struct{}{},
 		meta: map[string]map[string]int{}, learned: map[string]int{}}
-	s.regTask = tools.NewRegistry(append(tools.Builtin(), subagent.Tool(subagent.Builtin(), true, s.spawnTask))...)
+	s.regTask = tools.NewRegistry(append(base, subagent.Tool(subagent.Builtin(), true, s.spawnTask))...)
 	s.regChat = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "clarify", "memory", "session_search", "web_search", "web_extract")
 	s.web = WebConfig(cfg, o.Home)
 	s.chats = s.newChatHub()
@@ -194,6 +201,9 @@ func (s *Server) shutdown() {
 	if s.chats != nil {
 		s.chats.stop()
 	}
+	if s.mcp != nil {
+		s.mcp.Close()
+	}
 	if s.idx != nil {
 		_ = s.idx.Close()
 	}
@@ -226,6 +236,7 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 		MemoryScope:     "common", // every soa-d session is common until phase 5
 		MemoryApproval:  s.cfg.Memory.WriteApproval,
 		Web:             s.web,
+		MCP:             s.mcp,
 		Prompt: func(_ context.Context, ss store.Session) (string, error) {
 			r, err := prompt.Build(prompt.Options{
 				Home: s.opt.Home, Cwd: ss.Cwd, Scope: "common", Memory: true,

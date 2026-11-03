@@ -24,8 +24,10 @@ daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`).
 - **On soa-d now:** the terminal TUI (`son-of-anton`), `-q` and `-z`, and
   Signal chats (off until an instance moves; `[daemon] signal = true`).
 - **Still Python:** the relay workers, cron, physics runs.
-- **Not in the daemon yet:** `/handoff` and `/pickup` (5); MCP
-  servers (7); the Python sessions in `state.db` (imported in 8).
+- **Not in the daemon yet:** `/handoff` and `/pickup` (5); the Python
+  sessions in `state.db` (imported in 8).
+- **MCP:** servers in `[mcp_servers.<name>]` are found with `tool_search` and
+  run with `tool_call`.
 
 ## Running it
 

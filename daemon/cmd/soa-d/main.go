@@ -17,6 +17,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
+	"github.com/ewtodd/son-of-anton/daemon/internal/mcp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
@@ -119,6 +120,7 @@ func parseOptions(args []string, defaultMemory, allowUsageFile bool, stderr io.W
 type setup struct {
 	st     *store.Store
 	idx    *recall.Index // nil: no recall
+	mcp    *mcp.Manager  // nil: no MCP server is enabled
 	runner *agent.Runner
 	model  string
 }
@@ -153,13 +155,18 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 		return nil, err
 	}
 	mem, idx := recall.Memory(cfg, home, source == "query" && o.memory)
-	su := &setup{st: st, model: ep.Model, runner: &agent.Runner{
+	mcpm := server.MCPManager(cfg, home)
+	base := tools.Builtin()
+	if mcpm != nil {
+		base = append(base, tools.MCPTools(mcpm.Names())...)
+	}
+	su := &setup{st: st, mcp: mcpm, model: ep.Model, runner: &agent.Runner{
 		Store:           st,
 		Client:          provider.New(ep.BaseURL, ep.APIKey),
 		Model:           ep.Model,
 		ReasoningEffort: ep.ReasoningEffort,
 		Source:          source,
-		Tools:           tools.NewRegistry(tools.Builtin()...),
+		Tools:           tools.NewRegistry(base...),
 		Allowlist:       st.Allowlist(),
 		Policy:          paths.Policy{Home: userHome(), SoaHome: home},
 		Mode:            queryMode(cfg, o.yolo),
@@ -167,6 +174,7 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 		MemoryScope:     "common",
 		MemoryApproval:  cfg.Memory.WriteApproval,
 		Web:             server.WebConfig(cfg, home),
+		MCP:             mcpm,
 		Prompt: func(_ context.Context, s store.Session) (string, error) {
 			if o.system != "" {
 				return string(system), nil
@@ -191,6 +199,9 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 
 // close releases the store and the recall index.
 func (su *setup) close() {
+	if su.mcp != nil {
+		su.mcp.Close()
+	}
 	if su.idx != nil {
 		_ = su.idx.Close()
 	}
