@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 )
@@ -218,5 +219,40 @@ func TestTheApprovalAllowlistPersists(t *testing.T) {
 	b := open(t, path)
 	if !b.Allowlist().Has("git reset --hard") || b.Allowlist().Has("git push --force") {
 		t.Fatal("allowlisted keys must survive a reopen, and only those")
+	}
+}
+
+func TestPhysicsRuns(t *testing.T) {
+	st := newStore(t)
+	if v, err := st.SchemaVersion(); err != nil || v < 16 {
+		t.Fatalf("schema version %d, %v", v, err)
+	}
+	r := store.PhysicsRun{ID: "20261103_010203_p_m", Name: "p", SpecPath: "/h/physics/x.toml", RunDir: "/w/x", Worker: "sw", Manager: "sm", State: "working",
+		WorkerModel: "m", ManagerModel: "m2", Limits: `{"max_sessions":8}`, Started: time.Now(), NextMessage: "go"}
+	if err := st.CreatePhysicsRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	r.State, r.Phase, r.SessionsDone, r.Tokens, r.WorkStarted, r.Ended = "interrupted", "reviewing", 2, 123, true, time.Now()
+	if err := st.SavePhysicsRun(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.PhysicsRun(ctx, r.ID)
+	if err != nil || got.State != "interrupted" || got.Phase != "reviewing" || got.SessionsDone != 2 || got.Tokens != 123 || !got.WorkStarted || got.NextMessage != "go" || got.Ended.IsZero() || got.ManagerModel != "m2" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	for _, id := range []string{"sw", "sm"} {
+		if by, err := st.PhysicsRunBySession(ctx, id); err != nil || by.ID != r.ID {
+			t.Errorf("by session %s: %+v %v", id, by, err)
+		}
+	}
+	if _, err := st.PhysicsRunBySession(ctx, "other"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("unknown session: %v", err)
+	}
+	if _, err := st.PhysicsRun(ctx, "nope"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("unknown run: %v", err)
+	}
+	all, err := st.PhysicsRuns(ctx)
+	if err != nil || len(all) != 1 {
+		t.Fatalf("%v %v", all, err)
 	}
 }

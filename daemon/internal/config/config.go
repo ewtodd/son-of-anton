@@ -84,6 +84,18 @@ type Config struct {
 		Python string `toml:"python"`
 		// DataDirs are the directories a sandbox may bind read-only.
 		DataDirs []string `toml:"data_dirs"`
+		// Model is the worker's model (else model.default); ManagerModel the
+		// manager's (else the worker's).
+		Model        string `toml:"model"`
+		ManagerModel string `toml:"manager_model"`
+		// MaxSteps is the tool-step limit of a physics turn (default 400).
+		MaxSteps int `toml:"max_steps"`
+		// The run limits (defaults: 8 work sessions, 400,000 tokens a session,
+		// 3,000,000 tokens in all, 8 hours).
+		MaxSessions   int     `toml:"max_sessions"`
+		SessionTokens int     `toml:"session_tokens"`
+		TotalTokens   int     `toml:"total_tokens"`
+		Hours         float64 `toml:"hours"`
 	} `toml:"physics"`
 	Terminal struct {
 		Cwd string `toml:"cwd"`

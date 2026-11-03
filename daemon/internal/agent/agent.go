@@ -374,11 +374,11 @@ func (s *Session) TakeNotifications() []string { return s.state.TakeNotification
 // Event is one streaming update.
 type Event struct {
 	Kind       string          // "assistant.delta" | "reasoning.delta" | "tool.start" | "tool.end" | "message" | "compaction" | "warning" | "served" | "usage"
-	Text       string          // the fragment, the call arguments, the result, or the model now serving (served)
+	Text       string          // the fragment, the call arguments, the result, the model now serving (served), or the finish reason (usage)
 	Tool       string          // tool name (tool.start / tool.end)
 	CallID     string          // the call id (tool.start / tool.end)
 	Message    *store.Message  // the stored row (message)
-	Duration   time.Duration   // how long the call ran (tool.end)
+	Duration   time.Duration   // how long the call or request ran (tool.end, usage)
 	Compaction *CompactResult  // the finished compaction (compaction)
 	Usage      *provider.Usage // one request's usage, as it ends (usage)
 }
@@ -537,6 +537,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 				emit(Event{Kind: "reasoning.delta", Text: d.Reasoning})
 			}
 		}
+		reqBegan := time.Now()
 		resp, err := client.Complete(reqCtx, req, onDelta)
 		var httpErr *provider.HTTPError
 		if def := r.Default; err != nil && def != nil && model != def.Model && !stopped() && errors.As(err, &httpErr) && httpErr.Status == 404 {
@@ -582,7 +583,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			r.OnReply(s.ServedModel())
 		}
 		total.APICalls++
-		emit(Event{Kind: "usage", Usage: &resp.Usage})
+		emit(Event{Kind: "usage", Usage: &resp.Usage, Duration: time.Since(reqBegan), Text: resp.FinishReason})
 		s.noteResponse(resp.Usage.PromptTokens, emit)
 		total.Last = resp.Usage
 		total.Usage.PromptTokens += resp.Usage.PromptTokens

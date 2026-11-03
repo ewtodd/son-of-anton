@@ -374,7 +374,7 @@ func (m *model) switchSession(pick func(context.Context, *client.Client) (string
 			return fail(err)
 		}
 		var res attachResult
-		if err := c.Call(ctx, "session.attach", map[string]any{"session": id, "as": "driver"}, &res); err != nil {
+		if err := attachSession(ctx, c, map[string]any{"session": id}, &res); err != nil {
 			if rpcCode(err) == codeNoSession {
 				return fail(errNote("session " + id + " is not in soa-d"))
 			}
@@ -417,4 +417,17 @@ func (m *model) skinCommand(name string) {
 		}
 	}
 	m.feed.note("unknown skin: "+name, false)
+}
+
+// attachSession attaches to id as its driver. A session nobody may drive (a
+// physics run's: its controller does) is attached as a viewer instead, so the
+// run can be watched.
+func attachSession(ctx context.Context, c *client.Client, params map[string]any, res *attachResult) error {
+	params["as"] = "driver"
+	err := c.Call(ctx, "session.attach", params, res)
+	if rpcCode(err) == codeNotDriver {
+		params["as"] = "viewer"
+		err = c.Call(ctx, "session.attach", params, res)
+	}
+	return err
 }

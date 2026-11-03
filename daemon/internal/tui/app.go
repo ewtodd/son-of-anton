@@ -150,7 +150,7 @@ func attachFirst(ctx context.Context, c *client.Client, o Options) (res attachRe
 	} else {
 		resumed = true
 	}
-	if err = c.Call(ctx, "session.attach", map[string]any{"session": id, "as": "driver"}, &res); err != nil {
+	if err = attachSession(ctx, c, map[string]any{"session": id}, &res); err != nil {
 		if rpcCode(err) == codeNoSession {
 			err = errors.New("session " + id + " is not in soa-d")
 		}

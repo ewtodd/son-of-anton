@@ -182,17 +182,6 @@ func TestUsageErrors(t *testing.T) {
 	}
 }
 
-func TestProblemIsBeingRebuilt(t *testing.T) {
-	h := home(t, "")
-	r := cli(t, t.TempDir(), "", nil, "--home", h, "problem", "run", "spec.toml")
-	if r.code != 2 || strings.TrimSpace(r.errOut) != "the physics mode is being rebuilt (daemon/phases/11b); it is not in this version" {
-		t.Fatalf("problem: %d %q", r.code, r.errOut)
-	}
-	if r := cli(t, t.TempDir(), "", nil, "--help"); strings.Contains(r.out, "problem") {
-		t.Errorf("usage still lists problem: %q", r.out)
-	}
-}
-
 func TestVersion(t *testing.T) {
 	r := cli(t, t.TempDir(), "", nil, "--version")
 	if r.code != 0 || r.out != "son-of-anton "+buildinfo.Version+"\n" {

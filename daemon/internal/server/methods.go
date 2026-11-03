@@ -38,6 +38,8 @@ func (s *Server) dispatch(c *conn, req *request) (any, *rpcError) {
 	switch req.Method {
 	case "hello", "session.list", "session.create", "session.attach", "session.history", "session.detach", "session.children", "session.rename", "session.delete", "model.list":
 		driverOnly = false
+	case "physics.run", "physics.list", "physics.watch", "physics.stop", "physics.resume":
+		return s.physicsMethod(c, req, bad)
 	case "turn.send", "turn.interrupt", "queue.steer", "queue.remove", "queue.clear",
 		"approval.answer", "question.answer", "session.set", "command.run":
 	default:
@@ -304,8 +306,12 @@ func (s *Server) attach(c *conn, req *request, bad func(error) (any, *rpcError))
 	if p.As != "driver" && p.As != "viewer" {
 		return nil, errf(codeBadParams, "as must be driver or viewer")
 	}
-	if _, e := s.socketSession(p.Session); e != nil {
+	rec, e := s.socketSession(p.Session)
+	if e != nil {
 		return nil, e
+	}
+	if rec.Kind == "physics" && p.As == "driver" {
+		return nil, errf(codeNotDriver, "a physics session cannot be driven: the controller of its run does that; attach as viewer")
 	}
 	for range 3 {
 		l, err := s.load(s.base, p.Session)

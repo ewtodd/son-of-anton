@@ -1,6 +1,6 @@
 // Command son-of-anton is the user's command: it runs soa-d for the terminal
 // UI, -q and -z, shows the daemon's status and sessions (daemon/phases/10a-son-of-anton-command.md).
-// `problem` only says the physics mode is being rebuilt (phase 11a).
+// `problem` runs and follows physics runs (daemon/phases/11c-physics-runs.md).
 package main
 
 import (
@@ -27,6 +27,9 @@ const usage = `usage:
   son-of-anton [flags] PROMPT...                one query
   son-of-anton [flags] -q PROMPT | --query PROMPT | --query-file FILE|-
   son-of-anton [flags] -z PROMPT | --oneshot PROMPT
+  son-of-anton problem run SPEC [--model M] [--manager-model M] [--max-sessions N]
+                       [--session-tokens N] [--total-tokens N] [--hours H] [--wait]
+  son-of-anton problem list | watch ID | stop ID | resume ID
   son-of-anton status
   son-of-anton sessions [list] [--kind KIND]... [--all] [--limit N]
   son-of-anton sessions rename ID TITLE...
@@ -167,7 +170,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	switch f.command {
 	case "problem":
-		return runProblem(stderr)
+		return runProblem(f, stdout, stderr)
 	case "status":
 		if len(f.rest) > 0 {
 			return usageErr(stderr, "status takes no arguments")
@@ -314,12 +317,6 @@ func runSoaD(f flags, stdin io.Reader, stderr io.Writer) int {
 		argv = append(argv, "-c")
 	}
 	return execSoaD(argv, stderr)
-}
-
-// runProblem: the physics mode was removed in phase 11a and is rebuilt in 11b.
-func runProblem(stderr io.Writer) int {
-	fmt.Fprintln(stderr, "the physics mode is being rebuilt (daemon/phases/11b); it is not in this version")
-	return 2
 }
 
 // ---- status ----

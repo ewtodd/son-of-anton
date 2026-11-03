@@ -107,6 +107,9 @@ type Server struct {
 	indexedMu sync.Mutex
 	indexed   map[string]int64 // session -> last seq passed to the recall index
 
+	physMu     sync.Mutex
+	physActive *physRun // the physics run going, if any
+
 	turns  sync.WaitGroup // running turn goroutines
 	connWG sync.WaitGroup // connection goroutines
 }
@@ -152,6 +155,7 @@ func New(o Options) (*Server, error) {
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	s.applyRenames()
 	s.backfill()
+	s.physicsRecover()
 	if s.cfg.Daemon.Cron {
 		s.cron.start()
 	}
@@ -390,6 +394,12 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 		}
 		l.waiting = false
 	}
+	if rec.Kind == "physics" {
+		if err := s.physicsRunner(r, rec); err != nil {
+			return nil, err
+		}
+		l.waiting = false
+	}
 	sess, err := r.Resume(ctx, id)
 	if err != nil {
 		return nil, err
@@ -414,7 +424,7 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 func (s *Server) maybeUnload(l *live) {
 	s.mu.Lock()
 	l.mu.Lock()
-	ok := !l.unloaded && !l.closing && len(l.viewers) == 0 && !l.running && !l.compacting && len(l.bg) == 0 && l.sess.BackgroundRunning() == 0
+	ok := !l.unloaded && !l.closing && !l.pinned && len(l.viewers) == 0 && !l.running && !l.compacting && len(l.bg) == 0 && l.sess.BackgroundRunning() == 0
 	if ok {
 		l.unloaded = true
 		delete(s.live, l.id)

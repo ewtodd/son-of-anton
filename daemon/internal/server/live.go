@@ -86,6 +86,8 @@ type live struct {
 	bg                  map[string]context.CancelFunc       // running background tasks of this session, by child id
 	watchers            []func(status, text, errMsg string) // told when the session is idle after a turn (a task call waits here)
 	chat                chatSink                            // the Signal chat this session belongs to (nil: none)
+	run                 *physRun                            // the physics run this session is pinned for (nil: none)
+	pinned              bool                                // kept loaded for a physics run
 }
 
 func newLive(s *Server, rec store.Session, sum store.Summary) *live {
@@ -192,6 +194,9 @@ func (l *live) onAgentLocked(e agent.Event) (progress map[string]any) {
 	case "tool.start":
 		summary := summarize(e.Tool, e.Text)
 		l.emit("tool.start", map[string]any{"call_id": e.CallID, "name": e.Tool, "arguments": e.Text, "summary": summary})
+		if l.run != nil {
+			l.run.onToolStart(l, e.CallID, e.Tool, e.Text)
+		}
 		l.toolCalls++
 		if l.parent != "" {
 			progress = map[string]any{"child_id": l.id, "name": e.Tool, "summary": summary, "tool_calls": l.toolCalls}
@@ -199,6 +204,9 @@ func (l *live) onAgentLocked(e agent.Event) (progress map[string]any) {
 	case "tool.end":
 		l.emit("tool.end", map[string]any{"call_id": e.CallID, "name": e.Tool, "result": e.Text,
 			"is_error": isError(e.Tool, e.Text), "duration_ms": e.Duration.Milliseconds()})
+		if l.run != nil {
+			l.run.onToolEnd(l, e.CallID, e.Tool, e.Text, e.Duration)
+		}
 	case "compaction":
 		l.compacted(*e.Compaction)
 	case "warning":
@@ -210,6 +218,9 @@ func (l *live) onAgentLocked(e agent.Event) (progress map[string]any) {
 		l.emitSession()
 	case "usage":
 		l.ctxTokens = e.Usage.PromptTokens + e.Usage.CompletionTokens
+		if l.run != nil {
+			l.run.onUsage(l, e.Usage, e.Duration, e.Text)
+		}
 		l.emitSession()
 	case "message":
 		m := e.Message

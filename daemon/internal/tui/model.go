@@ -572,8 +572,8 @@ func (m *model) tryReconnect() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		var res attachResult
-		params := map[string]any{"session": sid, "as": "driver", "after_seq": after}
-		if err := c.Call(ctx, "session.attach", params, &res); err != nil {
+		params := map[string]any{"session": sid, "after_seq": after}
+		if err := attachSession(ctx, c, params, &res); err != nil {
 			_ = c.Close()
 			return reconnectedMsg{err: err}
 		}

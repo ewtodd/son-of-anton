@@ -7,7 +7,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const codeNoSession = -32011
+const (
+	codeNoSession = -32011
+	codeNotDriver = -32010 // a physics session: only its run drives it
+)
 
 var modes = []string{"default", "ask", "lockdown", "yolo"}
 

@@ -204,6 +204,28 @@ UPDATE schema_version SET version = 14;`,
 	// prompt yet, and none could choose a model since (loading them failed).
 	`UPDATE sessions SET model = '', reasoning_effort = '' WHERE kind = 'chat' AND COALESCE(prompt_hash, '') = '';
 UPDATE schema_version SET version = 15;`,
+	// v16: physics runs (phase 11c).
+	`CREATE TABLE physics_runs (
+	id              TEXT PRIMARY KEY,
+	name            TEXT NOT NULL,
+	spec_path       TEXT NOT NULL,
+	run_dir         TEXT NOT NULL,
+	worker_session  TEXT NOT NULL,
+	manager_session TEXT NOT NULL,
+	state           TEXT NOT NULL,
+	phase           TEXT NOT NULL DEFAULT '',
+	sessions_done   INTEGER NOT NULL DEFAULT 0,
+	tokens_used     INTEGER NOT NULL DEFAULT 0,
+	worker_model    TEXT NOT NULL,
+	manager_model   TEXT NOT NULL,
+	limits          TEXT NOT NULL,
+	elapsed_s       REAL NOT NULL DEFAULT 0,
+	next_message    TEXT NOT NULL DEFAULT '',
+	work_started    INTEGER NOT NULL DEFAULT 0,
+	started         TEXT NOT NULL,
+	ended           TEXT
+);
+UPDATE schema_version SET version = 16;`,
 }
 
 func migrate(db *sql.DB) error {

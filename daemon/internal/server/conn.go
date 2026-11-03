@@ -183,6 +183,7 @@ func (c *conn) run() {
 		l.detach(c)
 		c.srv.maybeUnload(l)
 	}
+	c.srv.physicsUnwatch(c)
 	c.srv.mu.Lock()
 	delete(c.srv.conns, c)
 	c.srv.mu.Unlock()
