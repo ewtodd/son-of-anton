@@ -418,7 +418,8 @@ func TestTheWallKeepsChatsOffTheSocket(t *testing.T) {
 	c.attach(tui, "driver")
 	c.send(tui, "what was the secret?")
 	rows := toolRows(c.turn())
-	if len(rows) != 1 || strings.Contains(rows[0], "papaya") || strings.Contains(rows[0], id) {
+	// The result repeats the query, so look for the chat's own text.
+	if len(rows) != 1 || strings.Contains(rows[0], "the secret is papaya") || strings.Contains(rows[0], id) {
 		t.Fatalf("a terminal session's search reached a chat: %v", rows)
 	}
 }
