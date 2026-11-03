@@ -74,7 +74,7 @@ func TestARuleChangeAsksTheUserEvenInYolo(t *testing.T) {
 	f, asked := memFixture(t, approval.Yolo, approval.Once)
 	r := f.call(t, "memory", map[string]any{"kind": "rule", "action": "add", "text": "Answer in plain English", "why": "readability"})
 	if r["success"] != true || str(r, "id") != "answer-in-plain-english" || str(r, "kind") != "rule" || str(r, "scope") != "common" ||
-		!strings.Contains(str(r, "usage"), "/6,000 chars") || str(r, "note") != "Saved. This update is complete — do not repeat it." {
+		!strings.Contains(str(r, "usage"), "/6,000 chars") || str(r, "note") != "Saved. Nothing more is needed for this change." {
 		t.Fatalf("result = %v", r)
 	}
 	if len(*asked) != 1 {
@@ -147,7 +147,7 @@ func TestAnInvalidChangeNeverAsks(t *testing.T) {
 func TestWithoutAStoreMemoryIsUnavailable(t *testing.T) {
 	f := setup(t, nil)
 	r := f.call(t, "memory", map[string]any{"kind": "fact", "action": "add", "text": "x"})
-	if r["success"] != false || !strings.Contains(str(r, "error"), "Memory is not available") {
+	if r["success"] != false || !strings.Contains(str(r, "error"), "Memory is off for this session") {
 		t.Fatalf("result = %v", r)
 	}
 }

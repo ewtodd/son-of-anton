@@ -301,14 +301,14 @@ func (c *cronSched) scriptRun(job cron.Job) outcome {
 	s := c.srv
 	at := time.Now().In(cron.Zone(s.opt.Home))
 	out, ok := cron.RunScript(s.base, s.opt.Home, jobText(job, "script"), jobText(job, "workdir"))
-	mode := header(job, "", at) + "**Mode:** no_agent (script)\n"
+	mode := header(job, "", at) + "**Run:** the script alone (no_agent)\n"
 	switch {
 	case !ok:
-		return outcome{errMsg: out, doc: mode + "**Status:** script failed\n\n" + out + "\n"}
+		return outcome{errMsg: out, doc: mode + "**Result:** the script failed\n\n" + out + "\n"}
 	case !cron.WakeGate(out):
-		return outcome{ok: true, silent: true, doc: mode + "**Status:** silent (wakeAgent=false)\n"}
+		return outcome{ok: true, silent: true, doc: mode + "**Result:** nothing to deliver (wakeAgent=false)\n"}
 	case strings.TrimSpace(out) == "":
-		return outcome{ok: true, silent: true, doc: mode + "**Status:** silent (empty output)\n"}
+		return outcome{ok: true, silent: true, doc: mode + "**Result:** nothing to deliver (no output)\n"}
 	}
 	return outcome{ok: true, response: out, doc: mode + "\n---\n\n" + out + "\n"}
 }

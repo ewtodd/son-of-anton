@@ -48,7 +48,7 @@ func memoryFail(msg string, extra map[string]any) (string, error) {
 
 func (memoryTool) Run(ctx context.Context, env *Env, raw json.RawMessage) (string, error) {
 	if env.Memory == nil {
-		return memoryFail("Memory is not available. It may be disabled in config or this environment.", nil)
+		return memoryFail("Memory is off for this session: it is disabled in the config, or there is no memory store here.", nil)
 	}
 	var a struct {
 		Kind, Action, ID, Text, Why, Scope string
@@ -84,7 +84,7 @@ func (memoryTool) Run(ctx context.Context, env *Env, raw json.RawMessage) (strin
 		return memoryError(err)
 	}
 	out := map[string]any{"id": res.ID, "success": true, "kind": res.Kind, "scope": res.Scope,
-		"note": "Saved. This update is complete — do not repeat it."}
+		"note": "Saved. Nothing more is needed for this change."}
 	if res.Usage != "" {
 		out["usage"] = res.Usage
 	}

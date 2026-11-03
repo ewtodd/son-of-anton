@@ -40,7 +40,7 @@ const SummaryPrefix = "[EARLIER CONVERSATION, SUMMARIZED] The start of this conv
 	"Notes:"
 
 // SummaryEnd closes the summary block.
-const SummaryEnd = "--- END OF CONTEXT SUMMARY. The notes stop here; answer the message below. ---"
+const SummaryEnd = "[END OF NOTES] Answer the message that follows them."
 
 // summaryBlock is the summary as the request carries it.
 func summaryBlock(summary string) string {

@@ -163,7 +163,7 @@ func TestProjectContextFilesMergeFromTheGitRootDown(t *testing.T) {
 	if a < 0 || b < a || c < b {
 		t.Fatalf("context files merge from the root down to cwd:\n%s", text)
 	}
-	if !strings.Contains(text, "# Project Context") || !strings.Contains(text, "## pkg/sub/AGENTS.md") {
+	if !strings.Contains(text, "# Project instructions") || !strings.Contains(text, "## pkg/sub/AGENTS.md") {
 		t.Fatalf("the block has its heading and each file a relative label:\n%s", text)
 	}
 	if len(r.ContextFiles) != 3 {

@@ -269,7 +269,7 @@ func projectContext(cwd string) (string, []string, error) {
 		paths = append(paths, f.path)
 	}
 	body := truncateContext(strings.Join(sections, "\n\n"), paths, cwd)
-	return "# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n" + body, paths, nil
+	return "# Project instructions\n\nThese instruction files apply to the working directory. Follow them.\n\n" + body, paths, nil
 }
 
 // truncateContext keeps the first 70% and the last 20% of contextMax around

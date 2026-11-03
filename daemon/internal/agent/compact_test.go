@@ -18,7 +18,7 @@ import (
 )
 
 const summaryPrefix = "[EARLIER CONVERSATION, SUMMARIZED]"
-const summaryEnd = "--- END OF CONTEXT SUMMARY"
+const summaryEnd = "[END OF NOTES]"
 
 // withCompaction gives r a summary model on aux and a 1000-token window
 // (threshold 750 tokens, tail budget about 150 tokens / 600 characters).

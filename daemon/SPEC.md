@@ -408,10 +408,15 @@ measured use. Anything wanted later comes back as a deliberate feature.
 
 ## 20. Provenance
 
-From phase 10c on, the words, tables, code and packaging of this repository are
-this project's own. The prompts, tool descriptions and messages were rewritten
-from the behaviour they have to produce, the pattern tables and stub code were
-replaced by this project's own, and the Nix packaging is its own. The Python
-files and the opencode sources that the sections above name were the
-behavioural reference for the port. They are kept in those sections as
-history; nothing in the daemon copies them.
+From phase 10c on, nothing of hermes-agent remains: the prompts, tool
+descriptions and messages were rewritten from the behaviour they have to
+produce, the pattern tables and the execute_code helper were replaced by this
+project's own, and the Nix packaging is its own. The Python files the
+sections above name were the behavioural reference for the port, kept there
+as history.
+
+opencode is different: the TUI's layout is a port of its session view, and
+some TUI code follows opencode's closely (the palette derivation, the
+subagent footer, small formatters), with comments saying so. The owner
+decided (2026-11-03) that this may stay, with what that means for the
+license.
