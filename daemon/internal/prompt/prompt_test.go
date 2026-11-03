@@ -233,3 +233,22 @@ func TestOutsideAGitRepoOnlyTheCwdIsRead(t *testing.T) {
 		t.Fatal("without git, only the cwd's context files are read")
 	}
 }
+
+// Phase 4a: a subagent's prompt starts with its type's prompt in place of the
+// identity, then the usual layers, with only delegated rules.
+func TestAnIdentityReplacesTheFirstLayer(t *testing.T) {
+	f := setup(t)
+	write(t, filepath.Join(f.home, "SOUL.md"), "I am the user's assistant.")
+	write(t, filepath.Join(f.home, "memories", "rules.toml"),
+		"[[rule]]\nid = \"plain\"\ntext = \"Plain English.\"\nsource = \"user\"\n\n[[rule]]\nid = \"guard\"\ntext = \"Never delete user files.\"\nsource = \"user\"\ndelegated = true\n")
+	res, err := prompt.Build(prompt.Options{Home: f.home, Cwd: f.cwd, Scope: "common", Memory: false, Now: now, Identity: "You are a file search specialist."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(res.Text, "You are a file search specialist.\n\n"+prompt.Guidance) || strings.Contains(res.Text, "user's assistant") {
+		t.Fatalf("prompt = %q", res.Text[:200])
+	}
+	if !strings.Contains(res.Text, "[guard]") || strings.Contains(res.Text, "[plain]") {
+		t.Fatal("only delegated rules ride a lean prompt")
+	}
+}

@@ -8,6 +8,7 @@
 package fakellm
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +23,9 @@ type ToolCall struct {
 	ID        string
 	Name      string
 	Arguments string
+	// ArgumentsFunc, when set, gives the arguments at the moment the turn is
+	// sent (for a value the test learns only while running, like a new id).
+	ArgumentsFunc func() string
 }
 
 // Turn scripts one response.
@@ -52,6 +56,10 @@ type Turn struct {
 	// StallAfterFirst sends the first content delta, then goes silent until
 	// the client gives up (idle-timeout tests).
 	StallAfterFirst bool
+	// When, if set, makes this turn answer only a request whose body contains
+	// it (the first such request, in any order); turns without When answer the
+	// other requests in order. Concurrent sessions each take their own turns.
+	When string
 	// ServedModel, when set, is sent as the x-maitred-model header (maitred
 	// naming the model that answered).
 	ServedModel string
@@ -68,6 +76,7 @@ type Server struct {
 	t       testing.TB
 	mu      sync.Mutex
 	turns   []Turn
+	used    []bool // turns already answered
 	bodies  [][]byte
 	headers []http.Header
 	models  []string
@@ -158,9 +167,17 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	s.bodies = append(s.bodies, body)
 	s.headers = append(s.headers, r.Header.Clone())
 	var turn Turn
-	scripted := idx < len(s.turns)
-	if scripted {
-		turn = s.turns[idx]
+	scripted := false
+	if len(s.used) < len(s.turns) {
+		s.used = append(s.used, make([]bool, len(s.turns)-len(s.used))...)
+	}
+	// The first unused turn this request may take: one without When, or one
+	// whose When appears in the request (concurrent sessions take their own).
+	for i, t := range s.turns {
+		if !s.used[i] && (t.When == "" || bytes.Contains(body, []byte(t.When))) {
+			s.used[i], turn, scripted = true, t, true
+			break
+		}
 	}
 	s.mu.Unlock()
 
@@ -239,6 +256,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for i, tc := range turn.ToolCalls {
+		if tc.ArgumentsFunc != nil {
+			tc.Arguments = tc.ArgumentsFunc()
+		}
 		send(chunk(map[string]any{"tool_calls": []any{map[string]any{
 			"index": i, "id": tc.ID, "type": "function",
 			"function": map[string]any{"name": tc.Name, "arguments": ""},
