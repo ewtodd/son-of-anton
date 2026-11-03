@@ -141,6 +141,9 @@ func newModel(a *App, c *client.Client, o Options, res attachResult, resumed boo
 	m.hist = ReadHistory(m.histPath)
 	m.histPos = len(m.hist)
 	m.initCmd = m.adopt(res, resumed)
+	if n := th.fallbackNote(); n != "" {
+		m.feed.note(n, false)
+	}
 	return m
 }
 

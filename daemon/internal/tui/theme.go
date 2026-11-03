@@ -22,7 +22,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
 )
 
-// skinKeys are the colour keys of a skin (son_of_anton_cli/skin_engine.py).
+// skinKeys are the colour keys of a skin.
 var skinKeys = []string{"ui_accent", "ui_thinking", "ui_tool", "ui_ok", "ui_warn", "ui_error"}
 
 type skinDef struct {
@@ -30,24 +30,28 @@ type skinDef struct {
 	colors     map[string]string
 }
 
-// builtinSkins are the built-in skins, in the order /skin lists them. A key a
-// skin leaves out comes from the first, "default".
+// builtinSkins are the skins that come with soa-d, in the order /skin lists
+// them. Each names all six colours. A user skin may leave keys out; those
+// come from the first, "default".
 var builtinSkins = []skinDef{
-	{"default", "Son of Anton — obsidian and gold", map[string]string{
-		"ui_accent": "yellow", "ui_thinking": "cyan", "ui_tool": "yellow", "ui_ok": "green", "ui_warn": "yellow", "ui_error": "red"}},
-	{"ares", "War-god theme — crimson and bronze", map[string]string{"ui_accent": "#DD4A3A"}},
-	{"mono", "Monochrome — clean grayscale", map[string]string{
-		"ui_accent": "#aaaaaa", "ui_ok": "#888888", "ui_error": "#cccccc", "ui_warn": "#999999"}},
-	{"slate", "Cool blue — developer-focused", map[string]string{
-		"ui_accent": "#7eb8f6", "ui_ok": "#63D0A6", "ui_error": "#F7A072", "ui_warn": "#e6a855"}},
-	{"daylight", "Light theme for bright terminals with dark text and cool blue accents", map[string]string{
-		"ui_accent": "#2563EB", "ui_ok": "#15803D", "ui_error": "#B91C1C", "ui_warn": "#B45309"}},
-	{"warm-lightmode", "Warm light mode — dark brown/gold text for light terminal backgrounds", map[string]string{
-		"ui_accent": "#8B4513", "ui_warn": "#E65100"}},
-	{"poseidon", "Ocean-god theme — deep blue and seafoam", map[string]string{"ui_accent": "#5DB8F5"}},
-	{"sisyphus", "Sisyphean theme — austere grayscale with persistence", map[string]string{
-		"ui_accent": "#E7E7E7", "ui_ok": "#919191", "ui_error": "#E7E7E7", "ui_warn": "#B7B7B7"}},
-	{"charizard", "Volcanic theme — burnt orange and ember", map[string]string{"ui_accent": "#F29C38"}},
+	{"default", "Your terminal's own colours", map[string]string{
+		"ui_accent": "yellow", "ui_thinking": "cyan", "ui_tool": "yellow",
+		"ui_ok": "green", "ui_warn": "yellow", "ui_error": "red"}},
+	{"paper", "For light terminals", map[string]string{
+		"ui_accent": "#1F4E8C", "ui_thinking": "#5B5FC7", "ui_tool": "#1F4E8C",
+		"ui_ok": "#2E7D32", "ui_warn": "#9A6700", "ui_error": "#B3261E"}},
+	{"ash", "Greyscale", map[string]string{
+		"ui_accent": "#C8C8C8", "ui_thinking": "#9E9E9E", "ui_tool": "#B0B0B0",
+		"ui_ok": "#A0A0A0", "ui_warn": "#D0D0D0", "ui_error": "#EDEDED"}},
+	{"tide", "Cool blues", map[string]string{
+		"ui_accent": "#6CB6D9", "ui_thinking": "#9C8CD9", "ui_tool": "#6CB6D9",
+		"ui_ok": "#7CC4A0", "ui_warn": "#D9B26C", "ui_error": "#E07A6C"}},
+	{"ember", "Warm oranges", map[string]string{
+		"ui_accent": "#E08A3C", "ui_thinking": "#C9A0DC", "ui_tool": "#E08A3C",
+		"ui_ok": "#8FBF6A", "ui_warn": "#E0B43C", "ui_error": "#E05A4E"}},
+	{"moss", "Greens", map[string]string{
+		"ui_accent": "#8DBF5A", "ui_thinking": "#7FB2C9", "ui_tool": "#8DBF5A",
+		"ui_ok": "#8DBF5A", "ui_warn": "#D9B45A", "ui_error": "#D9655A"}},
 }
 
 // loadSkins is the built-ins, then the user skins in <home>/skins/*.toml by
@@ -102,9 +106,10 @@ var ansiNames = map[string]string{
 	"gray": "8", "grey": "8", // bright black
 }
 
-// parseSkinColor reads a skin colour value (tui.py _to_ansi): its first colour
-// word is that ANSI colour, "default" is the terminal's own, "#rgb" and
-// "#rrggbb" are as given; anything else is not a colour.
+// parseSkinColor reads a skin colour value. The first colour name in it
+// (black, red, green, yellow, blue, magenta, cyan, white, gray) is that ANSI
+// colour, "default" is the terminal's own, "#rgb" and "#rrggbb" are taken as
+// written; anything else is not a colour.
 func parseSkinColor(v string) (lipgloss.TerminalColor, bool) {
 	v = strings.ToLower(strings.TrimSpace(v))
 	for _, w := range strings.Fields(strings.ReplaceAll(v, ",", " ")) {
@@ -159,6 +164,10 @@ type theme struct {
 	accent, thinking, tool, okC, warn, errC lipgloss.TerminalColor
 	panel                                   lipgloss.TerminalColor
 	surface                                 lipgloss.TerminalColor // nil: no generated surface
+
+	// missingSkin is the display.skin that named no skin, when the start fell
+	// back to the default.
+	missingSkin string
 
 	acc, think, toolS, okS, warnS, errS, mut, bld, plain lipgloss.Style
 }
@@ -331,6 +340,15 @@ func parseOSCColor(payload string) string {
 	return ""
 }
 
+// fallbackNote is what the feed says once at start when display.skin named a
+// skin that does not exist.
+func (th *theme) fallbackNote() string {
+	if th.missingSkin == "" {
+		return ""
+	}
+	return "display.skin is \"" + th.missingSkin + "\", which is not a skin; using default (/skin lists them)"
+}
+
 // startTheme is the theme the app starts in: the skin of config.toml's
 // [display] skin (default when unset or unknown), on the surfaces of the
 // terminal's background.
@@ -348,13 +366,17 @@ func startTheme(o Options, out io.Writer) *theme {
 	if cfg, err := config.Load(o.Home); err == nil {
 		want = cfg.Display.Skin
 	}
-	skin := builtinSkins[0]
+	skin, found := builtinSkins[0], want == ""
 	for _, sk := range loadSkins(o.Home) {
 		if sk.name == want {
-			skin = sk
+			skin, found = sk, true
 		}
 	}
-	return newTheme(newRenderer(out, dark), skin, pal)
+	th := newTheme(newRenderer(out, dark), skin, pal)
+	if !found {
+		th.missingSkin = want
+	}
+	return th
 }
 
 // exactSeqs lists, for each colour #rrggbb in hexes, the escape lipgloss writes

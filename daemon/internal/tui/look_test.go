@@ -212,20 +212,20 @@ func TestSkins(t *testing.T) {
 		[]byte("name = \"mine\"\ndescription = \"my own\"\n\n[colors]\nui_accent = \"#123456\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	restartWith(t, d, "\n[display]\nskin = \"slate\"\n")
+	restartWith(t, d, "\n[display]\nskin = \"tide\"\n")
 	a := open(t, d, tui.Options{})
 	waitScreen(t, a, "Message Son of Anton…")
-	const slate, ares, mine = "38;2;126;184;246", "38;2;221;74;58", "38;2;18;52;86"
-	if !strings.Contains(a.Styled(), slate) {
-		t.Fatal("display.skin = slate is not the accent at start")
+	const tide, ember, mine = "38;2;108;182;217", "38;2;224;138;60", "38;2;18;52;86"
+	if !strings.Contains(a.Styled(), tide) {
+		t.Fatal("display.skin = tide is not the accent at start")
 	}
 	send(a, "/skin")
-	waitScreen(t, a, "skin: slate", "● slate — Cool blue — developer-focused",
-		"ares — War-god theme — crimson and bronze", "charizard — Volcanic theme — burnt orange and ember", "mine — my own")
-	send(a, "/skin ares")
-	waitScreen(t, a, "skin: ares")
-	if st := a.Styled(); !strings.Contains(st, ares) || strings.Contains(st, slate) {
-		t.Fatal("/skin ares did not redraw everything in ares")
+	waitScreen(t, a, "skin: tide", "● tide — Cool blues",
+		"ember — Warm oranges", "moss — Greens", "mine — my own")
+	send(a, "/skin ember")
+	waitScreen(t, a, "skin: ember")
+	if st := a.Styled(); !strings.Contains(st, ember) || strings.Contains(st, tide) {
+		t.Fatal("/skin ember did not redraw everything in ember")
 	}
 	send(a, "/skin mine")
 	waitScreen(t, a, "skin: mine")
@@ -264,4 +264,16 @@ func TestARoutedModelReportsTheModelThatAnswered(t *testing.T) {
 	waitScreen(t, a, "auto → small-model", "▰▰▰▰▱▱▱▱▱▱  35%", "350 / 1.0K")
 	send(a, "/status")
 	waitScreen(t, a, "· auto → radiance/small-model · mode")
+}
+
+func TestAStartSkinThatNoLongerExistsFallsBackOnce(t *testing.T) {
+	d := newDaemon(t, fakellm.New(t))
+	restartWith(t, d, "\n[display]\nskin = \"slate\"\n")
+	a := open(t, d, tui.Options{})
+	s := waitScreen(t, a, "Message Son of Anton…", `display.skin is "slate"`)
+	if strings.Count(s, `display.skin is "slate"`) != 1 {
+		t.Fatalf("the fallback was not said exactly once:\n%s", s)
+	}
+	send(a, "/skin")
+	waitScreen(t, a, "skin: default")
 }
