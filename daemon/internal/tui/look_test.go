@@ -247,3 +247,21 @@ func TestSurfacesFollowTheTerminal(t *testing.T) {
 		t.Fatal("the user row is not on the panel colour (#2c2c43) or the prompt on the surface (#33334e)")
 	}
 }
+
+func TestARoutedModelReportsTheModelThatAnswered(t *testing.T) {
+	fake := fakellm.New(t, fakellm.Turn{Content: "routed", ServedModel: "radiance/small-model", PromptTokens: 300, CompletionTokens: 50})
+	fake.SetModels("auto", "radiance/small-model")
+	fake.SetModelMeta("auto", map[string]any{"context_length": 500000}) // the largest on offer
+	fake.SetModelMeta("radiance/small-model", map[string]any{"context_length": 1000})
+	d := newDaemon(t, fake)
+	restartWith(t, d, "\n[custom_providers.custom.models.\"auto\"]\n")
+	a := open(t, d, tui.Options{Model: "auto"})
+	a.Resize(160, 40)
+	send(a, "hi")
+	waitScreen(t, a, "routed")
+	idle(t, a)
+	// The window, the bar and the counts are the answering model's, not auto's listing.
+	waitScreen(t, a, "auto → small-model", "▰▰▰▰▱▱▱▱▱▱  35%", "350 / 1.0K")
+	send(a, "/status")
+	waitScreen(t, a, "· auto → radiance/small-model · mode")
+}

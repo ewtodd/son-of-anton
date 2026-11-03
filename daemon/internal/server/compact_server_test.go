@@ -145,3 +145,31 @@ func TestTitlesReachTheSession(t *testing.T) {
 		t.Fatalf("a title the user sets wins: %v", r)
 	}
 }
+
+func TestUnderARoutedModelTheWindowIsTheServedModels(t *testing.T) {
+	fake := fakellm.New(t,
+		fakellm.Turn{Content: "one", ServedModel: "small/model", PromptTokens: 300, CompletionTokens: 50},
+		fakellm.Turn{Content: "two", ServedModel: "big/model", PromptTokens: 400, CompletionTokens: 50},
+	)
+	fake.SetModels("auto", "small/model", "big/model")
+	fake.SetModelMeta("auto", map[string]any{"context_length": 500000}) // the largest on offer
+	fake.SetModelMeta("small/model", map[string]any{"context_length": 1000})
+	fake.SetModelMeta("big/model", map[string]any{"context_length": 500000})
+	h := newHarness(t, fake, "[custom_providers.custom.models.\"auto\"]\n")
+	c := h.dial()
+	id := c.create(t.TempDir())
+	c.attach(id, "driver")
+	c.ok("session.set", map[string]any{"session": id, "model": "auto"})
+	c.send(id, "hi")
+	c.turn()
+	st := obj(c.awaitWhere("session.updated", func(e map[string]any) bool { return obj(e, "state")["status"] == "idle" }), "state")
+	if st["served_model"] != "small/model" || st["context_length"] != 1000.0 || st["context_tokens"] != 350.0 {
+		t.Fatalf("after small/model answered: %v", st)
+	}
+	c.send(id, "more")
+	c.turn()
+	st = obj(c.awaitWhere("session.updated", func(e map[string]any) bool { return obj(e, "state")["status"] == "idle" }), "state")
+	if st["served_model"] != "big/model" || st["context_length"] != 500000.0 {
+		t.Fatalf("after big/model answered: %v", st)
+	}
+}

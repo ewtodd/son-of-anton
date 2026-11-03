@@ -60,13 +60,24 @@ func modelShort(model, served string) string {
 		return strings.TrimSuffix(s, ".gguf")
 	}
 	r := short(model)
-	if model == "auto" && served != "" && served != model { // the daemon reports the model itself until one answers
-		r = "auto → " + short(served)
+	// A routed model (maitred's auto, fiona) names the one that answered; the
+	// daemon reports the model itself until one has.
+	if served != "" && served != model {
+		r += " → " + short(served)
 	}
 	if rs := []rune(r); len(rs) > 26 {
 		r = string(rs[:23]) + "..."
 	}
 	return r
+}
+
+// modelName is the model in full, and the one that answered when that is
+// another (a routed model).
+func modelName(model, served string) string {
+	if served != "" && served != model {
+		return model + " → " + served
+	}
+	return model
 }
 
 type toolCall struct {

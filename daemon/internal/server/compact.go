@@ -46,6 +46,26 @@ func (s *Server) contextLength(ep config.Endpoint, id string) int {
 	return s.learned[id]
 }
 
+// servedWindow is the window of the model that answered a session on model,
+// when that is another model: under a routed id (maitred's auto, or fiona) the
+// routed id's own listing is only the largest window on offer. 0 when the same
+// model served, or its window is unknown.
+func (s *Server) servedWindow(model, served string) int {
+	if served == "" || served == model {
+		return 0
+	}
+	if n := s.cfg.RouteContextLength(served); n > 0 {
+		return n
+	}
+	ep, err := s.cfg.Endpoint(model)
+	if err != nil {
+		return 0
+	}
+	s.metaMu.Lock()
+	defer s.metaMu.Unlock()
+	return s.meta[ep.BaseURL][served]
+}
+
 // summarizer is the summary model for a session on ep: the compaction
 // auxiliary endpoint, with nil and "" standing for the session's own.
 func (s *Server) summarizer(ep config.Endpoint) (*provider.Client, string) {

@@ -253,6 +253,16 @@ func (l *live) finish(res agent.Result, err error) {
 		l.srv.learned[l.id] = n
 		l.srv.metaMu.Unlock()
 	}
+	// Under a routed model the window is that of the model that answered (what
+	// the context bar, /status and compaction should go by), unless an
+	// overflow taught the session its real limit.
+	l.srv.metaMu.Lock()
+	learned := l.srv.learned[l.id]
+	l.srv.metaMu.Unlock()
+	if w := l.srv.servedWindow(l.model, l.sess.ServedModel()); w > 0 && learned == 0 && w != l.ctxKnown {
+		l.sess.SetContextLength(w)
+		l.ctxKnown = w
+	}
 	end := map[string]any{"status": status, "usage": usageObj(res.Usage), "api_calls": res.APICalls}
 	if msg != "" {
 		end["error"] = msg

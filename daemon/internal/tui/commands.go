@@ -305,7 +305,7 @@ func (m *model) command(name, args, line string) tea.Cmd {
 	case "status":
 		s := m.sess
 		m.feed.note(fmt.Sprintf("session %s · %s · mode %s · in %s out %s · %s calls",
-			s.ID, s.Model, s.Mode, commas(s.In), commas(s.Out), commas(s.Calls)), false)
+			s.ID, modelName(s.Model, s.Served), s.Mode, commas(s.In), commas(s.Out), commas(s.Calls)), false)
 	default:
 		m.feed.note("unknown command /"+name+" (/help lists them)", false)
 	}
