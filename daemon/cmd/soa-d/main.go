@@ -18,6 +18,7 @@ import (
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
+	"github.com/ewtodd/son-of-anton/daemon/internal/buildinfo"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
 	"github.com/ewtodd/son-of-anton/daemon/internal/lsp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/mcp"
@@ -31,7 +32,8 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
 )
 
-const version = "soa-d 0.0.1"
+// version is what `soa-d version` names after the command.
+func version() string { return "soa-d " + buildinfo.Version }
 
 const usage = `soa-d — the Son of Anton daemon
 
@@ -59,7 +61,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "version":
-		fmt.Fprintln(stdout, version)
+		fmt.Fprintln(stdout, version())
 		return 0
 	case "query":
 		return runQuery(args[1:], stdout, stderr)
@@ -396,7 +398,7 @@ func runServe(args []string, stderr io.Writer) int {
 		return 1
 	}
 	retirePython(home, stderr)
-	srv, err := server.New(server.Options{Home: home, Version: version})
+	srv, err := server.New(server.Options{Home: home, Version: buildinfo.Version})
 	if err != nil {
 		_ = ln.Close()
 		fmt.Fprintf(stderr, "soa-d serve: %v\n", err)

@@ -5,8 +5,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
+	"github.com/ewtodd/son-of-anton/daemon/internal/buildinfo"
 	"github.com/ewtodd/son-of-anton/daemon/internal/client"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
 	"github.com/ewtodd/son-of-anton/daemon/internal/tui"
@@ -81,7 +81,7 @@ func runTUI(args []string, stderr io.Writer) int {
 	}
 	defer c.Close()
 	o.Home, o.Cwd, o.Autostart, o.Stderr = home, cwd, true, stderr
-	o.Version = strings.TrimPrefix(version, "soa-d ")
+	o.Version = buildinfo.Version
 	app, err := tui.Start(c, o, os.Stdin, os.Stdout)
 	if err != nil {
 		return fail(err)

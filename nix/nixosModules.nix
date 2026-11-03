@@ -1,29 +1,23 @@
-# nix/nixosModules.nix — the NixOS module for son-of-anton
+# nix/nixosModules.nix — services.son-of-anton.instances on NixOS.
 #
-# This module shares its options, its renderers for config.toml and .env,
-# and its state setup with the Home Manager module
-# (nix/homeManagerModules.nix). The shared code is in nix/moduleCommon.nix.
-# This file holds only the parts that need root: service users, state
-# directories, and the systemd services.
+# Each enabled instance is a systemd system service with its own user and its
+# own SON_OF_ANTON_HOME. System services, not Home Manager user ones, so that
+# they come up at boot with no login. An instance can also run as an existing
+# human account (managedAccount): the owner's terminal agent and the account's
+# Signal sessions then share one state.
 #
-# MULTI-INSTANCE. Each entry under `instances` becomes its own systemd system
-# service with its own user and its own SON_OF_ANTON_HOME. That is the
-# one-agent-per-account shape: a service can run AS a real login account, so
-# its Signal sessions and that account's own CLI sessions share one state.db.
-# System services (not Home Manager user services) because they must start at
-# boot without a login and without lingering.
-#
-# Usage:
 #   services.son-of-anton.instances.work = {
 #     enable = true;
 #     user = "e-work";
 #     createUser = false;
-#     managedAccount = true;                 # runs as a pre-existing human account
+#     managedAccount = true;
 #     son-of-antonHome = "/home/e-work/.son-of-anton";
 #     workingDirectory = "/home/e-work";
 #     environmentFiles = [ config.age.secrets."son-of-anton-env".path ];
 #   };
 #
+# Options are in options.nix, rendering and state setup in state.nix. This file
+# keeps what needs root or a system identity.
 { inputs, ... }:
 {
   flake.nixosModules.default =
@@ -33,543 +27,302 @@
       pkgs,
       ...
     }:
-
     let
-      outerConfig = config;
-      cfg = config.services.son-of-anton;
-      common = import ./moduleCommon.nix { inherit lib; };
+      options' = import ./options.nix { inherit lib; };
+      state = import ./state.nix { inherit lib; };
 
-      son-of-anton = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      package = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      instances = lib.filterAttrs (_: i: i.enable) config.services.son-of-anton.instances;
+      each = f: lib.mapAttrsToList f instances;
 
-      enabledInstances = lib.filterAttrs (_: inst: inst.enable) cfg.instances;
-
-      # ── One instance's option set ─────────────────────────────────────────
       instanceModule =
         { name, config, ... }:
         {
-          config.settings = common.soadSettings config { instance = name; };
-
           options =
-            common.sharedOptions {
-              defaultPackage = son-of-anton;
-              defaultPackageText = lib.literalExpression "son-of-anton.packages.\${system}.default";
-              # Derived from `name`, NOT from config.stateDir: an option
-              # default that reads its own submodule's config is an infinite
-              # recursion (the config cannot resolve before the options it is
-              # defined by). Instances that relocate state set these
-              # explicitly.
-              defaultWorkingDirectory = "/var/lib/son-of-anton-${name}/workspace";
-              defaultWorkingDirectoryText = lib.literalExpression ''"/var/lib/son-of-anton-''${name}/workspace"'';
+            options'.common {
+              inherit package;
+              packageText = lib.literalExpression "son-of-anton.packages.\${system}.default";
+              # From `name`, not from stateDir: a default that reads its own
+              # submodule's config cannot resolve. An instance that moves its
+              # state sets workingDirectory itself.
+              workingDirectory = "/var/lib/son-of-anton-${name}/workspace";
+              workingDirectoryText = lib.literalExpression ''"/var/lib/son-of-anton-''${name}/workspace"'';
             }
-            // (
-              with lib;
-              {
-                # ── Service identity ───────────────────────────────────────
-                user = mkOption {
-                  type = types.str;
-                  default = "son-of-anton-${name}";
-                  defaultText = lib.literalExpression ''"son-of-anton-''${name}"'';
-                  description = "System user running this gateway instance.";
-                };
+            // options'.instanceOnly { inherit name; };
 
-                group = mkOption {
-                  type = types.str;
-                  default = "son-of-anton";
-                  description = "Primary group for this gateway instance.";
-                };
-
-                createUser = mkOption {
-                  type = types.bool;
-                  default = true;
-                  description = ''
-                    Create the user/group automatically. Set false when the
-                    instance runs as a pre-existing login account.
-                  '';
-                };
-
-                managedAccount = mkOption {
-                  type = types.bool;
-                  default = false;
-                  description = ''
-                    The instance runs as a pre-existing HUMAN login account.
-
-                    This is not cosmetic. When false the module treats the
-                    state directory as its own and makes it setgid +
-                    group-writable (2770) so a shared service group can reach
-                    it. Applied to a real home that would (a) make sshd's
-                    StrictModes reject ~/.ssh/authorized_keys and (b) hand
-                    every other member of the account's primary group write
-                    access to the whole home.
-
-                    When true the module touches ONLY son-of-antonHome and its
-                    subdirectories, never the parent home and never
-                    workingDirectory; state is owner-only (0700/0600) and the
-                    unit runs with UMask 0077.
-                  '';
-                };
-
-                # ── Directories ────────────────────────────────────────────
-                stateDir = mkOption {
-                  type = types.str;
-                  default = "/var/lib/son-of-anton-${name}";
-                  defaultText = lib.literalExpression ''"/var/lib/son-of-anton-''${name}"'';
-                  description = ''
-                    State directory owned by this instance. Used as HOME for
-                    the unit. Ignored for directory creation when
-                    managedAccount is set.
-                  '';
-                };
-
-                son-of-antonHome = mkOption {
-                  type = types.str;
-                  default = "/var/lib/son-of-anton-${name}/.son-of-anton";
-                  defaultText = lib.literalExpression ''"/var/lib/son-of-anton-''${name}/.son-of-anton"'';
-                  description = ''
-                    SON_OF_ANTON_HOME for this instance: config,
-                    memory, sessions (state.db). Point it at a login account's
-                    ~/.son-of-anton to share sessions with that account's CLI.
-                  '';
-                };
-
-                protectedPaths = mkOption {
-                  type = types.listOf types.str;
-                  default = [
-                    ".gnupg"
-                    ".aws"
-                    ".age"
-                    ".git-credentials"
-                    ".config/sops"
-                  ];
-                  description = ''
-                    Credential stores the agent must not be able to reach,
-                    rendered to systemd InaccessiblePaths. Relative entries
-                    resolve against the unit's HOME; absolute ones pass
-                    through. Missing paths are ignored.
-
-                    This is a DENYLIST on purpose. The predecessor design
-                    enumerated the directories the agent was allowed to touch
-                    and enforced it with recursive ACLs. That list was long and
-                    changed every time a project was added, and it stopped
-                    being a boundary at all once the gateway ran AS the account
-                    it serves — you own those files. What is actually worth
-                    protecting is a short, stable set of credential stores.
-
-                    Enforcement is a mount namespace, not discretionary bits,
-                    so it also covers the terminal tool and every subprocess it
-                    spawns — which ACLs never did. agent/file_safety.py keeps
-                    its own app-layer deny for the same class of file; that
-                    layer has the nuance (~/.ssh/config is approval-gated
-                    rather than denied), this one is the backstop.
-
-                    ~/.ssh is deliberately NOT in the default: blocking it
-                    breaks git push over SSH. Its key files stay covered by
-                    the app-layer deny only, which a determined terminal
-                    command could bypass. Add ".ssh" here if that trade is
-                    not worth it for a given instance.
-                  '';
-                };
-
-                addToSystemPackages = mkOption {
-                  type = types.bool;
-                  default = false;
-                  description = ''
-                    Add the son-of-anton CLI to environment.systemPackages and
-                    export SON_OF_ANTON_HOME system-wide. At most one instance
-                    may set this: environment.variables is global, so a second
-                    would silently point every interactive shell at the wrong
-                    home.
-                  '';
-                };
-
-                git = mkOption {
-                  type = types.submodule {
-                    options = {
-                      github = mkOption {
-                        type = types.nullOr types.str;
-                        default = null;
-                        description = ''
-                          Runtime path to a *private* SSH key (OpenSSH format)
-                          whose public half is registered on GitHub — as a
-                          deploy key on the repositories this instance works
-                          on, or on a bot account added to them.
-
-                          Activation installs the key and a matching ssh
-                          config for github.com into the instance's HOME
-                          (stateDir, or workingDirectory for a
-                          managedAccount) and chowns both to the instance
-                          user. Plain `git clone`/`git push` over ssh — the
-                          agent's terminal tool included — then uses that
-                          identity without an ssh-agent.
-
-                          A `str` on purpose: pass a runtime path such as an
-                          agenix secret. A Nix path literal would copy the
-                          private key into the store, where every user can
-                          read it.
-                        '';
-                        example = literalExpression ''config.age.secrets."soa-ricky-github-key".path'';
-                      };
-                    };
-                  };
-                  default = { };
-                  description = ''
-                    Git credentials for this instance. See `git.github`.
-                  '';
-                };
-              }
-            );
+          config.settings = state.daemonDefaults { instance = name; };
         };
 
-      # ── Per-instance renderers ────────────────────────────────────────────
+      # What follows from an instance's options, in one place.
+      shape =
+        i:
+        let
+          own = i.managedAccount;
+          # The unit's HOME. A managed account's is its real home, which the
+          # module must never create or re-mode.
+          home = if own then i.workingDirectory else i.stateDir;
+          sshDir = "${home}/.ssh";
+        in
+        {
+          inherit home sshDir;
+          sshKey = "${sshDir}/id_github";
+          sshConfig = "${sshDir}/config-github";
+          # A shared service group gets group access; an account owns its home
+          # outright.
+          dirMode = if own then "0700" else "2770";
+          umask = if own then "0077" else "0007";
+          modes = {
+            config =
+              if own then
+                "0600"
+              else if i.addToSystemPackages then
+                "0660"
+              else
+                "0640";
+            env = if own then "0600" else "0640";
+            marker = "0644";
+          };
+          owner = {
+            inherit (i) user group;
+          };
+        };
 
-      # config.toml mode: group-writable (0660) when interactive users share
-      # this SON_OF_ANTON_HOME via addToSystemPackages. A managedAccount owns
-      # its home outright, so everything stays owner-only.
-      configTomlMode =
-        inst:
-        if inst.managedAccount then
-          "0600"
-        else if inst.addToSystemPackages then
-          "0660"
-        else
-          "0640";
+      # Dedicated file names, so that a managed account's own ~/.ssh/config and
+      # default identity are left alone; git is pointed at these through
+      # GIT_SSH_COMMAND.
+      sshConfigText = s: ''
+        Host github.com
+          IdentityFile ${s.sshKey}
+          IdentitiesOnly yes
+          User git
+          StrictHostKeyChecking accept-new
+      '';
 
-      envMode = inst: if inst.managedAccount then "0600" else "0640";
+      unitFor =
+        name: i:
+        let
+          s = shape i;
+        in
+        {
+          description = "Son of Anton daemon (${name})";
+          wantedBy = [ "multi-user.target" ];
+          after = [ "network-online.target" ];
+          wants = [ "network-online.target" ];
 
-      dirMode = inst: if inst.managedAccount then "0700" else "2770";
+          # The program reads its .env itself; activation writes it, so the
+          # unit has no EnvironmentFile.
+          environment = {
+            HOME = s.home;
+            # Signal's adapter locks on the account number so that two daemons
+            # do not listen on one number. Several instances here share one
+            # account on purpose (they are told apart by group), so each needs
+            # its own lock directory, inside the home the unit can write.
+            SON_OF_ANTON_GATEWAY_LOCK_DIR = "${i.son-of-antonHome}/locks";
+          }
+          // state.runtimeEnv i.son-of-antonHome
+          // lib.optionalAttrs (i.git.github != null) {
+            GIT_SSH_COMMAND = "ssh -F ${s.sshConfig} -i ${s.sshKey} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new";
+          };
 
-      serviceConfigFor = inst: {
-        User = inst.user;
-        Group = inst.group;
-        WorkingDirectory = inst.workingDirectory;
+          serviceConfig = {
+            ExecStart = lib.escapeShellArgs (state.argv i);
+            User = i.user;
+            Group = i.group;
+            WorkingDirectory = i.workingDirectory;
+            Restart = "always";
+            RestartSec = 5;
+            UMask = s.umask;
 
-        Restart = "always";
-        RestartSec = 5;
+            NoNewPrivileges = true;
+            ProtectSystem = "strict";
+            ProtectHome = false;
+            # Under strict, systemd refuses to start (226/NAMESPACE) if a
+            # writable path is missing, and the module creates nothing in a
+            # managed account's home. Hence the unit's HOME, not stateDir.
+            ReadWritePaths = lib.unique [
+              s.home
+              i.son-of-antonHome
+              i.workingDirectory
+            ];
+            # Applied after ReadWritePaths, so a denied path inside a writable
+            # home stays denied. "-": a missing path is not an error.
+            InaccessiblePaths = map (
+              p: "-" + (if lib.hasPrefix "/" p then p else "${s.home}/${p}")
+            ) i.protectedPaths;
+            PrivateTmp = true;
+          }
+          # The daemon of an owner's own account is also their terminal agent
+          # and needs their real filesystem. NoNewPrivileges stays, so nothing
+          # it runs can gain privileges.
+          // lib.optionalAttrs i.managedAccount {
+            ProtectSystem = false;
+            PrivateTmp = false;
+          };
 
-        # Shared-state deployments want group-writable files so interactive
-        # users in the service group can reach them. A managedAccount is the
-        # sole owner of its home, so its files stay private.
-        UMask = if inst.managedAccount then "0077" else "0007";
+          restartTriggers = state.restartOn pkgs i;
+          path = state.servicePath pkgs i;
+        };
 
-        # Hardening
-        NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        ProtectHome = false;
-        # `unitHomeFor`, NOT stateDir. Under ProtectSystem=strict systemd
-        # refuses to start when a ReadWritePaths entry does not exist, and a
-        # managedAccount's stateDir is never created — the tmpfiles block that
-        # would create it is gated off precisely so the module never touches a
-        # login account's home. Listing it cost 226/NAMESPACE on every start.
-        ReadWritePaths = lib.unique [
-          (unitHomeFor inst)
-          inst.son-of-antonHome
-          inst.workingDirectory
-        ];
-        # Applied after ReadWritePaths, so a denied subpath of a writable home
-        # stays denied. "-" prefix: ignore entries that do not exist.
-        InaccessiblePaths = map (
-          p:
-          "-" + (if lib.hasPrefix "/" p then p else "${unitHomeFor inst}/${p}")
-        ) inst.protectedPaths;
-        PrivateTmp = true;
-      }
-      # The unit's daemon is also the owner's terminal agent when the
-      # instance is their own account: it runs as them, as a TUI-started one
-      # did, so the filesystem sandbox goes. NoNewPrivileges stays (and soa-d
-      # sets no_new_privs itself): nothing it runs can use sudo.
-      // lib.optionalAttrs inst.managedAccount {
-        ProtectSystem = false;
-        PrivateTmp = false;
-      };
-
-      unitHomeFor = inst: if inst.managedAccount then inst.workingDirectory else inst.stateDir;
-
-      # ── Git over SSH ────────────────────────────────────────────────────
-      # Activation installs the key into the instance's ~/.ssh and a small
-      # ssh config that routes github.com to it; the unit starts git with
-      # GIT_SSH_COMMAND pinned to that config and key, so no ssh-agent is
-      # needed and the agent's terminal tool (which inherits the unit's
-      # environment) can clone and push. The unit's HOME is writable
-      # (unitHomeFor is in ReadWritePaths), and activation chowns the
-      # files to the instance user.
-      #
-      # Both files get DEDICATED names (id_github / config-github) rather
-      # than the defaults, so that, for a managedAccount instance that
-      # shares a human's interactive HOME, the instance key is never
-      # mistaken for the account's default ssh identity and the human's
-      # own ~/.ssh/config is never overwritten — GIT_SSH_COMMAND reads
-      # config-github instead of ~/.ssh/config.
-      gitSshDirFor = inst: "${unitHomeFor inst}/.ssh";
-
-      gitKeyFor = inst: "${gitSshDirFor inst}/id_github";
-
-      gitSshConfigFor = inst: "${gitSshDirFor inst}/config-github";
-
-      gitSshConfigTextFor = inst:
+      # Activation runs before tmpfiles and as root: create what the instance
+      # owns, with its owner, before the shared state setup writes into it.
+      activationFor =
+        i:
+        let
+          s = shape i;
+          own = "${i.user}:${i.group}";
+          q = lib.escapeShellArg;
+          dirs = map (d: "${i.son-of-antonHome}/${d}") state.subdirs;
+        in
         ''
-          Host github.com
-            IdentityFile ${gitKeyFor inst}
-            IdentitiesOnly yes
-            User git
-            StrictHostKeyChecking accept-new
+          mkdir -p ${q i.son-of-antonHome}
+          chown ${own} ${q i.son-of-antonHome}
+          chmod ${s.dirMode} ${q i.son-of-antonHome}
+          ${lib.optionalString (!i.managedAccount) ''
+            mkdir -p ${q "${i.stateDir}/home"} ${q i.workingDirectory}
+            chown ${own} ${q i.stateDir} ${q "${i.stateDir}/home"} ${q i.workingDirectory}
+            chmod 2770 ${q i.stateDir} ${q i.workingDirectory}
+            chmod 0750 ${q "${i.stateDir}/home"}
+            # Databases and SOUL.md must stay writable to the service group.
+            find ${q i.son-of-antonHome} -maxdepth 1 \
+              \( -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' -o -name SOUL.md \) \
+              -exec chmod g+rw {} + 2>/dev/null || true
+          ''}
+          for dir in ${lib.concatMapStringsSep " " q dirs}; do
+            mkdir -p "$dir"
+            chown ${own} "$dir"
+            chmod ${s.dirMode} "$dir"
+            ${lib.optionalString (!i.managedAccount) ''find "$dir" -type f -exec chmod g+rw {} + 2>/dev/null || true''}
+          done
+          ${lib.optionalString (i.git.github != null) ''
+            # Git over SSH: the key and the ssh config that names it.
+            mkdir -p ${q s.sshDir}
+            chmod 0700 ${q s.sshDir}
+            install -m 0600 ${q i.git.github} ${q s.sshKey}
+            printf %s ${q (sshConfigText s)} > ${q s.sshConfig}
+            chmod 0600 ${q s.sshConfig}
+            chown ${own} ${q s.sshDir} ${q s.sshKey} ${q s.sshConfig}
+          ''}
+          ${state.setupScript {
+            inherit pkgs;
+            cfg = i;
+            home = i.son-of-antonHome;
+            inherit (s) owner modes;
+            system = "nixos";
+          }}
         '';
 
-      unitEnvironmentFor = inst: {
-        HOME = unitHomeFor inst;
+      tmpfilesFor =
+        i:
+        let
+          s = shape i;
+          dir = mode: path: "d ${path} ${mode} ${i.user} ${i.group} - -";
+        in
+        # A managed account's home above son-of-antonHome is never touched: a
+        # 2770 rule on it would make sshd's StrictModes refuse its keys.
+        lib.optionals (!i.managedAccount) [
+          (dir "2770" i.stateDir)
+          (dir "0750" "${i.stateDir}/home")
+          (dir "2770" i.workingDirectory)
+        ]
+        ++ [
+          (dir s.dirMode i.son-of-antonHome)
+          (dir "0700" "${i.son-of-antonHome}/locks")
+        ]
+        ++ map (d: dir s.dirMode "${i.son-of-antonHome}/${d}") state.subdirs;
 
-        # REQUIRED for multi-instance on one Signal account.
-        #
-        # soa-d's Signal adapter (daemon/internal/signal/lock.go) acquires a
-        # scoped lock keyed on sha256(SIGNAL_ACCOUNT) — it exists precisely to
-        # stop two daemons listening to one Signal number, and the losing
-        # instance never starts Signal at all.
-        # Here we deliberately DO run several daemons on one account and
-        # separate them by group id instead, so each needs its own lock
-        # namespace. The lock directory otherwise falls back to
-        # $XDG_STATE_HOME (i.e. $HOME/.local/state), which is only accidentally
-        # distinct and is not guaranteed writable under ProtectSystem=strict.
-        # Pin it inside SON_OF_ANTON_HOME, which is always in ReadWritePaths.
-        SON_OF_ANTON_GATEWAY_LOCK_DIR = "${inst.son-of-antonHome}/locks";
-      }
-      // common.processEnvironment { son-of-antonHome = inst.son-of-antonHome; };
-
+      exporters = lib.filterAttrs (_: i: i.addToSystemPackages) instances;
+      duplicated = f: let xs = each (_: f); in lib.length xs != lib.length (lib.unique xs);
     in
     {
       options.services.son-of-anton.instances = lib.mkOption {
         type = lib.types.attrsOf (lib.types.submodule instanceModule);
         default = { };
         description = ''
-          Gateway instances. Each becomes systemd.services.son-of-anton-<name>
-          with its own user and its own SON_OF_ANTON_HOME.
+          The agent instances. Instance <name> becomes the unit
+          son-of-anton-<name>, with its own user and SON_OF_ANTON_HOME.
         '';
       };
 
-      # Top-level keys are STATIC. Building `config` as
-      # `mkMerge (mapAttrsToList ...)` makes the SHAPE of config depend on
-      # config values, and the module system cannot resolve the option set
-      # (it needs _module.freeformType) before that shape is known — an
-      # infinite recursion. Keying each attribute individually keeps the
-      # structure fixed and lets only the VALUES depend on instances.
+      # Each top-level key below is spelled out. Building `config` with one
+      # mkMerge over the instances would make its shape depend on option
+      # values, which the module system cannot resolve.
       config = {
-        assertions = (
-            let
-              users = lib.mapAttrsToList (_: i: i.user) enabledInstances;
-              homes = lib.mapAttrsToList (_: i: i.son-of-antonHome) enabledInstances;
-              exporters = lib.attrNames (lib.filterAttrs (_: i: i.addToSystemPackages) enabledInstances);
-            in
-            [
-              {
-                assertion = lib.all (i: !(i.memoryRules != [ ] && i.memoryRulesFile != null)) (
-                  lib.attrValues enabledInstances
-                );
-                message = ''
-                  An instance sets both memoryRules and memoryRulesFile. Use one:
-                  memoryRules declares rules in Nix (they land in the public Nix
-                  store); memoryRulesFile reads them from a runtime path.
-                '';
-              }
-              {
-                assertion = (lib.length users) == (lib.length (lib.unique users));
-                message = ''
-                  Two son-of-anton instances share a Unix user.
-
-                  users.users.<name>.home would then get conflicting
-                  definitions, and both gateways would write each other's
-                  state. Give each instance its own `user`.
-                '';
-              }
-              {
-                assertion = (lib.length homes) == (lib.length (lib.unique homes));
-                message = ''
-                  Two son-of-anton instances share a SON_OF_ANTON_HOME.
-
-                  They would write the same state.db, the same session routing
-                  index and the same .env. Give each instance its own
-                  `son-of-antonHome`.
-                '';
-              }
-              {
-                assertion = (lib.length exporters) <= 1;
-                message = ''
-                  More than one son-of-anton instance sets addToSystemPackages
-                  (${lib.concatStringsSep ", " exporters}).
-
-                  It exports SON_OF_ANTON_HOME through the global
-                  environment.variables, so only one instance can own it.
-                '';
-              }
-            ]
-          );
+        assertions = [
+          {
+            assertion = lib.all (i: i.memoryRules == [ ] || i.memoryRulesFile == null) (lib.attrValues instances);
+            message = ''
+              An instance sets both memoryRules and memoryRulesFile; keep one.
+              memoryRules ends up in the public Nix store, memoryRulesFile is
+              read from a run-time path.
+            '';
+          }
+          {
+            assertion = !duplicated (i: i.user);
+            message = ''
+              Two son-of-anton instances run as the same user. They would
+              fight over users.users.<name>.home and write each other's state;
+              give each its own `user`.
+            '';
+          }
+          {
+            assertion = !duplicated (i: i.son-of-antonHome);
+            message = ''
+              Two son-of-anton instances share one SON_OF_ANTON_HOME, and with
+              it the database, the session index and .env. Give each its own
+              `son-of-antonHome`.
+            '';
+          }
+          {
+            assertion = lib.length (lib.attrNames exporters) <= 1;
+            message = ''
+              These son-of-anton instances all set addToSystemPackages: ${lib.concatStringsSep ", " (lib.attrNames exporters)}.
+              It exports SON_OF_ANTON_HOME through the global
+              environment.variables, so at most one instance can.
+            '';
+          }
+        ];
 
         users.groups = lib.listToAttrs (
-          map (inst: lib.nameValuePair inst.group { }) (
-            lib.attrValues (lib.filterAttrs (_: i: i.createUser) enabledInstances)
-          )
+          lib.concatLists (each (_: i: lib.optional i.createUser (lib.nameValuePair i.group { })))
         );
 
         users.users = lib.listToAttrs (
-          lib.mapAttrsToList (
-            _: inst:
-            lib.nameValuePair inst.user (
-              (lib.optionalAttrs inst.createUser {
-                isSystemUser = true;
-                group = inst.group;
-                home = inst.stateDir;
-                createHome = true;
-                shell = pkgs.bashInteractive;
-              })
-              // (lib.optionalAttrs (inst.extraPackages != [ ]) {
-                packages = inst.extraPackages;
-              })
+          lib.concatLists (
+            each (
+              _: i:
+              lib.optional (i.createUser || i.extraPackages != [ ]) (
+                lib.nameValuePair i.user (
+                  lib.optionalAttrs i.createUser {
+                    isSystemUser = true;
+                    group = i.group;
+                    home = i.stateDir;
+                    createHome = true;
+                    shell = pkgs.bashInteractive;
+                  }
+                  // lib.optionalAttrs (i.extraPackages != [ ]) { packages = i.extraPackages; }
+                )
+              )
             )
-          ) (lib.filterAttrs (_: i: i.createUser || i.extraPackages != [ ]) enabledInstances)
-        );
-
-        environment.systemPackages = lib.concatMap (inst: [ (common.effectivePackage inst) ]) (
-          lib.attrValues (lib.filterAttrs (_: i: i.addToSystemPackages) enabledInstances)
-        );
-
-        environment.variables = lib.listToAttrs (
-          map (inst: lib.nameValuePair "SON_OF_ANTON_HOME" inst.son-of-antonHome) (
-            lib.attrValues (lib.filterAttrs (_: i: i.addToSystemPackages) enabledInstances)
           )
         );
 
-        # managedAccount instances get SON_OF_ANTON_HOME and its subdirs only.
-        # Creating or chmod-ing the parent home or workingDirectory of a login
-        # account breaks sshd StrictModes and leaks the home to the account's
-        # primary group.
-        systemd.tmpfiles.rules = lib.concatLists (
-          lib.mapAttrsToList (
-            _: inst:
-            (lib.optionals (!inst.managedAccount) [
-              "d ${inst.stateDir} 2770 ${inst.user} ${inst.group} - -"
-              "d ${inst.stateDir}/home 0750 ${inst.user} ${inst.group} - -"
-              "d ${inst.workingDirectory} 2770 ${inst.user} ${inst.group} - -"
-            ])
-            ++ [
-              "d ${inst.son-of-antonHome} ${dirMode inst} ${inst.user} ${inst.group} - -"
-              "d ${inst.son-of-antonHome}/locks 0700 ${inst.user} ${inst.group} - -"
-            ]
-            ++ map (d: "d ${inst.son-of-antonHome}/${d} ${dirMode inst} ${inst.user} ${inst.group} - -")
-              common.stateSubdirs
-          ) enabledInstances
-        );
+        environment.systemPackages = map state.packageFor (lib.attrValues exporters);
+        environment.variables = lib.mapAttrs' (
+          _: i: lib.nameValuePair "SON_OF_ANTON_HOME" i.son-of-antonHome
+        ) exporters;
 
-        system.activationScripts = lib.listToAttrs (
-          lib.mapAttrsToList (
-            name: inst:
-            lib.nameValuePair "son-of-anton-setup-${name}" (
-              lib.stringAfter
-                (
-                  [ "users" ]
-                  ++ lib.optional (outerConfig.system.activationScripts ? setupSecrets) "setupSecrets"
-                )
-                ''
-                  # Activation runs before tmpfiles, so create what we own.
-                  mkdir -p ${inst.son-of-antonHome}
-                  chown ${inst.user}:${inst.group} ${inst.son-of-antonHome}
-                  chmod ${dirMode inst} ${inst.son-of-antonHome}
-                  ${lib.optionalString (!inst.managedAccount) ''
-                    mkdir -p ${inst.stateDir}/home
-                    mkdir -p ${inst.workingDirectory}
-                    chown ${inst.user}:${inst.group} ${inst.stateDir} ${inst.stateDir}/home ${inst.workingDirectory}
-                    chmod 2770 ${inst.stateDir} ${inst.workingDirectory}
-                    chmod 0750 ${inst.stateDir}/home
+        systemd.tmpfiles.rules = lib.concatLists (each (_: tmpfilesFor));
 
-                    find ${inst.son-of-antonHome} -maxdepth 1 \
-                      \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
-                      -exec chmod g+rw {} + 2>/dev/null || true
-                  ''}
-                  for _subdir in ${lib.concatStringsSep " " common.stateSubdirs}; do
-                    mkdir -p "${inst.son-of-antonHome}/$_subdir"
-                    chown ${inst.user}:${inst.group} "${inst.son-of-antonHome}/$_subdir"
-                    chmod ${dirMode inst} "${inst.son-of-antonHome}/$_subdir"
-                    ${lib.optionalString (!inst.managedAccount) ''
-                      find "${inst.son-of-antonHome}/$_subdir" -type f \
-                        -exec chmod g+rw {} + 2>/dev/null || true
-                    ''}
-                  done
+        system.activationScripts = lib.mapAttrs' (
+          name: i:
+          lib.nameValuePair "son-of-anton-setup-${name}" (
+            lib.stringAfter (
+              [ "users" ] ++ lib.optional (config.system.activationScripts ? setupSecrets) "setupSecrets"
+            ) (activationFor i)
+          )
+        ) instances;
 
-                  ${lib.optionalString (inst.git.github != null) ''
-                    # git over SSH: install the key and the ssh config it
-                    # belongs to. The unit's HOME is unitHomeFor (stateDir,
-                    # or workingDirectory for a managedAccount) and is in
-                    # ReadWritePaths. mkdir -p so a fresh managedAccount
-                    # instance gets the directory; for a login account the
-                    # directory already exists and only the two dedicated
-                    # files are added.
-                    mkdir -p ${gitSshDirFor inst}
-                    chmod 0700 ${gitSshDirFor inst}
-                    chown ${inst.user}:${inst.group} ${gitSshDirFor inst}
-                    install -m 0600 ${inst.git.github} ${gitKeyFor inst}
-                    chown ${inst.user}:${inst.group} ${gitKeyFor inst}
-                    echo '${lib.replaceStrings [ "'" ] [ "\\'" ] (gitSshConfigTextFor inst)}' > ${gitSshConfigFor inst}
-                    chown ${inst.user}:${inst.group} ${gitSshConfigFor inst}
-                    chmod 0600 ${gitSshConfigFor inst}
-                  ''}
-
-                  ${common.mkStateScript {
-                    inherit pkgs;
-                    cfg = inst;
-                    son-of-antonHome = inst.son-of-antonHome;
-                    workingDirectory = inst.workingDirectory;
-                    owner = "${inst.user}:${inst.group}";
-                    stateDirs = common.stateSubdirs;
-                    modes = {
-                      config = configTomlMode inst;
-                      env = envMode inst;
-                      managed = "0644";
-                    };
-                  }}
-                ''
-            )
-          ) enabledInstances
-        );
-
-        systemd.services = lib.listToAttrs (
-          lib.mapAttrsToList (
-            name: inst:
-            lib.nameValuePair "son-of-anton-${name}" {
-              description = "Son of Anton daemon (${name})";
-              wantedBy = [ "multi-user.target" ];
-              after = [ "network-online.target" ];
-              wants = [ "network-online.target" ];
-
-              # inst.environment and inst.environmentFiles are written to
-              # $SON_OF_ANTON_HOME/.env by the activation script.
-              # the daemon reads them at start — no
-              # systemd EnvironmentFile needed.
-              #
-              # git over SSH for the agent's terminal tool: GIT_SSH_COMMAND
-              # pins the key installed by activation, so git never prompts
-              # for an agent or tries the account's default identity. It
-              # goes here ([Service] Environment=), NOT under unitConfig —
-              # Environment= is not a valid [Unit] key and systemd silently
-              # drops unknown keys.
-              environment = unitEnvironmentFor inst
-                // lib.optionalAttrs (inst.git.github != null) {
-                  GIT_SSH_COMMAND = "ssh -F ${gitSshConfigFor inst} -i ${gitKeyFor inst} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new";
-                };
-
-              serviceConfig = (serviceConfigFor inst) // {
-                ExecStart = lib.escapeShellArgs (common.daemonArgv inst);
-              };
-
-              # A rebuild that changes the settings or the environment restarts
-              # the process, which reads them only at start.
-              restartTriggers = common.restartTriggersFor {
-                inherit pkgs;
-                cfg = inst;
-                inherit (inst) workingDirectory;
-              };
-
-              path = common.processPath {
-                inherit pkgs;
-                cfg = inst;
-              };
-            }
-          ) enabledInstances
-        );
+        systemd.services = lib.mapAttrs' (name: i: lib.nameValuePair "son-of-anton-${name}" (unitFor name i)) instances;
       };
     };
 }

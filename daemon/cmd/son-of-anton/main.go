@@ -17,11 +17,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ewtodd/son-of-anton/daemon/internal/buildinfo"
 	"github.com/ewtodd/son-of-anton/daemon/internal/client"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
 )
-
-const version = "0.4.3"
 
 const usage = `usage:
   son-of-anton [flags]                          the terminal UI
@@ -160,7 +159,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return code
 	}
 	if f.version {
-		fmt.Fprintln(stdout, "son-of-anton "+version)
+		fmt.Fprintln(stdout, "son-of-anton "+buildinfo.Version)
 		return 0
 	}
 	if f.help {
@@ -371,7 +370,7 @@ func runStatus(f flags, stdout, stderr io.Writer) int {
 	if derr == nil {
 		defer c.Close()
 		h := c.Hello()
-		// The daemon's version may already be "soa-d 0.0.1": name it once.
+		// A daemon started before the one-version release says "soa-d 0.0.1".
 		version := strings.TrimPrefix(fmt.Sprint(h["version"]), "soa-d ")
 		fmt.Fprintf(stdout, "daemon: running (pid %v, soa-d %s)\n", num(h["pid"]), version)
 	} else {

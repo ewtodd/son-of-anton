@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ewtodd/son-of-anton/daemon/internal/buildinfo"
 	"github.com/ewtodd/son-of-anton/daemon/internal/client"
 	"github.com/ewtodd/son-of-anton/daemon/internal/server"
 )
@@ -198,7 +199,7 @@ func TestProblemHandsOnToThePhysicsPython(t *testing.T) {
 
 func TestVersion(t *testing.T) {
 	r := cli(t, t.TempDir(), "", nil, "--version")
-	if r.code != 0 || !strings.HasPrefix(r.out, "son-of-anton ") {
+	if r.code != 0 || r.out != "son-of-anton "+buildinfo.Version+"\n" {
 		t.Fatalf("--version: %d %q", r.code, r.out)
 	}
 }

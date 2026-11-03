@@ -1,18 +1,13 @@
-# nix/homeManagerModules.nix — the Home Manager module for son-of-anton
+# nix/homeManagerModules.nix — services.son-of-anton for one user's Home Manager.
 #
-# The user-level install: the CLI/TUI for one account, with its config.toml
-# and .env managed by Home Manager. Gateways run from the NixOS module.
+# The user-level install: the command on the profile, SON_OF_ANTON_HOME in the
+# session, and config.toml and .env kept up to date by an activation step. It
+# runs no service; gateways come from the NixOS module.
 #
-# `services.son-of-anton` shares its options with the NixOS module (see
-# nix/moduleCommon.nix). Only the necessary parts are different:
+# Same options as an instance of the NixOS module (options.nix), minus what a
+# system identity needs (user, group, sandbox, tmpfiles), plus `installPackage`
+# and `son-of-antonHome` (named whole here, not derived from a stateDir).
 #
-#   removed   user, group, createUser  — Home Manager runs as the user
-#   changed   system.activationScripts -> home.activation
-#   changed   addToSystemPackages      -> installPackage and
-#                                        home.sessionVariables
-#   changed   stateDir (+ "/.son-of-anton")  -> son-of-antonHome, set directly
-#
-# To use the module:
 #   imports = [ son-of-anton.homeManagerModules.default ];
 #   services.son-of-anton = {
 #     enable = true;
@@ -28,101 +23,57 @@
       pkgs,
       ...
     }:
-
     let
       cfg = config.services.son-of-anton;
-      common = import ./moduleCommon.nix { inherit lib; };
-      son-of-anton = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      options' = import ./options.nix { inherit lib; };
+      state = import ./state.nix { inherit lib; };
+      home = config.home.homeDirectory;
     in
     {
       options.services.son-of-anton =
-        common.sharedOptions {
-          defaultPackage = son-of-anton;
-          defaultPackageText = lib.literalExpression "son-of-anton.packages.\${system}.default";
-          defaultWorkingDirectory = config.home.homeDirectory;
-          defaultWorkingDirectoryText = lib.literalExpression "config.home.homeDirectory";
+        options'.common {
+          package = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          packageText = lib.literalExpression "son-of-anton.packages.\${system}.default";
+          workingDirectory = home;
+          workingDirectoryText = lib.literalExpression "config.home.homeDirectory";
         }
-        // {
-          son-of-antonHome = lib.mkOption {
-            type = lib.types.str;
-            default = "${config.home.homeDirectory}/.son-of-anton";
-            defaultText = lib.literalExpression ''"''${config.home.homeDirectory}/.son-of-anton"'';
-            description = ''
-              The value of SON_OF_ANTON_HOME. This state directory holds
-              config.toml, .env, the sessions, the memory and the cron jobs.
-
-              The NixOS module takes a `stateDir` and adds `/.son-of-anton` to it.
-              This module sets SON_OF_ANTON_HOME directly. Thus an existing
-              ~/.son-of-anton continues to work, and you can give the directory any
-              name.
-            '';
-            example = "/home/alice/.son-of-anton-work";
-          };
-
-          installPackage = lib.mkOption {
-            type = lib.types.bool;
-            default = true;
-            description = ''
-              Add the son-of-anton CLI to home.packages, and export SON_OF_ANTON_HOME
-              with home.sessionVariables.
-
-              The equivalent NixOS option, `addToSystemPackages`, exports
-              SON_OF_ANTON_HOME with environment.variables. That variable applies
-              to the full system and replaces the SON_OF_ANTON_HOME of each other
-              user. This module exports the variable for one user session
-              only, which is the reason to use Home Manager.
-            '';
-          };
-        };
+        // options'.homeOnly { homeDirectory = home; };
 
       config = lib.mkIf cfg.enable (
         lib.mkMerge [
           {
-            assertions = [
-              {
-                assertion = !(cfg.memoryRules != [ ] && cfg.memoryRulesFile != null);
-                message = ''
-                  services.son-of-anton sets both memoryRules and memoryRulesFile.
-                  Use one: memoryRules declares rules in Nix (they land in the
-                  public Nix store); memoryRulesFile reads them from a runtime path.
-                '';
+            assertions = lib.singleton {
+              assertion = cfg.memoryRules == [ ] || cfg.memoryRulesFile == null;
+              message = ''
+                services.son-of-anton sets both memoryRules and memoryRulesFile;
+                keep one. memoryRules ends up in the public Nix store,
+                memoryRulesFile is read from a run-time path.
+              '';
+            };
+
+            # Runs once the home.file links exist and the generation is
+            # linked, so a secret that sops-nix wrote during its own
+            # activation is already in place.
+            home.activation.son-of-antonAgentSetup = lib.hm.dag.entryAfter [ "writeBoundary" "linkGeneration" ] (
+              state.setupScript {
+                inherit pkgs cfg;
+                home = cfg.son-of-antonHome;
+                dry = "$DRY_RUN_CMD ";
+                # One user owns all of it; nothing is shared with a group.
+                modes = {
+                  config = "0600";
+                  env = "0600";
+                  marker = "0600";
+                };
+                system = "home-manager";
               }
-            ];
+            );
           }
-          # ── Packages and interactive-shell environment ─────────────────
+
           (lib.mkIf cfg.installPackage {
-            home.packages = [ (common.effectivePackage cfg) ] ++ cfg.extraPackages;
+            home.packages = [ (state.packageFor cfg) ] ++ cfg.extraPackages;
             home.sessionVariables.SON_OF_ANTON_HOME = cfg.son-of-antonHome;
           })
-
-          # ── Activation: directories, config, secrets ───────────────────
-          {
-            # The activation runs after writeBoundary, when the home.file
-            # symlinks are in place. It also runs after linkGeneration, when
-            # Home Manager completes the switch. A secret that the activation
-            # entry of sops-nix writes exists at that point.
-            home.activation.son-of-antonAgentSetup =
-              lib.hm.dag.entryAfter
-                [
-                  "writeBoundary"
-                  "linkGeneration"
-                ]
-                (
-                  common.mkStateScript {
-                    inherit pkgs cfg;
-                    inherit (cfg) son-of-antonHome workingDirectory;
-                    run = "$DRY_RUN_CMD ";
-                    stateDirs = common.stateSubdirs;
-                    managedSystem = "home-manager";
-                    # This state has one user. No group needs access to it.
-                    modes = {
-                      config = "0600";
-                      env = "0600";
-                      managed = "0600";
-                    };
-                  }
-                );
-          }
         ]
       );
     };

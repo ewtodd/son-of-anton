@@ -1,11 +1,10 @@
-# nix/son-of-anton.nix — Son of Anton Agent package
+# nix/son-of-anton.nix — the two commands, wrapped to run anywhere.
 #
-# The Go command and daemon (packages.nix), wrapped so they find the runtime
-# tools on PATH and the Python the physics mode runs on.
+# soa-d and son-of-anton (built in packages.nix) get the tools they shell out
+# to on PATH, and SON_OF_ANTON_PYTHON, the interpreter of the physics mode and
+# of execute_code. The CLI also learns where its daemon is (SOA_D_BIN).
 #
-# callPackage auto-wires nixpkgs args; the rest is passed explicitly.
-# Override the tools on the wrapper's PATH with
-#   pkgs.son-of-anton.override { extraPackages = [...]; }
+#   pkgs.son-of-anton.override { extraPackages = [ ... ]; }
 {
   lib,
   stdenv,
@@ -18,33 +17,35 @@
   poppler-utils,
   bubblewrap,
   ffmpeg,
-  # The Go daemon and command: the TUI, -q and -z are its clients (packages.nix).
+  # Both commands, unwrapped (packages.nix).
   soa-d,
-  # The physics harness environment (nix/physics-harness.nix): python3 with
-  # autophysicist importable.
+  # python3 with autophysicist importable (nix/physics-harness.nix).
   physicsHarness,
-  # More tools on the wrapper's PATH (and the dev shell's), e.g. the language
-  # servers an editor config enables: the daemon's LSP uses whatever is here.
+  # More tools on PATH, such as the language servers an editor config enables.
   extraPackages ? [ ],
 }:
 let
-  runtimeDeps = [
+  tools = [
     bash
     coreutils
     git
     ripgrep
-    # git over SSH (the module's git.github deploy key).
-    openssh
-    # web_extract converts PDFs with pdftotext.
-    poppler-utils
-    # The physics mode refuses to execute model-authored code without it.
-    bubblewrap
-    # Agents convert audio and video in their terminal (voice notes, clips).
-    ffmpeg
+    openssh # git over ssh
+    poppler-utils # web_extract reads PDFs with pdftotext
+    bubblewrap # the physics mode will not run model code without it
+    ffmpeg # agents convert audio and video in the terminal
   ]
   ++ extraPackages;
 
-  runtimePath = lib.makeBinPath runtimeDeps;
+  common = lib.escapeShellArgs [
+    "--suffix"
+    "PATH"
+    ":"
+    (lib.makeBinPath tools)
+    "--set"
+    "SON_OF_ANTON_PYTHON"
+    "${physicsHarness}/bin/python3"
+  ];
 in
 stdenv.mkDerivation {
   pname = "son-of-anton";
@@ -54,38 +55,27 @@ stdenv.mkDerivation {
   dontBuild = true;
   nativeBuildInputs = [ makeWrapper ];
 
+  # soa-d is already a wrapper (it carries its own minimal PATH), so these wrap
+  # a wrapper, with the full tool set on top.
   installPhase = ''
     runHook preInstall
-
     mkdir -p $out/bin
-
-    # `son-of-anton` is the Go command. It execs soa-d (the wrapped one below)
-    # and, for `problem`, the harness python (the physics mode, until its Go
-    # port).
-    makeWrapper ${soa-d}/bin/son-of-anton $out/bin/son-of-anton \
-      --set SOA_D_BIN $out/bin/soa-d \
-      --suffix PATH : "${runtimePath}" \
-      --set SON_OF_ANTON_PYTHON ${physicsHarness}/bin/python3
-
-    # The unit's daemon (backend = "soa-d"): the same runtime tools as the
-    # CLI, and the harness python for execute_code. soa-d is itself a
-    # wrapper, so this wraps the wrapper.
-    makeWrapper ${soa-d}/bin/soa-d $out/bin/soa-d \
-      --suffix PATH : "${runtimePath}" \
-      --set SON_OF_ANTON_PYTHON ${physicsHarness}/bin/python3
-
+    makeWrapper ${soa-d}/bin/soa-d $out/bin/soa-d ${common}
+    makeWrapper ${soa-d}/bin/son-of-anton $out/bin/son-of-anton ${common} \
+      --set SOA_D_BIN $out/bin/soa-d
     runHook postInstall
   '';
 
   passthru = {
-    inherit runtimeDeps physicsHarness;
+    runtimeDeps = tools;
+    inherit physicsHarness;
   };
 
-  meta = with lib; {
+  meta = {
     description = "Always-on agent harness with physics research modes";
     homepage = "https://github.com/ewtodd/son-of-anton";
     mainProgram = "son-of-anton";
-    license = licenses.mit;
-    platforms = platforms.linux;
+    license = lib.licenses.mit;
+    platforms = lib.platforms.linux;
   };
 }

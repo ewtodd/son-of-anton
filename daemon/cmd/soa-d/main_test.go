@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ewtodd/son-of-anton/daemon/internal/buildinfo"
 	"github.com/ewtodd/son-of-anton/daemon/internal/fakellm"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
@@ -118,7 +119,7 @@ func TestUsageErrors(t *testing.T) {
 	}
 	errOut.Reset()
 	out.Reset()
-	if code := run([]string{"version"}, &out, &errOut); code != 0 || out.Len() == 0 {
+	if code := run([]string{"version"}, &out, &errOut); code != 0 || out.String() != "soa-d "+buildinfo.Version+"\n" {
 		t.Fatalf("version: exit %d, stdout %q", code, out.String())
 	}
 }

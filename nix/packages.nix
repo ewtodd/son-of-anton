@@ -4,16 +4,22 @@
   perSystem =
     { pkgs, system, lib, ... }:
     let
+      # YY.MM.DD of the commit this flake is built from.
+      version = import ./version.nix { inherit (inputs) self; };
+
       # The Go daemon and the son-of-anton command (son-of-anton.nix wraps both).
       # Only daemon/ is the source, so physics changes never rebuild it.
       # Pure Go (CGO off); tests run in the check phase.
-      soa-d = pkgs.buildGoModule rec {
+      soa-d = pkgs.buildGoModule {
         pname = "soa-d";
-        version = "0.0.1";
+        inherit version;
 
         src = lib.cleanSource ../daemon;
         subPackages = [ "cmd/soa-d" "cmd/son-of-anton" ];
         env.CGO_ENABLED = "0";
+
+        # One date version for both commands (internal/buildinfo).
+        ldflags = [ "-X github.com/ewtodd/son-of-anton/daemon/internal/buildinfo.Version=${version}" ];
 
         # The terminal and search tools shell out to bash and ripgrep (and
         # use coreutils); the wrapper puts them on PATH at run time and the
