@@ -326,13 +326,14 @@ func (s *Session) TakeNotifications() []string { return s.state.TakeNotification
 
 // Event is one streaming update.
 type Event struct {
-	Kind       string         // "assistant.delta" | "reasoning.delta" | "tool.start" | "tool.end" | "message" | "compaction" | "warning"
-	Text       string         // the fragment, the call arguments, or the result
-	Tool       string         // tool name (tool.start / tool.end)
-	CallID     string         // the call id (tool.start / tool.end)
-	Message    *store.Message // the stored row (message)
-	Duration   time.Duration  // how long the call ran (tool.end)
-	Compaction *CompactResult // the finished compaction (compaction)
+	Kind       string          // "assistant.delta" | "reasoning.delta" | "tool.start" | "tool.end" | "message" | "compaction" | "warning" | "served" | "usage"
+	Text       string          // the fragment, the call arguments, the result, or the model now serving (served)
+	Tool       string          // tool name (tool.start / tool.end)
+	CallID     string          // the call id (tool.start / tool.end)
+	Message    *store.Message  // the stored row (message)
+	Duration   time.Duration   // how long the call ran (tool.end)
+	Compaction *CompactResult  // the finished compaction (compaction)
+	Usage      *provider.Usage // one request's usage, as it ends (usage)
 }
 
 // Result is the finished turn.
@@ -464,6 +465,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			Model:           model,
 			ReasoningEffort: effort,
 			Messages:        msgs,
+			OnServed:        func(m string) { s.setServed(m, emit) },
 		}
 		if r.Tools != nil {
 			req.Tools = r.Tools.Schemas()
@@ -523,13 +525,12 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 		retried = false
 		// Unconditional: a request back on the primary route after a fallback
 		// must not keep naming the fallback model.
-		s.mu.Lock()
-		s.served = resp.ServedModel
-		s.mu.Unlock()
+		s.setServed(resp.ServedModel, emit)
 		if r.OnReply != nil {
 			r.OnReply(s.ServedModel())
 		}
 		total.APICalls++
+		emit(Event{Kind: "usage", Usage: &resp.Usage})
 		s.noteResponse(resp.Usage.PromptTokens, emit)
 		total.Last = resp.Usage
 		total.Usage.PromptTokens += resp.Usage.PromptTokens
@@ -806,8 +807,26 @@ func marshalToolCalls(calls []provider.ToolCall) json.RawMessage {
 func (s *Session) ServedModel() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.servedLocked()
+}
+
+func (s *Session) servedLocked() string {
 	if s.served != "" {
 		return s.served
 	}
 	return s.model
+}
+
+// setServed records the model answering the current request ("" when the
+// endpoint named none) and emits "served" when that changes what
+// ServedModel reports.
+func (s *Session) setServed(m string, emit func(Event)) {
+	s.mu.Lock()
+	before := s.servedLocked()
+	s.served = m
+	after := s.servedLocked()
+	s.mu.Unlock()
+	if after != before {
+		emit(Event{Kind: "served", Text: after})
+	}
 }

@@ -101,6 +101,10 @@ type Request struct {
 	MaxTokens      int
 	Temperature    *float64
 	ResponseFormat json.RawMessage
+	// OnServed, when set, is told the model answering as soon as the
+	// response headers name it (maitred's x-maitred-model), before any of
+	// the stream; it is not called when they name none.
+	OnServed func(model string)
 }
 
 // Delta is one streaming fragment.
@@ -242,7 +246,7 @@ func (c *Client) Complete(ctx context.Context, req Request, onDelta func(Delta))
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		resp, delivered, retryAfter, err := c.doOnce(ctx, body, onDelta)
+		resp, delivered, retryAfter, err := c.doOnce(ctx, body, req.OnServed, onDelta)
 		if err == nil {
 			return resp, nil
 		}
@@ -277,7 +281,7 @@ func Fallbackable(err error) bool {
 
 // doOnce performs a single request and fully reads the stream. It reports
 // whether any delta reached onDelta and the Retry-After hint, if any.
-func (c *Client) doOnce(ctx context.Context, body []byte, onDelta func(Delta)) (*Response, bool, string, error) {
+func (c *Client) doOnce(ctx context.Context, body []byte, onServed func(string), onDelta func(Delta)) (*Response, bool, string, error) {
 	parent := ctx
 	var idled atomic.Bool
 	var timer *time.Timer
@@ -288,14 +292,14 @@ func (c *Client) doOnce(ctx context.Context, body []byte, onDelta func(Delta)) (
 		timer = time.AfterFunc(c.IdleTimeout, func() { idled.Store(true); cancel() })
 		defer timer.Stop()
 	}
-	resp, delivered, retryAfter, err := c.attempt(ctx, body, onDelta, timer, c.IdleTimeout)
+	resp, delivered, retryAfter, err := c.attempt(ctx, body, onServed, onDelta, timer, c.IdleTimeout)
 	if err != nil && idled.Load() && parent.Err() == nil {
 		err = errIdle
 	}
 	return resp, delivered, retryAfter, err
 }
 
-func (c *Client) attempt(ctx context.Context, body []byte, onDelta func(Delta), timer *time.Timer, idle time.Duration) (*Response, bool, string, error) {
+func (c *Client) attempt(ctx context.Context, body []byte, onServed func(string), onDelta func(Delta), timer *time.Timer, idle time.Duration) (*Response, bool, string, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, false, "", err
@@ -317,6 +321,10 @@ func (c *Client) attempt(ctx context.Context, body []byte, onDelta func(Delta), 
 			retryAfter: resp.Header.Get("Retry-After"),
 		}
 	}
+	served := resp.Header.Get("X-Maitred-Model")
+	if served != "" && onServed != nil {
+		onServed(served)
+	}
 	var rd io.Reader = resp.Body
 	if timer != nil {
 		timer.Reset(idle)
@@ -324,7 +332,7 @@ func (c *Client) attempt(ctx context.Context, body []byte, onDelta func(Delta), 
 	}
 	out, delivered, retryAfter, err := parseStream(rd, onDelta)
 	if out != nil {
-		out.ServedModel = resp.Header.Get("X-Maitred-Model")
+		out.ServedModel = served
 	}
 	return out, delivered, retryAfter, err
 }

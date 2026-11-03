@@ -203,6 +203,14 @@ func (l *live) onAgentLocked(e agent.Event) (progress map[string]any) {
 		l.compacted(*e.Compaction)
 	case "warning":
 		l.emit("notice", map[string]any{"level": "warning", "text": e.Text})
+	case "served":
+		// The headers named the model answering: the meta row and the context
+		// bar show it, and its window, from now on, not from the turn's end.
+		l.fitWindow()
+		l.emitSession()
+	case "usage":
+		l.ctxTokens = e.Usage.PromptTokens + e.Usage.CompletionTokens
+		l.emitSession()
 	case "message":
 		m := e.Message
 		l.announced, l.updated = m.Seq, m.TS
@@ -219,6 +227,26 @@ func (l *live) onAgentLocked(e agent.Event) (progress map[string]any) {
 		l.tail = open
 	}
 	return progress
+}
+
+// fitWindow keeps the session's window right (mu held). A window an
+// overflow error stated is kept for the session's life; otherwise, under a
+// routed model, the window is that of the model answering (what the context
+// bar, /status and compaction go by).
+func (l *live) fitWindow() {
+	if n := l.sess.ContextLength(); n != l.ctxKnown {
+		l.ctxKnown = n
+		l.srv.metaMu.Lock()
+		l.srv.learned[l.id] = n
+		l.srv.metaMu.Unlock()
+	}
+	l.srv.metaMu.Lock()
+	learned := l.srv.learned[l.id]
+	l.srv.metaMu.Unlock()
+	if w := l.srv.servedWindow(l.model, l.sess.ServedModel()); w > 0 && learned == 0 && w != l.ctxKnown {
+		l.sess.SetContextLength(w)
+		l.ctxKnown = w
+	}
 }
 
 // finish records the end of a turn and decides what runs next.
@@ -246,23 +274,7 @@ func (l *live) finish(res agent.Result, err error) {
 		Cached: res.Usage.CachedTokens, Reasoning: res.Usage.ReasoningTokens, Calls: res.APICalls}, l.ctxTokens); err != nil {
 		l.emit("notice", map[string]any{"level": "warning", "text": "storing usage: " + err.Error()})
 	}
-	if n := l.sess.ContextLength(); n != l.ctxKnown {
-		// An overflow error stated the real window: keep it for the session's life.
-		l.ctxKnown = n
-		l.srv.metaMu.Lock()
-		l.srv.learned[l.id] = n
-		l.srv.metaMu.Unlock()
-	}
-	// Under a routed model the window is that of the model that answered (what
-	// the context bar, /status and compaction should go by), unless an
-	// overflow taught the session its real limit.
-	l.srv.metaMu.Lock()
-	learned := l.srv.learned[l.id]
-	l.srv.metaMu.Unlock()
-	if w := l.srv.servedWindow(l.model, l.sess.ServedModel()); w > 0 && learned == 0 && w != l.ctxKnown {
-		l.sess.SetContextLength(w)
-		l.ctxKnown = w
-	}
+	l.fitWindow()
 	end := map[string]any{"status": status, "usage": usageObj(res.Usage), "api_calls": res.APICalls}
 	if msg != "" {
 		end["error"] = msg

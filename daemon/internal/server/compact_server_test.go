@@ -173,3 +173,31 @@ func TestUnderARoutedModelTheWindowIsTheServedModels(t *testing.T) {
 		t.Fatalf("after big/model answered: %v", st)
 	}
 }
+
+// The served model and its window show as soon as the response headers name
+// it, and the context tokens after each request: not at the turn's end.
+func TestTheServedModelShowsMidTurn(t *testing.T) {
+	hold := make(chan struct{})
+	fake := fakellm.New(t,
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("t1", "terminal", `{"command":"true"}`)}, ServedModel: "small/model", PromptTokens: 300, CompletionTokens: 50},
+		fakellm.Turn{Content: "done", ServedModel: "small/model", Release: hold},
+	)
+	fake.SetModels("auto", "small/model")
+	fake.SetModelMeta("auto", map[string]any{"context_length": 500000})
+	fake.SetModelMeta("small/model", map[string]any{"context_length": 1000})
+	h := newHarness(t, fake, "[custom_providers.custom.models.\"auto\"]\n")
+	c := h.dial()
+	id := c.create(t.TempDir())
+	c.attach(id, "driver")
+	c.ok("session.set", map[string]any{"session": id, "model": "auto"})
+	c.send(id, "hi")
+	st := obj(c.awaitWhere("session.updated", func(e map[string]any) bool {
+		s := obj(e, "state")
+		return s["status"] == "running" && s["context_tokens"] == 350.0
+	}), "state")
+	if st["served_model"] != "small/model" || st["context_length"] != 1000.0 {
+		t.Fatalf("mid-turn, after the first request: %v", st)
+	}
+	close(hold)
+	c.turn()
+}
