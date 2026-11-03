@@ -71,6 +71,9 @@ type Config struct {
 	} `toml:"cron"`
 	Relay struct {
 		WorkerHours any `toml:"worker_hours"` // [start, end] hours; see WorkerHours
+		// HiddenModels are models a chat may not hand a worker: exact names,
+		// or prefixes ending in "/" ("eklow/").
+		HiddenModels []string `toml:"hidden_models"`
 	} `toml:"relay"`
 	Gateway struct {
 		Model                string `toml:"model"`
@@ -359,6 +362,17 @@ func (c *Config) CompactionThreshold() float64 {
 // provider, "" when unset.
 func (c *Config) RouteDescription(model string) string {
 	return strings.TrimSpace(c.CustomProviders[c.Model.Provider].Models[model].Description)
+}
+
+// WorkerModelHidden reports whether relay.hidden_models keeps model from
+// workers: an exact entry, or an entry ending in "/" that model starts with.
+func (c *Config) WorkerModelHidden(model string) bool {
+	for _, h := range c.Relay.HiddenModels {
+		if h == model || (strings.HasSuffix(h, "/") && strings.HasPrefix(model, h)) {
+			return true
+		}
+	}
+	return false
 }
 
 // RouteContextLength is the configured context window of a model under the

@@ -41,6 +41,7 @@ func TestRelaySendChoosesTheWorkersModel(t *testing.T) {
 		fakellm.Turn{When: asWorker, Content: "done two"},
 		fakellm.Turn{When: asFiona, Content: "Reported two."},
 	)
+	fake.SetModels("test-model", "other-model")
 	r := newChatRig(t, fake, "")
 	r.say("go")
 	r.reply(sigGroup, "Started one.")
@@ -97,6 +98,7 @@ func TestRelaySendWithAnUnknownModelSendsNothing(t *testing.T) {
 		fakellm.Turn{When: asFiona, ToolCalls: []fakellm.ToolCall{relayCall("r1", map[string]any{"action": "send", "new_in": dir, "model": "nope", "message": "job"})}},
 		fakellm.Turn{When: asFiona, Content: "No such model."},
 	)
+	fake.SetModels("test-model", "other-model")
 	r := newChatRig(t, fake, "")
 	r.say("go")
 	r.reply(sigGroup, "No such model.")
@@ -125,11 +127,13 @@ func TestAChatTurnCarriesTheModelsNoteWhenItChanges(t *testing.T) {
 	fake := fakellm.New(t,
 		fakellm.Turn{Content: "r1"}, fakellm.Turn{Content: "r2"}, fakellm.Turn{Content: "r3"}, fakellm.Turn{Content: "r4"},
 	)
-	fake.SetModels("test-model", "auto")
+	// Only what the provider lists as live is offered: other-model is configured
+	// but not listed, so it is not in the note.
+	fake.SetModels("test-model", "auto", "deep-model")
 	fake.SetModelMeta("auto", map[string]any{"context_length": 1048576})
 	r := newChatRig(t, fake, modelsRoutes)
 
-	note := "[Models for relay send's model, up now: auto (1M context); deep-model (strongest reasoning, slow; 128k context); other-model; test-model; default is test-model.]"
+	note := "[Models for relay send's model, up now: auto (1M context); deep-model (strongest reasoning, slow; 128k context); test-model; default is test-model.]"
 	r.say("hello")
 	r.reply(sigGroup, "r1")
 	if got := lastUser(t, fake, 0); got != "hello\n\n"+note {
@@ -140,10 +144,10 @@ func TestAChatTurnCarriesTheModelsNoteWhenItChanges(t *testing.T) {
 	if got := withoutServed(lastUser(t, fake, 1)); got != "again" {
 		t.Fatalf("an unchanged list is not noted again: %q", got)
 	}
-	fake.SetModels("test-model", "auto", "new-model")
+	fake.SetModels("test-model", "auto", "deep-model", "new-model")
 	r.say("third")
 	r.reply(sigGroup, "r3")
-	note2 := "[Models for relay send's model, up now: auto (1M context); deep-model (strongest reasoning, slow; 128k context); new-model; other-model; test-model; default is test-model.]"
+	note2 := "[Models for relay send's model, up now: auto (1M context); deep-model (strongest reasoning, slow; 128k context); new-model; test-model; default is test-model.]"
 	if got := withoutServed(lastUser(t, fake, 2)); got != "third\n\n"+note2 {
 		t.Fatalf("a changed list is noted: %q", got)
 	}
@@ -216,5 +220,37 @@ func TestTheRelaySchemaOffersAModel(t *testing.T) {
 	}
 	if !strings.Contains(string(sch.Parameters), `"model": {"type": "string", "description": "send: the model this worker runs on, from its next turn: one of the names in the latest [Models] note, or \"default\" for this instance's model. Leave it out to keep the worker's model."}`) {
 		t.Fatalf("the schema: %s", sch.Parameters)
+	}
+}
+
+// A chat offers workers only what the provider lists as live, less
+// relay.hidden_models (exact names and "prefix/" entries); a send naming a
+// model kept out is refused like an unknown one.
+func TestWorkerModelsAreTheLiveOnesLessTheHidden(t *testing.T) {
+	dir := t.TempDir()
+	fake := fakellm.New(t,
+		fakellm.Turn{Content: "r1"},
+		fakellm.Turn{When: asFiona, ToolCalls: []fakellm.ToolCall{relayCall("r2", map[string]any{"action": "send", "new_in": dir, "model": "edge/small", "message": "job"})}},
+		fakellm.Turn{When: asFiona, Content: "Refused."},
+	)
+	fake.SetModels("auto", "fiona", "big/model", "down/model", "edge/small", "cloud-api")
+	fake.SetModelMeta("down/model", map[string]any{"status": "unavailable"})
+	fake.SetModelMeta("big/model", map[string]any{"status": "serving"})
+	r := newChatRig(t, fake, "[relay]\nhidden_models = [\"fiona\", \"edge/\", \"cloud-api\"]\n")
+
+	r.say("hello")
+	r.reply(sigGroup, "r1")
+	note := "[Models for relay send's model, up now: auto; big/model; default is test-model.]"
+	if got := lastUser(t, fake, 0); got != "hello\n\n"+note {
+		t.Fatalf("first turn = %q", got)
+	}
+	r.say("go")
+	r.reply(sigGroup, "Refused.")
+	res := toolResult(t, fake, "r2")
+	if res["success"] != false || res["error"] != "unknown model edge/small; known: auto, big/model" {
+		t.Fatalf("send = %v", res)
+	}
+	if requestWith(t, fake, asWorker) >= 0 {
+		t.Fatal("a worker ran")
 	}
 }

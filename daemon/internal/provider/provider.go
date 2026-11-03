@@ -587,6 +587,9 @@ type ModelInfo struct {
 	ID               string
 	ContextLength    int
 	ReasoningEfforts []string
+	// Status is the entry's live status as maitred reports it ("serving",
+	// "unavailable"); "" from a server that does not say.
+	Status string
 }
 
 // contextKeys are the fields servers use for a model's context window, in
@@ -623,6 +626,7 @@ func (c *Client) ModelInfo(ctx context.Context) ([]ModelInfo, error) {
 			}
 		}
 		_ = json.Unmarshal(d["reasoning_efforts"], &info.ReasoningEfforts)
+		_ = json.Unmarshal(d["status"], &info.Status)
 		infos = append(infos, info)
 	}
 	return infos, nil

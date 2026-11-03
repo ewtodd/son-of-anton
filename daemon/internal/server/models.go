@@ -194,12 +194,38 @@ func windowText(n int) string {
 	return ""
 }
 
+// workerModels are the models a chat may hand a worker: what the provider
+// lists as live now (maitred's status "serving"; an entry without a status
+// counts as live), less relay.hidden_models, sorted. nil when the list cannot
+// be fetched.
+func (s *Server) workerModels() []string {
+	ep, err := s.cfg.Endpoint("")
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(s.base, 5*time.Second)
+	infos, err := provider.New(ep.BaseURL, ep.APIKey).ModelInfo(ctx)
+	cancel()
+	if err != nil {
+		return nil
+	}
+	s.refreshMeta(ep, infos)
+	var names []string
+	for _, info := range infos {
+		if info.ID == "" || (info.Status != "" && info.Status != "serving") || s.cfg.WorkerModelHidden(info.ID) {
+			continue
+		}
+		names = append(names, info.ID)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // modelsNoteText lists the models a worker may be set to, for a chat's
 // fiona: every name, its description and window, and the default. "" when
 // there is no name at all.
 func (s *Server) modelsNoteText() string {
-	routes := s.modelRoutes()
-	names := sortedKeys(routes)
+	names := s.workerModels()
 	if len(names) == 0 {
 		return ""
 	}
@@ -247,17 +273,20 @@ func (s *Server) modelsNote(stamp string) string {
 }
 
 // workerModel resolves the model a relay send asks for: "default" is
-// model.default; a name no session may be set to is an error listing those
-// that can.
+// model.default; a name that is not offered to workers (not live, hidden by
+// relay.hidden_models, or unknown) is an error listing those that are.
 func (s *Server) workerModel(name string) (string, error) {
 	if name == "default" {
 		return s.cfg.Model.Default, nil
 	}
-	names := sortedKeys(s.modelRoutes())
+	names := s.workerModels()
 	for _, n := range names {
 		if n == name {
 			return name, nil
 		}
+	}
+	if len(names) == 0 {
+		return "", fmt.Errorf("unknown model %s; no model can be offered to workers right now (leave model out, or use default)", name)
 	}
 	return "", fmt.Errorf("unknown model %s; known: %s", name, strings.Join(names, ", "))
 }
