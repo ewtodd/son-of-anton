@@ -68,9 +68,12 @@ refused with a message saying they are not supported.
   (default 8), `session_tokens` (default 400,000), `total_tokens` (default
   3,000,000), `hours` (default 8). Tokens are prompt tokens not served from
   cache plus completion tokens, worker and manager together. At 90% of a
-  session's tokens the worker gets the budget message as a steer into its
-  running turn; at 125% the turn is interrupted (a yield: running commands
-  finish) and the work session ends. When `total_tokens` or `hours` runs out,
+  session's tokens the worker gets the budget message as a steer, the way
+  `turn.send` in `now` mode delivers one (its running turn stops after the
+  current tools, and the next turn starts with the message); that next turn
+  still belongs to the same work session. At 125% the turn is stopped with
+  its running commands allowed to finish (`Session.Stop(true)`) and the work
+  session ends. When `total_tokens` or `hours` runs out,
   the worker gets the budget message, the current turn ends as above, and the
   run is scored without another review.
 - **Scoring**: `RESULTS.txt` lines `key = value`, value a plain number
