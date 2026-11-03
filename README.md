@@ -155,5 +155,7 @@ inspired by that of [antirez/ds4](https://github.com/antirez/ds4).)
 
 ## License
 
-MIT, © 2025 Nous Research and © 2026 Ethan Todd. hermes-agent is the work of
-Nous Research, physics-intern of HuggingFace and opencode of SST.
+[0BSD](LICENSE), © 2026 Ethan Todd. The parts of the terminal UI that follow
+opencode stay under opencode's MIT license; LICENSE has its notice.
+hermes-agent is the work of Nous Research, physics-intern of HuggingFace and
+opencode of SST.

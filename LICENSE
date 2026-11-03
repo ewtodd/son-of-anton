@@ -1,7 +1,27 @@
+Copyright (C) 2026 by Ethan Todd
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
+
+-------------------------------------------------------------------------------
+
+Parts of the terminal UI follow opencode (https://github.com/sst/opencode)
+closely: its session layout, and the code whose comments say it follows
+opencode (for example the palette derivation in daemon/internal/tui/palette.go
+and the subagent footer in daemon/internal/tui/subagent.go). Those parts are
+used under opencode's license:
+
 MIT License
 
-Copyright (c) 2025 Nous Research
-Copyright (c) 2026 Ethan Todd
+Copyright (c) 2025 opencode
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

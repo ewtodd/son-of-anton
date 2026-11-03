@@ -9,7 +9,8 @@ Instructions for AI coding assistants and developers working on the son-of-anton
 Son of Anton began as a hard fork of [Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
 v0.20.5 (upstream commit `fcbd1076a9`), extended with the physics mode from
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern)
-(commit `5553bb6`). MIT licensed. It is the successor to the archived
+(commit `5553bb6`); none of either remains. Licensed 0BSD, with opencode-derived
+TUI parts under opencode's MIT notice (see LICENSE). It is the successor to the archived
 [temple](https://github.com/ewtodd/temple) harness. The Python agent is gone
 (phase 10b2) and so is the Python physics mode (phase 11a); the repository has no
 Python files. What remains is:

@@ -75,7 +75,7 @@ stdenv.mkDerivation {
     description = "Always-on agent daemon (Signal, cron, a terminal UI) and its command";
     homepage = "https://github.com/ewtodd/son-of-anton";
     mainProgram = "son-of-anton";
-    license = lib.licenses.mit;
+    license = [ lib.licenses.bsd0 lib.licenses.mit ]; # 0BSD; opencode-derived TUI parts MIT (see LICENSE)
     platforms = lib.platforms.linux;
   };
 }
