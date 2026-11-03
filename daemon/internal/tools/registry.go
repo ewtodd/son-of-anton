@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
+	"github.com/ewtodd/son-of-anton/daemon/internal/lsp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/mcp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/memory"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
@@ -62,6 +63,8 @@ type Env struct {
 	NoScripts string
 	// Vision is the endpoint vision_analyze sends images to (nil: none).
 	Vision *Vision
+	// LSP reports the errors an edit introduced (nil: no language servers).
+	LSP *lsp.Service
 }
 
 // Tool is one builtin tool.

@@ -22,6 +22,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
+	"github.com/ewtodd/son-of-anton/daemon/internal/lsp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/mcp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/memory"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
@@ -85,6 +86,7 @@ type Server struct {
 	cron    *cronSched
 	web     *tools.Web   // the web tools' settings, shared by every session
 	mcp     *mcp.Manager // nil: no MCP server is enabled
+	lsp     *lsp.Service // nil: LSP is disabled
 	chats   *chatHub     // nil: Signal is off
 	mem     *memory.Store
 	idx     *recall.Index   // nil: recall is off
@@ -119,11 +121,12 @@ func New(o Options) (*Server, error) {
 	}
 	mem, idx := recall.Memory(cfg, o.Home, true)
 	mcpm := MCPManager(cfg, o.Home)
+	lspS := LSPService(cfg)
 	base := tools.Builtin()
 	if mcpm != nil {
 		base = append(base, tools.MCPTools(mcpm.Names())...)
 	}
-	s := &Server{opt: o, cfg: cfg, st: st, reg: tools.NewRegistry(base...), mcp: mcpm, mem: mem, idx: idx,
+	s := &Server{opt: o, cfg: cfg, st: st, reg: tools.NewRegistry(base...), mcp: mcpm, lsp: lspS, mem: mem, idx: idx,
 		live: map[string]*live{}, indexed: map[string]int64{}, conns: map[*conn]struct{}{},
 		meta: map[string]map[string]int{}, learned: map[string]int{}}
 	s.cron = s.newCron()
@@ -219,6 +222,7 @@ func (s *Server) shutdown() {
 	if s.mcp != nil {
 		s.mcp.Close()
 	}
+	s.lsp.Close()
 	if s.idx != nil {
 		_ = s.idx.Close()
 	}
@@ -252,6 +256,7 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 		MemoryApproval:  s.cfg.Memory.WriteApproval,
 		Web:             s.web,
 		MCP:             s.mcp,
+		LSP:             s.lsp,
 		Vision:          VisionConfig(s.cfg, ep),
 		Cron:            s.cronHost(""),
 		Prompt: func(_ context.Context, ss store.Session) (string, error) {

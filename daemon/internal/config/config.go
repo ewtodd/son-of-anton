@@ -75,7 +75,13 @@ type Config struct {
 		AllowPrivateURLs bool     `toml:"allow_private_urls"`
 	} `toml:"web"`
 	MCPServers map[string]MCPServer `toml:"mcp_servers"`
-	Platforms  struct {
+	LSP        struct {
+		Enabled     *bool                `toml:"enabled"`
+		WaitTimeout any                  `toml:"wait_timeout"` // seconds
+		IdleTimeout any                  `toml:"idle_timeout"` // seconds; 0 never
+		Servers     map[string]LSPServer `toml:"servers"`
+	} `toml:"lsp"`
+	Platforms struct {
 		Signal struct {
 			RequireMention  any `toml:"require_mention"`
 			TypingIndicator any `toml:"typing_indicator"`
@@ -434,4 +440,15 @@ type MCPServer struct {
 		Include []string `toml:"include"`
 		Exclude []string `toml:"exclude"`
 	} `toml:"tools"`
+}
+
+// LSPServer is one [lsp.servers.<id>] table. Extensions and RootMarkers
+// define a server the built-in table lacks.
+type LSPServer struct {
+	Disabled              bool           `toml:"disabled"`
+	Command               []string       `toml:"command"`
+	Env                   map[string]any `toml:"env"`
+	InitializationOptions any            `toml:"initialization_options"`
+	Extensions            []string       `toml:"extensions"`
+	RootMarkers           []string       `toml:"root_markers"`
 }

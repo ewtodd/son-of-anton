@@ -97,6 +97,7 @@ func (patchTool) Run(ctx context.Context, env *Env, args json.RawMessage) (strin
 
 	newText := applySpans(text, spans, a.NewString, a.OldString, strategy)
 	diff := unifiedDiff(a.Path, text, newText)
+	edit := env.LSP.Begin(abs)
 	warning := stalenessWarning(env, abs)
 	if _, _, err := writeAtomic(abs, newText); err != nil {
 		return errorResult(err.Error()), nil
@@ -108,6 +109,9 @@ func (patchTool) Run(ctx context.Context, env *Env, args json.RawMessage) (strin
 	}
 	if warning != "" {
 		result["_warning"] = warning
+	}
+	if report := edit.Finish(ctx, newText); report != "" {
+		result["lsp_diagnostics"] = report
 	}
 	refreshStamp(env, abs)
 	return jsonResult(result)

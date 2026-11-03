@@ -17,6 +17,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
+	"github.com/ewtodd/son-of-anton/daemon/internal/lsp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/mcp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
@@ -124,6 +125,7 @@ type setup struct {
 	st     *store.Store
 	idx    *recall.Index // nil: no recall
 	mcp    *mcp.Manager  // nil: no MCP server is enabled
+	lsp    *lsp.Service  // nil: LSP is disabled
 	runner *agent.Runner
 	model  string
 }
@@ -159,11 +161,12 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 	}
 	mem, idx := recall.Memory(cfg, home, source == "query" && o.memory)
 	mcpm := server.MCPManager(cfg, home)
+	lspS := server.LSPService(cfg)
 	base := tools.Builtin()
 	if mcpm != nil {
 		base = append(base, tools.MCPTools(mcpm.Names())...)
 	}
-	su := &setup{st: st, mcp: mcpm, model: ep.Model, runner: &agent.Runner{
+	su := &setup{st: st, mcp: mcpm, lsp: lspS, model: ep.Model, runner: &agent.Runner{
 		Store:           st,
 		Client:          provider.New(ep.BaseURL, ep.APIKey),
 		Model:           ep.Model,
@@ -178,6 +181,7 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 		MemoryApproval:  cfg.Memory.WriteApproval,
 		Web:             server.WebConfig(cfg, home),
 		MCP:             mcpm,
+		LSP:             lspS,
 		Vision:          server.VisionConfig(cfg, ep),
 		Prompt: func(_ context.Context, s store.Session) (string, error) {
 			if o.system != "" {
@@ -209,6 +213,7 @@ func (su *setup) close() {
 	if su.mcp != nil {
 		su.mcp.Close()
 	}
+	su.lsp.Close()
 	if su.idx != nil {
 		_ = su.idx.Close()
 	}

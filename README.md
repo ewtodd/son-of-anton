@@ -28,6 +28,7 @@ daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`).
 - **Not in the daemon yet:** `/handoff` and `/pickup` (5).
 - **MCP:** servers in `[mcp_servers.<name>]` are found with `tool_search` and
   run with `tool_call`.
+- **LSP:** write_file and patch report new errors from the file's language server.
 
 ## Running it
 

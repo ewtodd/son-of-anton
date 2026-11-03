@@ -56,6 +56,7 @@ func (writeFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (s
 	if v := env.Gate.Write(ctx, abs, check.Protected); !v.Allowed {
 		return errorResult(v.Message), nil
 	}
+	edit := env.LSP.Begin(abs)
 	warning := stalenessWarning(env, abs)
 	written, dirsCreated, err := writeAtomic(abs, a.Content)
 	if err != nil {
@@ -70,6 +71,9 @@ func (writeFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (s
 	}
 	if warning != "" {
 		result["_warning"] = warning
+	}
+	if report := edit.Finish(ctx, a.Content); report != "" {
+		result["lsp_diagnostics"] = report
 	}
 	refreshStamp(env, abs)
 	return jsonResult(result)
