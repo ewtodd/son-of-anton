@@ -4,9 +4,11 @@ package main
 // soa-d.db (daemon/phases/08a-import.md).
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -84,6 +86,10 @@ func importSessions(ctx context.Context, from, home string) (importResult, error
 	if err != nil {
 		return res, fmt.Errorf("reading %s: %w", src, err)
 	}
+	jobs, err := readPyJobs(from)
+	if err != nil {
+		return res, err
+	}
 	// The newest Signal session of each chat is the one the chat continues in.
 	newest := map[string]string{}
 	for _, ps := range sessions { // ordered by start
@@ -98,7 +104,7 @@ func importSessions(ctx context.Context, from, home string) (importResult, error
 	}
 	defer st.Close()
 	for _, ps := range sessions {
-		kind, scope, ok := mapSource(ps)
+		kind, scope, ok := mapSource(ps, jobs)
 		if !ok {
 			res.skipped++
 			continue
@@ -174,8 +180,9 @@ func readPySessions(ctx context.Context, db *sql.DB) ([]pySession, error) {
 }
 
 // mapSource gives the soa-d kind and scope for a Python source; ok is false
-// for the sources the Python hid.
-func mapSource(ps pySession) (kind, scope string, ok bool) {
+// for the sources the Python hid. A cron session is the gateway's when its
+// job delivers to Signal, or when its job is gone (unknown fails closed).
+func mapSource(ps pySession, jobs map[string]pyJob) (kind, scope string, ok bool) {
 	switch ps.source {
 	case "subagent", "tool", "kanban":
 		return "", "", false
@@ -187,7 +194,10 @@ func mapSource(ps pySession) (kind, scope string, ok bool) {
 		if strings.Contains(strings.ToLower(ps.key+" "+ps.origin), "signal") {
 			return "cron", "gateway", true
 		}
-		return "cron", "common", true
+		if j, known := jobs[cronJobID(ps.id)]; known && !j.toSignal() {
+			return "cron", "common", true
+		}
+		return "cron", "gateway", true
 	}
 	return "interactive", "common", true
 }
@@ -275,4 +285,85 @@ func convertToolCalls(raw string) (json.RawMessage, error) {
 		out = append(out, call{ID: c.ID, Type: "function", Function: fn{Name: c.Function.Name, Arguments: args}})
 	}
 	return json.Marshal(out)
+}
+
+// pyJob is what the importer needs of a Python cron job: where it delivers.
+type pyJob struct {
+	Deliver string `json:"deliver"`
+	Origin  *struct {
+		Platform string `json:"platform"`
+	} `json:"origin"`
+}
+
+// toSignal says whether the job delivers to Signal (or might: anything but
+// local, and an origin that is not another platform's).
+func (j pyJob) toSignal() bool {
+	deliver := j.Deliver
+	if strings.TrimSpace(deliver) == "" {
+		deliver = "local"
+		if j.Origin != nil {
+			deliver = "origin"
+		}
+	}
+	for _, d := range strings.Split(deliver, ",") {
+		switch d = strings.ToLower(strings.TrimSpace(d)); d {
+		case "", "local":
+		case "origin":
+			if j.Origin == nil || j.Origin.Platform == "" || j.Origin.Platform == "signal" {
+				return true
+			}
+		default: // signal, signal:<chat>, all
+			return true
+		}
+	}
+	return false
+}
+
+// readPyJobs reads the Python home's cron/jobs.json, by job id; none is an
+// empty map.
+func readPyJobs(from string) (map[string]pyJob, error) {
+	b, err := os.ReadFile(filepath.Join(from, "cron", "jobs.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]pyJob{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	b = bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))
+	var file struct {
+		Jobs []json.RawMessage `json:"jobs"`
+	}
+	var list []json.RawMessage
+	if err := json.Unmarshal(b, &file); err == nil && file.Jobs != nil {
+		list = file.Jobs
+	} else if err := json.Unmarshal(b, &list); err != nil {
+		return nil, fmt.Errorf("reading %s: %w", filepath.Join(from, "cron", "jobs.json"), err)
+	}
+	out := map[string]pyJob{}
+	for _, raw := range list {
+		var j pyJob
+		var id struct {
+			ID    string `json:"id"`
+			JobID string `json:"job_id"`
+		}
+		if json.Unmarshal(raw, &j) != nil || json.Unmarshal(raw, &id) != nil {
+			continue
+		}
+		if id.ID == "" {
+			id.ID = id.JobID
+		}
+		out[id.ID] = j
+	}
+	return out, nil
+}
+
+// cronJobID is the job id in a Python cron session's id
+// (cron_<job id>_<time>), "" when it is not one.
+func cronJobID(sessionID string) string {
+	rest, ok := strings.CutPrefix(sessionID, "cron_")
+	if !ok {
+		return ""
+	}
+	id, _, _ := strings.Cut(rest, "_")
+	return id
 }
