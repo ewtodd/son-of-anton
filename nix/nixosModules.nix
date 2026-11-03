@@ -271,6 +271,14 @@
           "-" + (if lib.hasPrefix "/" p then p else "${unitHomeFor inst}/${p}")
         ) inst.protectedPaths;
         PrivateTmp = true;
+      }
+      # On soa-d the unit's daemon is also the owner's terminal agent when the
+      # instance is their own account: it runs as them, as a TUI-started one
+      # did, so the filesystem sandbox goes. NoNewPrivileges stays (and soa-d
+      # sets no_new_privs itself): nothing it runs can use sudo.
+      // lib.optionalAttrs (inst.backend == "soa-d" && inst.managedAccount) {
+        ProtectSystem = false;
+        PrivateTmp = false;
       };
 
       unitHomeFor = inst: if inst.managedAccount then inst.workingDirectory else inst.stateDir;

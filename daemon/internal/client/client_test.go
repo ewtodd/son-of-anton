@@ -231,3 +231,31 @@ func TestTheConnectionGoing(t *testing.T) {
 		t.Fatal("Dial with no daemon succeeded")
 	}
 }
+
+func TestConnectNeverStartsADaemonAUnitServes(t *testing.T) {
+	home, err := os.MkdirTemp("", "soac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("SON_OF_ANTON_HOME", "")
+	cfg := "[model]\ndefault = \"m\"\n\n[daemon]\nautostart = false\ninstance = \"play\"\n"
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A stand-in daemon that would leave a mark if it were started.
+	mark := filepath.Join(home, "started")
+	bin := filepath.Join(home, "soa-d")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\ntouch "+mark+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SOA_D_BIN", bin)
+	_, err = client.Connect(home, "tui")
+	if err == nil || !strings.Contains(err.Error(), "son-of-anton-play") {
+		t.Fatalf("Connect on a home a unit serves = %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if _, err := os.Stat(mark); err == nil {
+		t.Fatal("Connect started a daemon on a home a unit serves")
+	}
+}

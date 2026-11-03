@@ -160,7 +160,18 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 settings.model.default = "auto";
               };
               house = account "house";
+              shop = {
+                enable = true;
+                user = "soa-shop";
+                createUser = true;
+                managedAccount = false;
+                stateDir = "/var/lib/soa-shop";
+                son-of-antonHome = "/var/lib/soa-shop/.son-of-anton";
+                workingDirectory = "/srv/shop";
+                backend = "soa-d";
+              };
             };
+            sc = name: units."son-of-anton-${name}".serviceConfig;
             units = eval.config.systemd.services;
             exec = name: execStr units."son-of-anton-${name}".serviceConfig.ExecStart;
             inst = eval.config.services.son-of-anton.instances;
@@ -169,8 +180,14 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           assert lib.hasSuffix "/bin/soa-d serve" (exec "work");
           assert lib.hasInfix "bin/son-of-anton gateway" (exec "house");
           assert inst.house.backend == "python";
-          assert inst.play.settings.daemon == { instance = "play"; signal = true; cron = true; };
-          assert inst.work.settings.daemon == { instance = "work"; signal = true; cron = false; };
+          assert inst.play.settings.daemon == { instance = "play"; signal = true; cron = true; autostart = false; };
+          assert inst.work.settings.daemon == { instance = "work"; signal = true; cron = false; autostart = false; };
+          # An owner's own account on soa-d: no filesystem sandbox, never privileges.
+          assert (sc "play").ProtectSystem == false && (sc "play").PrivateTmp == false;
+          assert (sc "play").NoNewPrivileges;
+          # A service account on soa-d, and the Python gateway, keep the sandbox.
+          assert (sc "shop").ProtectSystem == "strict" && (sc "shop").PrivateTmp && (sc "shop").NoNewPrivileges;
+          assert (sc "house").ProtectSystem == "strict" && (sc "house").PrivateTmp;
           assert inst.work.settings.model.default == "auto";
           assert !(inst.house.settings ? daemon);
           assert units."son-of-anton-play".environment.SON_OF_ANTON_HOME == "/home/e-play/.son-of-anton";

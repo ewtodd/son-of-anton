@@ -443,6 +443,8 @@ let
         daemon = {
           signal = true;
           cron = true;
+          # The unit serves this home: a TUI connects, never starts its own.
+          autostart = false;
         }
         // extra;
       }

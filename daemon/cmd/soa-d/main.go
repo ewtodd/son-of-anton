@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
@@ -367,6 +369,14 @@ func runServe(args []string, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "soa-d serve: %v\n", err)
 			return 1
 		}
+	}
+	// Nothing the daemon runs may gain privileges (sudo, su, any setuid or
+	// setcap program), however the daemon was started: a unit, or a TUI. The
+	// flag is per thread and Go forks from any thread, so every thread gets
+	// it (AllThreadsSyscall needs a build without cgo, as soa-d always is).
+	if _, _, errno := syscall.AllThreadsSyscall(syscall.SYS_PRCTL, unix.PR_SET_NO_NEW_PRIVS, 1, 0); errno != 0 {
+		fmt.Fprintf(stderr, "soa-d serve: setting no_new_privs: %v\n", errno)
+		return 1
 	}
 	ln, err := server.Listen(home)
 	if errors.Is(err, server.ErrRunning) {

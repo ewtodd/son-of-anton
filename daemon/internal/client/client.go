@@ -15,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/ewtodd/son-of-anton/daemon/internal/config"
 )
 
 const maxLine = 16 << 20
@@ -105,6 +107,9 @@ func Connect(home, name string) (*Client, error) {
 	if err == nil {
 		return handshake(conn, name)
 	}
+	if served, unit := servedByUnit(home); served {
+		return nil, fmt.Errorf("soa-d is not running for %s, and %s serves it: see systemctl status %s", home, unit, unit)
+	}
 	if err := startDaemon(home); err != nil {
 		return nil, err
 	}
@@ -119,6 +124,20 @@ func Connect(home, name string) (*Client, error) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// servedByUnit reports whether config.toml says a system unit serves home
+// ([daemon] autostart = false), and that unit's name. A config that does not
+// load leaves the decision to the daemon, which reports it in its log.
+func servedByUnit(home string) (bool, string) {
+	cfg, err := config.Load(home)
+	if err != nil || cfg.Daemon.Autostart == nil || *cfg.Daemon.Autostart {
+		return false, ""
+	}
+	if cfg.Daemon.Instance != "" {
+		return true, "son-of-anton-" + cfg.Daemon.Instance
+	}
+	return true, "its son-of-anton unit"
 }
 
 // startDaemon runs `<bin> serve --home <home>` in its own session, its output

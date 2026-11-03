@@ -228,8 +228,11 @@ services.son-of-anton.instances.work = {
   makes the file purely declarative.
 - `backend = "soa-d"` on an instance moves it from the Python gateway to the Go
   daemon (the same unit then runs `soa-d serve`: Signal, cron and the socket
-  the TUI attaches to). Run `soa-d import --from ~/.son-of-anton` once to bring
-  the Python sessions over. The default is `python`.
+  the TUI attaches to; the TUI never starts a daemon of its own there). Run
+  `soa-d import --from ~/.son-of-anton` once to bring the Python sessions over.
+  The default is `python`. On a `managedAccount` (a person's own account) the
+  unit drops its filesystem sandbox, since its daemon is that person's terminal
+  agent too; nothing soa-d runs can gain privileges (no sudo), on any instance.
 - A Home Manager module covers a terminal-only install.
 - There are no installation commands (`setup`, `update`, `config set`,
   `gateway install`): the module declares the deployment and `systemctl` runs

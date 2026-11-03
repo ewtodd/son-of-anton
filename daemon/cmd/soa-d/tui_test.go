@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,5 +115,71 @@ func TestTUIResumingAnUnknownSessionFailsBeforeTheScreen(t *testing.T) {
 	code, out, errOut := runIn(t, "tui", "--home", home, "--resume", "nope")
 	if code != 1 || out != "" || errOut != "soa-d: session nope is not in soa-d\n" {
 		t.Fatalf("exit %d, %q, %q", code, out, errOut)
+	}
+}
+
+func TestTheDaemonCannotGainPrivileges(t *testing.T) {
+	fake := fakellm.New(t,
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "terminal", Arguments: `{"command":"grep NoNewPrivs /proc/self/status"}`}}},
+		fakellm.Turn{Content: "done"},
+	)
+	home := shortHome(t, fake)
+	t.Setenv("SOA_D_BIN", os.Args[0])
+	t.Setenv("SOA_D_TEST_AS_MAIN", "1")
+	c, err := client.Connect(home, "tui")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	pid := int(c.Hello()["pid"].(float64))
+	sock := filepath.Join(home, "run", "soa-d.sock")
+	t.Cleanup(func() {
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+		for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			if _, err := os.Stat(sock); os.IsNotExist(err) {
+				return
+			}
+		}
+		t.Error("the started daemon did not stop")
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var cr struct {
+		Session struct {
+			ID string `json:"id"`
+		} `json:"session"`
+	}
+	if err := c.Call(ctx, "session.create", map[string]any{"cwd": t.TempDir()}, &cr); err != nil {
+		t.Fatal(err)
+	}
+	id := cr.Session.ID
+	for _, step := range []struct {
+		method string
+		params map[string]any
+	}{
+		{"session.attach", map[string]any{"session": id, "as": "driver"}},
+		{"session.set", map[string]any{"session": id, "mode": "yolo"}},
+		{"turn.send", map[string]any{"session": id, "text": "check"}},
+	} {
+		if err := c.Call(ctx, step.method, step.params, nil); err != nil {
+			t.Fatalf("%s: %v", step.method, err)
+		}
+	}
+	var result string
+	for result == "" {
+		select {
+		case ev := <-c.Events():
+			if ev.Kind == "tool.end" {
+				result, _ = ev.Params["result"].(string)
+			}
+		case <-ctx.Done():
+			t.Fatal("no tool result")
+		}
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal([]byte(result), &out); err != nil || strings.TrimSpace(out.Output) != "NoNewPrivs:\t1" {
+		t.Fatalf("a command the daemon ran could gain privileges: %s", result)
 	}
 }
