@@ -18,13 +18,15 @@ separate physics research mode that runs only when you ask for it.
 
 ## Status: the Go rewrite
 
-The Python backend is being replaced, one phase at a time, by `soa-d`, a Go
-daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`).
+`soa-d`, a Go daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`),
+replaces the Python backend. Its v1 is complete: everything below runs on it.
 
-- **On soa-d now:** the terminal TUI (`son-of-anton`), `-q` and `-z`, and
-  Signal chats with fiona and her relay workers (off until an instance
-  moves; `[daemon] signal = true`) and cron (`[daemon] cron = true`).
-- **Still Python:** physics runs.
+- **On soa-d:** the terminal TUI (`son-of-anton`), `-q` and `-z`; Signal
+  chats with fiona and her relay workers, and cron, once an instance moves
+  (`backend = "soa-d"` in the NixOS module; until then that instance's
+  Python gateway serves them).
+- **Still Python:** physics runs, and the Textual TUI's front end (a Go TUI
+  is next). The Python backend goes once every instance has moved.
 - **MCP:** servers in `[mcp_servers.<name>]` are found with `tool_search` and
   run with `tool_call`.
 - **LSP:** write_file and patch report new errors from the file's language server.
