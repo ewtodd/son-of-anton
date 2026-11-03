@@ -1070,3 +1070,7 @@
 {"cmd": "kill -s 9 -1", "dangerous": true, "hardline": true, "note": "the signal given with -s is skipped to find -1"}
 {"cmd": "pkill -SIGKILL x", "dangerous": true, "hardline": false, "note": "-SIGKILL is -9"}
 {"cmd": "killall --regexp x", "dangerous": true, "hardline": false, "note": "the long form of -r"}
+{"cmd": "git rm --cached -q AGENTS.md", "dangerous": false, "hardline": false, "note": "git's rm subcommand with --cached only unstages"}
+{"cmd": "git -C repo rm --cached x", "dangerous": false, "hardline": false, "note": "git's rm subcommand after a global option"}
+{"cmd": "git rm -r --cached build", "dangerous": true, "hardline": false, "note": "git's rm subcommand in its recursive form is a sweep"}
+{"cmd": "git status; rm --force a", "dangerous": true, "hardline": false, "note": "an rm after a git command is still rm"}

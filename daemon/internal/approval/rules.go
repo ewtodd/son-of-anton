@@ -272,11 +272,51 @@ func checkSoft(sc *scan, h *hits) {
 }
 
 func checkDeletes(sc *scan, h *hits) {
+	// The rm that is git's own subcommand (`git rm`, `git -C dir rm`) is
+	// a sweep only in its recursive form: `git rm --cached` only unstages.
+	// Any other rm, quoted ones included, is judged as rm.
+	gitRm := map[int]bool{}
+	for _, ch := range sc.commands() {
+		if ch.cmd < 0 || base(sc.toks[ch.cmd].l) != "git" {
+			continue
+		}
+		last, takesValue := sc.toks[ch.cmd].wid, false
+		for j := ch.cmd + 1; j < len(sc.toks) && sc.toks[j].seg == sc.toks[ch.cmd].seg; j++ {
+			t := sc.toks[j]
+			if t.kind != kWord || t.wid == last {
+				continue
+			}
+			last = t.wid
+			if takesValue {
+				takesValue = false
+				continue
+			}
+			if !t.q && strings.HasPrefix(t.l, "-") {
+				takesValue = t.l == "-c" || t.l == "-C" || t.l == "--git-dir" || t.l == "--work-tree" || t.l == "--namespace"
+				continue
+			}
+			if !t.q && t.l == "rm" {
+				gitRm[j] = true
+			}
+			break
+		}
+	}
 	for _, i := range sc.verbs("rm") {
 		if sc.over {
 			return
 		}
 		args := sc.wordArgs(i, false)
+		if gitRm[i] {
+			for _, a := range args {
+				if a.t == "--" || a.q {
+					break
+				}
+				if recursiveFlag(a.l) {
+					h.add("rm-sweep")
+				}
+			}
+			continue
+		}
 		if len(args) > 0 && args[0].t != "--" && (strings.HasPrefix(args[0].l, "--") || shortCluster(args[0].l, "r")) {
 			h.add("rm-sweep")
 		}
