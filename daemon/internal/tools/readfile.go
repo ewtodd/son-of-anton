@@ -60,12 +60,12 @@ func (readFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 	if err := env.Policy.CheckRead(abs); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	fi, err := os.Stat(abs)
+	fi, err := envStat(env, abs)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return jsonResult(map[string]any{
 				"error":         "No such file: " + a.Path,
-				"similar_files": similarFiles(abs),
+				"similar_files": similarFiles(env, abs),
 			})
 		}
 		return errorResult(err.Error()), nil
@@ -73,7 +73,7 @@ func (readFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 	if fi.IsDir() {
 		return errorResult(abs + " is a directory; read a file inside it"), nil
 	}
-	data, err := os.ReadFile(abs)
+	data, err := envReadFile(env, abs)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
@@ -173,9 +173,9 @@ func splitLines(s string) []string {
 // similarFiles lists up to 5 names in the same directory that are within
 // edit distance 2 of the wanted name, or share a 4+ char case-insensitive
 // prefix.
-func similarFiles(abs string) []string {
+func similarFiles(env *Env, abs string) []string {
 	dir, base := filepath.Dir(abs), filepath.Base(abs)
-	entries, err := os.ReadDir(dir)
+	entries, err := envReadDir(env, dir)
 	if err != nil {
 		return nil
 	}

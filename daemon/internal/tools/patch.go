@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
@@ -71,7 +70,7 @@ func (patchTool) Run(ctx context.Context, env *Env, args json.RawMessage) (strin
 	if v := env.Gate.Write(ctx, abs, check.Protected); !v.Allowed {
 		return errorResult(v.Message), nil
 	}
-	content, err := os.ReadFile(abs)
+	content, err := envReadFile(env, abs)
 	if err != nil {
 		return errorResult("cannot read " + a.Path + ": " + err.Error()), nil
 	}
@@ -99,7 +98,7 @@ func (patchTool) Run(ctx context.Context, env *Env, args json.RawMessage) (strin
 	diff := unifiedDiff(a.Path, text, newText)
 	edit := env.LSP.Begin(abs)
 	warning := stalenessWarning(env, abs)
-	if _, _, err := writeAtomic(abs, newText); err != nil {
+	if _, _, err := envWriteAtomic(env, abs, newText); err != nil {
 		return errorResult(err.Error()), nil
 	}
 	result := map[string]any{

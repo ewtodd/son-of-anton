@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -89,11 +88,8 @@ func (searchFilesTool) Run(ctx context.Context, env *Env, args json.RawMessage) 
 	if err := env.Policy.CheckConfined(abs); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+	if fi, err := envStat(env, abs); err != nil || !fi.IsDir() {
 		return errorResult("nothing at " + a.Path), nil
-	}
-	if _, err := exec.LookPath("rg"); err != nil {
-		return errorResult("search_files runs on ripgrep and rg was not found"), nil
 	}
 
 	switch a.Target {
@@ -107,8 +103,10 @@ func (searchFilesTool) Run(ctx context.Context, env *Env, args json.RawMessage) 
 }
 
 func runContentSearch(ctx context.Context, env *Env, a searchArgs, abs string) (string, error) {
-	cmd := exec.CommandContext(ctx, "rg",
-		"--json", "--sort", "path")
+	cmd, err := rgCommand(ctx, env, "--json", "--sort", "path")
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
 	if a.Context > 0 {
 		cmd.Args = append(cmd.Args, "-C", fmt.Sprint(a.Context))
 	}
@@ -294,7 +292,10 @@ func runFileSearch(ctx context.Context, env *Env, a searchArgs, abs string) (str
 		glob = "*" + glob + "*"
 	}
 	cmdArgs := []string{"--files", "--sortr", "modified", "--glob", glob, abs}
-	cmd := exec.CommandContext(ctx, "rg", cmdArgs...)
+	cmd, err := rgCommand(ctx, env, cmdArgs...)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
 	var out, errBuf strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf

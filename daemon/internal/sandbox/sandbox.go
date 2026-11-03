@@ -9,6 +9,7 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -158,6 +159,11 @@ var (
 // returns an *UnavailableError and nothing runs. argv[0] should be an
 // absolute path inside the runtime (bwrap resolves it before PATH is set).
 func (p Policy) Command(extraEnv []string, argv ...string) (*exec.Cmd, error) {
+	return p.CommandContext(context.Background(), extraEnv, argv...)
+}
+
+// CommandContext is Command with a context that kills the process when done.
+func (p Policy) CommandContext(ctx context.Context, extraEnv []string, argv ...string) (*exec.Cmd, error) {
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
 		return nil, &UnavailableError{"bwrap is not on PATH"}
@@ -169,7 +175,7 @@ func (p Policy) Command(extraEnv []string, argv ...string) (*exec.Cmd, error) {
 	if err := p.probe(bwrap); err != nil {
 		return nil, err
 	}
-	return exec.Command(bwrap, args...), nil
+	return exec.CommandContext(ctx, bwrap, args...), nil
 }
 
 // Bash is the shell the sandbox runs wrappers with.

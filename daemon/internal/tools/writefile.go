@@ -58,11 +58,11 @@ func (writeFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (s
 	}
 	edit := env.LSP.Begin(abs)
 	warning := stalenessWarning(env, abs)
-	written, dirsCreated, err := writeAtomic(abs, a.Content)
+	written, dirsCreated, err := envWriteAtomic(env, abs, a.Content)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
-	verified := verifyWritten(abs, a.Content)
+	verified := verifyWritten(env, abs, a.Content)
 	result := map[string]any{
 		"bytes_written": written,
 		"dirs_created":  dirsCreated,
@@ -133,8 +133,8 @@ func writeAtomic(abs, content string) (int, bool, error) {
 
 // verifyWritten re-reads the file and compares its hash to the written
 // content.
-func verifyWritten(abs, content string) bool {
-	data, err := os.ReadFile(abs)
+func verifyWritten(env *Env, abs, content string) bool {
+	data, err := envReadFile(env, abs)
 	if err != nil {
 		return false
 	}
@@ -145,7 +145,7 @@ func verifyWritten(abs, content string) bool {
 
 // refreshStamp records the new on-disk state after a write.
 func refreshStamp(env *Env, abs string) {
-	fi, err := os.Stat(abs)
+	fi, err := envStat(env, abs)
 	if err != nil {
 		return
 	}
@@ -158,7 +158,7 @@ func stalenessWarning(env *Env, abs string) string {
 	if !ok {
 		return ""
 	}
-	fi, err := os.Stat(abs)
+	fi, err := envStat(env, abs)
 	if err != nil {
 		return ""
 	}

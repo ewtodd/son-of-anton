@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -337,5 +338,43 @@ func TestSandboxedSessionIsYoloButHardlineStillRefuses(t *testing.T) {
 	}
 	if !strings.Contains(res[1], "BLOCKED (hardline)") || strings.Contains(res[1], "ran") {
 		t.Errorf("the hardline command was not refused: %s", res[1])
+	}
+}
+
+// search_files runs ripgrep inside the sandbox: a file outside the roots,
+// reached through a symlink in the run directory, is never reported, and a
+// match in the run directory is.
+func TestSandboxedSearchRunsInsideTheSandbox(t *testing.T) {
+	rt := sandboxtest.Runtime(t)
+	w := newWorld(t, rt)
+	if rg, err := exec.LookPath("rg"); err != nil || !strings.HasPrefix(rg, "/nix/store/") {
+		t.Skipf("ripgrep (%q, %v) is not in the Nix store, so it cannot run in the sandbox here", rg, err)
+	}
+	if err := os.Symlink(w.outside, filepath.Join(w.run, "out")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(w.outside, "secret"), filepath.Join(w.run, "secret-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.run, "mine.txt"), []byte("TOPSECRET-not\nneedle here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := runCalls(t, w,
+		tc("c1", "search_files", map[string]any{"pattern": "TOPSECRET", "path": w.run}),
+		tc("c2", "search_files", map[string]any{"pattern": "needle", "path": w.run}),
+		tc("c3", "search_files", map[string]any{"pattern": "*", "target": "files", "path": w.run}),
+		tc("c4", "search_files", map[string]any{"pattern": "DATAFILE", "path": w.data}),
+	)
+	if strings.Contains(res[0], "secret") || strings.Contains(res[0], "out/") || strings.Count(res[0], "TOPSECRET") != 1 {
+		t.Errorf("search reached outside the roots (only mine.txt may match): %s", res[0])
+	}
+	if !strings.Contains(res[1], "mine.txt") || strings.Contains(res[1], `"error"`) {
+		t.Errorf("search inside the run dir: %s", res[1])
+	}
+	if strings.Contains(res[2], "victim") || strings.Contains(res[2], "/home/") {
+		t.Errorf("file search reached outside: %s", res[2])
+	}
+	if !strings.Contains(res[3], "events.txt") {
+		t.Errorf("search in the data dir: %s", res[3])
 	}
 }
