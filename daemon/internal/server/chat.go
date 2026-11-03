@@ -7,6 +7,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -294,25 +295,43 @@ func (k *chatLink) turnEnd(status, content, errMsg string) {
 }
 
 func (k *chatLink) approval(id string, req approval.Request, choices []string) {
-	cs := k.cs
+	k.cs.askApproval(k.l, id, req, choices, "")
+}
+
+func (k *chatLink) question(id string, q tools.Question) { k.cs.askQuestion(k.l, id, q, "") }
+
+func (k *chatLink) closed(id string) { k.cs.dropPending(id) }
+
+// askApproval puts an approval of session l to the chat; prefix leads the
+// message (a worker's approvals say whose they are). An id already asked is
+// not asked again.
+func (cs *chatState) askApproval(l *live, id string, req approval.Request, choices []string, prefix string) {
 	cs.mu.Lock()
-	cs.pending = append(cs.pending, pendingReq{id: id, l: k.l, choices: choices})
+	if hasPending(cs.pending, id) {
+		cs.mu.Unlock()
+		return
+	}
+	cs.pending = append(cs.pending, pendingReq{id: id, l: l, choices: choices})
 	many := len(approvals(cs.pending)) > 1
 	cs.mu.Unlock()
-	text, styles := approvalText(req, choices, id, many)
+	text, styles := approvalText(req, choices, id, many, prefix)
 	cs.sayStyled(text, styles)
 }
 
-func (k *chatLink) question(id string, q tools.Question) {
-	cs := k.cs
+// askQuestion puts a question of session l to the chat.
+func (cs *chatState) askQuestion(l *live, id string, q tools.Question, prefix string) {
 	cs.mu.Lock()
-	cs.pending = append(cs.pending, pendingReq{id: id, l: k.l, question: true, choices: q.Choices})
+	if hasPending(cs.pending, id) {
+		cs.mu.Unlock()
+		return
+	}
+	cs.pending = append(cs.pending, pendingReq{id: id, l: l, question: true, choices: q.Choices})
 	cs.mu.Unlock()
-	cs.say(questionText(q))
+	cs.say(questionText(q, prefix))
 }
 
-func (k *chatLink) closed(id string) {
-	cs := k.cs
+// dropPending forgets a request that was answered or withdrawn.
+func (cs *chatState) dropPending(id string) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	for i, p := range cs.pending {
@@ -321,6 +340,15 @@ func (k *chatLink) closed(id string) {
 			return
 		}
 	}
+}
+
+func hasPending(list []pendingReq, id string) bool {
+	for _, p := range list {
+		if p.id == id {
+			return true
+		}
+	}
+	return false
 }
 
 func approvals(list []pendingReq) []pendingReq {
@@ -339,12 +367,12 @@ func utf16Len(s string) int { return len(utf16.Encode([]rune(s))) }
 
 // approvalText is the chat's approval request, with the subject in a
 // monospace style (a code block). Several waiting approvals each name an id.
-func approvalText(req approval.Request, choices []string, id string, many bool) (string, []string) {
+func approvalText(req approval.Request, choices []string, id string, many bool, prefix string) (string, []string) {
 	what := map[string]string{"command": "run a command", "write": "write a file", "memory": "save to memory"}[req.Kind]
 	if what == "" {
 		what = req.Kind
 	}
-	head := "⚠️ Approval needed: " + what
+	head := prefix + "⚠️ Approval needed: " + what
 	if many {
 		head += " [" + shortID(id) + "]"
 	}
@@ -372,8 +400,8 @@ func approvalText(req approval.Request, choices []string, id string, many bool) 
 	return text, styles
 }
 
-func questionText(q tools.Question) string {
-	text := "❓ " + q.Text
+func questionText(q tools.Question, prefix string) string {
+	text := "❓ " + prefix + q.Text
 	if len(q.Choices) == 0 {
 		return text
 	}
@@ -404,6 +432,7 @@ func (s *Server) chatRunner(r *agent.Runner, stamp string) {
 	}
 	r.Tools = s.regChat
 	r.AsyncDelivery = false
+	r.Relay = func(ctx context.Context, args json.RawMessage) string { return s.relay(ctx, stamp, args) }
 	if !s.cfg.Gateway.SingleUser {
 		r.WallChat = stamp
 	}

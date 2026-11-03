@@ -92,6 +92,10 @@ type Runner struct {
 	Cron *tools.Cron
 	// LSP reports the errors an edit introduced (tools.Env.LSP).
 	LSP *lsp.Service
+	// Relay answers the relay tool (tools.Env.Relay).
+	Relay func(ctx context.Context, args json.RawMessage) string
+	// Owner stamps the sessions NewSession creates with the chat that started them.
+	Owner string
 	// Scope and Chat stamp the sessions NewSession creates ("" Scope is common).
 	Scope, Chat string
 }
@@ -115,6 +119,7 @@ func (r *Runner) NewSession(ctx context.Context, kind, cwd string) (*Session, er
 		Model:     r.Model,
 		Scope:     r.Scope,
 		Chat:      r.Chat,
+		Owner:     r.Owner,
 	}
 	text, err := r.Prompt(ctx, pending)
 	if err != nil {
@@ -514,7 +519,7 @@ func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls [
 	base := tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
 		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval,
 		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, WallChat: s.runner.WallChat, Web: s.runner.Web, MCP: s.runner.MCP,
-		Vision: s.runner.Vision, LSP: s.runner.LSP, NoScripts: s.runner.NoScripts, Cron: s.runner.Cron}
+		Vision: s.runner.Vision, LSP: s.runner.LSP, NoScripts: s.runner.NoScripts, Cron: s.runner.Cron, Relay: s.runner.Relay}
 	var emitMu sync.Mutex
 	emit := func(e Event) {
 		emitMu.Lock()

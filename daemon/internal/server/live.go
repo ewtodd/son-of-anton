@@ -32,6 +32,7 @@ type tailEv struct {
 
 type pendingApproval struct {
 	ch      chan approval.Choice
+	req     approval.Request
 	choices []string
 	reason  string // why a chat denied it, set before the answer is sent
 }
@@ -41,7 +42,10 @@ type answer struct {
 	withdrawn bool
 }
 
-type pendingQuestion struct{ ch chan answer }
+type pendingQuestion struct {
+	ch chan answer
+	q  tools.Question
+}
 
 type usageTotals struct{ input, output, cached, reasoning, calls int }
 
@@ -264,7 +268,7 @@ func (l *live) finish(res agent.Result, err error) {
 	case "interrupted", "error":
 		l.waiting = true
 	}
-	if l.chat != nil {
+	if l.chat != nil && (l.kind != "worker" || l.driver == nil) {
 		l.waiting = false // nobody at a terminal steers a chat; its messages run in order
 	}
 	l.emitSession()
@@ -294,6 +298,9 @@ func (l *live) next() {
 	}
 	if l.waiting {
 		return
+	}
+	if l.kind == "worker" && l.driver == nil && !l.srv.inWorkerHours(time.Now()) {
+		return // a worker nobody has picked up starts its queue only within its hours
 	}
 	items, err := l.srv.st.QueueItems(context.Background(), l.id)
 	if err != nil || len(items) == 0 {
@@ -430,16 +437,21 @@ func (l *live) drainNotices() {
 		return
 	}
 	for _, t := range texts {
-		if !l.running && !l.compacting && !l.waiting {
-			l.startTurn(t)
-			continue
-		}
-		if _, err := l.srv.st.QueuePush(context.Background(), l.id, "notice", t); err != nil {
-			l.emit("notice", map[string]any{"level": "error", "text": "queueing a notice: " + err.Error()})
-			continue
-		}
-		l.emitQueue()
+		l.noticeLocked(t)
 	}
+}
+
+// noticeLocked runs text as a turn if the session is idle, else queues it.
+func (l *live) noticeLocked(text string) {
+	if !l.running && !l.compacting && !l.waiting {
+		l.startTurn(text)
+		return
+	}
+	if _, err := l.srv.st.QueuePush(context.Background(), l.id, "notice", text); err != nil {
+		l.emit("notice", map[string]any{"level": "error", "text": "queueing a notice: " + err.Error()})
+		return
+	}
+	l.emitQueue()
 }
 
 // ---- approvals and questions ----
@@ -494,7 +506,7 @@ func (l *live) approveAs(ctx context.Context, req approval.Request, child string
 	if req.AllowRemember {
 		choices = []string{"once", "session", "always", "deny"}
 	}
-	p := &pendingApproval{ch: make(chan approval.Choice, 1), choices: choices}
+	p := &pendingApproval{ch: make(chan approval.Choice, 1), req: req, choices: choices}
 	l.mu.Lock()
 	l.approvals[id] = p
 	reasons := req.Reasons
@@ -529,7 +541,7 @@ func (l *live) approveAs(ctx context.Context, req approval.Request, child string
 // ask is the session's tools.Questioner.
 func (l *live) ask(ctx context.Context, q tools.Question) ([]string, error) {
 	id := newID("qu_")
-	p := &pendingQuestion{ch: make(chan answer, 1)}
+	p := &pendingQuestion{ch: make(chan answer, 1), q: q}
 	choices := q.Choices
 	if choices == nil {
 		choices = []string{}
@@ -677,6 +689,9 @@ func (l *live) detach(c *conn) {
 	delete(l.viewers, c)
 	if l.driver == c {
 		l.driver = nil
+		if l.kind == "worker" {
+			l.handBack()
+		}
 	}
 }
 

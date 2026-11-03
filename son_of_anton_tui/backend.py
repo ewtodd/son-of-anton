@@ -30,7 +30,7 @@ NOT_IN_SOAD = "session {id} is not in soa-d (Python sessions are imported in pha
 # Canonical names of the commands this client handles (the rest say so).
 SUPPORTED = (
     "model", "reasoning", "perm", "new", "clear", "resume", "sessions", "commit",
-    "stop", "sendnow", "sendall", "cancel", "status", "help", "skin", "quit", "compact",
+    "stop", "sendnow", "sendall", "cancel", "status", "help", "skin", "quit", "compact", "pickup",
 )
 
 
@@ -903,6 +903,8 @@ class DaemonBackend:
                     self.note("no sessions to resume")
                 else:
                     self.emit("pick", purpose="resume", title="Resume session", rows=rows, default=0, filterable=True)
+        elif name == "pickup":
+            self._pickup(arg)
         elif name == "compact":
             self._compact(arg)
         elif name == "commit":
@@ -941,6 +943,27 @@ class DaemonBackend:
         elif name == "skin":
             self._skin(arg)
         return True
+
+    def _pickup(self, arg: str) -> None:
+        """Attach a worker as driver, like /resume; with no argument, pick one."""
+        workers = self.list_workers()
+        if arg:
+            want = arg.strip().lower()
+            hit = next((w for w in workers if w["id"] == arg.strip()), None) or next(
+                (w for w in workers if (w.get("title") or "").strip().lower() == want), None)
+            if hit is None:
+                self.note(f"no worker {arg}", muted=False)
+            else:
+                self.resume(hit["id"])
+            return
+        if not workers:
+            self.note("no workers to pick up")
+            return
+        rows = []
+        for w in workers:
+            title = (w.get("title") or w.get("preview") or "").strip() or "untitled"
+            rows.append((w["id"], title[:80], f"{w.get('cwd', '')} · {str(w.get('updated', ''))[:16]}"))
+        self.emit("pick", purpose="pickup", title="Pick up a worker", rows=rows, default=0, filterable=True)
 
     def _compact(self, arg: str) -> None:
         if arg in ("--preview", "--dry-run"):
@@ -981,7 +1004,7 @@ class DaemonBackend:
             elif purpose == "reasoning":
                 self._set(reasoning_effort=key)
                 self.note(f"reasoning: {key or 'default'} (from the next turn)")
-            elif purpose == "resume":
+            elif purpose in ("resume", "pickup"):
                 self.resume(key)
         except _daemon.DaemonError as exc:
             self.note(exc.message, muted=False)
@@ -996,6 +1019,9 @@ class DaemonBackend:
 
     def list_sessions(self) -> list:
         return self._call("session.list", {"kinds": ["interactive"], "limit": 500}).get("sessions") or []
+
+    def list_workers(self) -> list:
+        return self._call("session.list", {"kinds": ["worker"], "limit": 500}).get("sessions") or []
 
     def new_session(self) -> None:
         sid = self._call("session.create", {"cwd": self.cwd})["session"]["id"]

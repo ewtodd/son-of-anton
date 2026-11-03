@@ -65,6 +65,8 @@ type Env struct {
 	Vision *Vision
 	// LSP reports the errors an edit introduced (nil: no language servers).
 	LSP *lsp.Service
+	// Relay answers the relay tool's actions for this chat (nil: unavailable).
+	Relay func(ctx context.Context, args json.RawMessage) string
 }
 
 // Tool is one builtin tool.
@@ -124,6 +126,15 @@ type Concurrent interface{ Concurrent() bool }
 
 // Names lists the registered tool names in order.
 func (r *Registry) Names() []string { return append([]string(nil), r.order...) }
+
+// With is a registry of this one's tools followed by ts.
+func (r *Registry) With(ts ...Tool) *Registry {
+	all := make([]Tool, 0, len(r.order)+len(ts))
+	for _, n := range r.order {
+		all = append(all, r.tools[n])
+	}
+	return NewRegistry(append(all, ts...)...)
+}
 
 // Only is a registry of the named tools (those registered), in the given order.
 func (r *Registry) Only(names ...string) *Registry {

@@ -22,10 +22,10 @@ The Python backend is being replaced, one phase at a time, by `soa-d`, a Go
 daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`).
 
 - **On soa-d now:** the terminal TUI (`son-of-anton`), `-q` and `-z`, and
-  Signal chats (off until an instance moves; `[daemon] signal = true`) and
-  cron (off until an instance moves; `[daemon] cron = true`).
-- **Still Python:** the relay workers, physics runs.
-- **Not in the daemon yet:** `/handoff` and `/pickup` (5).
+  Signal chats with fiona and her relay workers (off until an instance
+  moves; `[daemon] signal = true`) and cron (`[daemon] cron = true`).
+- **Still Python:** physics runs; importing Claude Code, Codex and opencode
+  transcripts (`son-of-anton sessions import`, then `soa-d import`).
 - **MCP:** servers in `[mcp_servers.<name>]` are found with `tool_search` and
   run with `tool_call`.
 - **LSP:** write_file and patch report new errors from the file's language server.
@@ -125,6 +125,16 @@ Her model is `gateway.model`; when that route is down (after the provider's
 retries, before any output) the one request is sent again on `model.default`,
 and the next request tries `gateway.model` first. `[relay] worker_hours =
 [start, end]` tells her when workers may run.
+
+Fiona relays work with the `relay` tool. A worker is a session of its own in the
+directory you name; it has the full tools of a terminal session, runs outside
+the chat, and the chat hears when each of its turns ends. Workers respect
+`[relay] worker_hours`: a request sent outside them waits in the worker's
+queue and runs when the hours begin. Their approvals and questions come to the
+chat. `/pickup` in the TUI takes one over (a picker, or `/pickup id-or-title`):
+the chat's later requests then queue on it for you, and it asks you instead of
+the chat, whatever the hours. Leaving it (another `/resume`, `/new`, quitting)
+hands it back to the chat.
 
 ## Memory
 

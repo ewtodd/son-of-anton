@@ -164,6 +164,12 @@ UPDATE schema_version SET version = 8;`,
 	session_id TEXT NOT NULL REFERENCES sessions(id)
 );
 UPDATE schema_version SET version = 9;`,
+	`ALTER TABLE sessions ADD COLUMN owner TEXT;
+CREATE TABLE relay_bindings (
+	chat       TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL REFERENCES sessions(id)
+);
+UPDATE schema_version SET version = 10;`,
 }
 
 func migrate(db *sql.DB) error {
@@ -229,6 +235,9 @@ type Session struct {
 	Chat  string
 	// Agent is a child session's subagent type ("explore"); "" otherwise.
 	Agent string
+	// Owner is the chat stamp that started a worker session; "" otherwise.
+	// It is not Chat: the wall reads Chat, and a worker is common.
+	Owner string
 	// Usage is the session's token totals over all its turns; ContextTokens is
 	// what its last request held.
 	Usage         Usage
@@ -285,11 +294,11 @@ type execer interface {
 
 func insertSession(ctx context.Context, ex execer, sess Session) error {
 	_, err := ex.ExecContext(ctx,
-		`INSERT INTO sessions (id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, scope, chat, title_source, agent)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, scope, chat, title_source, agent, owner)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sess.ID, sess.Kind, nullStr(sess.ParentID), nullStr(sess.Source), nullStr(sess.Title),
 		nullStr(sess.Cwd), nullStr(sess.Model), nullStr(sess.PromptHash),
-		formatTime(sess.Created), nullTime(sess.Ended), nullStr(sess.ReasoningEffort), nullStr(sess.Mode), nullStr(sess.Workspace), sess.Scope, nullStr(sess.Chat), nullStr(sess.TitleSource), nullStr(sess.Agent))
+		formatTime(sess.Created), nullTime(sess.Ended), nullStr(sess.ReasoningEffort), nullStr(sess.Mode), nullStr(sess.Workspace), sess.Scope, nullStr(sess.Chat), nullStr(sess.TitleSource), nullStr(sess.Agent), nullStr(sess.Owner))
 	return err
 }
 
@@ -311,12 +320,13 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 		tsource  sql.NullString
 		chat     sql.NullString
 		agent    sql.NullString
+		owner    sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, title_source, scope, chat, agent, input_tokens, output_tokens, cached_tokens, reasoning_tokens, api_calls, context_tokens
+		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, title_source, scope, chat, agent, input_tokens, output_tokens, cached_tokens, reasoning_tokens, api_calls, context_tokens, owner
 		 FROM sessions WHERE id = ?`, id).
 		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended, &effort, &mode, &work, &tsource, &sess.Scope, &chat, &agent,
-			&sess.Usage.Input, &sess.Usage.Output, &sess.Usage.Cached, &sess.Usage.Reasoning, &sess.Usage.Calls, &sess.ContextTokens)
+			&sess.Usage.Input, &sess.Usage.Output, &sess.Usage.Cached, &sess.Usage.Reasoning, &sess.Usage.Calls, &sess.ContextTokens, &owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -335,6 +345,7 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 	sess.TitleSource = tsource.String
 	sess.Chat = chat.String
 	sess.Agent = agent.String
+	sess.Owner = owner.String
 	sess.Created, err = parseTime(created.String)
 	if err != nil {
 		return Session{}, err

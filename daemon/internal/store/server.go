@@ -371,3 +371,45 @@ func (s *Store) SetChatSession(ctx context.Context, chat, id string) error {
 		 ON CONFLICT(chat) DO UPDATE SET session_id = excluded.session_id`, chat, id)
 	return err
 }
+
+// RelayBinding is the worker a chat last started or sent to, ErrNotFound when
+// the chat has none.
+func (s *Store) RelayBinding(ctx context.Context, chat string) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT session_id FROM relay_bindings WHERE chat = ?`, chat).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return id, err
+}
+
+// SetRelayBinding binds the chat to a worker; an empty id unbinds it.
+func (s *Store) SetRelayBinding(ctx context.Context, chat, id string) error {
+	if id == "" {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM relay_bindings WHERE chat = ?`, chat)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO relay_bindings (chat, session_id) VALUES (?, ?)
+		 ON CONFLICT(chat) DO UPDATE SET session_id = excluded.session_id`, chat, id)
+	return err
+}
+
+// QueuedWorkers lists the worker sessions that have queued messages.
+func (s *Store) QueuedWorkers(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT q.session_id FROM queue q JOIN sessions s ON s.id = q.session_id WHERE s.kind = 'worker'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

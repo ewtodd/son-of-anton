@@ -81,7 +81,7 @@ type Server struct {
 	st      *store.Store
 	reg     *tools.Registry // the builtin tools (a child's are drawn from it)
 	regTask *tools.Registry // reg plus the task tool: an interactive session's
-	regChat *tools.Registry // a chat session's: notes, memory, recall, web; no terminal
+	regChat *tools.Registry // a chat session's: notes, memory, recall, web, relay; no terminal
 	regCron *tools.Registry // a cron job's: every builtin tool but clarify
 	cron    *cronSched
 	web     *tools.Web   // the web tools' settings, shared by every session
@@ -132,7 +132,7 @@ func New(o Options) (*Server, error) {
 	s.cron = s.newCron()
 	cronTool := tools.CronJob(o.Home)
 	s.regTask = tools.NewRegistry(append(base, subagent.Tool(subagent.Builtin(), true, s.spawnTask), cronTool)...)
-	s.regChat = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "clarify", "memory", "session_search", "web_search", "web_extract")
+	s.regChat = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "clarify", "memory", "session_search", "web_search", "web_extract").With(tools.RelayTool())
 	var cronTools []string
 	for _, n := range s.reg.Names() {
 		if n != "clarify" {
@@ -155,6 +155,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if s.chats != nil {
 		s.chats.start()
 	}
+	s.watchWorkerHours()
 	stopAccept := context.AfterFunc(ctx, func() { _ = ln.Close() })
 	defer stopAccept()
 	var acceptErr error
@@ -280,13 +281,21 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 // create makes a new interactive session and returns its ID. It is not left
 // loaded: attaching loads it.
 func (s *Server) create(ctx context.Context, cwd, source string) (string, []string, error) {
+	return s.createAs(ctx, "interactive", "", cwd, source)
+}
+
+// createAs is create for a session of another kind; owner is the chat that
+// starts a worker.
+func (s *Server) createAs(ctx context.Context, kind, owner, cwd, source string) (string, []string, error) {
 	ep, err := s.cfg.Endpoint("")
 	if err != nil {
 		return "", nil, err
 	}
 	mode := s.cfg.PermissionMode()
 	var warnings []string
-	sess, err := s.runner(&live{}, ep, mode, source, &warnings).NewSession(ctx, "interactive", cwd)
+	r := s.runner(&live{}, ep, mode, source, &warnings)
+	r.Owner = owner
+	sess, err := r.NewSession(ctx, kind, cwd)
 	if err != nil {
 		return "", nil, err
 	}
@@ -361,6 +370,12 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 		s.chatRunner(r, rec.Chat)
 		if s.chats != nil {
 			l.chat = &chatLink{cs: s.chats.state(rec.Chat), l: l}
+		}
+		l.waiting = false
+	}
+	if rec.Kind == "worker" {
+		if s.chats != nil && rec.Owner != "" {
+			l.chat = &workerLink{cs: s.chats.state(rec.Owner), l: l}
 		}
 		l.waiting = false
 	}
