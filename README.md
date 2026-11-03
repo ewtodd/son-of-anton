@@ -24,8 +24,7 @@ daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`).
 - **On soa-d now:** the terminal TUI (`son-of-anton`), `-q` and `-z`, and
   Signal chats with fiona and her relay workers (off until an instance
   moves; `[daemon] signal = true`) and cron (`[daemon] cron = true`).
-- **Still Python:** physics runs; importing Claude Code, Codex and opencode
-  transcripts (`son-of-anton sessions import`, then `soa-d import`).
+- **Still Python:** physics runs.
 - **MCP:** servers in `[mcp_servers.<name>]` are found with `tool_search` and
   run with `tool_call`.
 - **LSP:** write_file and patch report new errors from the file's language server.
@@ -76,6 +75,11 @@ launch starts the new daemon.
   `state.db`.
 - `soa-d import --from ~/.son-of-anton` brings the Python's sessions into the
   TUI (safe to run again; sessions already imported are skipped).
+- `soa-d import --from-claude [ROOT]`, `--from-codex [ROOT]` and
+  `--from-opencode [DB]` bring Claude Code, Codex CLI and opencode sessions in
+  straight from those tools' own stores (read-only; defaults `~/.claude/projects`,
+  `~/.codex/sessions`, `~/.local/share/opencode/opencode.db`). A session already
+  imported is skipped; `--force` imports it again.
 - Web search falls back from SearXNG (`SEARXNG_URL`) to DuckDuckGo, and
   `web_extract` reads pages directly, then through `WEB_EXTRACT_URL`, then any
   opt-in `web.extract_fallbacks` (`"wayback"`, `"jina"`).

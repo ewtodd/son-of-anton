@@ -23,20 +23,40 @@ import (
 )
 
 func runImport(args []string, stdout, stderr io.Writer) int {
-	var from, home string
+	var from, home, foreignFlag, foreignRoot string
+	var force bool
 	for i := 0; i < len(args); i++ {
-		if (args[i] != "--from" && args[i] != "--home") || i+1 >= len(args) {
+		switch args[i] {
+		case "--force":
+			force = true
+		case "--from-claude", "--from-codex", "--from-opencode":
+			if foreignFlag != "" {
+				fmt.Fprint(stderr, usage)
+				return 2
+			}
+			foreignFlag = args[i]
+			// The root is optional: a following word that is not a flag.
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+				foreignRoot = args[i+1]
+				i++
+			}
+		case "--from", "--home":
+			if i+1 >= len(args) {
+				fmt.Fprint(stderr, usage)
+				return 2
+			}
+			if args[i] == "--from" {
+				from = args[i+1]
+			} else {
+				home = args[i+1]
+			}
+			i++
+		default:
 			fmt.Fprint(stderr, usage)
 			return 2
 		}
-		if args[i] == "--from" {
-			from = args[i+1]
-		} else {
-			home = args[i+1]
-		}
-		i++
 	}
-	if from == "" {
+	if (from == "") == (foreignFlag == "") || (force && foreignFlag == "") {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
@@ -47,7 +67,13 @@ func runImport(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
-	res, err := importSessions(context.Background(), from, home)
+	var res importResult
+	var err error
+	if foreignFlag != "" {
+		res, err = importForeign(context.Background(), foreignFlag, foreignRoot, home, force, stderr)
+	} else {
+		res, err = importSessions(context.Background(), from, home)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "soa-d import: %v\n", err)
 		return 1
@@ -127,7 +153,10 @@ func importSessions(ctx context.Context, from, home string) (importResult, error
 		if ps.source == "signal" {
 			sess.Chat = chatStamp(ps)
 		}
-		present, err := st.ImportSession(ctx, sess, ps.prompt, msgs, sess.Chat != "" && newest[sess.Chat] == ps.id)
+		present, err := st.ImportSession(ctx, sess, ps.prompt, msgs, store.ImportOpts{
+			MakeCurrent: sess.Chat != "" && newest[sess.Chat] == ps.id,
+			Foreign:     pyForeign(ps.origin),
+		})
 		if err != nil {
 			return res, fmt.Errorf("importing session %s: %w", ps.id, err)
 		}
@@ -139,6 +168,21 @@ func importSessions(ctx context.Context, from, home string) (importResult, error
 		res.messages += len(msgs)
 	}
 	return res, nil
+}
+
+// pyForeign is the foreign session a Python session was imported from, from
+// its origin_json, so it is not imported again from the tool's own store.
+func pyForeign(origin string) *store.Foreign {
+	var o struct {
+		ImportedFrom struct {
+			Tool      string `json:"tool"`
+			SessionID string `json:"foreign_session_id"`
+		} `json:"imported_from"`
+	}
+	if json.Unmarshal([]byte(origin), &o) != nil || o.ImportedFrom.Tool == "" || o.ImportedFrom.SessionID == "" {
+		return nil
+	}
+	return &store.Foreign{Source: o.ImportedFrom.Tool, ID: o.ImportedFrom.SessionID}
 }
 
 func titleSource(title string) string {

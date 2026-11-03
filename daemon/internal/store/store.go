@@ -170,6 +170,13 @@ CREATE TABLE relay_bindings (
 	session_id TEXT NOT NULL REFERENCES sessions(id)
 );
 UPDATE schema_version SET version = 10;`,
+	`CREATE TABLE foreign_imports (
+	source     TEXT NOT NULL,
+	foreign_id TEXT NOT NULL,
+	session_id TEXT NOT NULL REFERENCES sessions(id),
+	PRIMARY KEY (source, foreign_id)
+);
+UPDATE schema_version SET version = 11;`,
 }
 
 func migrate(db *sql.DB) error {

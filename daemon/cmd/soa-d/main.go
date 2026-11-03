@@ -37,6 +37,7 @@ usage:
   soa-d oneshot [--home DIR] [--model M] [--reasoning LEVEL] [--yolo] [--system FILE] [--memory | --no-memory] [--usage-file PATH] PROMPT
   soa-d serve [--home DIR]
   soa-d import --from DIR [--home DIR]
+  soa-d import (--from-claude [ROOT] | --from-codex [ROOT] | --from-opencode [DB]) [--home DIR] [--force]
   soa-d version
 `
 
