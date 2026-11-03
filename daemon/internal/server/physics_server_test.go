@@ -991,3 +991,231 @@ func TestPhysicsLogClipsLongOutput(t *testing.T) {
 		t.Errorf("session-1.md is %d characters", n)
 	}
 }
+
+// plant runs f on the run directory (found under the workspace root) at the
+// moment the fake builds a worker's tool call, i.e. while the worker works.
+func (e *physEnv) plant(f func(dir string)) func() string {
+	return func() string {
+		ents, _ := os.ReadDir(e.root)
+		if len(ents) == 1 {
+			f(filepath.Join(e.root, ents[0].Name()))
+		}
+		return `{"path":"RESULTS.txt","content":` + fmt.Sprintf("%q", goodResults) + `}`
+	}
+}
+
+func outsideDir(t *testing.T) (dir, file string) {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	file = filepath.Join(d, "victim")
+	if err := os.WriteFile(file, []byte("OUTSIDE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return d, file
+}
+
+func TestPhysicsDaemonWritesStayBeneathTheRunDirectory(t *testing.T) {
+	// While the worker works it replaces EVENT_LOG.jsonl, REVIEWS.md,
+	// FORMAL_EVAL.md and logs/ with symlinks to outside the run directory.
+	// The daemon's writes are refused (they land nowhere outside), the run
+	// still finishes and is scored.
+	out, victim := outsideDir(t)
+	var e *physEnv
+	plant := func(dir string) {
+		for _, name := range []string{"EVENT_LOG.jsonl", "REVIEWS.md", "FORMAL_EVAL.md"} {
+			_ = os.Remove(filepath.Join(dir, name))
+			_ = os.Symlink(victim, filepath.Join(dir, name))
+		}
+		_ = os.RemoveAll(filepath.Join(dir, "logs"))
+		_ = os.Symlink(out, filepath.Join(dir, "logs"))
+	}
+	e = newPhys(t, false, "",
+		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "w1", Name: "write_file", ArgumentsFunc: func() string { return e.plant(plant)() }}}}),
+		wt(fakellm.Turn{Content: "done"}),
+		mt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{reviewCall("r1", "accept", "ok")}}),
+		mt(fakellm.Turn{Content: "Done."}),
+	)
+	w := e.start(e.spec(), nil)
+	r := e.final(str(w, "id"))
+	if str(r, "state") != "passed" {
+		t.Fatalf("run: %v", r)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "OUTSIDE" {
+		t.Errorf("the outside file was changed: %q", b)
+	}
+	if ents, _ := os.ReadDir(out); len(ents) != 1 {
+		t.Errorf("the outside directory gained entries: %v", ents)
+	}
+	lines := strings.Join(strs(e.c.ok("physics.watch", map[string]any{"run": str(w, "id")}), "lines"), "\n")
+	for _, want := range []string{"logs/session-1.md was not written", "REVIEWS.md was not written", "FORMAL_EVAL.md was not written"} {
+		if !strings.Contains(lines, want) {
+			t.Errorf("progress lacks %q:\n%s", want, lines)
+		}
+	}
+}
+
+func TestPhysicsResultsSymlinkIsUnreadable(t *testing.T) {
+	// RESULTS.txt is a symlink to a file outside that would pass the checks:
+	// it is treated as missing, its content reaches no request, and the run
+	// does not pass.
+	_, _ = outsideDir(t)
+	out, _ := outsideDir(t)
+	secret := filepath.Join(out, "results")
+	if err := os.WriteFile(secret, []byte("centroid_a = 4217.8\nwidth_b = 88.27\n# SECRETMARK\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var e *physEnv
+	plant := func(dir string) { _ = os.Symlink(secret, filepath.Join(dir, "RESULTS.txt")) }
+	e = newPhys(t, false, "",
+		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "w1", Name: "read_file", ArgumentsFunc: func() string { e.plant(plant)(); return `{"path":"PROBLEM.md"}` }}}}),
+		wt(fakellm.Turn{Content: "done"}),
+		mt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{reviewCall("r1", "accept", "ok")}}),
+		mt(fakellm.Turn{Content: "Done."}),
+	)
+	w := e.start(e.spec(), nil)
+	r := e.final(str(w, "id"))
+	if str(r, "state") != "failed" {
+		t.Fatalf("run: %v", r)
+	}
+	if got := e.lastContent(e.requests(managerMark)[0]); !strings.Contains(got, "RESULTS.txt: missing.") {
+		t.Errorf("the review message: %q", got)
+	}
+	for i, b := range e.fake.Bodies() {
+		if bytes.Contains(b, []byte("SECRETMARK")) {
+			t.Errorf("request %d carries the outside file", i)
+		}
+	}
+}
+
+func TestPhysicsManagerCannotReadOrSearchThroughASymlink(t *testing.T) {
+	out, victim := outsideDir(t)
+	if err := os.WriteFile(victim, []byte("OUTSIDE-SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var e *physEnv
+	plant := func(dir string) {
+		_ = os.Symlink(victim, filepath.Join(dir, "filelink"))
+		_ = os.Symlink(out, filepath.Join(dir, "dirlink"))
+	}
+	e = newPhys(t, true, "",
+		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "w1", Name: "write_file", ArgumentsFunc: func() string { return e.plant(plant)() }}}}),
+		wt(fakellm.Turn{Content: "done"}),
+		mt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{
+			tcall("m1", "read_file", map[string]any{"path": "filelink"}),
+			tcall("m2", "read_file", map[string]any{"path": "dirlink/victim"}),
+			tcall("m3", "search_files", map[string]any{"pattern": "OUTSIDE", "path": "dirlink"}),
+			tcall("m4", "search_files", map[string]any{"pattern": "OUTSIDE-SECRET"}),
+			tcall("m5", "read_file", map[string]any{"path": "RESULTS.txt"}),
+			reviewCall("m6", "accept", "ok"),
+		}}),
+		mt(fakellm.Turn{Content: "Done."}),
+	)
+	w := e.start(e.spec(), nil)
+	if r := e.final(str(w, "id")); str(r, "state") != "passed" {
+		t.Fatalf("run: %v", r)
+	}
+	res := e.toolResults(e.requests(managerMark)[1])
+	for _, id := range []string{"m1", "m2", "m3", "m4"} {
+		if strings.Contains(res[id], "OUTSIDE-SECRET") || strings.Contains(res[id], "OUTSIDE\"") {
+			t.Errorf("%s returned the outside file: %q", id, res[id])
+		}
+	}
+	for _, id := range []string{"m1", "m2", "m3"} {
+		if !strings.Contains(res[id], "outside") && !strings.Contains(res[id], "leaves") && !strings.Contains(res[id], "error") {
+			t.Errorf("%s was not refused: %q", id, res[id])
+		}
+	}
+	if !strings.Contains(res["m5"], "centroid_a") {
+		t.Errorf("the manager cannot read inside the run directory: %q", res["m5"])
+	}
+	for i, b := range e.fake.Bodies() {
+		if bytes.Contains(b, []byte("OUTSIDE-SECRET")) && i > 0 {
+			// Only the manager's own search pattern may carry the word.
+			if !bytes.Contains(b, []byte(`"pattern":"OUTSIDE-SECRET"`)) && !strings.Contains(string(b), `OUTSIDE-SECRET\"`) {
+				t.Errorf("request %d carries the outside file", i)
+			}
+		}
+	}
+}
+
+func TestPhysicsDataIsReadableAtTheNamedAndTheResolvedPath(t *testing.T) {
+	var e *physEnv
+	link := filepath.Join(t.TempDir(), "named", "YAP-Final")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := "cat %s/events.root; echo; echo x > %s/w; echo rc=$?"
+	e = newPhys(t, true, "",
+		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{
+			{ID: "w1", Name: "terminal", ArgumentsFunc: func() string {
+				b, _ := json.Marshal(map[string]any{"command": fmt.Sprintf(cmd, link, link) + "; " + fmt.Sprintf(cmd, e.dataDir, e.dataDir)})
+				return string(b)
+			}},
+			{ID: "w2", Name: "read_file", ArgumentsFunc: func() string { return `{"path":` + fmt.Sprintf("%q", link+"/events.root") + `}` }},
+			{ID: "w3", Name: "read_file", ArgumentsFunc: func() string {
+				return `{"path":` + fmt.Sprintf("%q", e.dataDir+"/events.root") + `}`
+			}},
+			{ID: "w4", Name: "write_file", ArgumentsFunc: func() string {
+				return `{"path":` + fmt.Sprintf("%q", link+"/new.txt") + `,"content":"x"}`
+			}},
+			{ID: "w5", Name: "write_file", ArgumentsFunc: func() string {
+				return `{"path":` + fmt.Sprintf("%q", e.dataDir+"/new.txt") + `,"content":"x"}`
+			}},
+		}}),
+		wt(fakellm.Turn{Content: "done"}),
+		mt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{reviewCall("r1", "accept", "ok")}}),
+		mt(fakellm.Turn{Content: "Done."}),
+	)
+	if err := os.Symlink(e.dataDir, link); err != nil {
+		t.Fatal(err)
+	}
+	spec := strings.Replace(e.spec(), filepath.Join(e.dataDir, "events.root"), link, 1)
+	w := e.start(spec, nil)
+	e.final(str(w, "id"))
+	wr := e.requests(workerMark)
+	res := e.toolResults(wr[1])
+	var term struct {
+		Output string `json:"output"`
+	}
+	_ = json.Unmarshal([]byte(res["w1"]), &term)
+	if strings.Count(term.Output, "DATA") != 2 || strings.Count(term.Output, "rc=1") != 2 {
+		t.Errorf("terminal at both paths: %q", res["w1"])
+	}
+	for _, id := range []string{"w2", "w3"} {
+		if !strings.Contains(res[id], "DATA") {
+			t.Errorf("read_file %s: %q", id, res[id])
+		}
+	}
+	for _, id := range []string{"w4", "w5"} {
+		if !strings.Contains(res[id], "error") {
+			t.Errorf("write_file %s was not refused: %q", id, res[id])
+		}
+	}
+	if _, err := os.Stat(filepath.Join(e.dataDir, "new.txt")); err == nil {
+		t.Error("wrote into the data directory")
+	}
+	// The prompt names the data as the spec does.
+	if sys := string(e.fake.Messages(wr[0])[0]); !strings.Contains(sys, "mounted read-only at "+link+",") {
+		t.Errorf("the worker prompt does not name %s", link)
+	}
+}
+
+func TestPhysicsSymlinkedDataOutsideDataDirsIsRefused(t *testing.T) {
+	e := newPhys(t, false, "")
+	other := t.TempDir()
+	if err := os.WriteFile(filepath.Join(other, "events.root"), []byte("X"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(e.dataDir, "sneaky.root") // named inside data_dirs, points outside
+	if err := os.Symlink(filepath.Join(other, "events.root"), link); err != nil {
+		t.Fatal(err)
+	}
+	spec := strings.Replace(e.spec(), filepath.Join(e.dataDir, "events.root"), link, 1)
+	_, err := e.c.call("physics.run", map[string]any{"spec": spec})
+	if err == nil || !strings.Contains(err.Message, "not under physics.data_dirs") {
+		t.Fatalf("got %+v", err)
+	}
+}

@@ -23,6 +23,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
 	"github.com/ewtodd/son-of-anton/daemon/internal/physics"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
+	"github.com/ewtodd/son-of-anton/daemon/internal/sandbox"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 )
 
@@ -37,6 +38,7 @@ type physRun struct {
 	lim      physics.Limits
 	repo     physics.Repo
 	events   *physics.EventLog
+	fs       *sandbox.FS   // the only way the daemon touches the run directory once the worker exists
 	done     chan struct{} // closed when the run ends or is interrupted
 
 	callsPath, linesPath string
@@ -68,7 +70,8 @@ func (r *physRun) init(rec store.PhysicsRun) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.rec = rec
-	r.events = physics.NewEventLog(filepath.Join(rec.RunDir, "EVENT_LOG.jsonl"))
+	r.fs = (sandbox.Policy{RunDir: rec.RunDir}).FS()
+	r.events = physics.NewEventLog(r.fs, filepath.Join(rec.RunDir, "EVENT_LOG.jsonl"))
 	r.callsPath = filepath.Join(r.s.physicsDir(), r.id+".calls.jsonl")
 	r.linesPath = filepath.Join(r.s.physicsDir(), r.id+".log")
 	r.calls = map[string]pendingCall{}
@@ -523,13 +526,11 @@ func (r *physRun) startSession(n int) {
 // endWorkSession writes logs/session-N.md, checks RESULTS.txt's format and
 // commits, and moves the run to its review.
 func (r *physRun) endWorkSession(n int) error {
-	dir := r.rec.RunDir
-	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0o755); err != nil {
-		return err
-	}
+	// The run directory is the worker's: every access is beneath it. A refused
+	// write (a symlink planted where the log goes) leaves no log; the run goes on.
 	log := physics.SessionLog(n, r.readCalls(n))
-	if err := os.WriteFile(filepath.Join(dir, "logs", fmt.Sprintf("session-%d.md", n)), []byte(log), 0o644); err != nil {
-		return err
+	if _, _, err := r.fs.WriteAtomic(filepath.Join(r.rec.RunDir, "logs", fmt.Sprintf("session-%d.md", n)), log); err != nil {
+		r.say(fmt.Sprintf("logs/session-%d.md was not written: %v", n, err))
 	}
 	first := strings.TrimSpace(strings.SplitN(strings.TrimSpace(r.closing(r.rec.Worker)), "\n", 2)[0])
 	if rr := []rune(first); len(rr) > 200 {
@@ -562,7 +563,7 @@ func (r *physRun) closing(session string) string {
 }
 
 func (r *physRun) formatCheck() string {
-	text, found := physics.ReadResults(r.rec.RunDir)
+	text, found := physics.ReadResults(r.fs, r.rec.RunDir)
 	return physics.FormatCheck(r.spec.Keys(), text, found)
 }
 
@@ -619,18 +620,10 @@ func (r *physRun) reviewStep() (step, string) {
 		}
 	}
 
-	f, err := os.OpenFile(filepath.Join(r.rec.RunDir, "REVIEWS.md"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return stepInterrupted, err.Error()
+	if err := r.fs.Append(filepath.Join(r.rec.RunDir, "REVIEWS.md"), fmt.Sprintf("## Review %d: %s\n\n%s\n\n", n, verdict, strings.TrimSpace(feedback))); err != nil {
+		r.say("REVIEWS.md was not written: " + err.Error())
 	}
-	_, err = fmt.Fprintf(f, "## Review %d: %s\n\n%s\n\n", n, verdict, strings.TrimSpace(feedback))
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = r.repo.Commit(fmt.Sprintf("review %d: %s", n, verdict))
-	}
-	if err != nil {
+	if err := r.repo.Commit(fmt.Sprintf("review %d: %s", n, verdict)); err != nil {
 		return stepInterrupted, err.Error()
 	}
 	r.say(fmt.Sprintf("review %d: %s", n, verdict))
@@ -681,18 +674,19 @@ func (r *physRun) release() {
 // finalize scores RESULTS.txt against the spec's checks, writes and commits
 // FORMAL_EVAL.md, and ends the run in state passed or failed, or forced.
 func (r *physRun) finalize(forced string) {
-	text, found := physics.ReadResults(r.rec.RunDir)
+	text, found := physics.ReadResults(r.fs, r.rec.RunDir)
 	eval := physics.Score(r.spec.Checks, text, found)
 	state := eval.Status()
 	if forced != "" {
 		state = forced
 	}
-	err := os.WriteFile(filepath.Join(r.rec.RunDir, "FORMAL_EVAL.md"), []byte(eval.Markdown()), 0o644)
-	if err == nil {
-		err = r.repo.Commit("formal evaluation: " + eval.Status())
+	_, _, werr := r.fs.WriteAtomic(filepath.Join(r.rec.RunDir, "FORMAL_EVAL.md"), eval.Markdown())
+	if werr != nil {
+		r.say("FORMAL_EVAL.md was not written: " + werr.Error())
 	}
-	if err != nil {
-		r.say("scoring: " + err.Error())
+	cerr := r.repo.Commit("formal evaluation: " + eval.Status())
+	if cerr != nil {
+		r.say("scoring: " + cerr.Error())
 	}
 	r.mu.Lock()
 	r.rec.State, r.rec.Phase, r.rec.Ended = state, "", time.Now()

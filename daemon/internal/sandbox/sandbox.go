@@ -35,6 +35,9 @@ type Policy struct {
 	Runtime string
 	// Home is the commands' HOME, normally RunDir/.home.
 	Home string
+	// ReadOnly binds RunDir read-only and makes no root writable: a session
+	// that only reads the run directory (the physics manager).
+	ReadOnly bool
 }
 
 // UnavailableError says why no sandbox can be built; its message starts with
@@ -45,15 +48,26 @@ func (e *UnavailableError) Error() string {
 	return "the sandbox is unavailable, so nothing was run: " + e.Reason
 }
 
-// ReadRoots are the paths a session's file tools may read.
+// ReadRoots are the paths a session's file tools may read: a data directory
+// under the path it was named by and, when that is a symlink, its target.
 func (p Policy) ReadRoots() []string {
 	roots := []string{p.RunDir}
-	roots = append(roots, p.Data...)
+	for _, d := range p.Data {
+		roots = append(roots, filepath.Clean(d))
+		if real := resolveRoot(d); real != filepath.Clean(d) {
+			roots = append(roots, real)
+		}
+	}
 	return append(roots, StorePath)
 }
 
 // WriteRoots are the paths a session's file tools may write.
-func (p Policy) WriteRoots() []string { return []string{p.RunDir} }
+func (p Policy) WriteRoots() []string {
+	if p.ReadOnly {
+		return nil
+	}
+	return []string{p.RunDir}
+}
 
 // clean resolves path (absolute, not the filesystem root) through symlinks.
 func clean(what, path string) (string, error) {
@@ -94,8 +108,10 @@ func (p Policy) Args(extraEnv []string, argv ...string) ([]string, error) {
 		// The home is writable only because it lies inside the run directory.
 		return nil, &UnavailableError{"the home " + home + " is not inside the run directory"}
 	}
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return nil, &UnavailableError{"the home: " + err.Error()}
+	if !p.ReadOnly {
+		if err := os.MkdirAll(home, 0o700); err != nil {
+			return nil, &UnavailableError{"the home: " + err.Error()}
+		}
 	}
 
 	a := []string{
@@ -122,8 +138,16 @@ func (p Policy) Args(extraEnv []string, argv ...string) ([]string, error) {
 			return nil, err
 		}
 		a = append(a, "--ro-bind", real, real)
+		if named := filepath.Clean(d); named != real {
+			// The path the problem names works too, though it is a symlink.
+			a = append(a, "--ro-bind", real, named)
+		}
 	}
-	a = append(a, "--bind", runDir, runDir)
+	if p.ReadOnly {
+		a = append(a, "--ro-bind", runDir, runDir)
+	} else {
+		a = append(a, "--bind", runDir, runDir)
+	}
 	for _, b := range p.Binds {
 		real, err := clean("a bind", b)
 		if err != nil {

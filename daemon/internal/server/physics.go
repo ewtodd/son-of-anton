@@ -18,7 +18,6 @@ import (
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
-	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/physics"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 	"github.com/ewtodd/son-of-anton/daemon/internal/sandbox"
@@ -329,7 +328,7 @@ func (s *Server) physicsSetup(r *physRun, dir, worker, manager string) (store.Ph
 		})
 		return sess.ID, err
 	}
-	data := r.spec.DataReal
+	data := r.spec.Data
 	if len(data) == 0 {
 		data = []string{"(no data paths)"}
 	}
@@ -477,12 +476,16 @@ func (s *Server) physicsRunner(r *agent.Runner, rec store.Session) error {
 		}
 		return nil
 	}
+	// The manager reads through the same confined opener as the worker, from a
+	// sandbox with the run directory bound read-only and nothing writable.
 	r.Tools = s.reg.Only("read_file", "search_files").With(reviewTool{srv: s, run: run.ID})
-	r.Policy = paths.Policy{Home: s.userHome(), SoaHome: s.opt.Home, Confine: run.RunDir, ConfineNote: "read: " + run.RunDir}
+	r.Sandbox = &sandbox.Policy{
+		RunDir: run.RunDir, Runtime: filepath.Dir(s.cfg.Physics.Python), Home: filepath.Join(run.RunDir, ".home"), ReadOnly: true,
+	}
 	return nil
 }
 
-// specData is the resolved data paths of a spec, read leniently (a run's
+// specData is the data paths, as the spec names them of a spec, read leniently (a run's
 // sessions can be loaded to be watched after its data has moved).
 func specData(text string) []string {
 	var raw struct {
@@ -493,8 +496,8 @@ func specData(text string) []string {
 	}
 	var out []string
 	for _, d := range raw.Data {
-		if real, err := filepath.EvalSymlinks(d); err == nil {
-			out = append(out, real)
+		if _, err := os.Stat(d); err == nil {
+			out = append(out, filepath.Clean(d))
 		}
 	}
 	return out

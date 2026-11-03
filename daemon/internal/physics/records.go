@@ -3,10 +3,11 @@ package physics
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ewtodd/son-of-anton/daemon/internal/sandbox"
 )
 
 // Limits are a run's budgets.
@@ -17,14 +18,16 @@ type Limits struct {
 	Hours         float64 `json:"hours"`
 }
 
-// EventLog appends the run's EVENT_LOG.jsonl.
+// EventLog appends the run's EVENT_LOG.jsonl through the confined opener:
+// the worker controls the run directory, so the path may be a symlink.
 type EventLog struct {
 	mu   sync.Mutex
+	fs   *sandbox.FS
 	path string
 }
 
-// NewEventLog logs to path.
-func NewEventLog(path string) *EventLog { return &EventLog{path: path} }
+// NewEventLog logs to path, beneath fs's write root.
+func NewEventLog(fs *sandbox.FS, path string) *EventLog { return &EventLog{fs: fs, path: path} }
 
 // Add appends one line; fields are the line's other keys.
 func (l *EventLog) Add(kind string, fields map[string]any) {
@@ -38,12 +41,7 @@ func (l *EventLog) Add(kind string, fields map[string]any) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.Write(append(b, '\n'))
+	_ = l.fs.Append(l.path, string(b)+"\n")
 }
 
 // Call is one tool call of a work session, as logs/session-N.md lists it.

@@ -254,13 +254,17 @@ func (s *Session) sandboxed(pol *sandbox.Policy) {
 	s.sandbox = &p
 	s.gate = approval.NewGate(approval.Yolo, nil, nil)
 	read := strings.Join(p.ReadRoots(), ", ")
+	write := "none"
+	if w := p.WriteRoots(); len(w) > 0 {
+		write = strings.Join(w, ", ")
+	}
 	s.policy = paths.Policy{
 		Home:        p.Home,
 		Confine:     p.RunDir,
 		ReadAlso:    p.ReadRoots()[1:],
-		ConfineNote: "read: " + read + "; write: " + strings.Join(p.WriteRoots(), ", "),
+		ConfineNote: "read: " + read + "; write: " + write,
 	}
-	if s.reg != nil {
+	if s.reg != nil && !p.ReadOnly {
 		s.reg = s.reg.Only(sandboxToolNames...)
 	}
 }

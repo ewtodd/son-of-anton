@@ -22,16 +22,25 @@ import (
 // instant. No path string is ever opened directly, and when openat2 is not
 // available the operation is refused: there is no fallback to a plain open.
 type FS struct {
-	read  []string // roots a read may lie under
-	write string   // the root a write may lie under
+	read  []string          // roots a read may lie under, in every form they are named
+	alias map[string]string // a named root that is a symlink -> its target, which is what is opened
+	write string            // the root a write may lie under
 }
 
 // FS is the confined file access of this policy: reads beneath RunDir, the
 // data directories and the Nix store, writes beneath RunDir.
 func (p Policy) FS() *FS {
-	f := &FS{write: resolveRoot(p.RunDir)}
+	f := &FS{alias: map[string]string{}}
+	if !p.ReadOnly {
+		f.write = resolveRoot(p.RunDir)
+	}
 	for _, r := range p.ReadRoots() {
-		f.read = append(f.read, resolveRoot(r))
+		c, real := filepath.Clean(r), resolveRoot(r)
+		f.read = append(f.read, c)
+		if real != c {
+			f.alias[c] = real
+			f.read = append(f.read, real)
+		}
 	}
 	return f
 }
@@ -86,10 +95,13 @@ func at(dirfd int, rel string, flags int, mode uint32) (int, error) {
 }
 
 // open opens path (beneath one of roots) and wraps the descriptor.
-func openIn(roots []string, path string, flags int, mode uint32) (*os.File, error) {
-	root, rel, err := split(roots, path)
+func (f *FS) openRead(path string, flags int, mode uint32) (*os.File, error) {
+	root, rel, err := split(f.read, path)
 	if err != nil {
 		return nil, err
+	}
+	if real, ok := f.alias[root]; ok {
+		root = real
 	}
 	rfd, err := openRoot(root)
 	if err != nil {
@@ -105,7 +117,7 @@ func openIn(roots []string, path string, flags int, mode uint32) (*os.File, erro
 
 // ReadFile reads a file beneath a read root.
 func (f *FS) ReadFile(path string) ([]byte, error) {
-	file, err := openIn(f.read, path, unix.O_RDONLY, 0)
+	file, err := f.openRead(path, unix.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +127,7 @@ func (f *FS) ReadFile(path string) ([]byte, error) {
 
 // Stat is os.Stat for a path beneath a read root.
 func (f *FS) Stat(path string) (os.FileInfo, error) {
-	file, err := openIn(f.read, path, unix.O_PATH, 0)
+	file, err := f.openRead(path, unix.O_PATH, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +137,7 @@ func (f *FS) Stat(path string) (os.FileInfo, error) {
 
 // ReadDir lists a directory beneath a read root.
 func (f *FS) ReadDir(path string) ([]os.DirEntry, error) {
-	file, err := openIn(f.read, path, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	file, err := f.openRead(path, unix.O_RDONLY|unix.O_DIRECTORY, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -139,35 +151,9 @@ func (f *FS) ReadDir(path string) ([]os.DirEntry, error) {
 // directory descriptor opened beneath the root. It returns the bytes written
 // and whether a directory had to be created.
 func (f *FS) WriteAtomic(path, content string) (int, bool, error) {
-	root, rel, err := split([]string{f.write}, path)
+	dirfd, base, created, err := f.parent(path)
 	if err != nil {
 		return 0, false, err
-	}
-	if rel == "." {
-		return 0, false, fmt.Errorf("%s is the run directory itself", path)
-	}
-	dirfd, err := openRoot(root)
-	if err != nil {
-		return 0, false, err
-	}
-	created := false
-	dir, base := filepath.Split(rel)
-	for _, comp := range strings.Split(strings.Trim(dir, "/"), "/") {
-		if comp == "" {
-			continue
-		}
-		if err := unix.Mkdirat(dirfd, comp, 0o755); err == nil {
-			created = true
-		} else if !errors.Is(err, unix.EEXIST) {
-			unix.Close(dirfd)
-			return 0, false, &os.PathError{Op: "mkdir", Path: comp, Err: err}
-		}
-		next, err := at(dirfd, comp, unix.O_PATH|unix.O_DIRECTORY, 0)
-		unix.Close(dirfd)
-		if err != nil {
-			return 0, false, err
-		}
-		dirfd = next
 	}
 	defer unix.Close(dirfd)
 
@@ -214,4 +200,62 @@ func (f *FS) WriteAtomic(path, content string) (int, bool, error) {
 		return 0, false, &os.PathError{Op: "rename", Path: path, Err: err}
 	}
 	return len(content), created, nil
+}
+
+// parent opens the directory that holds path beneath the write root, creating
+// missing directories (0755), and returns its descriptor (the caller closes
+// it), the file's name in it, and whether a directory was created.
+func (f *FS) parent(path string) (dirfd int, base string, created bool, err error) {
+	if f.write == "" {
+		return -1, "", false, errors.New("this session may not write")
+	}
+	root, rel, err := split([]string{f.write}, path)
+	if err != nil {
+		return -1, "", false, err
+	}
+	if rel == "." {
+		return -1, "", false, fmt.Errorf("%s is the run directory itself", path)
+	}
+	dirfd, err = openRoot(root)
+	if err != nil {
+		return -1, "", false, err
+	}
+	dir, base := filepath.Split(rel)
+	for _, comp := range strings.Split(strings.Trim(dir, "/"), "/") {
+		if comp == "" {
+			continue
+		}
+		if err := unix.Mkdirat(dirfd, comp, 0o755); err == nil {
+			created = true
+		} else if !errors.Is(err, unix.EEXIST) {
+			unix.Close(dirfd)
+			return -1, "", false, &os.PathError{Op: "mkdir", Path: comp, Err: err}
+		}
+		next, err := at(dirfd, comp, unix.O_PATH|unix.O_DIRECTORY, 0)
+		unix.Close(dirfd)
+		if err != nil {
+			return -1, "", false, err
+		}
+		dirfd = next
+	}
+	return dirfd, base, created, nil
+}
+
+// Append appends data to path beneath the write root, creating the file (0644)
+// and its parent directories. A symlink at the file's own name is refused
+// (O_NOFOLLOW), as one in a directory on the way is by the beneath resolution.
+func (f *FS) Append(path, data string) error {
+	dirfd, base, _, err := f.parent(path)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(dirfd)
+	fd, err := at(dirfd, base, unix.O_WRONLY|unix.O_CREAT|unix.O_APPEND|unix.O_NOFOLLOW, 0o644)
+	if err != nil {
+		return err
+	}
+	file := os.NewFile(uintptr(fd), base)
+	defer file.Close()
+	_, err = file.WriteString(data)
+	return err
 }

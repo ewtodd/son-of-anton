@@ -133,6 +133,8 @@ func TestArgsRefuseWhatIsNotSafe(t *testing.T) {
 	}
 }
 
+// A symlinked data path is bound at its target and, since the problem names
+// it, at the named path too (phase 11c).
 func TestSymlinkedPathsAreBoundAtTheirRealPath(t *testing.T) {
 	run, data, rt := dirs(t)
 	link := filepath.Join(filepath.Dir(run), "datalink")
@@ -144,7 +146,7 @@ func TestSymlinkedPathsAreBoundAtTheirRealPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if index(args, "--ro-bind", data, data) < 0 || index(args, link) >= 0 {
+	if index(args, "--ro-bind", data, data) < 0 || index(args, "--ro-bind", data, link) < 0 {
 		t.Errorf("args = %v", args)
 	}
 }

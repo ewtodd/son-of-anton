@@ -2,10 +2,11 @@ package physics
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/ewtodd/son-of-anton/daemon/internal/sandbox"
 )
 
 // plainNumber is a value RESULTS.txt may hold: no units, no uncertainty.
@@ -43,9 +44,11 @@ func ParseResults(text string) map[string]Value {
 	return out
 }
 
-// ReadResults reads <runDir>/RESULTS.txt; found is false when it is not there.
-func ReadResults(runDir string) (text string, found bool) {
-	b, err := os.ReadFile(runDir + "/RESULTS.txt")
+// ReadResults reads <runDir>/RESULTS.txt through the confined opener; found is
+// false when it is not there or cannot be read (a symlink out of the run
+// directory, say).
+func ReadResults(fs *sandbox.FS, runDir string) (text string, found bool) {
+	b, err := fs.ReadFile(runDir + "/RESULTS.txt")
 	if err != nil {
 		return "", false
 	}
