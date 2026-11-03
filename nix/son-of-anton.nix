@@ -149,6 +149,13 @@ stdenv.mkDerivation (finalAttrs: {
       --set-default SON_OF_ANTON_BIN $out/bin/son-of-anton \
       --set SON_OF_ANTON_PYTHON ${sonOfAntonVenv}/bin/python3
 
+    # The unit's daemon (backend = "soa-d"): the same runtime tools as the
+    # CLI, and the sealed venv's python for execute_code. soa-d is itself a
+    # wrapper, so this wraps the wrapper.
+    makeWrapper ${soa-d}/bin/soa-d $out/bin/soa-d \
+      --suffix PATH : "${runtimePath}" \
+      --set SON_OF_ANTON_PYTHON ${sonOfAntonVenv}/bin/python3
+
     runHook postInstall
   '';
 

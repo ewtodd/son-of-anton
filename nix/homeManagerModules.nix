@@ -77,6 +77,7 @@
 
       config = lib.mkIf cfg.enable (
         lib.mkMerge [
+          { services.son-of-anton.settings = common.soadSettings cfg { }; }
           {
             assertions = [
               {

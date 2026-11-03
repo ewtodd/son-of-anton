@@ -214,6 +214,10 @@ services.son-of-anton.instances.work = {
 - `settings` is merged into `config.toml` three ways, so dropping a key from
   Nix removes it and runtime writes survive; `pruneUnmanagedSettings = true`
   makes the file purely declarative.
+- `backend = "soa-d"` on an instance moves it from the Python gateway to the Go
+  daemon (the same unit then runs `soa-d serve`: Signal, cron and the socket
+  the TUI attaches to). Run `soa-d import --from ~/.son-of-anton` once to bring
+  the Python sessions over. The default is `python`.
 - A Home Manager module covers a terminal-only install.
 - There are no installation commands (`setup`, `update`, `config set`,
   `gateway install`): the module declares the deployment and `systemctl` runs

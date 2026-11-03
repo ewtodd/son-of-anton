@@ -45,8 +45,10 @@
 
       # ── One instance's option set ─────────────────────────────────────────
       instanceModule =
-        { name, ... }:
+        { name, config, ... }:
         {
+          config.settings = common.soadSettings config { instance = name; };
+
           options =
             common.sharedOptions {
               defaultPackage = son-of-anton;
@@ -520,7 +522,11 @@
           lib.mapAttrsToList (
             name: inst:
             lib.nameValuePair "son-of-anton-${name}" {
-              description = "Son of Anton Agent Gateway (${name})";
+              description =
+                if inst.backend == "soa-d" then
+                  "Son of Anton daemon (${name})"
+                else
+                  "Son of Anton Agent Gateway (${name})";
               wantedBy = [ "multi-user.target" ];
               after = [ "network-online.target" ];
               wants = [ "network-online.target" ];

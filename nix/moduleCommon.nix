@@ -64,6 +64,24 @@ let
         '';
       };
 
+      backend = mkOption {
+        type = types.enum [
+          "python"
+          "soa-d"
+        ];
+        default = "python";
+        description = ''
+          What serves the instance. `python` runs the Python gateway
+          (`son-of-anton gateway`). `soa-d` runs the Go daemon (`soa-d serve`:
+          Signal, cron and the socket the TUI attaches to) in the same unit, so
+          the Python gateway and soa-d never both serve one instance. The
+          module also seeds `settings.daemon` for `soa-d`
+          (signal and cron on, plus `instance` on NixOS); an explicit
+          `settings.daemon.*` wins key by key. Bring the Python sessions over
+          once with `soa-d import --from ~/.son-of-anton`.
+        '';
+      };
+
       # ── Declarative config ─────────────────────────────────────────────
       settings = mkOption {
         type = deepConfigType;
@@ -401,10 +419,34 @@ let
     '';
 
   # ── Process argv ────────────────────────────────────────────────────────
-  gatewayArgv = cfg: [
-    "${effectivePackage cfg}/bin/son-of-anton"
-    "gateway"
-  ];
+  gatewayArgv =
+    cfg:
+    if cfg.backend == "soa-d" then
+      [
+        "${effectivePackage cfg}/bin/soa-d"
+        "serve"
+      ]
+    else
+      [
+        "${effectivePackage cfg}/bin/son-of-anton"
+        "gateway"
+      ];
+
+  # The `daemon` settings that `backend = "soa-d"` seeds. mkBefore puts this
+  # definition first in the settings merge (recursiveUpdate, later wins), so
+  # an explicit `settings.daemon.*` replaces a key without dropping the rest,
+  # which mkDefault would not do once any other setting exists.
+  soadSettings =
+    cfg: extra:
+    lib.mkIf (cfg.backend == "soa-d") (
+      lib.mkBefore {
+        daemon = {
+          signal = true;
+          cron = true;
+        }
+        // extra;
+      }
+    );
 
   # The environment that each Son of Anton process needs.
   #
@@ -447,6 +489,7 @@ in
     processEnvironment
     processPath
     sharedOptions
+    soadSettings
     stateSubdirs
     ;
 }
