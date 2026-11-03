@@ -150,6 +150,7 @@ func (l *live) startTurn(text string) {
 		res, err := l.sess.Send(ctx, text, l.onAgent)
 		cancel()
 		l.finish(res, err)
+		l.srv.indexAfterTurn(l.id)
 	}()
 }
 

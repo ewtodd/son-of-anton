@@ -91,6 +91,9 @@ type Server struct {
 	meta    map[string]map[string]int // base URL -> model -> context length
 	learned map[string]int            // session -> a limit an overflow error stated
 
+	indexedMu sync.Mutex
+	indexed   map[string]int64 // session -> last seq passed to the recall index
+
 	turns  sync.WaitGroup // running turn goroutines
 	connWG sync.WaitGroup // connection goroutines
 }
@@ -107,7 +110,7 @@ func New(o Options) (*Server, error) {
 	}
 	mem, idx := recall.Memory(cfg, o.Home, true)
 	s := &Server{opt: o, cfg: cfg, st: st, reg: tools.NewRegistry(tools.Builtin()...), mem: mem, idx: idx,
-		live: map[string]*live{}, conns: map[*conn]struct{}{},
+		live: map[string]*live{}, indexed: map[string]int64{}, conns: map[*conn]struct{}{},
 		meta: map[string]map[string]int{}, learned: map[string]int{}}
 	s.base, s.stop = context.WithCancel(context.Background())
 	return s, nil
@@ -115,6 +118,7 @@ func New(o Options) (*Server, error) {
 
 // Serve accepts connections until ctx is done, then shuts down cleanly.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	s.backfill()
 	stopAccept := context.AfterFunc(ctx, func() { _ = ln.Close() })
 	defer stopAccept()
 	var acceptErr error
@@ -219,6 +223,7 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 	}
 	if s.idx != nil {
 		r.Recall = func(ctx context.Context, text string) string { return s.idx.Recall(ctx, "common", text) }
+		r.SearchMessages = s.searchMessages("common")
 	}
 	return r
 }

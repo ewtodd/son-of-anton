@@ -41,6 +41,7 @@ type Index struct {
 	db    *sql.DB
 	http  *http.Client
 
+	msgMu         sync.Mutex // serializes IndexMessages
 	mu            sync.Mutex
 	cooldownUntil time.Time
 }
@@ -195,7 +196,7 @@ func (x *Index) refresh(ctx context.Context) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 	for k := range have {
-		if wanted[k] || kept(k, keep) {
+		if wanted[k] || kept(k, keep) || strings.HasPrefix(k, messageKind+":") {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM items WHERE key = ?`, k); err != nil {

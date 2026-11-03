@@ -70,6 +70,8 @@ type Runner struct {
 	Memory         *memory.Store
 	MemoryScope    string
 	MemoryApproval bool
+	// SearchMessages adds meaning-based matches to session_search (nil: off).
+	SearchMessages tools.MessageSearch
 }
 
 // NewSession builds the prompt (exactly once), stores it, and creates the
@@ -462,7 +464,8 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 // call keeps whatever its tool returned.
 func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emit func(Event), maxChars int) []store.Message {
 	env := &tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
-		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval}
+		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval,
+		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages}
 	rows := make([]store.Message, 0, len(calls))
 	for _, call := range calls {
 		emit(Event{Kind: "tool.start", Tool: call.Function.Name, CallID: call.ID, Text: string(call.Function.Arguments)})

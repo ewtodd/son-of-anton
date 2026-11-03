@@ -24,7 +24,7 @@ daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`).
 - **On soa-d now:** the terminal TUI (`son-of-anton`), `-q` and `-z`.
 - **Still Python:** the Signal gateway and its relay workers, cron, physics
   runs.
-- **Not in the daemon yet:** `session_search` (phase 3c); subagents (4); `/handoff` and `/pickup` (5); MCP
+- **Not in the daemon yet:** subagents (4); `/handoff` and `/pickup` (5); MCP
   servers and web tools (7); the Python sessions in `state.db` (imported in 8).
 
 ## Running it

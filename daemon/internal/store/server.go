@@ -103,9 +103,22 @@ func (s *Store) ListSessions(ctx context.Context, kinds []string, limit int) ([]
 // ListSessionsIn is ListSessions limited to one workspace (Session.Workspace);
 // an empty workspace means every session.
 func (s *Store) ListSessionsIn(ctx context.Context, kinds []string, workspace string, limit int) ([]Summary, error) {
+	return s.listSessions(ctx, kinds, workspace, "", limit)
+}
+
+// ListReadable is ListSessions with the wall: only sessions the caller can
+// read (Readable), decided in the query.
+func (s *Store) ListReadable(ctx context.Context, caller string, kinds []string, limit int) ([]Summary, error) {
+	return s.listSessions(ctx, kinds, "", wallSQL(caller), limit)
+}
+
+func (s *Store) listSessions(ctx context.Context, kinds []string, workspace, wall string, limit int) ([]Summary, error) {
 	var out []Summary
 	for _, kind := range kinds {
 		where, args := `s.parent_id IS NULL AND s.kind = ?`, []any{kind}
+		if wall != "" {
+			where += ` AND ` + wall
+		}
 		if workspace != "" {
 			where, args = where+` AND s.workspace = ?`, append(args, workspace)
 		}

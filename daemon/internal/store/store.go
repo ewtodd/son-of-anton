@@ -147,6 +147,9 @@ UPDATE schema_version SET version = 4;`,
 );
 ALTER TABLE sessions ADD COLUMN title_source TEXT;
 UPDATE schema_version SET version = 5;`,
+	`ALTER TABLE sessions ADD COLUMN scope TEXT NOT NULL DEFAULT 'common';
+ALTER TABLE sessions ADD COLUMN chat TEXT;
+UPDATE schema_version SET version = 6;`,
 }
 
 func migrate(db *sql.DB) error {
@@ -206,6 +209,10 @@ type Session struct {
 	Mode            string
 	// TitleSource says where Title came from: derived, llm or user.
 	TitleSource string
+	// Scope is "common" (the default) or "gateway"; Chat is a chat stamp such
+	// as "signal:<id>". Together they are the wall (Readable).
+	Scope string
+	Chat  string
 }
 
 // newSessionID returns YYYYmmdd_HHMMSS_ plus six random hex chars (local
@@ -229,12 +236,15 @@ func (s *Store) CreateSession(ctx context.Context, sess Session) (Session, error
 			sess.Created = time.Now()
 		}
 		sess.ID = id
+		if sess.Scope == "" {
+			sess.Scope = "common"
+		}
 		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO sessions (id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO sessions (id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, scope, chat)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sess.ID, sess.Kind, nullStr(sess.ParentID), nullStr(sess.Source), nullStr(sess.Title),
 			nullStr(sess.Cwd), nullStr(sess.Model), nullStr(sess.PromptHash),
-			formatTime(sess.Created), nullTime(sess.Ended), nullStr(sess.ReasoningEffort), nullStr(sess.Mode), nullStr(sess.Workspace))
+			formatTime(sess.Created), nullTime(sess.Ended), nullStr(sess.ReasoningEffort), nullStr(sess.Mode), nullStr(sess.Workspace), sess.Scope, nullStr(sess.Chat))
 		if err == nil {
 			return sess, nil
 		}
@@ -261,11 +271,12 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 		mode     sql.NullString
 		work     sql.NullString
 		tsource  sql.NullString
+		chat     sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, title_source
+		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, title_source, scope, chat
 		 FROM sessions WHERE id = ?`, id).
-		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended, &effort, &mode, &work, &tsource)
+		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended, &effort, &mode, &work, &tsource, &sess.Scope, &chat)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -282,6 +293,7 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 	sess.Mode = mode.String
 	sess.Workspace = work.String
 	sess.TitleSource = tsource.String
+	sess.Chat = chat.String
 	sess.Created, err = parseTime(created.String)
 	if err != nil {
 		return Session{}, err
@@ -435,6 +447,8 @@ type Hit struct {
 	SessionID string
 	Seq       int64
 	Snippet   string
+	Role      string
+	TS        time.Time
 }
 
 // Search full-text-searches message content.

@@ -12,6 +12,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/memory"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
+	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 )
 
 // Env carries what a tool may touch: the path policy, the approval gate and
@@ -34,6 +35,12 @@ type Env struct {
 	Memory         *memory.Store
 	MemoryScope    string
 	MemoryApproval bool
+	// Store and SessionID back session_search (nil Store: unavailable);
+	// SearchMessages adds meaning-based matches (nil: recall is off). The
+	// caller's scope is MemoryScope.
+	Store          *store.Store
+	SessionID      string
+	SearchMessages MessageSearch
 }
 
 // Tool is one builtin tool.
@@ -91,6 +98,7 @@ func Builtin() []Tool {
 		todoTool{},
 		clarifyTool{},
 		memoryTool{},
+		sessionSearchTool{},
 	}
 }
 
