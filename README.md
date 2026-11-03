@@ -25,8 +25,10 @@ replaces the Python backend. Its v1 is complete: everything below runs on it.
   chats with fiona and her relay workers, and cron, once an instance moves
   (`backend = "soa-d"` in the NixOS module; until then that instance's
   Python gateway serves them).
-- **Still Python:** physics runs, and the Textual TUI's front end (a Go TUI
-  is next). The Python backend goes once every instance has moved.
+- **Still Python:** physics runs, and the Textual TUI's front end, still the
+  default. The Go TUI (`soa-d tui`) does all it does and is opt-in until
+  `son-of-anton` switches to it. The Python backend goes once every instance
+  has moved.
 - **MCP:** servers in `[mcp_servers.<name>]` are found with `tool_search` and
   run with `tool_call`.
 - **LSP:** write_file and patch report new errors from the file's language server.
