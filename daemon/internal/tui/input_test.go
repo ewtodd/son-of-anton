@@ -133,6 +133,12 @@ func TestCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := open(t, d, tui.Options{})
+	a.Resize(100, 40) // room for all of /help
+
+	a.Type("/reasoning hi") // test-model's levels: before the switch to other-model, which has none
+	a.Press("tab")
+	waitDock(t, a, "/reasoning high ")
+	clearPrompt(t, a)
 
 	a.Type("/mo")
 	waitScreen(t, a, "/model", "Switch this session's model")
@@ -145,11 +151,6 @@ func TestCompletion(t *testing.T) {
 	waitDock(t, a, "/model other-model ")
 	a.Press("enter")
 	waitScreen(t, a, "model: other-model (from the next turn)")
-
-	a.Type("/reasoning hi")
-	a.Press("tab")
-	waitDock(t, a, "/reasoning high ")
-	clearPrompt(t, a)
 
 	a.Type("/perm y")
 	a.Press("tab")
@@ -167,9 +168,8 @@ func TestCompletion(t *testing.T) {
 	a.Type("./do")
 	a.Press("tab")
 	waitDock(t, a, "./docs/")
-	if strings.Contains(dock(a.Screen()), "./docs/ ") {
-		t.Fatal("a directory was inserted with a space after it")
-	}
+	a.Type("x") // the cursor's cell reads as a space: what follows shows there is none
+	waitDock(t, a, "./docs/x")
 	clearPrompt(t, a)
 
 	a.Type("/hel")

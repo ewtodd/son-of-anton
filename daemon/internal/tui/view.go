@@ -232,20 +232,11 @@ func (m *model) render() []string {
 		return th.paint(l, th.surface, cw)
 	}
 	dock = append(dock, "", frame(rail))
-	// The cursor at the end of a draft is drawn here, as a block, not by the text
-	// area as a reversed space: a trailing space then is only ever one typed.
-	end := m.atEnd() && m.ta.Value() != ""
-	m.ta.Cursor.Blink = end
 	taLines := strings.Split(m.ta.View(), "\n")
 	if sg := m.suggestion(); sg != "" && ta == 1 {
 		if row := m.suggestRow(sg, max(cw-3, 1)); row != "" {
 			taLines[0] = row
-			end = false
 		}
-	}
-	if end {
-		last := len(taLines) - 1
-		taLines[last] = putBlock(taLines[last], m.ta.LineInfo().CharOffset)
 	}
 	for _, l := range taLines {
 		dock = append(dock, frame(rail+"  "+l))
@@ -424,12 +415,4 @@ func (m *model) suggestRow(sg string, w int) string {
 	}
 	cursor := m.th.r.NewStyle().Reverse(true).Render(string(r[0]))
 	return v + cursor + m.th.mut.Render(string(r[1:]))
-}
-
-// putBlock draws a block at column c of row, over what is there.
-func putBlock(row string, c int) string {
-	if w := ansi.StringWidth(row); w <= c {
-		row += strings.Repeat(" ", c+1-w)
-	}
-	return ansi.Truncate(row, c, "") + "█" + ansi.TruncateLeft(row, c+1, "")
 }

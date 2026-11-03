@@ -473,6 +473,7 @@ func TestCommandsReachTheDaemon(t *testing.T) {
 
 	send(a, "/goal")
 	waitScreen(t, a, "unknown command /goal (/help lists them)")
+	a.Resize(100, 40) // room for all of /help
 	send(a, "/help")
 	waitScreen(t, a, "commands:", "/model", "/sendnow", "!cmd runs a shell command here · ctrl+p opens the palette · :q quits")
 	send(a, "/status")

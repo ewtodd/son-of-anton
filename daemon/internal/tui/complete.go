@@ -162,11 +162,6 @@ func (m *model) completeArg(v string, start int, word string, explicit bool) (*c
 				add(mod.Efforts)
 			}
 		}
-		if len(names) == 1 { // the model has none of its own: offer the levels any model has
-			for _, mod := range m.models.Models {
-				add(mod.Efforts)
-			}
-		}
 	default:
 		return nil, false
 	}

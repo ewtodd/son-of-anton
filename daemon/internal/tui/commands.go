@@ -168,11 +168,7 @@ func (m *model) command(name, args, line string) tea.Cmd {
 	}
 	switch name {
 	case "help":
-		lines := strings.Split(helpText(), "\n") // a row is cut, not wrapped, so the list fits a screen
-		for i, l := range lines {
-			lines[i] = ellipsize(l, max(m.contentWidth()-6, 1))
-		}
-		m.feed.note(strings.Join(lines, "\n"), false)
+		m.feed.note(helpText(), false)
 	case "model":
 		if args != "" {
 			return m.set(map[string]any{"model": args}, "model: "+args+" (from the next turn)", name)
