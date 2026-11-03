@@ -1,0 +1,1 @@
+{"type":"user","uuid":"x1","parentUuid":null,"sessionId":"claude-sub","message":{"role":"user","content":"a subagent's own log"}}
