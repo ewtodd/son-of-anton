@@ -2905,9 +2905,9 @@ def _record_output_history(text: str) -> None:
 def _cprint(text: str, strip: bool = True):
     """Write one ANSI-colored chrome line.
 
-    The single funnel for the CLI's own output. Under the Textual front-end it
-    is replaced (see ``son_of_anton_tui.backend``) so lines land in the
-    transcript instead; this plain implementation is what the non-interactive
+    The single funnel for the CLI's own output. An in-process front-end may
+    replace it so lines land in its transcript (none does since the terminal
+    TUI moved to soa-d); this plain implementation is what the non-interactive
     paths (``-q``, one-shot, cron) use, where stdout is a pipe or a plain tty
     and the escapes can go straight out.
 
@@ -2959,8 +2959,8 @@ def _prepend_note_to_message(message, note: str):
     return message
 
 
-# Set by the interactive front-end while it owns output (see
-# ``son_of_anton_tui.backend``): bare ``print`` is captured there, so chrome
+# Set by an in-process front-end while it owns output (none does since the
+# terminal TUI moved to soa-d): bare ``print`` is captured there, so chrome
 # that must land in the transcript goes through ``_cprint`` instead.
 _CPRINT_ROUTED = False
 

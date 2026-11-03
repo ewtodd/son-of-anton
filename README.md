@@ -21,14 +21,14 @@ separate physics research mode that runs only when you ask for it.
 `soa-d`, a Go daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`),
 replaces the Python backend. Its v1 is complete: everything below runs on it.
 
-- **On soa-d:** the terminal TUI (`son-of-anton`), `-q` and `-z`; Signal
+- **On soa-d:** the terminal TUI (`son-of-anton`, which opens `soa-d tui`,
+  written in Go), `-q` and `-z`; Signal
   chats with fiona and her relay workers, and cron, once an instance moves
   (`backend = "soa-d"` in the NixOS module; until then that instance's
   Python gateway serves them).
-- **Still Python:** physics runs, and the Textual TUI's front end, still the
-  default. The Go TUI (`soa-d tui`) does all it does and is opt-in until
-  `son-of-anton` switches to it. The Python backend goes once every instance
-  has moved.
+- **Still Python:** physics runs, the `son-of-anton` command's flag parsing,
+  and the Signal gateway of each instance that has not moved. The Python
+  backend goes once every instance has moved.
 - **MCP:** servers in `[mcp_servers.<name>]` are found with `tool_search` and
   run with `tool_call`.
 - **LSP:** write_file and patch report new errors from the file's language server.
@@ -71,9 +71,9 @@ launch starts the new daemon.
   `-m MODEL`, `--reasoning LEVEL` and `--yolo`; without `--yolo` a dangerous
   command is denied, since nobody is there to approve it.
 - `soa-d tui [--home DIR] [--in DIR] [-c | --resume ID|latest] [-m MODEL]
-  [--reasoning LEVEL] [--yolo]` opens the Go terminal client on the daemon (it
-  starts the daemon when nothing listens). It is opt-in while the Textual TUI
-  is the default: `son-of-anton` still opens that one.
+  [--reasoning LEVEL] [--yolo]` opens the terminal client on the daemon (it
+  starts the daemon when nothing listens); `son-of-anton` with no query runs
+  it with the same flags.
 - A message typed while a turn runs is queued in the daemon and survives a
   restart.
 - The agent can hand work to subagents (`explore` searches and reads; `general`
@@ -253,9 +253,8 @@ and now being rewritten in Go. The physics mode began as a port of
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern)
 (`5553bb6`) and has been rebuilt for experimental data. The daemon design and
 permission modes come from the archived [temple](https://github.com/ewtodd/temple)
-harness. The TUI is a from-scratch Textual port of
-[opencode](https://github.com/sst/opencode)'s session layout
-(`TUI_AESTHETICS.md` maps it file by file). The session journal follows
+harness. The TUI is a from-scratch Go port of
+[opencode](https://github.com/sst/opencode)'s session layout. The session journal follows
 [goluckyryan/letsClaw](https://github.com/goluckyryan/letsClaw).
 
 ## AI Full Disclosure

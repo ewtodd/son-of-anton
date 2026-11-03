@@ -27,8 +27,9 @@ dependencies = [
   "rich==14.3.3",
   "requests==2.33.0",  # CVE-2026-25645
   "croniter==6.0.0",
+  # Unused since the Textual TUI went (the terminal TUI is soa-d tui); drop it
+  # with the next networked `uv lock`.
   "textual==8.2.8",
-  # The TUI feed parses markdown itself (son_of_anton_tui/feed.py).
   "markdown-it-py==4.0.0",
   "psutil==7.2.2",
   "ptyprocess>=0.7.0,<1",
@@ -82,7 +83,7 @@ py-modules = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "son_of_anton_cli", "son_of_anton_cli.*", "gateway", "gateway.*", "cron", "cron.*", "autophysicist", "autophysicist.*", "son_of_anton_tui", "son_of_anton_tui.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "son_of_anton_cli", "son_of_anton_cli.*", "gateway", "gateway.*", "cron", "cron.*", "autophysicist", "autophysicist.*"]
 
 [tool.setuptools.package-data]
 # Globs, not an enumeration of filenames. Every prompt here is loaded at

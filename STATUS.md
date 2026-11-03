@@ -8,7 +8,7 @@ state, open work, and the operational facts a fresh session needs._
 A hard fork of Nous Research's hermes-agent v0.20.5, cut down to what the
 owner's deployments use, with the Autophysicist physics mode ported from
 huggingface/physics-intern. One chat loop; physics runs only via
-`son-of-anton problem create/run`. Textual TUI plus a Signal gateway. Linux and
+`son-of-anton problem create/run`. A Go terminal TUI (soa-d) plus a Signal gateway. Linux and
 Nix only. MIT.
 
 ## Current state

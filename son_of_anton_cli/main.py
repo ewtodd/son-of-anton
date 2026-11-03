@@ -984,8 +984,8 @@ def _route_to_daemon(args) -> None:
 
     Returns (staying on the Python agent) only for ``chat -Q`` and for ``-q`` /
     ``--query-file`` with ``--resume``: the gateway's relay workers. Otherwise
-    it never returns: ``-z`` and ``-q`` exec ``soa-d oneshot`` / ``soa-d query``
-    and the interactive launch runs the Textual TUI on the daemon.
+    it never returns: ``-z``, ``-q`` and the interactive launch exec ``soa-d
+    oneshot``, ``soa-d query`` and ``soa-d tui``.
     """
     command = getattr(args, "command", None)
     if command not in (None, "chat"):
@@ -1055,25 +1055,12 @@ def _route_to_daemon(args) -> None:
         if not os.path.isdir(cwd):
             print(f"Error: --in directory not found: {in_dir}", file=sys.stderr)
             sys.exit(1)
-    try:
-        from son_of_anton_cli.config import load_config
-        from son_of_anton_cli.skin_engine import init_skin_from_config
-
-        init_skin_from_config(load_config())
-    except Exception:
-        pass
-    from son_of_anton_tui.backend import DaemonBackend
-    from son_of_anton_tui.tui import run_app
-
-    backend = DaemonBackend(
-        home=home, cwd=cwd, resume=resume_id, continue_last=bool(continue_last),
-        model=getattr(args, "model", None), yolo=bool(getattr(args, "yolo", False)),
-        reasoning=getattr(args, "reasoning", None),
-    )
-    if not backend.start():
-        sys.exit(1)
-    run_app(backend)
-    sys.exit(0)
+    argv = ["tui", *common, "--in", cwd]
+    if resume_id:
+        argv += ["--resume", resume_id]
+    elif continue_last:
+        argv.append("-c")
+    _daemon_exec(home, argv)
 
 
 def cmd_chat(args):
@@ -1501,6 +1488,11 @@ def _first_positional_index(argv: list) -> int | None:
                 i += 1
                 continue
             if tok in _TOP_LEVEL_VALUE_FLAGS and i + 1 < len(argv):
+                # -c's value is optional: a flag after it is not its value
+                # (``-c -m model`` would otherwise make ``model`` a prompt).
+                if tok in ("-c", "--continue") and argv[i + 1].startswith("-"):
+                    i += 1
+                    continue
                 i += 2
                 continue
             i += 1

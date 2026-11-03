@@ -24,8 +24,8 @@ _RST = "\033[0m"
 def cprint(text: str):
     """Print one ANSI-colored banner line.
 
-    Replaced by the interactive front-end (see ``son_of_anton_tui.backend``) so
-    banner output lands in the transcript; this plain form is what the
+    An in-process front-end may replace it so banner output lands in its
+    transcript (none does since the terminal TUI moved to soa-d); this plain form is what the
     non-interactive paths use.
     """
     try:

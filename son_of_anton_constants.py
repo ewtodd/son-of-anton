@@ -11,8 +11,8 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 
 
-# Set while an interactive front-end owns the terminal (the Textual app; see
-# ``son_of_anton_tui.backend``). Anything tempted to call ``input()`` or draw
+# Set while an in-process front-end owns the terminal (none does since the
+# terminal TUI moved to soa-d; this goes with the Python backend). Anything tempted to call ``input()`` or draw
 # on the tty from a worker thread must check this first: a full-screen app
 # holds stdin, so a bare prompt would block forever with nothing on screen.
 # Lives here because low-level callers (tools.approval) must not import the

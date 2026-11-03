@@ -1102,7 +1102,7 @@ class KawaiiSpinner:
     def _is_managed_stdout(self) -> bool:
         """Return True when a front-end owns stdout and draws its own spinner.
 
-        The Textual app captures print output and renders tool activity as its
+        A front-end that captures print output renders tool activity as its
         own rows, so a ``\\r``-driven animation here would fight it: the frames
         arrive as separate captured lines rather than overwriting one.
         """

@@ -272,15 +272,14 @@ never routed — it comes from the normal resolution chain and `/model`.
 `cli.py` is the `SonOfAntonCLI` class (the agent-orchestration half) plus the
 `main()` entry point, which now serves only the single-query paths (`chat -Q`,
 the gateway's relay workers) on the Python agent. The interactive front-end is
-Textual (see [Interface](#interface)) and a client of the soa-d daemon;
-`son_of_anton_cli/main.py` routes the interactive launch, `-q` and `-z` to it
-(`_route_to_daemon`).
+the Go TUI in soa-d (see [Interface](#interface));
+`son_of_anton_cli/main.py` execs `soa-d tui`, `soa-d query` and `soa-d oneshot`
+for the interactive launch, `-q` and `-z` (`_route_to_daemon`).
 
 - `main()` (bottom of `cli.py`) parses flags and builds a `QuietCLI` (a
   `SonOfAntonCLI` with no screen) for the single query.
 - **Rich** is still used for the single-query path: `ChatConsole` and
-  `show_banner()` (what `/clear` prints) render through it. The interactive
-  TUI renders through Textual widgets, not Rich.
+  `show_banner()` (what `/clear` prints) render through it.
 - **KawaiiSpinner** (`agent/display.py`) — animated thinking/waiting faces
   used by the agent loop (`agent/conversation_loop.py`,
   `agent/tool_executor.py`) while streaming; the TUI shows the same
@@ -317,39 +316,23 @@ menus, and autocomplete automatically.
 
 ## Interface
 
-Textual is the only interactive interface. The prompt_toolkit REPL was deleted on
-2026-09-02 (`9906a30b`); before that, the Ink/TypeScript TUI (`ui-tui/`,
-`tui_gateway/`) was removed on 2026-08-25. There is no `--tui`/`--cli` flag and no
-fallback: if Textual will not start, nothing interactive starts. Single-query mode
-(`son-of-anton "..."`, `-q`) bypasses the front-end entirely.
+The interactive interface is the Go TUI in soa-d (`daemon/internal/tui`,
+`soa-d tui`); `son-of-anton` with no query execs it. The Textual TUI
+(`son_of_anton_tui/`) was deleted on 2026-11-03 once the Go one did all it did
+(`daemon/phases/09a-tui-core.md` to `09d-tui-subagents-mouse.md`); before it,
+the prompt_toolkit REPL (2026-09-02) and the Ink/TypeScript TUI (2026-08-25).
+There is no fallback: if `soa-d tui` will not start, nothing interactive
+starts. Single-query mode (`son-of-anton "..."`, `-q`) bypasses it.
 
-- `son_of_anton_tui/tui.py` — the `SonOfAntonTUIApp` (Textual `App`) and its
-  widgets: the virtual transcript (see `son_of_anton_tui/feed.py`), the 42-column
-  sidebar, `PromptArea` (with `PromptHistory` for ↑ recall),
-  `ChoiceModal`/`MultiChoiceModal`/`TextModal`, and `SlashProvider`
-  (autocomplete). `run_app(backend)` starts it.
-- `son_of_anton_tui/feed.py` — `VirtualFeed`, the transcript as a Textual Line
-  API widget (`ScrollView` + `render_line`): blocks of content (user turns,
-  ANSI note lines, tool rows, reasoning, markdown) rendered to line strips,
-  painted per viewport so the frame cost is O(visible lines) regardless of
-  session length — the marathon-session fix. Markdown renders through the
-  `gfm-like` markdown-it preset in the fork's plain aesthetic (no syntax
-  rainbow), with tables realigned by the shared `realign_markdown_tables`.
-- `son_of_anton_tui/completion.py` — what the prompt completes, kept pure (no
-  Textual): command names and arguments (`SUBCOMMANDS`, `/skin`, `/tools`),
-  `@` references (checked against `agent.context_references`' parser) and,
-  on Tab only, file paths. Tab never moves focus off the prompt; history shows
-  as ghost text (`PromptHistory.suggest`, → accepts).
-- `son_of_anton_tui/daemon.py` — the soa-d protocol client (socket, hello,
-  autostart, calls, events).
-- `son_of_anton_tui/backend.py` — `DaemonBackend`: attaches one soa-d session as
-  driver, turns daemon events into the app's typed events, and handles every
-  slash command itself (those soa-d lacks say so). `daemon/phases/02b-tui-client.md`
-  is the spec.
+- `daemon/internal/client` is the socket client (hello, calls, events, starting
+  the daemon); `daemon/internal/tui` the Bubble Tea program: the feed
+  (markdown, folding reasoning, tool and task rows), the sidebar, modals and
+  pickers, completion and the palette, the subagent view, the mouse, skins.
 - The layout is a deliberate port of [opencode](https://github.com/sst/opencode)'s
   session route (its TUI is the nicest in the category, and open source). The
-  design is theirs; the code is a from-scratch Textual port. See
-  `TUI_AESTHETICS.md` for the file-by-file mapping.
+  design is theirs; the code is a from-scratch port.
+- Its tests drive `tui.App` like a person at the keyboard (`Type`, `Press`,
+  `Resize`, `Screen`) against an in-process daemon and `internal/fakellm`.
 
 ---
 
