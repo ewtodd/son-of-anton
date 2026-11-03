@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -115,9 +114,10 @@ func startBackground(env *Env, cwd, command string, notify bool) (string, error)
 		fmt.Sprintf("builtin cd -- %s || exit 126", shQuote(cwd)),
 		`eval "$SOA_D_CMD"`,
 	}, "\n")
-	cmd := exec.Command("bash", "-c", script)
-	cmd.Dir = cwd
-	cmd.Env = withHome(append(append([]string{}, os.Environ()...), "SOA_D_CMD="+command, "SOA_MODEL="+env.Model), env.CommandHome)
+	cmd, err := shellCmd(env, script, cwd, command)
+	if err != nil {
+		return "", err
+	}
 	cmd.Stdin = openNull()
 	cmd.Stdout, cmd.Stderr = p.buf, p.buf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

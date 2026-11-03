@@ -77,6 +77,14 @@ type Config struct {
 		SingleUser           bool   `toml:"single_user"`
 		GroupSessionsPerUser *bool  `toml:"group_sessions_per_user"`
 	} `toml:"gateway"`
+	Physics struct {
+		WorkspaceRoot string `toml:"workspace_root"`
+		// Python is the physics runtime's bin/python3; its directory is the
+		// runtime a sandbox runs commands with.
+		Python string `toml:"python"`
+		// DataDirs are the directories a sandbox may bind read-only.
+		DataDirs []string `toml:"data_dirs"`
+	} `toml:"physics"`
 	Terminal struct {
 		Cwd string `toml:"cwd"`
 		// HomeMode "cwd": commands get HOME = Cwd, so ~ is the instance's

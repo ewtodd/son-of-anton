@@ -171,6 +171,63 @@
           echo "ok: both commands run, report ${version}, and carry a working python3"
         '';
 
+        # The physics runtime is everything a sandboxed command may run. This
+        # runs it as the sandbox does, with a PATH of its bin/ alone and nothing
+        # else (no bwrap needed): python3 imports its stack, a C++ program
+        # built with root-config writes a TTree and reads it back, and
+        # RDataFrame and uproot read it again.
+        physics-runtime =
+          let
+            rt = self'.packages.physics-runtime;
+          in
+          scriptCheck "son-of-anton-physics-runtime-check" ''
+            cd $TMPDIR && mkdir physics && cd physics
+            cat > prog.cpp <<'CPP'
+            #include <TFile.h>
+            #include <TTree.h>
+            #include <cstdio>
+            int main() {
+              {
+                TFile f("t.root", "RECREATE");
+                TTree t("t", "t");
+                float x = 0;
+                t.Branch("x", &x, "x/F");
+                for (int i = 1; i <= 100; i++) { x = i; t.Fill(); }
+                t.Write();
+              }
+              TFile f("t.root");
+              TTree *t = (TTree *)f.Get("t");
+              float x = 0;
+              t->SetBranchAddress("x", &x);
+              double sum = 0;
+              for (Long64_t i = 0; i < t->GetEntries(); i++) { t->GetEntry(i); sum += x; }
+              std::printf("sum=%g entries=%lld\n", sum, t->GetEntries());
+              return sum == 5050 ? 0 : 1;
+            }
+            CPP
+            env -i HOME=$TMPDIR PATH=${rt}/bin ${rt}/bin/bash -euc '
+              for p in python3 python root root-config rootls gcc g++ cc c++ make \
+                       bash sh ls find grep sed awk diff which less file gzip tar; do
+                command -v $p >/dev/null || { echo "missing from bin: $p"; exit 1; }
+              done
+              python3 -c "import ROOT, uproot, awkward, numpy, scipy"
+              g++ -O2 prog.cpp $(root-config --cflags --libs) -o prog
+              ./prog | grep -x "sum=5050 entries=100"
+              rootls t.root | grep -x t
+              python3 -c "
+            import ROOT
+            ROOT.gROOT.SetBatch(True)
+            s = ROOT.RDataFrame(\"t\", \"t.root\").Sum(\"x\").GetValue()
+            assert s == 5050, s
+            import uproot
+            a = uproot.open(\"t.root\")[\"t\"][\"x\"].array(library=\"np\")
+            assert a.sum() == 5050 and len(a) == 100, a.sum()
+            "
+              printf "all=ok\n"
+            '
+            echo "ok: python imports, a root-config C++ TTree round trip, RDataFrame and uproot, from ${rt}/bin alone"
+          '';
+
         # ── NixOS module ─────────────────────────────────────────────────────
         # Four instances: three login accounts (one with settings of its own)
         # and a service account that keeps the sandbox.

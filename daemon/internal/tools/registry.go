@@ -14,6 +14,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/memory"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
+	"github.com/ewtodd/son-of-anton/daemon/internal/sandbox"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 )
 
@@ -31,6 +32,9 @@ type Env struct {
 	// Model is the model serving this step; shell commands see it as
 	// $SOA_MODEL (for a commit's Model: line).
 	Model string
+	// Sandbox, when set, runs every terminal and process command inside it
+	// (never unsandboxed: when it is unavailable the command does not run).
+	Sandbox *sandbox.Policy
 	// CommandHome is the HOME of the commands the tools run ("" keeps the
 	// daemon's; see config.CommandHome).
 	CommandHome string

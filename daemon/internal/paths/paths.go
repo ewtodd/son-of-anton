@@ -22,6 +22,9 @@ type Policy struct {
 	Confine string
 	// ReadAlso lists directories a confined policy may read but never write.
 	ReadAlso []string
+	// ConfineNote, when set, replaces the notes-folder wording of a refusal: it
+	// names every root the confined tools reach (the sandboxed session).
+	ConfineNote string
 }
 
 // WriteCheck is the result of CheckWrite.
@@ -117,6 +120,9 @@ func (p Policy) checkIn(abs, confine string) error {
 		return err
 	}
 	if !under(real, dir) {
+		if p.ConfineNote != "" {
+			return fmt.Errorf("%s is outside the paths this session may use (%s)", abs, p.ConfineNote)
+		}
 		return fmt.Errorf("%s is outside the notes folder (%s); the chat's file tools reach only it.", abs, p.Confine)
 	}
 	return nil

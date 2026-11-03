@@ -37,6 +37,25 @@ let
   utilsPython = analysis-utilities.packages.${system}.pythonPackage;
   root = analysis-utilities.packages.${system}.root;
 
+  # What the sandbox may run, named: bin/ holds these and nothing else of the
+  # host. gcc is the wrapped compiler of this nixpkgs, so a program built with
+  # `root-config` links the ROOT the Python uses and finds it through the rpath
+  # root-config itself emits (-Wl,-rpath,${root}/lib).
+  shellPackages = with pkgs; [
+    bash
+    coreutils
+    findutils
+    gnugrep
+    gnused
+    gawk
+    diffutils
+    which
+    less
+    file
+    gzip
+    gnutar
+  ];
+
   pythonEnv = pkgs.python3.withPackages (
     ps:
     [
@@ -56,18 +75,14 @@ let
       joblib
       h5py
       tqdm
+      # ROOT I/O from python without PyROOT: uproot reads a TTree into numpy
+      # and jagged awkward arrays. analysis_utils' loaders remain the fast path
+      # for the lab's waveform branches (TArrayS/TArrayF object branches and
+      # fixed-size array leaves are uproot's worst case: jagged arrays, no disk
+      # cache, a per-event decode); uproot is for everything else.
+      uproot
+      awkward
     ])
-    # Deliberately NOT uproot/awkward. ROOT I/O here goes through PyROOT and
-    # analysis_utilities' loaders, which is not a stylistic preference: the data
-    # this runs on stores waveforms in TArrayS/TArrayF object branches and
-    # fixed-size array leaves, which is uproot's worst case — jagged awkward
-    # arrays, no disk cache, and a per-event decode. `load_tree_data` and
-    # `load_leaf_array_data` read the same branches straight into 2-D numpy and
-    # cache the result, so the second pass costs nothing.
-    #
-    # Shipping both is worse than shipping one. A model that sees uproot in the
-    # package list reaches for it, because that is what it has read a thousand
-    # times, and then spends the run's budget waiting on it.
     ++ extraPythonPackages ps
   );
 in
@@ -111,4 +126,32 @@ pkgs.runCommand "son-of-anton-physics-runtime"
         ]
       }"
     ln -s $out/bin/python3 $out/bin/python
+
+    # ROOT: root and rootls carry ROOT's environment like python3 does;
+    # root-config is linked as it is (it finds its own prefix from where the
+    # link points).
+    for prog in root rootls; do
+      makeWrapper ${root}/bin/$prog $out/bin/$prog \
+        --set ROOTSYS ${root} \
+        --prefix LD_LIBRARY_PATH : "${root}/lib:${utils}/lib" \
+        --prefix ROOT_INCLUDE_PATH : "${utils}/include:${root}/include"
+    done
+    ln -s ${root}/bin/root-config $out/bin/root-config
+
+    # The compilers and make.
+    for prog in gcc g++ cc c++; do
+      ln -s ${pkgs.gcc}/bin/$prog $out/bin/$prog
+    done
+    ln -s ${pkgs.gnumake}/bin/make $out/bin/make
+
+    # ROOT probes with ldd while it resolves its libraries (python3 carries it
+    # in its own wrapper); a compiled program has only this PATH.
+    ln -s ${pkgs.glibc.bin}/bin/ldd $out/bin/ldd
+
+    # The shell and the usual tools.
+    for pkg in ${pkgs.lib.concatMapStringsSep " " (p: "${pkgs.lib.getBin p}") shellPackages}; do
+      for f in $pkg/bin/*; do
+        [ -e "$out/bin/$(basename $f)" ] || ln -s $f $out/bin/$(basename $f)
+      done
+    done
   ''

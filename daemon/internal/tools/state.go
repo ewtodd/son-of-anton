@@ -41,6 +41,10 @@ func NewState(cwd string) (*State, error) {
 		_ = os.RemoveAll(dir)
 		return nil, err
 	}
+	// Resolved, so a sandbox binds it at the path the snapshot is written to.
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
 	return &State{cwd: cwd, tempDir: dir, stamps: map[string]readStamp{}, procs: map[string]*bgProc{}}, nil
 }
 
@@ -56,6 +60,13 @@ func (s *State) SetCwd(cwd string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cwd = cwd
+}
+
+// TempDir is the session's private temp dir ("" once closed).
+func (s *State) TempDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tempDir
 }
 
 // SnapshotPath is the shell environment snapshot inside the private temp dir.

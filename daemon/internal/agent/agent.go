@@ -16,6 +16,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/memory"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
+	"github.com/ewtodd/son-of-anton/daemon/internal/sandbox"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
 )
@@ -56,9 +57,13 @@ type Runner struct {
 	MaxToolResultChars int
 	Policy             paths.Policy
 	CommandHome        string // HOME of the commands tools run ("" keeps the daemon's)
-	Mode               approval.Mode
-	Approver           approval.Approver
-	Allowlist          approval.Allowlist
+	// Sandbox, when set, makes every session of this runner a sandboxed one:
+	// commands run inside it, the file tools reach only its roots, the mode is
+	// yolo, and only the sandbox tool set is offered.
+	Sandbox   *sandbox.Policy
+	Mode      approval.Mode
+	Approver  approval.Approver
+	Allowlist approval.Allowlist
 	// AsyncDelivery says whether a background completion notice can ever be
 	// delivered in this run; Ask answers clarify (nil: nobody can).
 	AsyncDelivery bool
@@ -215,18 +220,53 @@ func (r *Runner) newSession(id, prompt, cwd string) (*Session, error) {
 	if mode == "" {
 		mode = approval.Default
 	}
-	return &Session{
+	gate := approval.NewGate(mode, r.Approver, r.Allowlist)
+	s := &Session{
 		runner: r,
 		id:     id,
 		prompt: prompt,
 		state:  state,
-		gate:   approval.NewGate(mode, r.Approver, r.Allowlist),
+		gate:   gate,
+		policy: r.Policy,
+		reg:    r.Tools,
 		client: r.Client,
 		model:  r.Model,
 		effort: r.ReasoningEffort,
 		comp:   compState{ctxLen: r.Compaction.ContextLength, client: r.Compaction.Client, model: r.Compaction.Model},
-	}, nil
+	}
+	if r.Sandbox != nil {
+		s.sandboxed(r.Sandbox)
+	}
+	return s, nil
 }
+
+// sandboxToolNames are the tools a sandboxed session is offered: nothing that
+// reaches the network, the instance's memory or other sessions, and no
+// clarify (nobody answers).
+var sandboxToolNames = []string{"terminal", "process", "read_file", "write_file", "patch", "search_files", "todo"}
+
+// sandboxed makes s a session that runs inside pol: yolo mode with nobody to
+// ask (hardline rules still refuse; a protected write has no approver, so it
+// is denied), the file tools confined to the sandbox's roots, and the
+// sandbox tool set.
+func (s *Session) sandboxed(pol *sandbox.Policy) {
+	p := *pol
+	s.sandbox = &p
+	s.gate = approval.NewGate(approval.Yolo, nil, nil)
+	read := strings.Join(p.ReadRoots(), ", ")
+	s.policy = paths.Policy{
+		Home:        p.Home,
+		Confine:     p.RunDir,
+		ReadAlso:    p.ReadRoots()[1:],
+		ConfineNote: "read: " + read + "; write: " + strings.Join(p.WriteRoots(), ", "),
+	}
+	if s.reg != nil {
+		s.reg = s.reg.Only(sandboxToolNames...)
+	}
+}
+
+// registry is the tools this session offers and runs.
+func (s *Session) registry() *tools.Registry { return s.reg }
 
 // Session is one conversation, bound to its stored transcript and prompt.
 type Session struct {
@@ -235,6 +275,10 @@ type Session struct {
 	prompt string
 	state  *tools.State
 	gate   *approval.Gate
+	policy paths.Policy
+	reg    *tools.Registry
+	// sandbox is set for a session that runs inside one.
+	sandbox *sandbox.Policy
 
 	mu            sync.Mutex // guards the fields below
 	client        *provider.Client
@@ -475,8 +519,8 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			Messages:        msgs,
 			OnServed:        func(m string) { s.setServed(m, emit) },
 		}
-		if r.Tools != nil {
-			req.Tools = r.Tools.Schemas()
+		if reg := s.registry(); reg != nil {
+			req.Tools = reg.Schemas()
 			if steps >= maxSteps {
 				req.ToolChoice = "none"
 			}
@@ -586,7 +630,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 // calls not yet started are not run (each gets a cancellation result); a
 // running call keeps whatever its tool returned.
 func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emitEvent func(Event), maxChars int) []store.Message {
-	base := tools.Env{Policy: s.runner.Policy, CommandHome: s.runner.CommandHome, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
+	base := tools.Env{Policy: s.policy, Sandbox: s.sandbox, CommandHome: s.runner.CommandHome, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
 		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval,
 		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, WallChat: s.runner.WallChat, Web: s.runner.Web, MCP: s.runner.MCP,
 		Vision: s.runner.Vision, LSP: s.runner.LSP, NoScripts: s.runner.NoScripts, Cron: s.runner.Cron, Relay: s.runner.Relay}
@@ -652,10 +696,11 @@ func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls [
 
 // concurrent says whether the named tool may run beside its siblings.
 func (s *Session) concurrent(name string) bool {
-	if s.runner.Tools == nil {
+	reg := s.registry()
+	if reg == nil {
 		return false
 	}
-	t, ok := s.runner.Tools.Lookup(name)
+	t, ok := reg.Lookup(name)
 	if !ok {
 		return false
 	}
@@ -667,10 +712,11 @@ func (s *Session) runOneCall(ctx context.Context, env *tools.Env, call provider.
 	if ctx.Err() != nil {
 		return errorJSON("cancelled: the user interrupted before this call ran")
 	}
-	if s.runner.Tools == nil {
+	reg := s.registry()
+	if reg == nil {
 		return errorJSON("unknown tool: " + call.Function.Name)
 	}
-	tool, ok := s.runner.Tools.Lookup(call.Function.Name)
+	tool, ok := reg.Lookup(call.Function.Name)
 	if !ok {
 		return errorJSON("unknown tool: " + call.Function.Name)
 	}

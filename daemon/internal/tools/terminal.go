@@ -102,7 +102,12 @@ func (terminalTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 	if a.Background {
 		return runBackground(env, cwd, a)
 	}
-	out, newCwd, code, done := runShell(ctx, env.State.SnapshotPath(), cwd, a.Command, timeout, env.Model, env.CommandHome)
+	nonce := newNonce()
+	cmd, err := shellCmd(env, buildWrapper(env.State.SnapshotPath(), cwd, nonce), cwd, a.Command)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+	out, newCwd, code, done := runShell(ctx, cmd, nonce, timeout)
 	out = stripANSI(out)
 	out = strings.TrimSpace(out)
 
@@ -151,18 +156,27 @@ func withHome(environ []string, home string) []string {
 	return append(environ, "HOME="+home)
 }
 
-// runShell runs one command in a throwaway bash that sources the session's
-// environment snapshot, and captures the post-command cwd and environment.
-// It returns the output (stdout+stderr merged), the new cwd (empty when the
-// command exited before the marker), the exit code, and whether the marker
-// was seen.
-func runShell(ctx context.Context, snapshot, cwd, command string, timeoutSeconds int, model, home string) (string, string, int, bool) {
-	nonce := newNonce()
-	wrapper := buildWrapper(snapshot, cwd, nonce)
-
-	cmd := exec.Command("bash", "-c", wrapper)
+// shellCmd builds the process that runs script under bash with command in
+// SOA_D_CMD. In a sandboxed session that is bwrap running the runtime's bash
+// (the session's temp dir bound, so the environment snapshot works); when the
+// sandbox is unavailable there is no process, never an unsandboxed one.
+func shellCmd(env *Env, script, cwd, command string) (*exec.Cmd, error) {
+	if env.Sandbox != nil {
+		pol := *env.Sandbox
+		pol.Binds = append(append([]string{}, pol.Binds...), env.State.TempDir())
+		return pol.Command([]string{"SOA_D_CMD=" + command, "SOA_MODEL=" + env.Model}, pol.Bash(), "-c", script)
+	}
+	cmd := exec.Command("bash", "-c", script)
 	cmd.Dir = cwd
-	cmd.Env = withHome(append(append([]string{}, os.Environ()...), "SOA_D_CMD="+command, "SOA_MODEL="+model), home)
+	cmd.Env = withHome(append(append([]string{}, os.Environ()...), "SOA_D_CMD="+command, "SOA_MODEL="+env.Model), env.CommandHome)
+	return cmd, nil
+}
+
+// runShell runs cmd, a shellCmd built around buildWrapper(.., nonce), and
+// captures the post-command cwd. It returns the output (stdout+stderr merged),
+// the new cwd (empty when the command exited before the marker), the exit
+// code, and whether the marker was seen.
+func runShell(ctx context.Context, cmd *exec.Cmd, nonce string, timeoutSeconds int) (string, string, int, bool) {
 	cmd.Stdin = openNull()
 	buf := &boundedBuffer{}
 	cmd.Stdout = buf
