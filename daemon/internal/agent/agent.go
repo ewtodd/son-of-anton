@@ -93,6 +93,9 @@ type Runner struct {
 	// sent again, once.
 	Default   *Fallback
 	OnDeadPin func(old string, def Fallback)
+	// ListNote, when set, returns a note for the turn (the models a chat may
+	// hand a worker), "" for none. It rides the user message like the model note.
+	ListNote func() string
 	// ModelNote, when set, returns the model that answered the last reply (""
 	// before any); the turn's context then ends with a line naming it.
 	// OnReply is told the model that answered each response.
@@ -402,6 +405,11 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 	if r.Recall != nil {
 		if block := r.Recall(ctx, text); block != "" {
 			apiText = text + "\n\n" + block
+		}
+	}
+	if r.ListNote != nil {
+		if note := r.ListNote(); note != "" {
+			apiText += "\n\n" + note
 		}
 	}
 	if r.ModelNote != nil {

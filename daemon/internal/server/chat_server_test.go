@@ -150,7 +150,7 @@ func TestAChatMessageGetsAnAnswer(t *testing.T) {
 	if strings.Join(m.Styles, ",") != "0:2:BOLD" {
 		t.Fatalf("styles = %v; replies go through Format", m.Styles)
 	}
-	if got := lastUser(t, fake, 0); got != "hello bot" {
+	if got := noModelNote(lastUser(t, fake, 0)); got != "hello bot" {
 		t.Fatalf("the model got %q", got)
 	}
 	names := toolNames(t, fake.Request(0))
@@ -262,7 +262,7 @@ func TestCommandsNeverReachTheModel(t *testing.T) {
 	r.quiet(0)
 	r.say("/etc/hosts looks wrong")
 	r.reply(sigGroup, "checking")
-	if lastUser(t, fake, 0) != "/etc/hosts looks wrong" {
+	if noModelNote(lastUser(t, fake, 0)) != "/etc/hosts looks wrong" {
 		t.Fatal("a path is a message, not a command")
 	}
 }
@@ -366,7 +366,7 @@ func TestAttachmentsAndQuotes(t *testing.T) {
 	sent["attachments"] = []any{map[string]any{"id": "a1", "contentType": "image/png", "filename": "shot.png", "size": 9}}
 	r.sig.Push(env)
 	m := r.reply(sigGroup, "nice picture")
-	got := lastUser(t, fake, 0)
+	got := noModelNote(lastUser(t, fake, 0))
 	found := regexp.MustCompile(`^look\n\[Attachment from the user: shot\.png \(image/png\), stored at (.+)\]$`).FindStringSubmatch(got)
 	if found == nil {
 		t.Fatalf("the user text = %q", got)
@@ -555,8 +555,13 @@ func TestAStaleLockIsTaken(t *testing.T) {
 	}
 }
 
-// noModelNote drops the per-turn line that names the model which answered
-// last (phase 8g), which every message after a reply carries.
+// noModelNote drops the per-turn lines a chat adds to a message: the one that
+// names the model which answered last (phase 8g), which every message after a
+// reply carries, and the models note (phase 8i), which the first one does.
 func noModelNote(s string) string {
-	return strings.TrimSuffix(s, "\n\n[Model: your last reply came from test-model.]")
+	s = strings.TrimSuffix(s, "\n\n[Model: your last reply came from test-model.]")
+	if i := strings.LastIndex(s, "\n\n[Models for relay send's model"); i >= 0 {
+		s = s[:i]
+	}
+	return s
 }

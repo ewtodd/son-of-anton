@@ -32,7 +32,8 @@ func (relayTool) Schema() provider.Tool {
 			"instructions of your own. Before choosing between continuing an existing worker and starting a new one, ask " +
 			"the user. A worker's results and its questions (answer one by sending the user's reply) arrive here as " +
 			"notifications; tell the user briefly. Its approval requests also arrive here, and the user answers them with " +
-			"/approve or /deny.",
+			"/approve or /deny. " +
+			"A send can also choose the worker's model: pick from the latest [Models] note by what the task needs, and tell the user which you chose.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -41,7 +42,8 @@ func (relayTool) Schema() provider.Tool {
     "message": {"type": "string", "description": "send: the user's request for the worker, as they gave it."},
     "new_in": {"type": "string", "description": "send: start a new worker in this directory instead."},
     "now": {"type": "boolean", "description": "send: steer the running turn instead of queueing; only when the user asks for it now."},
-    "workspace": {"type": "string", "description": "list: only workers in this directory or below it."}
+    "workspace": {"type": "string", "description": "list: only workers in this directory or below it."},
+    "model": {"type": "string", "description": "send: the model this worker runs on, from its next turn: one of the names in the latest [Models] note, or \"default\" for this instance's model. Leave it out to keep the worker's model."}
   },
   "required": ["action"]
 }`),

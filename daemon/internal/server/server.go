@@ -89,6 +89,7 @@ type Server struct {
 	lsp     *lsp.Service // nil: LSP is disabled
 	chats   *chatHub     // nil: Signal is off
 	served  sync.Map     // session id -> the model that answered its last reply in this run
+	noted   sync.Map     // chat stamp -> the models note last given to that chat in this run
 	mem     *memory.Store
 	idx     *recall.Index   // nil: recall is off
 	base    context.Context // cancelled when shutdown starts

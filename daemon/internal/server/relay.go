@@ -282,6 +282,7 @@ type relayArgs struct {
 	NewIn     string `json:"new_in"`
 	Now       bool   `json:"now"`
 	Workspace string `json:"workspace"`
+	Model     string `json:"model"`
 }
 
 func relayJSON(v map[string]any) string {
@@ -425,8 +426,9 @@ func (s *Server) relayList(ctx context.Context, stamp string, a relayArgs) strin
 	for _, sum := range ws {
 		w := sum.Session
 		items, _ := s.st.QueueItems(ctx, w.ID)
-		out = append(out, map[string]any{"worker": w.ID, "title": w.Title, "cwd": w.Cwd, "state": s.workerState(w.ID, len(items)),
-			"bound": w.ID == bound, "last_active": sum.Updated.Format(time.RFC3339)})
+		entry := map[string]any{"worker": w.ID, "title": w.Title, "cwd": w.Cwd, "state": s.workerState(w.ID, len(items)),
+			"bound": w.ID == bound, "last_active": sum.Updated.Format(time.RFC3339)}
+		out = append(out, s.withModel(entry, w))
 	}
 	return relayJSON(map[string]any{"success": true, "workers": out})
 }
@@ -458,14 +460,22 @@ func (s *Server) relayStatus(ctx context.Context, w store.Session) string {
 	if r := []rune(reply); len(r) > lastReplyMax {
 		reply = string(r[:lastReplyMax])
 	}
-	return relayJSON(map[string]any{"success": true, "worker": w.ID, "title": w.Title, "cwd": w.Cwd,
-		"state": s.workerState(w.ID, len(items)), "queued": queued, "approvals_waiting": waiting, "last_reply": reply})
+	res := map[string]any{"success": true, "worker": w.ID, "title": w.Title, "cwd": w.Cwd,
+		"state": s.workerState(w.ID, len(items)), "queued": queued, "approvals_waiting": waiting, "last_reply": reply}
+	return relayJSON(s.withModel(res, w))
 }
 
 func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) string {
 	msg := strings.TrimSpace(a.Message)
 	if msg == "" {
 		return relayFail("message is required")
+	}
+	model := strings.TrimSpace(a.Model)
+	if model != "" {
+		var err error
+		if model, err = s.workerModel(model); err != nil {
+			return relayFail(err.Error())
+		}
 	}
 	var id string
 	if dir := strings.TrimSpace(a.NewIn); dir != "" {
@@ -491,6 +501,12 @@ func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) str
 		if err != nil {
 			return relayFail(err.Error())
 		}
+		if model != "" {
+			params, _ := json.Marshal(map[string]any{"model": model})
+			if _, e := s.set(l, params, func(err error) (any, *rpcError) { return nil, errf(codeBadParams, "%v", err) }); e != nil {
+				return relayFail("setting the worker's model: " + e.Message)
+			}
+		}
 		sent, err := l.relaySend(msg, a.Now)
 		if errors.Is(err, errUnloaded) {
 			continue // another connection's detach closed it first
@@ -501,4 +517,20 @@ func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) str
 		return relayJSON(map[string]any{"success": true, "worker": id, "title": sent.title, "status": sent.status, "when": sent.when})
 	}
 	return relayFail("the worker kept unloading")
+}
+
+// withModel adds the worker session's model to a list or status entry, and
+// the model that served its latest reply when this daemon's life has one.
+func (s *Server) withModel(m map[string]any, w store.Session) map[string]any {
+	model := w.Model
+	if l := s.loaded(w.ID); l != nil {
+		l.mu.Lock()
+		model = l.model
+		l.mu.Unlock()
+	}
+	m["model"] = model
+	if served := s.lastServed(w.ID); served != "" {
+		m["served_model"] = served
+	}
+	return m
 }

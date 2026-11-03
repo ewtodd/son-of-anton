@@ -433,6 +433,7 @@ func (s *Server) chatRunner(r *agent.Runner, stamp string, l *live) {
 		}
 	}
 	r.ModelNote = func() string { return s.lastServed(l.id) }
+	r.ListNote = func() string { return s.modelsNote(stamp) }
 	r.Default = s.defaultRoute(s.cfg.ChatModel())
 	deadPin := r.OnDeadPin
 	r.OnDeadPin = func(old string, def agent.Fallback) {

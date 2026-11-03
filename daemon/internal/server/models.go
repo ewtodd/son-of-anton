@@ -179,3 +179,85 @@ func (s *Server) lastServed(id string) string {
 	m, _ := v.(string)
 	return m
 }
+
+// ---- the models note (phase 8i) ----
+
+// windowText is a context window as the models note writes it: 128k (thousands
+// rounded down) or 1M; "" when unknown.
+func windowText(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%dM", n/1_000_000)
+	case n >= 1000:
+		return fmt.Sprintf("%dk", n/1000)
+	}
+	return ""
+}
+
+// modelsNoteText lists the models a worker may be set to, for a chat's
+// fiona: every name, its description and window, and the default. "" when
+// there is no name at all.
+func (s *Server) modelsNoteText() string {
+	routes := s.modelRoutes()
+	names := sortedKeys(routes)
+	if len(names) == 0 {
+		return ""
+	}
+	var meta map[string]int
+	if ep, err := s.cfg.Endpoint(""); err == nil {
+		s.metaMu.Lock()
+		meta = s.meta[ep.BaseURL]
+		s.metaMu.Unlock()
+	}
+	items := make([]string, 0, len(names))
+	for _, n := range names {
+		var detail []string
+		if d := s.cfg.RouteDescription(n); d != "" {
+			detail = append(detail, d)
+		}
+		window := s.cfg.RouteContextLength(n)
+		if window <= 0 {
+			window = meta[n]
+		}
+		if w := windowText(window); w != "" {
+			detail = append(detail, w+" context")
+		}
+		if len(detail) > 0 {
+			n += " (" + strings.Join(detail, "; ") + ")"
+		}
+		items = append(items, n)
+	}
+	return "[Models for relay send's model, up now: " + strings.Join(items, "; ") + "; default is " + s.cfg.Model.Default + ".]"
+}
+
+// modelsNote is the note a chat's turn carries: the models list on its first
+// turn after the daemon starts and again whenever it changes, "" otherwise.
+// It rides the turn's user message (never the system prompt), so the cached
+// transcript only ever grows.
+func (s *Server) modelsNote(stamp string) string {
+	note := s.modelsNoteText()
+	if note == "" {
+		return ""
+	}
+	if last, _ := s.noted.Load(stamp); last == note {
+		return ""
+	}
+	s.noted.Store(stamp, note)
+	return note
+}
+
+// workerModel resolves the model a relay send asks for: "default" is
+// model.default; a name no session may be set to is an error listing those
+// that can.
+func (s *Server) workerModel(name string) (string, error) {
+	if name == "default" {
+		return s.cfg.Model.Default, nil
+	}
+	names := sortedKeys(s.modelRoutes())
+	for _, n := range names {
+		if n == name {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("unknown model %s; known: %s", name, strings.Join(names, ", "))
+}

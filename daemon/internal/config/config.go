@@ -150,6 +150,9 @@ type ModelRoute struct {
 	ReasoningEffort  any      `toml:"reasoning_effort"`
 	ReasoningEfforts []string `toml:"reasoning_efforts"`
 	ContextLength    int      `toml:"context_length"`
+	// Description is what the model is good for, in a few words; the models
+	// note a chat gets lists it.
+	Description string `toml:"description"`
 }
 
 // Endpoint is a resolved, ready-to-use model endpoint.
@@ -330,6 +333,12 @@ func (c *Config) CompactionThreshold() float64 {
 		return t
 	}
 	return 0.75
+}
+
+// RouteDescription is the configured description of a model under the model
+// provider, "" when unset.
+func (c *Config) RouteDescription(model string) string {
+	return strings.TrimSpace(c.CustomProviders[c.Model.Provider].Models[model].Description)
 }
 
 // RouteContextLength is the configured context window of a model under the
