@@ -1,0 +1,65 @@
+{
+ "#1e1e2e": {
+  "panel": "#2c2c43",
+  "surface": "#33334e",
+  "boost": "#33334e",
+  "panel-lighten-1": "#3a3a59",
+  "border-blurred": "#48486e",
+  "border": "#4f4f79",
+  "text-muted": "#a9a9a9"
+ },
+ "#000000": {
+  "panel": "#111111",
+  "surface": "#191919",
+  "boost": "#191919",
+  "panel-lighten-1": "#222222",
+  "border-blurred": "#333333",
+  "border": "#3b3b3b",
+  "text-muted": "#b4b4b4"
+ },
+ "#ffffff": {
+  "panel": "#eeeeee",
+  "surface": "#e5e5e5",
+  "boost": "#e5e5e5",
+  "panel-lighten-1": "#dddddd",
+  "border-blurred": "#cccccc",
+  "border": "#c3c3c3",
+  "text-muted": "#4b4b4b"
+ },
+ "#fdf6e3": {
+  "panel": "#eeeeee",
+  "surface": "#e5e5e5",
+  "boost": "#e5e5e5",
+  "panel-lighten-1": "#dddddd",
+  "border-blurred": "#cccccc",
+  "border": "#c3c3c3",
+  "text-muted": "#4b4b4b"
+ },
+ "#282c34": {
+  "panel": "#343a44",
+  "surface": "#3b414d",
+  "boost": "#3b414d",
+  "panel-lighten-1": "#414855",
+  "border-blurred": "#4e5666",
+  "border": "#555d6e",
+  "text-muted": "#adadad"
+ },
+ "#f0f0f0": {
+  "panel": "#e0e0e0",
+  "surface": "#d8d8d8",
+  "boost": "#d8d8d8",
+  "panel-lighten-1": "#d0d0d0",
+  "border-blurred": "#c0c0c0",
+  "border": "#b8b8b8",
+  "text-muted": "#616161"
+ },
+ "#002b36": {
+  "panel": "#003f4f",
+  "surface": "#00495c",
+  "boost": "#00495c",
+  "panel-lighten-1": "#005369",
+  "border-blurred": "#006882",
+  "border": "#00728f",
+  "text-muted": "#a9a9a9"
+ }
+}

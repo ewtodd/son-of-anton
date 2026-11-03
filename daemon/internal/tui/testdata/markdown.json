@@ -1,0 +1,218 @@
+{
+ "headings": {
+  "source": "# The plan\n\nSome text after a heading.\n\n## Second level\n\n### Third level heading\n",
+  "80": [
+   "   The plan",
+   "   Some text after a heading.",
+   "   Second level",
+   "   Third level heading"
+  ],
+  "40": [
+   "   The plan",
+   "   Some text after a heading.",
+   "   Second level",
+   "   Third level heading"
+  ]
+ },
+ "inline": {
+  "source": "This has **bold**, *italic*, `inline code`, ~~struck~~ and a [link](https://example.com) in one paragraph that goes on long enough to wrap across more than one line at the narrow width.",
+  "80": [
+   "   This has bold, italic, inline code, struck and a link in one paragraph",
+   "   that goes on long enough to wrap across more than one line at the narrow",
+   "   width."
+  ],
+  "40": [
+   "   This has bold, italic, inline",
+   "   code, struck and a link in one",
+   "   paragraph that goes on long enough",
+   "   to wrap across more than one line",
+   "   at the narrow width."
+  ]
+ },
+ "softbreaks": {
+  "source": "a line\nthat continues   with   spaces\nand ends here.  \nafter a hard break",
+  "80": [
+   "   a line that continues with spaces and ends here.",
+   "   after a hard break"
+  ],
+  "40": [
+   "   a line that continues with spaces",
+   "   and ends here.",
+   "   after a hard break"
+  ]
+ },
+ "fence": {
+  "source": "Run this:\n\n```bash\nnix build .#soa-d\ngo test ./internal/tui/ -run TestATurnStreamsIntoTheFeed -count=3 -v\n```\n\nThen check.",
+  "80": [
+   "   Run this:",
+   "▎nix build .#soa-d",
+   "▎go test ./internal/tui/ -run TestATurnStreamsIntoTheFeed -count=3 -v",
+   "   Then check."
+  ],
+  "40": [
+   "   Run this:",
+   "▎nix build .#soa-d",
+   "▎go test ./internal/tui/ -run TestATu",
+   "   Then check."
+  ]
+ },
+ "bullets": {
+  "source": "- first item\n- second item that is long enough that it has to wrap onto another line here\n- third",
+  "80": [
+   "   • first item",
+   "   • second item that is long enough that it has to wrap onto another line",
+   "     here",
+   "   • third"
+  ],
+  "40": [
+   "   • first item",
+   "   • second item that is long enough",
+   "     that it has to wrap onto another",
+   "     line here",
+   "   • third"
+  ]
+ },
+ "ordered": {
+  "source": "1. one\n2. two\n3. three with `code`",
+  "80": [
+   "   1. one",
+   "   2. two",
+   "   3. three with code"
+  ],
+  "40": [
+   "   1. one",
+   "   2. two",
+   "   3. three with code"
+  ]
+ },
+ "loose": {
+  "source": "- para one\n\n  continued para\n\n- next",
+  "80": [
+   "   • para one",
+   "",
+   "     continued para",
+   "   • next"
+  ],
+  "40": [
+   "   • para one",
+   "",
+   "     continued para",
+   "   • next"
+  ]
+ },
+ "quote": {
+  "source": "> quoted text that is long enough to wrap when the width is narrow, really it is\n\nafter",
+  "80": [
+   "   ▎quoted text that is long enough to wrap when the width is narrow, really",
+   "   ▎it is",
+   "   after"
+  ],
+  "40": [
+   "   ▎quoted text that is long enough",
+   "   ▎to wrap when the width is",
+   "   ▎narrow, really it is",
+   "   after"
+  ]
+ },
+ "hr": {
+  "source": "above\n\n---\n\nbelow",
+  "80": [
+   "   above",
+   "────────────────────────────────────────────────────────────────────────────────",
+   "   below"
+  ],
+  "40": [
+   "   above",
+   "────────────────────────────────────────",
+   "   below"
+  ]
+ },
+ "table": {
+  "source": "| name | value |\n|---|---|\n| alpha | 1 |\n| beta | 22 |\n",
+  "80": [
+   "   | name  | value |",
+   "   |-------|-------|",
+   "   | alpha | 1     |",
+   "   | beta  | 22    |"
+  ],
+  "40": [
+   "   | name  | value |",
+   "   |-------|-------|",
+   "   | alpha | 1     |",
+   "   | beta  | 22    |"
+  ]
+ },
+ "widetable": {
+  "source": "| file | what changed | why it matters for the owner |\n|---|---|---|\n| internal/tui/tui.go | the app, its model and the program loop | everything the person sees |\n| internal/client/client.go | the socket client | it reconnects |\n",
+  "80": [
+   "   file: internal/tui/tui.go",
+   "   what changed: the app, its model and the program loop",
+   "   why it matters for the owner: everything the person sees",
+   "   ────────────────────────────────────────",
+   "   file: internal/client/client.go",
+   "   what changed: the socket client",
+   "   why it matters for the owner: it reconnects"
+  ],
+  "40": [
+   "   file: internal/tui/tui.go",
+   "   what changed: the app, its model",
+   "     and the program loop",
+   "   why it matters for the owner:",
+   "     everything the person sees",
+   "   ────────────────────────────────",
+   "   file: internal/client/client.go",
+   "   what changed: the socket client",
+   "   why it matters for the owner: it",
+   "     reconnects"
+  ]
+ },
+ "mixed": {
+  "source": "## Summary\n\nDone. Changes:\n\n- `a.go`: fixed\n- `b.go`: added\n\n```\nok\n```\n\n> note\n\nThat's all.",
+  "80": [
+   "   Summary",
+   "   Done. Changes:",
+   "   • a.go: fixed",
+   "   • b.go: added",
+   "▎ok",
+   "   ▎note",
+   "   That's all."
+  ],
+  "40": [
+   "   Summary",
+   "   Done. Changes:",
+   "   • a.go: fixed",
+   "   • b.go: added",
+   "▎ok",
+   "   ▎note",
+   "   That's all."
+  ]
+ },
+ "nested": {
+  "source": "- top\n  - inner one\n  - inner two\n- next\n",
+  "80": [
+   "   • top",
+   "     • inner one",
+   "     • inner two",
+   "   • next"
+  ],
+  "40": [
+   "   • top",
+   "     • inner one",
+   "     • inner two",
+   "   • next"
+  ]
+ },
+ "indented": {
+  "source": "Before:\n\n    indented code line\n\nafter\n",
+  "80": [
+   "   Before:",
+   "▎indented code line",
+   "   after"
+  ],
+  "40": [
+   "   Before:",
+   "▎indented code line",
+   "   after"
+  ]
+ }
+}
