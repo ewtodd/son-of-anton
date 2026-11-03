@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import signal
 import sqlite3
@@ -648,3 +649,222 @@ def test_a_rule_change_asks_and_is_saved(daemon_home, tmp_path) -> None:
         assert "Answer in plain English" in rules
 
     run_app(b, body)
+
+
+# ---------------------------------------------------------------------------
+# Subagents (phase 4b): task rows, the hint, the child view
+# (daemon/phases/04b-subagent-view.md)
+# ---------------------------------------------------------------------------
+
+def task_call(cid, description, prompt, subagent_type="explore", **extra):
+    args = {"description": description, "prompt": prompt, "subagent_type": subagent_type, **extra}
+    return {"id": cid, "name": "task", "arguments": json.dumps(args)}
+
+
+def block_text(b) -> str:
+    """A block's text from its source (notes and tool rows render lazily)."""
+    out = [v for v in (getattr(b, "text", None), getattr(b, "source", None), getattr(b, "label", None)) if isinstance(v, str)]
+    out.extend(t.plain for t in getattr(b, "texts", []))
+    out.extend(s.text for s in getattr(b, "lines", []))
+    return "\n".join(out)
+
+
+def view_text(app) -> str:
+    """Everything in the feed on screen (the child's, in a child view)."""
+    return "\n".join(block_text(b) for b in app.query_one("#feed")._blocks)
+
+
+def task_rows(app) -> list:
+    return [b for b in app.query_one("#feed")._blocks if b.kind == "tool" and " Task" in b.label]
+
+
+def static_text(widget) -> str:
+    content = widget.content
+    return content.plain if hasattr(content, "plain") else str(content)
+
+
+def footer(app) -> str:
+    return static_text(app.screen.query_one("#subagent-footer"))
+
+
+def in_child_view(app) -> bool:
+    return isinstance(app.screen, _tui.SubagentScreen)
+
+
+ONE_CHILD = [
+    {"tool_calls": [task_call("t1", "Find the thing", "look for the thing")]},
+    {"tool_calls": [terminal("c1", "echo hi")]},
+    {"content": "found it"},
+    {"content": "all done"},
+]
+
+
+def test_task_labels_and_durations_are_opencodes() -> None:
+    from son_of_anton_tui.backend import subagent_duration, tool_summary
+
+    args = {"description": "Find it", "prompt": "p", "subagent_type": "explore"}
+    assert tool_summary("task", json.dumps(args)) == "Explore Task — Find it"
+    assert tool_summary("task", json.dumps({**args, "background": True})) == "Explore Task (background) — Find it"
+    assert tool_summary("task", json.dumps({"description": "x", "prompt": "p"})) == "General Task — x"
+    assert tool_summary("task", json.dumps({**args, "subagent_type": "code-review"})) == "Code-Review Task — Find it"
+    assert [subagent_duration(ms) for ms in (450, 12345, 125000, 3720000, 90000000)] == \
+        ["450ms", "12.3s", "2m 5s", "1h 2m", "1d 1h"]
+
+
+def test_a_task_row_follows_its_child_and_the_hint_follows_it(daemon_home, tmp_path) -> None:
+    _textual()
+    home, fake = daemon_home(ONE_CHILD)
+    b = start_backend(home, tmp_path)
+
+    async def body(app, pilot):
+        await type_line(app, pilot, "find it")
+        assert await wait_for(pilot, lambda: "all done" in app._transcript)
+        rows = task_rows(app)
+        assert len(rows) == 1 and rows[0].label == "Explore Task — Find the thing", [b.label for b in rows]
+        assert await wait_for(pilot, lambda: re.fullmatch(r"↳ 1 toolcall · \d+(ms|\.\ds)", rows[0].detail or "")), rows[0].detail
+        blocks = app.query_one("#feed")._blocks
+        after = [block_text(x) for x in blocks[blocks.index(rows[0]) + 1:]]
+        assert any("ctrl+x down view subagents" in t for t in after), "the hint follows the task row"
+        assert not any(x.kind == "tool" and "echo hi" in x.label for x in blocks), "the child's own tools stay in the child"
+
+    run_app(b, body)
+
+
+def test_ctrl_x_down_opens_the_child_and_up_comes_back(daemon_home, tmp_path) -> None:
+    _textual()
+    home, fake = daemon_home(ONE_CHILD)
+    b = start_backend(home, tmp_path)
+
+    async def body(app, pilot):
+        await type_line(app, pilot, "find it")
+        assert await wait_for(pilot, lambda: "all done" in app._transcript)
+        main = app.screen
+        await pilot.press("ctrl+x", "down")
+        assert await wait_for(pilot, lambda: in_child_view(app)), "ctrl+x down opens the child"
+        assert await wait_for(pilot, lambda: "found it" in view_text(app)), view_text(app)
+        text = view_text(app)
+        assert "look for the thing" in text and "echo hi" in text, "the child's transcript: its prompt, its tools, its answer"
+        assert "all done" not in text
+        assert not app.screen.query("#input"), "a child view has no prompt"
+        assert b.view_id is not None and b.view_id != b.session_id
+        assert await wait_for(pilot, lambda: re.search(r"\b12\b", footer(app))), footer(app)
+        f = footer(app)
+        assert "Explore" in f and "(1 of 1)" in f and "Parent" in f and "Prev" in f and "Next" in f, f
+        await pilot.press("up")
+        assert await wait_for(pilot, lambda: app.screen is main), "up returns to the parent"
+        assert b.view_id is None
+        assert "all done" in view_text(app)
+
+    run_app(b, body)
+
+
+def test_left_and_right_step_through_siblings(daemon_home, tmp_path) -> None:
+    _textual()
+    home, fake = daemon_home([
+        {"tool_calls": [task_call("t1", "Job A", "do job alpha"), task_call("t2", "Job B", "do job beta")]},
+        {"content": "finished"},
+        {"content": "finished"},
+        {"content": "both done"},
+    ])
+    b = start_backend(home, tmp_path)
+
+    def prompt_shown(app) -> str:
+        text = view_text(app)
+        return "alpha" if "do job alpha" in text else "beta" if "do job beta" in text else ""
+
+    async def body(app, pilot):
+        await type_line(app, pilot, "do both")
+        assert await wait_for(pilot, lambda: "both done" in app._transcript)
+        await pilot.press("ctrl+x", "down")
+        assert await wait_for(pilot, lambda: in_child_view(app) and "(2 of 2)" in footer(app)), "the newest child first"
+        assert await wait_for(pilot, lambda: prompt_shown(app))
+        newest = prompt_shown(app)
+        await pilot.press("right")
+        assert await wait_for(pilot, lambda: "(1 of 2)" in footer(app) and prompt_shown(app) not in ("", newest)), "right wraps to the first"
+        await pilot.press("right")
+        assert await wait_for(pilot, lambda: "(2 of 2)" in footer(app) and prompt_shown(app) == newest)
+        await pilot.press("left")
+        assert await wait_for(pilot, lambda: "(1 of 2)" in footer(app))
+        await pilot.press("up")
+        assert await wait_for(pilot, lambda: not in_child_view(app))
+
+    run_app(b, body)
+
+
+def test_a_running_child_streams_live_into_its_view(daemon_home, tmp_path) -> None:
+    _textual()
+    home, fake = daemon_home([
+        {"tool_calls": [task_call("t1", "Wait a bit", "sleep then answer")]},
+        {"tool_calls": [terminal("c1", "sleep 2; echo slept")]},
+        {"content": "woke up"},
+        {"content": "all done"},
+    ])
+    b = start_backend(home, tmp_path)
+
+    async def body(app, pilot):
+        await type_line(app, pilot, "go")
+        assert await wait_for(pilot, lambda: any("sleep 2" in (r.detail or "") for r in task_rows(app))), \
+            [r.detail for r in task_rows(app)]
+        assert "view subagents" in static_text(app.query_one("#status-right")), "the status row names the shortcut while a child runs"
+        main = app.screen
+        await pilot.press("ctrl+x", "down")
+        assert await wait_for(pilot, lambda: in_child_view(app))
+        assert await wait_for(pilot, lambda: "sleep then answer" in view_text(app))
+        assert await wait_for(pilot, lambda: "woke up" in view_text(app), timeout=15), "the child's turn streams into its view"
+        await pilot.press("up")
+        assert await wait_for(pilot, lambda: app.screen is main)
+        assert await wait_for(pilot, lambda: "all done" in view_text(app)), "the parent's feed kept up underneath"
+        assert "view subagents" not in static_text(app.query_one("#status-right"))
+
+    run_app(b, body)
+
+
+def test_a_childs_approval_names_the_subagent(daemon_home, tmp_path) -> None:
+    _textual()
+    f = tmp_path / "f.txt"
+    f.write_text("x", encoding="utf-8")
+    f.chmod(0o644)
+    home, fake = daemon_home([
+        {"tool_calls": [task_call("t1", "Open it up", "make f.txt world-writable", "general")]},
+        {"tool_calls": [terminal("c1", "chmod 777 f.txt")]},
+        {"content": "changed"},
+        {"content": "all done"},
+    ])
+    b = start_backend(home, tmp_path)
+
+    async def body(app, pilot):
+        await type_line(app, pilot, "go")
+        assert await wait_for(pilot, lambda: isinstance(app.screen, _tui.ChoiceModal)), "the approval modal never opened"
+        title = app.screen._title + str(getattr(app.screen, "_detail", ""))
+        assert "chmod 777" in title and app.screen._title.startswith("General Task — Open it up: "), title
+        await pilot.press("1")  # once
+        assert await wait_for(pilot, lambda: "all done" in app._transcript)
+        assert f.stat().st_mode & 0o777 == 0o777
+
+    run_app(b, body)
+
+
+def test_a_resumed_session_shows_its_task_rows_and_children(daemon_home, tmp_path) -> None:
+    _textual()
+    home, fake = daemon_home(ONE_CHILD)
+    b = start_backend(home, tmp_path)
+    sid = []
+
+    async def first(app, pilot):
+        await type_line(app, pilot, "find it")
+        assert await wait_for(pilot, lambda: "all done" in app._transcript)
+        sid.append(b.session_id)
+
+    run_app(b, first)
+    b2 = start_backend(home, tmp_path, resume=sid[0])
+
+    async def again(app, pilot):
+        assert await wait_for(pilot, lambda: task_rows(app))
+        row = task_rows(app)[0]
+        assert row.label == "Explore Task — Find the thing"
+        assert await wait_for(pilot, lambda: re.fullmatch(r"↳ 1 toolcall · \d+(ms|\.\ds)", row.detail or "")), row.detail
+        assert await wait_for(pilot, lambda: "ctrl+x down view subagents" in view_text(app)), view_text(app)
+        await pilot.press("ctrl+x", "down")
+        assert await wait_for(pilot, lambda: in_child_view(app) and "found it" in view_text(app))
+
+    run_app(b2, again)
