@@ -4,14 +4,15 @@
   perSystem =
     { pkgs, system, lib, ... }:
     let
-      # The Go daemon. Only daemon/ is the source, so Python changes never
-      # rebuild it. Pure Go (CGO off); tests run in the check phase.
+      # The Go daemon and the son-of-anton command (son-of-anton.nix wraps both).
+      # Only daemon/ is the source, so Python changes never rebuild it.
+      # Pure Go (CGO off); tests run in the check phase.
       soa-d = pkgs.buildGoModule rec {
         pname = "soa-d";
         version = "0.0.1";
 
         src = lib.cleanSource ../daemon;
-        subPackages = [ "cmd/soa-d" ];
+        subPackages = [ "cmd/soa-d" "cmd/son-of-anton" ];
         env.CGO_ENABLED = "0";
 
         # The terminal and search tools shell out to bash and ripgrep (and
@@ -38,7 +39,7 @@
 
       package = pkgs.callPackage ./son-of-anton.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
-        # on the wrapper PATH: `son-of-anton` (TUI, -q, -z) runs on the daemon
+        # `son-of-anton` is its Go command; the TUI, -q and -z run on the daemon
         inherit soa-d;
       };
     in

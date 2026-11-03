@@ -1,7 +1,8 @@
-# nix/son-of-anton.nix — Son of Anton Agent package (Python only)
+# nix/son-of-anton.nix — Son of Anton Agent package
 #
-# The fork ships no JS surfaces, so this is a single sealed uv2nix venv plus
-# a wrapper that exposes the bundled locales.
+# The Go command and daemon (packages.nix), plus a sealed uv2nix venv for the
+# physics mode and the daemon's execute_code, and the wrappers that put the
+# runtime tools on PATH and expose the bundled locales.
 #
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
 # Override the tools on the wrapper's PATH with
@@ -117,33 +118,11 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p $out/share/son-of-anton $out/bin
     ln -s ${bundledLocales} $out/share/son-of-anton/locales
 
-    # Shell completions, generated from the live argparse tree at build time
-    # rather than checked in: a hand-maintained list goes stale the first time
-    # a subcommand is added, and this one cannot. Generated from the SEALED
-    # venv, not the wrapper, because the wrapper does not exist yet; the
-    # command tree is identical either way.
-    #
-    # HOME and SON_OF_ANTON_HOME are a scratch dir: the CLI must not create
-    # state outside the build sandbox. If generation fails or yields nothing,
-    # fail the build rather than ship a package whose completions vanished.
-    mkdir -p $out/share/bash-completion/completions \
-             $out/share/zsh/site-functions \
-             $out/share/fish/vendor_completions.d
-    export HOME=$(mktemp -d)
-    export SON_OF_ANTON_HOME=$HOME/.son-of-anton
-    ${sonOfAntonVenv}/bin/son-of-anton completion bash \
-      > $out/share/bash-completion/completions/son-of-anton
-    ${sonOfAntonVenv}/bin/son-of-anton completion zsh \
-      > $out/share/zsh/site-functions/_son-of-anton
-    ${sonOfAntonVenv}/bin/son-of-anton completion fish \
-      > $out/share/fish/vendor_completions.d/son-of-anton.fish
-    for f in $out/share/bash-completion/completions/son-of-anton \
-             $out/share/zsh/site-functions/_son-of-anton \
-             $out/share/fish/vendor_completions.d/son-of-anton.fish; do
-      test -s "$f" || { echo "empty completion script: $f" >&2; exit 1; }
-    done
-
-    makeWrapper ${sonOfAntonVenv}/bin/son-of-anton $out/bin/son-of-anton \
+    # `son-of-anton` is the Go command. It execs soa-d (the wrapped one below)
+    # and, for `problem`, the sealed venv's python (the physics mode, until its
+    # Go port). The shell completions the Python generated have no replacement.
+    makeWrapper ${soa-d}/bin/son-of-anton $out/bin/son-of-anton \
+      --set SOA_D_BIN $out/bin/soa-d \
       --suffix PATH : "${runtimePath}" \
       --set SON_OF_ANTON_BUNDLED_LOCALES $out/share/son-of-anton/locales \
       --set-default SON_OF_ANTON_BIN $out/bin/son-of-anton \

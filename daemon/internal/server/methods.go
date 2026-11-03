@@ -36,7 +36,7 @@ func (s *Server) dispatch(c *conn, req *request) (any, *rpcError) {
 	// driver-only methods check the role.
 	driverOnly := true
 	switch req.Method {
-	case "hello", "session.list", "session.create", "session.attach", "session.history", "session.detach", "session.children", "model.list":
+	case "hello", "session.list", "session.create", "session.attach", "session.history", "session.detach", "session.children", "session.rename", "session.delete", "model.list":
 		driverOnly = false
 	case "turn.send", "turn.interrupt", "queue.steer", "queue.remove", "queue.clear",
 		"approval.answer", "question.answer", "session.set", "command.run":
@@ -115,6 +115,13 @@ func (s *Server) dispatch(c *conn, req *request) (any, *rpcError) {
 			return bad(err)
 		}
 		return s.children(sp.Session)
+	case "session.rename":
+		return s.rename(req.Params, bad)
+	case "session.delete":
+		if err := json.Unmarshal(req.Params, &sp); err != nil {
+			return bad(err)
+		}
+		return s.deleteSession(sp.Session)
 	case "session.detach":
 		if err := json.Unmarshal(req.Params, &sp); err != nil {
 			return bad(err)

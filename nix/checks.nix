@@ -426,8 +426,8 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           set -euo pipefail
           test -d ${son-of-anton}/share/son-of-anton/locales \
             || (echo "FAIL: bundled locales missing"; exit 1)
-          ${son-of-anton}/bin/son-of-anton --help 2>&1 | grep -q "gateway" \
-            || (echo "FAIL: gateway subcommand missing"; exit 1)
+          ${son-of-anton}/bin/son-of-anton --help 2>&1 | grep -q "sessions" \
+            || (echo "FAIL: sessions subcommand missing"; exit 1)
           echo "PASS: bundled locales present, binary works"
           mkdir -p $out
         '';

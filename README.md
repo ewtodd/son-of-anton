@@ -74,6 +74,19 @@ launch starts the new daemon.
   [--reasoning LEVEL] [--yolo]` opens the terminal client on the daemon (it
   starts the daemon when nothing listens); `son-of-anton` with no query runs
   it with the same flags.
+- `son-of-anton` is a small Go program (`daemon/cmd/son-of-anton`) that runs
+  `soa-d` for the above: no words is the terminal UI, words (or `-q`,
+  `--query-file FILE|-`) a query, `-z` a one-shot. Flags: `-m`, `--reasoning`,
+  `--yolo`, `--home DIR`; the UI also takes `--in DIR`, `-c`, `--resume`.
+  `--version` prints the version.
+- `son-of-anton status` shows, without starting a daemon, whether one runs
+  (pid, version), what serves it, Signal and cron, the models and the session
+  counts.
+- `son-of-anton sessions [list] [--kind KIND]... [--all] [--limit N]` lists the
+  interactive and worker sessions, newest first; `sessions rename ID TITLE...`,
+  `sessions delete ID [--yes]` (refused while the session is in use) and
+  `sessions import ARGS...` (`soa-d import`'s flags) manage them.
+- `son-of-anton problem ARGS...` is the physics mode (Python until its Go port).
 - A message typed while a turn runs is queued in the daemon and survives a
   restart.
 - The agent can hand work to subagents (`explore` searches and reads; `general`

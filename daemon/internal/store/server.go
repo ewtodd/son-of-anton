@@ -423,3 +423,59 @@ func (s *Store) RenameModel(ctx context.Context, old, new string) (int64, error)
 	}
 	return res.RowsAffected()
 }
+
+// SessionTree is a session's id and those of all its descendants (parent
+// first). ErrNotFound when the session does not exist.
+func (s *Store) SessionTree(ctx context.Context, id string) ([]string, error) {
+	if _, err := s.Session(ctx, id); err != nil {
+		return nil, err
+	}
+	ids := []string{id}
+	for i := 0; i < len(ids); i++ {
+		rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions WHERE parent_id = ? ORDER BY rowid`, ids[i])
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var kid string
+			if err := rows.Scan(&kid); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			ids = append(ids, kid)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
+}
+
+// DeleteSessions removes the sessions and everything stored for them (messages
+// and their search entries, compactions, queue, relay bindings, the foreign
+// import record), in one transaction.
+func (s *Store) DeleteSessions(ctx context.Context, ids []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		for _, q := range []string{
+			`INSERT INTO messages_fts (messages_fts, rowid, content) SELECT 'delete', rowid, content FROM messages WHERE session_id = ?1`,
+			`DELETE FROM messages WHERE session_id = ?1`,
+			`DELETE FROM compactions WHERE session_id = ?1`,
+			`DELETE FROM queue WHERE session_id = ?1`,
+			`DELETE FROM chats WHERE session_id = ?1`,
+			`DELETE FROM relay_bindings WHERE session_id = ?1`,
+			`DELETE FROM foreign_imports WHERE session_id = ?1`,
+			`DELETE FROM sessions WHERE id = ?1`,
+		} {
+			if _, err := tx.ExecContext(ctx, q, id); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
