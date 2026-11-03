@@ -155,7 +155,7 @@ func TestAChatMessageGetsAnAnswer(t *testing.T) {
 	}
 	names := toolNames(t, fake.Request(0))
 	sort.Strings(names)
-	if strings.Join(names, ",") != "clarify,memory,patch,read_file,relay,search_files,session_search,todo,web_extract,web_search,write_file" {
+	if strings.Join(names, ",") != "clarify,cronjob,memory,patch,read_file,relay,search_files,session_search,todo,vision_analyze,web_extract,web_search,write_file" {
 		t.Fatalf("a chat's tools = %v", names)
 	}
 	var start, stop bool
