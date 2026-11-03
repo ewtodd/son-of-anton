@@ -606,7 +606,13 @@ func TestTheFrameFitsEverySize(t *testing.T) {
 		if !strings.Contains(s, "THE END") {
 			t.Fatalf("at %dx%d the newest output is not in view:\n%s", sz[0], sz[1], s)
 		}
-		if sz[0] <= 100 && !strings.Contains(lineWith(s, "$ echo"), "…") {
+		// On a short screen the answer pushes the tool row out of view; where
+		// it shows, it is one line, cut. At 100x30 it must show.
+		row := lineWith(s, "$ echo")
+		if sz == [2]int{100, 30} && row == "" {
+			t.Fatalf("at 100x30 the tool row is not in view:\n%s", s)
+		}
+		if sz[0] <= 100 && row != "" && !strings.Contains(row, "…") {
 			t.Fatalf("at %dx%d the tool row is not cut to one line:\n%s", sz[0], sz[1], s)
 		}
 	}

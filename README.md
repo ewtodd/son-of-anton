@@ -68,6 +68,10 @@ launch starts the new daemon.
   is lean (no identity or memory, only rules marked `delegated`). Both take
   `-m MODEL`, `--reasoning LEVEL` and `--yolo`; without `--yolo` a dangerous
   command is denied, since nobody is there to approve it.
+- `soa-d tui [--home DIR] [--in DIR] [-c | --resume ID|latest] [-m MODEL]
+  [--reasoning LEVEL] [--yolo]` opens the Go terminal client on the daemon (it
+  starts the daemon when nothing listens). It is opt-in while the Textual TUI
+  is the default: `son-of-anton` still opens that one.
 - A message typed while a turn runs is queued in the daemon and survives a
   restart.
 - The agent can hand work to subagents (`explore` searches and reads; `general`

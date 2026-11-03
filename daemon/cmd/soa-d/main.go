@@ -36,6 +36,7 @@ usage:
   soa-d query [--home DIR] [--model M] [--reasoning LEVEL] [--yolo] [--system FILE] [--memory | --no-memory] PROMPT
   soa-d oneshot [--home DIR] [--model M] [--reasoning LEVEL] [--yolo] [--system FILE] [--memory | --no-memory] [--usage-file PATH] PROMPT
   soa-d serve [--home DIR]
+  soa-d tui [--home DIR] [--in DIR] [-c | --resume ID|latest] [-m MODEL] [--reasoning LEVEL] [--yolo]
   soa-d import --from DIR [--home DIR]
   soa-d import (--from-claude [ROOT] | --from-codex [ROOT] | --from-opencode [DB]) [--home DIR] [--force]
   soa-d version
@@ -63,6 +64,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runImport(args[1:], stdout, stderr)
 	case "serve":
 		return runServe(args[1:], stderr)
+	case "tui":
+		return runTUI(args[1:], stderr)
 	default:
 		fmt.Fprint(stderr, usage)
 		return 2
