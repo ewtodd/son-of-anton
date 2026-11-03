@@ -41,6 +41,7 @@ type App struct {
 	lastScreen  string
 	lastStyled  string
 	lastSession string
+	interactive bool // the program owns a terminal (so an editor can take it over)
 }
 
 func (a *App) send(msg tea.Msg) { a.p.Send(msg) }
@@ -82,7 +83,7 @@ func Start(c *client.Client, o Options, in io.Reader, out io.Writer) (*App, erro
 		res.Session = sr.Session
 	}
 
-	a := &App{done: make(chan struct{})}
+	a := &App{done: make(chan struct{}), interactive: in != nil}
 	m := newModel(a, c, o, res, resumed, startTheme(o, out))
 	opts := []tea.ProgramOption{tea.WithOutput(out)}
 	if in == nil {

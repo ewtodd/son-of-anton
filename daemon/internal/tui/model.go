@@ -54,9 +54,10 @@ type model struct {
 	cl   *client.Client
 	w, h int
 
-	sess  sessState
-	queue []string
-	role  string
+	sess   sessState
+	queue  []string
+	qitems []queueItem
+	role   string
 
 	feed       *feed
 	curAsst    *block
@@ -77,6 +78,16 @@ type model struct {
 	sbForced *bool // set by the first ctrl+b; after that a resize never shows or hides the sidebar
 
 	modals []*modal
+	picker *picker
+
+	// completion: the open list, the models fetched for this prompt (gen says
+	// which prompt), and whether a tab waits for them
+	comp          *completion
+	models        *modelList
+	modelsGen     int
+	modelsPending bool
+	tabPending    bool
+	editing       bool
 	// held are events of other sessions: the one being switched to sends its
 	// live tail right after the attach reply, before the switch is applied.
 	held []client.Event
@@ -121,8 +132,9 @@ func (m *model) Init() tea.Cmd { return m.afterAttach() }
 func (m *model) adopt(res attachResult, resumed bool) tea.Cmd {
 	m.sess = parseSession(res.Session, sessState{})
 	m.role = res.Role
-	m.queue = queueTexts(res.Queue)
-	m.modals = nil
+	m.queue, m.qitems = queueTexts(res.Queue), res.Queue
+	m.modals, m.picker = nil, nil
+	m.resetPrompt()
 	m.curAsst, m.curReason = nil, nil
 	m.lastSeq = 0
 	m.follow = true
@@ -426,7 +438,7 @@ func (m *model) onEvent(ev client.Event) tea.Cmd {
 				}
 			}
 		}
-		m.queue = queueTexts(items)
+		m.queue, m.qitems = queueTexts(items), items
 	case "role":
 		m.role = str(p, "as")
 		if m.role == "viewer" {
@@ -457,7 +469,7 @@ func (m *model) finishTools() {
 }
 
 func (m *model) onLost() tea.Cmd {
-	m.modals = nil
+	m.modals, m.picker = nil, nil
 	m.finishTools()
 	m.sess.Status = "idle"
 	m.flush()
@@ -524,7 +536,7 @@ func (m *model) onReconnected(msg reconnectedMsg) tea.Cmd {
 		m.drawHistory(attachResult{Messages: msg.res.Messages, Compactions: msg.res.Compactions}, false)
 	}
 	m.sess = parseSession(msg.res.Session, m.sess)
-	m.queue = queueTexts(msg.res.Queue)
+	m.queue, m.qitems = queueTexts(msg.res.Queue), msg.res.Queue
 	m.role = msg.res.Role
 	m.feed.note("reconnected to soa-d", true)
 	return m.startTick()

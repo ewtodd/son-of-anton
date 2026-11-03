@@ -74,6 +74,7 @@ func (m *model) submit() tea.Cmd {
 	}
 	m.record(m.ta.Value())
 	m.ta.Reset()
+	m.resetPrompt()
 	return m.dispatch(text)
 }
 
@@ -155,25 +156,6 @@ func runBang(cwd, line string, send func(tea.Msg)) {
 
 // ---- slash commands ----
 
-const helpText = `commands:
-  /help — show this list
-  /model [name] — show the models or switch to one
-  /reasoning [level] — show or set the reasoning effort
-  /perm [mode] — show or set the permission mode
-  /new — start a new session (/reset, /clear)
-  /resume [id] — list sessions or switch to one (/sessions)
-  /pickup ID — take over a worker's session
-  /commit [args] — commit the work with a model turn
-  /stop — kill background processes
-  /compact [focus | --preview] — summarize older rows
-  /sendnow [text] — steer the running turn now
-  /sendall — send everything queued now
-  /cancel — drop the queued messages
-  /skin [name] — show the skins or switch to one
-  /status — session, model, mode and usage
-  /quit — leave (/exit, /q)
-  !cmd runs a shell command here · :q quits`
-
 func (m *model) command(name, args, line string) tea.Cmd {
 	switch name {
 	case "quit", "exit", "q":
@@ -186,28 +168,16 @@ func (m *model) command(name, args, line string) tea.Cmd {
 	}
 	switch name {
 	case "help":
-		m.feed.note(helpText, false)
+		lines := strings.Split(helpText(), "\n") // a row is cut, not wrapped, so the list fits a screen
+		for i, l := range lines {
+			lines[i] = ellipsize(l, max(m.contentWidth()-6, 1))
+		}
+		m.feed.note(strings.Join(lines, "\n"), false)
 	case "model":
 		if args != "" {
 			return m.set(map[string]any{"model": args}, "model: "+args+" (from the next turn)", name)
 		}
-		var res modelList
-		return call(c, 15*time.Second, "model.list", map[string]any{"session": sid}, &res, func(m *model, err error) tea.Cmd {
-			if err != nil {
-				fail(m, err)
-				return nil
-			}
-			lines := []string{"model: " + res.Current}
-			for _, mod := range res.Models {
-				if mod.Name == res.Current {
-					lines = append(lines, "  ● "+mod.Name)
-				} else {
-					lines = append(lines, "    "+mod.Name)
-				}
-			}
-			m.feed.note(strings.Join(lines, "\n"), false)
-			return nil
-		})
+		return m.modelPicker()
 	case "reasoning":
 		if args != "" {
 			effort := args
@@ -216,29 +186,7 @@ func (m *model) command(name, args, line string) tea.Cmd {
 			}
 			return m.set(map[string]any{"reasoning_effort": effort}, "reasoning: "+args+" (from the next turn)", name)
 		}
-		cur, mdl := m.sess.Effort, m.sess.Model
-		var res modelList
-		return call(c, 15*time.Second, "model.list", map[string]any{"session": sid}, &res, func(m *model, err error) tea.Cmd {
-			if err != nil {
-				fail(m, err)
-				return nil
-			}
-			if cur == "" {
-				cur = "default"
-			}
-			var efforts []string
-			for _, mod := range res.Models {
-				if mod.Name == mdl || (mdl == "" && mod.Name == res.Current) {
-					efforts = mod.Efforts
-				}
-			}
-			if len(efforts) == 0 {
-				m.feed.note(modelOr(mdl, res.Current)+" has no configured reasoning levels", false)
-			} else {
-				m.feed.note("reasoning: "+cur+"  ("+strings.Join(efforts, " | ")+")", false)
-			}
-			return nil
-		})
+		return m.reasoningPicker()
 	case "perm":
 		if args != "" {
 			return m.set(map[string]any{"mode": args}, "permission mode: "+args, name)
@@ -259,30 +207,11 @@ func (m *model) command(name, args, line string) tea.Cmd {
 		if args != "" {
 			return m.switchSession(func(context.Context, *client.Client) (string, error) { return args, nil }, true, name)
 		}
-		var res struct {
-			Sessions []map[string]any `json:"sessions"`
-		}
-		return call(c, 15*time.Second, "session.list", map[string]any{"limit": 10}, &res, func(m *model, err error) tea.Cmd {
-			if err != nil {
-				fail(m, err)
-				return nil
-			}
-			if len(res.Sessions) == 0 {
-				m.feed.note("no sessions to resume", false)
-				return nil
-			}
-			var lines []string
-			for _, s := range res.Sessions {
-				title := str(s, "title")
-				if title == "" {
-					title = "untitled"
-				}
-				lines = append(lines, "  "+str(s, "id")+"  "+title+"  ·  "+str(s, "cwd"))
-			}
-			m.feed.note(strings.Join(lines, "\n"), false)
-			return nil
-		})
+		return m.sessionPicker(name, nil)
 	case "pickup":
+		if args == "" {
+			return m.sessionPicker(name, []string{"worker"})
+		}
 		return m.switchSession(func(ctx context.Context, c *client.Client) (string, error) {
 			var res struct {
 				Sessions []map[string]any `json:"sessions"`
@@ -374,16 +303,7 @@ func (m *model) command(name, args, line string) tea.Cmd {
 				return nil
 			})
 	case "cancel":
-		dropped := len(m.queue)
-		return call(c, 15*time.Second, "queue.clear", map[string]any{"session": sid}, nil,
-			func(m *model, err error) tea.Cmd {
-				if err != nil {
-					fail(m, err)
-				} else {
-					m.feed.note(fmt.Sprintf("dropped %d queued message(s)", dropped), false)
-				}
-				return nil
-			})
+		return m.cancelPicker()
 	case "skin":
 		m.skinCommand(args)
 	case "status":

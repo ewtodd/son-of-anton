@@ -100,13 +100,20 @@ func b2i(b bool) int {
 
 // feedRows is the number of rows left for the feed, and the dock's height.
 func (m *model) feedRows() (dock, rows int) {
-	dock = 8 + m.taRows() + m.queueRows()
+	dock = 8 + m.taRows() + m.queueRows() + m.compRows()
 	return dock, max(m.h-dock, 0)
 }
 
 func (m *model) statusLine(cw int, now time.Time) string {
 	th := m.th
 	var left, right []seg
+	idleRight := func() {
+		if m.sess.CtxLen > 0 {
+			pct := (100*m.sess.CtxTokens + m.sess.CtxLen/2) / m.sess.CtxLen
+			right = append(right, seg{fmt.Sprintf("%d%% context  ·  ", pct), th.mut})
+		}
+		right = append(right, seg{"/help", th.bld}, seg{" commands", th.plain})
+	}
 	if m.busy() {
 		label := "thinking"
 		for i := len(m.feed.blocks) - 1; i >= 0; i-- {
@@ -123,11 +130,10 @@ func (m *model) statusLine(cw int, now time.Time) string {
 		right = []seg{{"ctrl+c", th.bld}, {" interrupt", th.plain}}
 	} else {
 		left = []seg{{tilde(m.sess.Cwd), th.plain}}
-		if m.sess.CtxLen > 0 {
-			pct := (100*m.sess.CtxTokens + m.sess.CtxLen/2) / m.sess.CtxLen
-			right = append(right, seg{fmt.Sprintf("%d%% context  ·  ", pct), th.mut})
+		if m.editing {
+			left = []seg{{spinnerFrame(m.spin), th.bld}, {" ", th.plain}, {"running editor", th.plain}}
 		}
-		right = append(right, seg{"/help", th.bld}, seg{" commands", th.plain})
+		idleRight()
 	}
 	var suffix []seg
 	if n := len(m.queue); n > 0 {
@@ -217,6 +223,7 @@ func (m *model) render() []string {
 		dock = append(dock, "")
 		dock = append(dock, q...)
 	}
+	dock = append(dock, m.compLines(cw)...)
 	// The prompt frame, from its first rail to its last, is on the surface.
 	frame := func(l string) string {
 		if th.surface == nil {
@@ -225,7 +232,22 @@ func (m *model) render() []string {
 		return th.paint(l, th.surface, cw)
 	}
 	dock = append(dock, "", frame(rail))
-	for _, l := range strings.Split(m.ta.View(), "\n") {
+	// The cursor at the end of a draft is drawn here, as a block, not by the text
+	// area as a reversed space: a trailing space then is only ever one typed.
+	end := m.atEnd() && m.ta.Value() != ""
+	m.ta.Cursor.Blink = end
+	taLines := strings.Split(m.ta.View(), "\n")
+	if sg := m.suggestion(); sg != "" && ta == 1 {
+		if row := m.suggestRow(sg, max(cw-3, 1)); row != "" {
+			taLines[0] = row
+			end = false
+		}
+	}
+	if end {
+		last := len(taLines) - 1
+		taLines[last] = putBlock(taLines[last], m.ta.LineInfo().CharOffset)
+	}
+	for _, l := range taLines {
 		dock = append(dock, frame(rail+"  "+l))
 	}
 	dock = append(dock, frame(rail), frame(rail+"  "+m.metaLine(max(cw-3, 0))), frame(rail), "", m.statusLine(cw, now), "")
@@ -251,9 +273,15 @@ func (m *model) render() []string {
 	}
 	lines = append(lines, dock...)
 
-	if len(m.modals) > 0 {
-		box := m.modals[0].view(cw, th)
-		start := max((rows-len(box))/2, 0)
+	var box []string
+	switch {
+	case len(m.modals) > 0:
+		box = m.modals[0].view(cw, th)
+	case m.picker != nil:
+		box = m.picker.view(cw, h, th)
+	}
+	if box != nil {
+		start := min(max((rows-len(box))/2, 0), max(len(lines)-len(box), 0))
 		bw := 0
 		for _, l := range box {
 			bw = max(bw, lipgloss.Width(l))
@@ -382,4 +410,26 @@ func (m *model) sidebar(h int, now time.Time) []string {
 		rows[i] = th.paint(border+"  "+content, th.panel, sidebarWidth)
 	}
 	return rows
+}
+
+// suggestRow is the draft's row with the history suggestion after the
+// cursor: the cursor sits on the suggestion's first character. "" when it
+// does not fit on the row.
+func (m *model) suggestRow(sg string, w int) string {
+	v := m.ta.Value()
+	sg = cut(sg, max(w-textWidth(v), 0))
+	r := []rune(sg)
+	if len(r) == 0 {
+		return ""
+	}
+	cursor := m.th.r.NewStyle().Reverse(true).Render(string(r[0]))
+	return v + cursor + m.th.mut.Render(string(r[1:]))
+}
+
+// putBlock draws a block at column c of row, over what is there.
+func putBlock(row string, c int) string {
+	if w := ansi.StringWidth(row); w <= c {
+		row += strings.Repeat(" ", c+1-w)
+	}
+	return ansi.Truncate(row, c, "") + "█" + ansi.TruncateLeft(row, c+1, "")
 }

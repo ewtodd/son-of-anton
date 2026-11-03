@@ -29,9 +29,37 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 	if len(m.modals) > 0 && s != "ctrl+c" && s != "ctrl+q" {
 		return m.modalKey(k)
 	}
+	if m.picker != nil && s != "ctrl+c" && s != "ctrl+q" && s != "ctrl+p" {
+		return m.pickerKey(k)
+	}
+	if m.comp != nil {
+		if cmd, ok := m.compKey(s); ok {
+			return cmd
+		}
+	}
 	switch s {
 	case "ctrl+c":
+		if m.picker != nil {
+			m.picker = nil
+			return nil
+		}
 		return m.ctrlC()
+	case "ctrl+p":
+		if m.picker == nil {
+			m.palettePicker()
+		} else if m.picker.palette {
+			m.picker = nil
+		}
+		return nil
+	case "ctrl+g":
+		return m.editor()
+	case "tab":
+		return m.tab()
+	case "right":
+		if sg := m.suggestion(); sg != "" {
+			m.ta.SetValue(m.ta.Value() + sg)
+			return m.refreshComp()
+		}
 	case "ctrl+q":
 		return m.quit(false)
 	case "esc":
@@ -81,7 +109,7 @@ func (m *model) edit(k tea.KeyMsg) tea.Cmd {
 	m.ta.SetHeight(m.taCap()) // so a key never scrolls a draft that will fit
 	var cmd tea.Cmd
 	m.ta, cmd = m.ta.Update(k)
-	return cmd
+	return tea.Batch(cmd, m.refreshComp())
 }
 
 func (m *model) onFirstRow() bool {
@@ -138,6 +166,7 @@ func (m *model) ctrlC() tea.Cmd {
 	if m.ta.Value() != "" {
 		m.ta.Reset()
 		m.histPos = len(m.hist)
+		m.resetPrompt()
 		return nil
 	}
 	return m.quit(false)
