@@ -24,7 +24,9 @@ CREATE TABLE sessions (
 	model TEXT, system_prompt TEXT, parent_session_id TEXT, started_at REAL NOT NULL, ended_at REAL, end_reason TEXT,
 	input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0,
 	reasoning_tokens INTEGER DEFAULT 0, api_call_count INTEGER DEFAULT 0, last_prompt_tokens INTEGER DEFAULT 0,
-	cwd TEXT, title TEXT, title_source TEXT, origin_json TEXT, archived INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0);
+	cwd TEXT, title TEXT, title_source TEXT, origin_json TEXT, archived INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0,
+	system_prompt_hash TEXT REFERENCES system_prompts(hash));
+CREATE TABLE system_prompts (hash TEXT PRIMARY KEY, prompt TEXT NOT NULL);
 CREATE TABLE messages (
 	id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
 	tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL NOT NULL, reasoning TEXT, reasoning_content TEXT,
@@ -50,10 +52,24 @@ func pyHome(t *testing.T) string {
 	}
 	session := func(id, source, key, chatType, chatID, title string, started float64, msgs ...pyMsg) {
 		t.Helper()
-		_, err := db.Exec(`INSERT INTO sessions (id, source, session_key, chat_type, chat_id, model, system_prompt, started_at, ended_at,
+		// The Python kept each prompt in system_prompts, by hash. Its stores
+		// from before that table kept it in the sessions column (the oneshot
+		// here), and some sessions have none (the cron here).
+		var inline, hash any
+		switch prompt := "the prompt of " + id; id {
+		case "20261006_100000_ffffffff":
+			inline = prompt
+		case "20261005_100000_eeeeeeee":
+		default:
+			hash = "h-" + id
+			if _, err := db.Exec(`INSERT INTO system_prompts (hash, prompt) VALUES (?, ?)`, hash, prompt); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, err := db.Exec(`INSERT INTO sessions (id, source, session_key, chat_type, chat_id, model, system_prompt, system_prompt_hash, started_at, ended_at,
 			input_tokens, output_tokens, cache_read_tokens, reasoning_tokens, api_call_count, last_prompt_tokens, cwd, title)
-			VALUES (?, ?, ?, ?, ?, 'auto', ?, ?, ?, 1000, 200, 300, 40, 5, 1234, '/home/u/proj', ?)`,
-			id, source, nullable(key), nullable(chatType), nullable(chatID), "the prompt of "+id, started, started+60, nullable(title))
+			VALUES (?, ?, ?, ?, ?, 'auto', ?, ?, ?, ?, 1000, 200, 300, 40, 5, 1234, '/home/u/proj', ?)`,
+			id, source, nullable(key), nullable(chatType), nullable(chatID), inline, hash, started, started+60, nullable(title))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -166,6 +182,20 @@ func TestImportCopiesThePythonSessions(t *testing.T) {
 		if err != nil || s.Kind != "chat" || s.Scope != "gateway" || s.Chat != stamp {
 			t.Fatalf("a Signal session = %+v, %v", s, err)
 		}
+		if s.Model != "" {
+			t.Fatalf("an imported chat follows the instance's chat model: %q", s.Model)
+		}
+		if p, err := st.Prompt(ctx, s.PromptHash); err != nil || p != "the prompt of "+id {
+			t.Fatalf("a chat's prompt = %q, %v", p, err)
+		}
+	}
+	if s, _ := st.Session(ctx, "20261006_100000_ffffffff"); s.PromptHash == "" {
+		t.Fatal("a prompt kept in the sessions column is imported")
+	} else if p, _ := st.Prompt(ctx, s.PromptHash); p != "the prompt of 20261006_100000_ffffffff" {
+		t.Fatalf("the oneshot's prompt = %q", p)
+	}
+	if s, _ := st.Session(ctx, "20261005_100000_eeeeeeee"); s.PromptHash != "" {
+		t.Fatalf("a session the Python kept no prompt for has none: %q", s.PromptHash)
 	}
 	if cur, err := st.ChatSession(ctx, stamp); err != nil || cur != "20261002_100000_bbbbbbbb" {
 		t.Fatalf("the chat continues in its newest session: %q, %v", cur, err)

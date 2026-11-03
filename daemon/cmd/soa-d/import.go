@@ -152,6 +152,7 @@ func importSessions(ctx context.Context, from, home string) (importResult, error
 		}
 		if ps.source == "signal" {
 			sess.Chat = chatStamp(ps)
+			sess.Model = "" // a chat follows the instance's chat model
 		}
 		present, err := st.ImportSession(ctx, sess, ps.prompt, msgs, store.ImportOpts{
 			MakeCurrent: sess.Chat != "" && newest[sess.Chat] == ps.id,
@@ -198,7 +199,17 @@ func unixTime(f float64) time.Time {
 }
 
 func readPySessions(ctx context.Context, db *sql.DB) ([]pySession, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id, source, session_key, chat_type, chat_id, model, system_prompt, started_at, ended_at,
+	// The Python kept prompts in system_prompts, by hash; the sessions column
+	// holds only those of a store from before that table.
+	prompt := `system_prompt`
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'system_prompts'`).Scan(&n); err != nil {
+		return nil, err
+	}
+	if n > 0 {
+		prompt = `COALESCE(NULLIF(system_prompt, ''), (SELECT p.prompt FROM system_prompts p WHERE p.hash = sessions.system_prompt_hash))`
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id, source, session_key, chat_type, chat_id, model, `+prompt+`, started_at, ended_at,
 		input_tokens, output_tokens, cache_read_tokens, reasoning_tokens, api_call_count, last_prompt_tokens, cwd, title, origin_json
 		FROM sessions ORDER BY started_at, id`)
 	if err != nil {

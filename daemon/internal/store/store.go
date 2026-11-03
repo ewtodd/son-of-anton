@@ -199,6 +199,11 @@ UPDATE schema_version SET version = 13;`,
 	// so every stored chat model was the config of its day.
 	`UPDATE sessions SET model = '', reasoning_effort = '' WHERE kind = 'chat';
 UPDATE schema_version SET version = 14;`,
+	// v15: the chats the Python import stored with the Python's model, before
+	// it stored them following: none has a prompt yet (the import missed the
+	// Python's), and none could choose a model since (loading them failed).
+	`UPDATE sessions SET model = '', reasoning_effort = '' WHERE kind = 'chat' AND COALESCE(prompt_hash, '') = '';
+UPDATE schema_version SET version = 15;`,
 }
 
 func migrate(db *sql.DB) error {
@@ -386,6 +391,14 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 		}
 	}
 	return sess, nil
+}
+
+// FillPrompt gives a session stored without a prompt the prompt hash; a
+// session that has one keeps it.
+func (s *Store) FillPrompt(ctx context.Context, id, hash string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET prompt_hash = ? WHERE id = ? AND COALESCE(prompt_hash, '') = ''`, hash, id)
+	return err
 }
 
 // PutPrompt stores a system prompt and returns its sha256 hex hash. The text

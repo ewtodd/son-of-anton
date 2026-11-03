@@ -149,12 +149,18 @@ func (r *Runner) NewSession(ctx context.Context, kind, cwd string) (*Session, er
 	return r.newSession(sess.ID, text, cwd)
 }
 
-// Resume loads a stored session and its prompt; the Prompt builder is never
-// called.
+// Resume loads a stored session and its prompt. The Prompt builder is called
+// only for a session stored without a prompt (imported from a store that
+// kept none): its prompt is built and stored then, once, as a new session's.
 func (r *Runner) Resume(ctx context.Context, id string) (*Session, error) {
 	sess, err := r.Store.Session(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if sess.PromptHash == "" {
+		if sess, err = r.fillPrompt(ctx, sess); err != nil {
+			return nil, err
+		}
 	}
 	text, err := r.Store.Prompt(ctx, sess.PromptHash)
 	if err != nil {
@@ -175,6 +181,26 @@ func (r *Runner) Resume(ctx context.Context, id string) (*Session, error) {
 		}
 	}
 	return s, nil
+}
+
+// fillPrompt builds and stores the prompt of a session stored without one and
+// returns the session as stored after (a prompt stored meanwhile wins).
+func (r *Runner) fillPrompt(ctx context.Context, sess store.Session) (store.Session, error) {
+	if r.Prompt == nil {
+		return sess, fmt.Errorf("agent: session %s has no stored prompt", sess.ID)
+	}
+	text, err := r.Prompt(ctx, sess)
+	if err != nil {
+		return sess, err
+	}
+	hash, err := r.Store.PutPrompt(ctx, text)
+	if err != nil {
+		return sess, err
+	}
+	if err := r.Store.FillPrompt(ctx, sess.ID, hash); err != nil {
+		return sess, err
+	}
+	return r.Store.Session(ctx, sess.ID)
 }
 
 func (r *Runner) newSession(id, prompt, cwd string) (*Session, error) {
