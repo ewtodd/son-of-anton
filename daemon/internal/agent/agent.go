@@ -77,6 +77,10 @@ type Runner struct {
 	WallChat string
 	// Web configures web_search and web_extract (tools.Env.Web).
 	Web *tools.Web
+	// Vision is where vision_analyze sends images (tools.Env.Vision); NoScripts
+	// is why execute_code refuses to run (tools.Env.NoScripts), "" to allow it.
+	Vision    *tools.Vision
+	NoScripts string
 	// Fallback, when set, takes a request that fails on Model after the
 	// client's own retries (before any output); the next request tries Model
 	// again. A session switched to another model has no fallback.
@@ -504,7 +508,8 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emitEvent func(Event), maxChars int) []store.Message {
 	base := tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
 		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval,
-		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, WallChat: s.runner.WallChat, Web: s.runner.Web, MCP: s.runner.MCP}
+		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, WallChat: s.runner.WallChat, Web: s.runner.Web, MCP: s.runner.MCP,
+		Vision: s.runner.Vision, NoScripts: s.runner.NoScripts}
 	var emitMu sync.Mutex
 	emit := func(e Event) {
 		emitMu.Lock()
@@ -516,6 +521,12 @@ func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls [
 		call := calls[i]
 		env := base
 		env.CallID = call.ID
+		// A script run by execute_code calls the session's tools through here.
+		env.Call = func(ctx context.Context, name string, args json.RawMessage) string {
+			inner := base
+			inner.CallID = call.ID
+			return s.runOneCall(ctx, &inner, provider.ToolCall{ID: call.ID, Function: provider.FunctionCall{Name: name, Arguments: string(args)}}, maxChars)
+		}
 		emit(Event{Kind: "tool.start", Tool: call.Function.Name, CallID: call.ID, Text: string(call.Function.Arguments)})
 		began := time.Now()
 		var result string

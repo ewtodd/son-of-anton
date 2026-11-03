@@ -175,6 +175,7 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 		MemoryApproval:  cfg.Memory.WriteApproval,
 		Web:             server.WebConfig(cfg, home),
 		MCP:             mcpm,
+		Vision:          server.VisionConfig(cfg, ep),
 		Prompt: func(_ context.Context, s store.Session) (string, error) {
 			if o.system != "" {
 				return string(system), nil
@@ -189,6 +190,9 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 			return r.Text, err
 		},
 	}}
+	if su.runner.Mode != approval.Yolo {
+		su.runner.NoScripts = "execute_code is not available in this run: nobody is here to approve a script. Start the run with --yolo to allow it."
+	}
 	// A full-memory query recalls; a lean oneshot never does.
 	if idx != nil {
 		su.idx = idx

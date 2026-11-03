@@ -237,6 +237,7 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 		MemoryApproval:  s.cfg.Memory.WriteApproval,
 		Web:             s.web,
 		MCP:             s.mcp,
+		Vision:          VisionConfig(s.cfg, ep),
 		Prompt: func(_ context.Context, ss store.Session) (string, error) {
 			r, err := prompt.Build(prompt.Options{
 				Home: s.opt.Home, Cwd: ss.Cwd, Scope: "common", Memory: true,

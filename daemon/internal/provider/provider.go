@@ -29,6 +29,37 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"`
+	// Parts, when set, are sent as the content in place of Content (a user
+	// message with an image, for vision_analyze); nothing else uses them.
+	Parts []ContentPart `json:"-"`
+}
+
+// ContentPart is one part of a message's content array.
+type ContentPart struct {
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+}
+
+// ImageURL is an image part's URL (a data: URL when the image is inline).
+type ImageURL struct {
+	URL string `json:"url"`
+}
+
+// MarshalJSON writes Parts as the content array; a message without parts
+// serializes exactly as before.
+func (m Message) MarshalJSON() ([]byte, error) {
+	if m.Parts == nil {
+		type plain Message
+		return json.Marshal(plain(m))
+	}
+	return json.Marshal(struct {
+		Role       string        `json:"role"`
+		Content    []ContentPart `json:"content"`
+		ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
+		ToolCallID string        `json:"tool_call_id,omitempty"`
+		Name       string        `json:"name,omitempty"`
+	}{m.Role, m.Parts, m.ToolCalls, m.ToolCallID, m.Name})
 }
 
 // ToolCall is one function call on an assistant message.

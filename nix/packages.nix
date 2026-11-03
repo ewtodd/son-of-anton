@@ -18,7 +18,7 @@
         # use coreutils); the wrapper puts them on PATH at run time and the
         # check phase needs them too.
         nativeBuildInputs = [ pkgs.makeWrapper pkgs.bash pkgs.ripgrep pkgs.coreutils ];
-        nativeCheckInputs = [ pkgs.bash pkgs.ripgrep pkgs.coreutils pkgs.git ];
+        nativeCheckInputs = [ pkgs.bash pkgs.ripgrep pkgs.coreutils pkgs.git pkgs.python3 ];
 
         # The contract tests live in internal/*, which subPackages would skip
         # in the default check phase; test the whole module instead.
@@ -33,7 +33,7 @@
             "${pkgs.bash}/bin:${pkgs.ripgrep}/bin:${pkgs.coreutils}/bin"
         '';
 
-        vendorHash = "sha256-HO6P3NZ0l5+jv84Qlowt4lD4bZ5ON/IKc6vRrv/NqHo=";
+        vendorHash = "sha256-BTongJ8y7i4FN78iHgfNuqOIyKR0S8/teoiKQe27U3o=";
       };
 
       package = pkgs.callPackage ./son-of-anton.nix {

@@ -52,6 +52,14 @@ type Env struct {
 	MCP *mcp.Manager
 	// CallID is the id of the tool call being run.
 	CallID string
+	// Call runs one of the session's tools as a direct call would, through the
+	// same registry, environment and gates; execute_code's scripts use it.
+	Call func(ctx context.Context, name string, args json.RawMessage) string
+	// NoScripts, when set, is why execute_code refuses to run (a run with
+	// nobody to ask).
+	NoScripts string
+	// Vision is the endpoint vision_analyze sends images to (nil: none).
+	Vision *Vision
 }
 
 // Tool is one builtin tool.
@@ -66,6 +74,9 @@ type Registry struct {
 	order []string
 }
 
+// adaptable is a tool whose schema depends on the tools its registry holds.
+type adaptable interface{ adapt(names []string) Tool }
+
 // NewRegistry builds a registry in the given order; later duplicates of a
 // name are ignored.
 func NewRegistry(ts ...Tool) *Registry {
@@ -77,6 +88,11 @@ func NewRegistry(ts ...Tool) *Registry {
 		}
 		r.tools[name] = t
 		r.order = append(r.order, name)
+	}
+	for name, t := range r.tools {
+		if a, ok := t.(adaptable); ok {
+			r.tools[name] = a.adapt(r.order)
+		}
 	}
 	return r
 }
@@ -130,6 +146,8 @@ func Builtin() []Tool {
 		sessionSearchTool{},
 		webSearchTool{},
 		webExtractTool{},
+		executeCodeTool{},
+		visionTool{},
 	}
 }
 

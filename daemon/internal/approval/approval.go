@@ -380,3 +380,19 @@ func (g *Gate) Memory(ctx context.Context, summary, detail string) Verdict {
 	}
 	return Verdict{Allowed: true, Asked: true}
 }
+
+// Script gates running a model-written script (execute_code). The script is
+// the subject. It runs without asking in default and yolo, as a shell
+// command that is not dangerous would; ask and lockdown ask for every one.
+// The calls the script makes go through their own gates.
+func (g *Gate) Script(ctx context.Context, script string) Verdict {
+	var v Verdict
+	switch g.curMode() {
+	case Ask, Lockdown:
+		v = g.ask(ctx, Request{Kind: "command", Subject: script, Reasons: []string{"run a Python script"}, AllowRemember: false})
+	default:
+		v = Verdict{Allowed: true}
+	}
+	g.record(v)
+	return v
+}

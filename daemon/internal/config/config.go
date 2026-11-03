@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -270,6 +271,8 @@ type AuxiliaryTask struct {
 	BaseURL string `toml:"base_url"`
 	KeyEnv  string `toml:"key_env"`
 	Model   string `toml:"model"`
+	// Timeout is the task's request timeout in seconds (0: the task's own default).
+	Timeout float64 `toml:"timeout"`
 }
 
 // CompactionEnabled says whether automatic compaction is on (default true).
@@ -321,6 +324,12 @@ func (c *Config) envKey(name string) string {
 		return v
 	}
 	return c.dotenv[name]
+}
+
+// AuxiliaryTimeout is an auxiliary task's configured request timeout; 0 when
+// unset.
+func (c *Config) AuxiliaryTimeout(task string) time.Duration {
+	return time.Duration(c.AuxTasks[task].Timeout * float64(time.Second))
 }
 
 // HasAuxiliary says whether an [auxiliary.<task>] table is configured.
