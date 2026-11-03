@@ -25,9 +25,8 @@ in front of local models). Linux and Nix only.
 ## Status
 
 Everything runs on soa-d. The physics mode is still Python until its Go port.
-Some text and data that came from hermes-agent (prompts, tool descriptions,
-the command-safety tables, the Nix layout) are still being rewritten; see
-Provenance.
+Versions are dates: `son-of-anton --version` prints the day the build's
+commit was made, as `YY.MM.DD`.
 
 ## The command
 
@@ -146,13 +145,18 @@ v0.20.5, and its physics mode as a port of
 [huggingface/physics-intern](https://github.com/huggingface/physics-intern).
 The Python is gone except the physics mode: soa-d and its terminal UI are a
 new implementation in Go, written against a spec with the Python as the
-behavioural reference, not a line-by-line port. Not yet all new: soa-d still
-carries some of hermes-agent's text and data (several prompts and tool
-descriptions, the command-safety pattern tables, the skin colours, the helper
-module `execute_code` writes), and the Nix packaging keeps parts of
-hermes-agent's layout; the subagent prompts come from opencode, and the
-physics manager's prompt from physics-intern. All of that is being rewritten.
-The daemon design and permission modes come from the archived
+behavioural reference, not a line-by-line port. Since November 2026 none of
+hermes-agent's code or text remains: the prompts, tool descriptions,
+messages, command-safety rules, skins and Nix packaging were rewritten from
+what they have to do. Only names were kept (options, config keys,
+environment variables), so existing setups keep working.
+
+Two things are still borrowed. The terminal UI's layout is a port of
+[opencode](https://github.com/sst/opencode)'s session view, and some of its
+code follows opencode's closely (the palette, the subagent footer, small
+formatters); that stays. The physics mode is still physics-intern's
+Python, its manager prompt included, until its Go port. The daemon design and
+permission modes come from the archived
 [temple](https://github.com/ewtodd/temple) harness.
 
 ## AI Full Disclosure
