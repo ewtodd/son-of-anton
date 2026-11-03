@@ -371,7 +371,9 @@ func runStatus(f flags, stdout, stderr io.Writer) int {
 	if derr == nil {
 		defer c.Close()
 		h := c.Hello()
-		fmt.Fprintf(stdout, "daemon: running (pid %v, soa-d %v)\n", num(h["pid"]), h["version"])
+		// The daemon's version may already be "soa-d 0.0.1": name it once.
+		version := strings.TrimPrefix(fmt.Sprint(h["version"]), "soa-d ")
+		fmt.Fprintf(stdout, "daemon: running (pid %v, soa-d %s)\n", num(h["pid"]), version)
 	} else {
 		fmt.Fprintln(stdout, "daemon: not running")
 	}

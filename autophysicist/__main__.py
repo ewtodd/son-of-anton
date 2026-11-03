@@ -84,6 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The model's key lives in the home's .env, which the Python command loaded
+    # at startup; the physics LLM layer reads it from the environment.
+    from son_of_anton_cli.env_loader import load_son_of_anton_dotenv
+
+    load_son_of_anton_dotenv()
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command != "problem":
