@@ -21,6 +21,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
 	"github.com/ewtodd/son-of-anton/daemon/internal/lsp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/mcp"
+	"github.com/ewtodd/son-of-anton/daemon/internal/nixmerge"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
@@ -41,6 +42,8 @@ usage:
   soa-d tui [--home DIR] [--in DIR] [-c | --resume ID|latest] [-m MODEL] [--reasoning LEVEL] [--yolo]
   soa-d import --from DIR [--home DIR]
   soa-d import (--from-claude [ROOT] | --from-codex [ROOT] | --from-opencode [DB]) [--home DIR] [--force]
+  soa-d config merge DECLARED CONFIG [--state STATE] [--adopt] [--dry-run]
+  soa-d rules merge DECLARED RULES --state STATE
   soa-d version
 `
 
@@ -68,6 +71,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runServe(args[1:], stderr)
 	case "tui":
 		return runTUI(args[1:], stderr)
+	case "config":
+		return nixmerge.RunConfig(args[1:], stderr)
+	case "rules":
+		return nixmerge.RunRules(args[1:], stderr)
 	default:
 		fmt.Fprint(stderr, usage)
 		return 2

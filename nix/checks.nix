@@ -259,6 +259,8 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             "chown e-work:son-of-anton /home/e-work/.son-of-anton/config.toml"
             activation;
           assert lib.hasInfix "/home/e-work/.son-of-anton/.nix-managed.json" activation;
+          assert lib.hasInfix "/bin/soa-d config merge " activation;
+          assert lib.hasInfix "/bin/soa-d rules merge " activation;
           assert lib.hasInfix
             "chown e-play:son-of-anton /home/e-play/.son-of-anton/config.toml"
             activation;
@@ -330,6 +332,8 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             activation = eval.config.home.activation.son-of-antonAgentSetup.data;
           in
           assert lib.hasInfix "--state /home/son-of-anton-check/.son-of-anton/.nix-managed.json" activation;
+          assert lib.hasInfix "/bin/soa-d config merge " activation;
+          assert lib.hasInfix "/bin/soa-d rules merge " activation;
           assert lib.hasInfix "/run/agenix/check-env" activation;
           assert lib.hasInfix "memories/.nix-rules.json" activation;
           assert eval.config.home.sessionVariables.SON_OF_ANTON_HOME
@@ -389,12 +393,12 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           '';
 
         # ── The memoryRules seed ─────────────────────────────────────────
-        # The merge script runs from the store the way activation runs it:
+        # The merge runs from the store the way activation runs it:
         # it creates rules.toml and its state file, and a second run with
         # nothing changed leaves both as they were.
         rules-seed =
           let
-            script = pkgs.callPackage ./rulesMergeScript.nix { };
+            script = "${self'.packages.soa-d}/bin/soa-d rules merge";
             declared = (pkgs.formats.toml { }).generate "rules-declared.toml" {
               rule = [
                 {

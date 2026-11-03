@@ -99,7 +99,7 @@ let
 
           The first activation after this state file is introduced cannot
           attribute anything to Nix, so it removes nothing and instead reports
-          the undeclared keys it found. See nix/config_merge.py (--adopt).
+          the undeclared keys it found. See `soa-d config merge` (--adopt).
         '';
         example = literalExpression ''
           {
@@ -156,7 +156,7 @@ let
           value, and one that was changed on disk since is kept and reported.
           A rule no longer declared is removed only if it is still what Nix
           wrote. Rules Nix never declared are untouched; nothing is removed on
-          the first run. See nix/rules_merge.py.
+          the first run. See `soa-d rules merge`.
         '';
         example = literalExpression ''
           [
@@ -268,7 +268,6 @@ let
       generated = (pkgs.formats.toml { }).generate "son-of-anton-config.toml" (
         lib.recursiveUpdate { terminal.cwd = workingDirectory; } cfg.settings
       );
-      mergeScript = pkgs.callPackage ./configMergeScript.nix { };
       # The declared input of the rules merge: a runtime path when
       # memoryRulesFile is set (the path string only; the file is never read
       # at evaluation), else the store file generated from memoryRules.
@@ -279,7 +278,6 @@ let
           "${(pkgs.formats.toml { }).generate "son-of-anton-rules.toml" {
             rule = map (lib.filterAttrs (_: v: v != null)) cfg.memoryRules;
           }}";
-      rulesMergeScript = pkgs.callPackage ./rulesMergeScript.nix { };
     };
 
   # What a running daemon or gateway read when it started: its settings and
@@ -373,6 +371,8 @@ let
       };
 
       inst = "${run}install ${installFlags}";
+      # The merges are subcommands of the instance's own soa-d.
+      soad = "${effectivePackage cfg}/bin/soa-d";
     in
     ''
       # Directories. The service units and Son of Anton make most of these
@@ -407,7 +407,7 @@ let
       # touching the second. Without it the merge can only ever add and
       # overwrite, and a `nixos-rebuild` that drops a setting leaves it live on
       # disk with nothing reporting that it did.
-      ${run}${configFiles.mergeScript} ${configFiles.generated} ${son-of-antonHome}/config.toml --state ${son-of-antonHome}/.nix-managed.json${lib.optionalString cfg.pruneUnmanagedSettings " --adopt"}
+      ${run}${soad} config merge ${configFiles.generated} ${son-of-antonHome}/config.toml --state ${son-of-antonHome}/.nix-managed.json${lib.optionalString cfg.pruneUnmanagedSettings " --adopt"}
       ${run}chmod ${modes.config} ${son-of-antonHome}/config.toml
       ${run}chmod ${modes.config} ${son-of-antonHome}/.nix-managed.json
       ${lib.optionalString (
@@ -419,7 +419,7 @@ let
       # file next to it records what Nix wrote so a rule retired in Nix goes
       # away only if nobody has touched it since. Created files get the
       # state-file mode and owner like the other files here.
-      ${run}${configFiles.rulesMergeScript} ${configFiles.rulesDeclared} ${son-of-antonHome}/memories/rules.toml --state ${son-of-antonHome}/memories/.nix-rules.json
+      ${run}${soad} rules merge ${configFiles.rulesDeclared} ${son-of-antonHome}/memories/rules.toml --state ${son-of-antonHome}/memories/.nix-rules.json
       for _f in ${son-of-antonHome}/memories/rules.toml ${son-of-antonHome}/memories/.nix-rules.json; do
         if [ -e "$_f" ]; then
           ${run}chmod ${modes.config} "$_f"

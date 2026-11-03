@@ -1,0 +1,1965 @@
+[
+ {
+  "name": "add-declared-missing",
+  "kind": "rules",
+  "doc": "declared and missing: added and recorded (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "follows-declared-while-untouched",
+  "kind": "rules",
+  "doc": "disk still what Nix wrote: new declared value, user key `added` kept as a local date (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"New text.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Old text.\"\nscope = \"common\"\nsource = \"user\"\nadded = 2026-11-01\n",
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Old text.\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: updated a to the declared value\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"New text.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"New text.\"\nscope = \"common\"\nsource = \"user\"\nadded = 2026-11-01\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "changed-on-disk-kept-and-reported",
+  "kind": "rules",
+  "doc": "declared but edited since: disk kept, state keeps the old value (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"New text.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Edited by the user.\"\nscope = \"common\"\nsource = \"user\"\n",
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Old text.\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: kept a as it is on disk — it differs from the declared value (changed after Nix wrote it)\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Old text.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Edited by the user.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "dropping-declared-why-clears-it",
+  "kind": "rules",
+  "doc": "an untouched entry loses a why Nix dropped (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nwhy = \"because\"\nscope = \"common\"\nsource = \"user\"\n",
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\",\n    \"why\": \"because\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: updated a to the declared value\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "retired-untouched-is-removed",
+  "kind": "rules",
+  "doc": "no longer declared, untouched: removed (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "rule = []\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: removed a (retired in Nix)\n",
+    "files": {
+     "memories/.nix-rules.json": "{}\n",
+     "memories/rules.toml": "rule = []\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "retired-but-changed-is-kept",
+  "kind": "rules",
+  "doc": "no longer declared, changed: kept, untracked (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "rule = []\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Rewritten.\"\nscope = \"common\"\nsource = \"user\"\n",
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: kept a — no longer declared in Nix, but it changed after Nix wrote it\n",
+    "files": {
+     "memories/.nix-rules.json": "{}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Rewritten.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "ids-nix-never-declared-untouched",
+  "kind": "rules",
+  "doc": "agent-made ids survive both while declared rules change and when all retire (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"agent-made\"\ntext = \"Added by the agent.\"\nscope = \"gateway\"\nsource = \"agent\"\nadded = 2026-10-31\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"agent-made\"\ntext = \"Added by the agent.\"\nscope = \"gateway\"\nsource = \"agent\"\nadded = 2026-10-31\n\n[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "rule = []\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: removed a (retired in Nix)\n",
+    "files": {
+     "memories/.nix-rules.json": "{}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"agent-made\"\ntext = \"Added by the agent.\"\nscope = \"gateway\"\nsource = \"agent\"\nadded = 2026-10-31\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "first-run-mixed",
+  "kind": "rules",
+  "doc": "no state: add missing, keep differing, remove nothing, record only the attributed (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Theirs.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"c\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"b\"\ntext = \"Mine.\"\nscope = \"common\"\nsource = \"agent\"\n\n[[rule]]\nid = \"c\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"old\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: kept b as it is on disk — it differs from the declared value (no record of Nix writing it)\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"c\": {\n    \"id\": \"c\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"b\"\ntext = \"Mine.\"\nscope = \"common\"\nsource = \"agent\"\n\n[[rule]]\nid = \"c\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"old\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "kept-conflict-keeps-being-reported",
+  "kind": "rules",
+  "doc": "the same conflict reported on every activation (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"New text.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Edited.\"\nscope = \"common\"\nsource = \"user\"\n",
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Old text.\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: kept a as it is on disk — it differs from the declared value (changed after Nix wrote it)\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Old text.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Edited.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"New text.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: kept a as it is on disk — it differs from the declared value (changed after Nix wrote it)\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Old text.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Edited.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"New text.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: kept a as it is on disk — it differs from the declared value (changed after Nix wrote it)\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Old text.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Edited.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "idempotent",
+  "kind": "rules",
+  "doc": "a second run with nothing changed writes the same files (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "main-never-overwrites-unparseable-file",
+  "kind": "rules",
+  "doc": "a rules.toml that does not parse: untouched, no state (python test)",
+  "parse_detail": true,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]\nid = "
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — it does not parse (Expected ']]' at the end of an array declaration (at line 1, column 7)). Fix it by hand; the next activation will merge the declared rules.\n",
+    "files": {
+     "memories/rules.toml": "[[rule]\nid = "
+    }
+   }
+  ]
+ },
+ {
+  "name": "nothing-declared-no-history-creates-nothing",
+  "kind": "rules",
+  "doc": "empty declared list, no state, no file (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "rule = []\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {}
+   }
+  ]
+ },
+ {
+  "name": "nothing-declared-state-retires-all",
+  "kind": "rules",
+  "doc": "empty declared list after a real one retires the untouched",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "rule = []\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: removed a (retired in Nix)\nrules.toml: removed b (retired in Nix)\n",
+    "files": {
+     "memories/.nix-rules.json": "{}\n",
+     "memories/rules.toml": "rule = []\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "nothing-declared-file-exists-no-state",
+  "kind": "rules",
+  "doc": "empty declared, existing file, no state: file kept, empty state written",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "rule = []\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"x\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     "memories/.nix-rules.json": "{}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"x\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "runtime-file-with-every-field",
+  "kind": "rules",
+  "doc": "a declared file with why, scope and source (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nwhy = \"because\"\nscope = \"gateway\"\nsource = \"agent\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"gateway\",\n    \"source\": \"agent\",\n    \"text\": \"Other.\",\n    \"why\": \"because\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"gateway\"\nwhy = \"because\"\nsource = \"agent\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "rule-order-and-appends",
+  "kind": "rules",
+  "doc": "new declared rules are appended after the ones on disk",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"z\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"y\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"m\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"n\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added z\nrules.toml: added y\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"y\": {\n    \"id\": \"y\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"z\": {\n    \"id\": \"z\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"m\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"n\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"z\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"y\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "added-local-date-survives-unrelated-change",
+  "kind": "rules",
+  "doc": "added = 2026-11-01 stays a local date through a rewrite",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"v1\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"v0\"\nscope = \"common\"\nsource = \"user\"\nadded = 2026-11-01\n\n[[rule]]\nid = \"b\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\nadded = 2026-11-02\n",
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"v0\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: updated a to the declared value\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"v1\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"v1\"\nscope = \"common\"\nsource = \"user\"\nadded = 2026-11-01\n\n[[rule]]\nid = \"b\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\nadded = 2026-11-02\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "other-top-level-keys-dropped-on-write",
+  "kind": "rules",
+  "doc": "a write keeps only [[rule]]: other tables in rules.toml are dropped",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"new\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "stray = 1\n\n[[rule]]\nid = \"a\"\ntext = \"old\"\nscope = \"common\"\nsource = \"user\"\n\n[other]\nk = 1\n",
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"old\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: updated a to the declared value\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"new\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"new\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "no-change-does-not-rewrite",
+  "kind": "rules",
+  "doc": "equal content, odd formatting and comments: rules.toml untouched, state written",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "# my rules\n\n[[rule]]   # first\nid=\"a\"\ntext ='Keep answers short.'\nscope = \"common\"\nsource = \"user\"\nstray = 1\n\n[other]\nk = 1\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "# my rules\n\n[[rule]]   # first\nid=\"a\"\ntext ='Keep answers short.'\nscope = \"common\"\nsource = \"user\"\nstray = 1\n\n[other]\nk = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "duplicate-ids-on-disk",
+  "kind": "rules",
+  "doc": "the first entry with an id is the one merged; retiring removes only it",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"a\"\ntext = \"second\"\nscope = \"common\"\nsource = \"user\"\n",
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"a\"\ntext = \"second\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "rule = []\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: removed a (retired in Nix)\n",
+    "files": {
+     "memories/.nix-rules.json": "{}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"second\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "disk-entry-without-id",
+  "kind": "rules",
+  "doc": "an entry with no id is never touched",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\ntext = \"orphan\"\n\n[[rule]]\nid = \"a\"\ntext = \"x\"\nscope = \"common\"\nsource = \"user\"\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: kept a as it is on disk — it differs from the declared value (no record of Nix writing it)\n",
+    "files": {
+     "memories/.nix-rules.json": "{}\n",
+     "memories/rules.toml": "[[rule]]\ntext = \"orphan\"\n\n[[rule]]\nid = \"a\"\ntext = \"x\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "extra-user-keys-kept-on-update",
+  "kind": "rules",
+  "doc": "keys Nix does not own (notes) stay when the value updates",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"new\"\nscope = \"common\"\nsource = \"user\"\nwhy = \"w\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"old\"\nscope = \"common\"\nsource = \"user\"\nnotes = \"mine\"\n",
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"old\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: updated a to the declared value\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"new\",\n    \"why\": \"w\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"new\"\nscope = \"common\"\nsource = \"user\"\nnotes = \"mine\"\nwhy = \"w\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "why-added-to-untouched-entry",
+  "kind": "rules",
+  "doc": "a why Nix now declares is added to an untouched entry",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\nwhy = \"because\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\nadded = 2026-11-01\n",
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: updated a to the declared value\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\",\n    \"why\": \"because\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\nadded = 2026-11-01\nwhy = \"because\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "scope-and-source-changes",
+  "kind": "rules",
+  "doc": "declared scope/source follow while untouched, are kept when edited",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"gateway\"\nsource = \"agent\"\n\n[[rule]]\nid = \"b\"\ntext = \"Keep answers short.\"\nscope = \"gateway\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"agent\"\n",
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: updated a to the declared value\nrules.toml: kept b as it is on disk — it differs from the declared value (changed after Nix wrote it)\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"gateway\",\n    \"source\": \"agent\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"gateway\"\nsource = \"agent\"\n\n[[rule]]\nid = \"b\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"agent\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "state-corrupt-is-a-first-run",
+  "kind": "rules",
+  "doc": "an unreadable state: kept and reported, nothing removed",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"new\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"old\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"gone\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+     "memories/.nix-rules.json": "{nope"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: kept a as it is on disk — it differs from the declared value (no record of Nix writing it)\n",
+    "files": {
+     "memories/.nix-rules.json": "{}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"old\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"gone\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "state-not-a-dict",
+  "kind": "rules",
+  "doc": "a JSON list state is no state",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+     "memories/.nix-rules.json": "[1]"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "state-empty-dict-is-no-history",
+  "kind": "rules",
+  "doc": "an empty state with nothing declared and no file creates nothing",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "rule = []\n",
+    "pre": {
+     "memories/.nix-rules.json": "{}"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     "memories/.nix-rules.json": "{}"
+    }
+   }
+  ]
+ },
+ {
+  "name": "state-garbage-values",
+  "kind": "rules",
+  "doc": "state entries that are not rules never match; a retired id with garbage is kept",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"bb\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"other\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"c\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+     "memories/.nix-rules.json": "{\"a\": 5, \"b\": [1], \"c\": \"x\", \"ghost\": {\"id\": \"ghost\"}}"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: kept b as it is on disk — it differs from the declared value (changed after Nix wrote it)\nrules.toml: kept c — no longer declared in Nix, but it changed after Nix wrote it\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": [\n    1\n  ]\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"other\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"c\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "state-entry-for-a-rule-not-on-disk",
+  "kind": "rules",
+  "doc": "a recorded rule that is gone from disk drops out of the state",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"b\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"b\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+     "memories/.nix-rules.json": "{\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"gone\": {\n    \"id\": \"gone\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"b\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "disk-why-empty-equals-no-why",
+  "kind": "rules",
+  "doc": "why = \"\" on disk counts as absent",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"t2\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nwhy = \"\"\nscope = \"common\"\nsource = \"user\"\n",
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: updated a to the declared value\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"t2\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"t2\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "declared-why-empty-is-dropped",
+  "kind": "rules",
+  "doc": "why = \"\" in the declared file is not recorded",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\nwhy = \"\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unicode-and-multiline-text",
+  "kind": "rules",
+  "doc": "text with accents, quotes, newlines, emoji",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Réponds \\\"court\\\"\\nsur deux lignes 😀 \\\\ done\"\nscope = \"common\"\nsource = \"user\"\nwhy = \"parce que\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"R\\u00e9ponds \\\"court\\\"\\nsur deux lignes \\ud83d\\ude00 \\\\ done\",\n    \"why\": \"parce que\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Réponds \\\"court\\\"\\nsur deux lignes 😀 \\\\ done\"\nscope = \"common\"\nwhy = \"parce que\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "disk-missing-source-first-run",
+  "kind": "rules",
+  "doc": "a disk rule without source differs from the declared canon",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: kept a as it is on disk — it differs from the declared value (no record of Nix writing it)\n",
+    "files": {
+     "memories/.nix-rules.json": "{}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "rules-file-empty",
+  "kind": "rules",
+  "doc": "an empty rules.toml is no rules",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": ""
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "rules-file-rule-empty-list",
+  "kind": "rules",
+  "doc": "rule = [] on disk",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "rule = []\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "rules-file-rule-is-a-string-crashes",
+  "kind": "rules",
+  "doc": "rule = \"x\" on disk: exit 1, nothing written",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "rule = \"x\"\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 1,
+    "stderr": null,
+    "files": {
+     "memories/rules.toml": "rule = \"x\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "retire-then-redeclare",
+  "kind": "rules",
+  "doc": "removed, then declared again: added once more",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "rule = []\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: removed a (retired in Nix)\n",
+    "files": {
+     "memories/.nix-rules.json": "{}\n",
+     "memories/rules.toml": "rule = []\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "user-edit-between-activations",
+  "kind": "rules",
+  "doc": "declared, user edits, redeclared with change, retired",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"v1\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"b1\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"v1\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"b1\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"v1\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"b1\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"v2\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"b1\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"v1\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"mine\"\nscope = \"common\"\nsource = \"user\"\n"
+    },
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: updated a to the declared value\nrules.toml: kept b as it is on disk — it differs from the declared value (changed after Nix wrote it)\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"v2\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"b1\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"v2\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"mine\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"v2\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: kept b — no longer declared in Nix, but it changed after Nix wrote it\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"v2\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"v2\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"mine\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "state-in-missing-directory",
+  "kind": "rules",
+  "doc": "memories/ is created by the write",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-missing",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": null,
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable ([Errno 2] No such file or directory: '{DIR}/declared.toml').\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-directory",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": {
+     "dir": true
+    },
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable ([Errno 21] Is a directory: '{DIR}/declared.toml').\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-unparseable",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": true,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]\nid = ",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (Expected ']]' at the end of an array declaration (at line 1, column 7)).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-not-utf8",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": {
+     "hex": "fffe00"
+    },
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable ('utf-8' codec can't decode byte 0xff in position 0: invalid start byte).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-not-utf8-continuation",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": {
+     "hex": "5b5b72756c655d5d0a6964203d202261220a74657874203d2022636166c328220a"
+    },
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable ('utf-8' codec can't decode byte 0xc3 in position 29: invalid continuation byte).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-not-utf8-truncated",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": {
+     "hex": "23207820e282"
+    },
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable ('utf-8' codec can't decode bytes in position 4-5: unexpected end of data).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-empty-file",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (no [[rule]] tables).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-no-rule-key",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "x = 1\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (no [[rule]] tables).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-rule-not-a-list",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "rule = \"x\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (`rule` is not an array of tables).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-rule-a-table",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[rule]\nid = \"a\"\ntext = \"t\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (`rule` is not an array of tables).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-rule-item-not-a-table",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "rule = [1]\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (rule #1 is not a table).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-bad-id",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"Bad_ID\"\ntext = \"t\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (rule #1 (Bad_ID): id must match [a-z0-9][a-z0-9-]*).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-id-not-a-string",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = 3\ntext = \"t\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (rule #1: id must match [a-z0-9][a-z0-9-]*).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-no-id",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\ntext = \"t\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (rule #1: id must match [a-z0-9][a-z0-9-]*).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-empty-text",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"  \"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (rule #1 (a): text must be a non-empty string).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-no-text",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (rule #1 (a): text must be a non-empty string).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-text-not-string",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = 3\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (rule #1 (a): text must be a non-empty string).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-why-not-string",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"t\"\nwhy = 3\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (rule #1 (a): why must be a string).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-bad-scope",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"t\"\nscope = \"everywhere\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (rule #1 (a): scope must be one of common, gateway).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-bad-source",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"t\"\nsource = \"bot\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (rule #1 (a): source must be one of user, agent).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-unknown-keys",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"t\"\nzeta = 1\nadded = 2026-11-01\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (rule #1 (a): unknown key(s) added, zeta).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-duplicate-ids",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\n[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (rule #2 (a): duplicate id).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unusable-declared-one-bad-among-good",
+  "kind": "rules",
+  "doc": "a declared file that is not trustworthy changes nothing (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "memories/rules.toml",
+   "memories/.nix-rules.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: added a\nrules.toml: added b\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   },
+   {
+    "declared": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\n[[rule]]\nid = \"c\"\ntext = \"\"\n",
+    "pre": {},
+    "args": [],
+    "state": "memories/.nix-rules.json",
+    "exit": 0,
+    "stderr": "rules.toml: left untouched — declared rules file {DIR}/declared.toml is unusable (rule #2 (c): text must be a non-empty string).\n",
+    "files": {
+     "memories/.nix-rules.json": "{\n  \"a\": {\n    \"id\": \"a\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Keep answers short.\"\n  },\n  \"b\": {\n    \"id\": \"b\",\n    \"scope\": \"common\",\n    \"source\": \"user\",\n    \"text\": \"Other.\"\n  }\n}\n",
+     "memories/rules.toml": "[[rule]]\nid = \"a\"\ntext = \"Keep answers short.\"\nscope = \"common\"\nsource = \"user\"\n\n[[rule]]\nid = \"b\"\ntext = \"Other.\"\nscope = \"common\"\nsource = \"user\"\n"
+    }
+   }
+  ]
+ }
+]

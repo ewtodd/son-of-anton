@@ -1,0 +1,1652 @@
+[
+ {
+  "name": "first-run-fresh",
+  "kind": "config",
+  "doc": "no config.toml, no state: both are created, nothing is reported",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[model]\ndefault = \"qwen\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"model\": {\n    \"default\": \"qwen\"\n  }\n}\n",
+     "config.toml": "[model]\ndefault = \"qwen\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "overwrites-stale-on-disk-value",
+  "kind": "config",
+  "doc": "a Nix key replaces the on-disk value (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[model]\ndefault = \"qwen\"\n",
+    "pre": {
+     "config.toml": "[model]\ndefault = \"old\"\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"model\": {\n    \"default\": \"qwen\"\n  }\n}\n",
+     "config.toml": "[model]\ndefault = \"qwen\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "retired-key-removed-next-activation",
+  "kind": "config",
+  "doc": "a key Nix dropped and nobody touched is removed (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[custom_providers.custom.models.qwen]\n[custom_providers.custom.models.gemma]\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"custom_providers\": {\n    \"custom\": {\n      \"models\": {\n        \"gemma\": {},\n        \"qwen\": {}\n      }\n    }\n  }\n}\n",
+     "config.toml": "[custom_providers]\n\n[custom_providers.custom]\n\n[custom_providers.custom.models]\n\n[custom_providers.custom.models.qwen]\n\n[custom_providers.custom.models.gemma]\n"
+    }
+   },
+   {
+    "declared": "[custom_providers.custom.models.qwen]\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed custom_providers.custom.models.gemma (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"custom_providers\": {\n    \"custom\": {\n      \"models\": {\n        \"qwen\": {}\n      }\n    }\n  }\n}\n",
+     "config.toml": "[custom_providers]\n\n[custom_providers.custom]\n\n[custom_providers.custom.models]\n\n[custom_providers.custom.models.qwen]\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "empty-parent-removed",
+  "kind": "config",
+  "doc": "removing the last child removes the emptied parents (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "keep = 1\n[a.b]\nc = 1\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": {\n    \"b\": {\n      \"c\": 1\n    }\n  },\n  \"keep\": 1\n}\n",
+     "config.toml": "keep = 1\n\n[a]\n\n[a.b]\nc = 1\n"
+    }
+   },
+   {
+    "declared": "keep = 1\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed a (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"keep\": 1\n}\n",
+     "config.toml": "keep = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "runtime-keys-untouched",
+  "kind": "config",
+  "doc": "keys Nix never declared survive, also with a state file (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[model]\ndefault = \"qwen\"\n",
+    "pre": {
+     "config.toml": "[memory]\nwrite_approval = true\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: no record of what Nix wrote previously, so nothing was retracted on this run. These keys are on disk and not declared in Nix — runtime settings, or leftovers from a Nix generation that predates this state file:\n  memory.write_approval\nIf they are leftovers, re-run this script with --adopt (add --dry-run first) to prune them in one pass. Otherwise ignore this: from now on, retiring a key in Nix removes it.\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"model\": {\n    \"default\": \"qwen\"\n  }\n}\n",
+     "config.toml": "[memory]\nwrite_approval = true\n\n[model]\ndefault = \"qwen\"\n"
+    }
+   },
+   {
+    "declared": "[model]\ndefault = \"qwen\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"model\": {\n    \"default\": \"qwen\"\n  }\n}\n",
+     "config.toml": "[memory]\nwrite_approval = true\n\n[model]\ndefault = \"qwen\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "edited-after-nix-survives-retirement",
+  "kind": "config",
+  "doc": "retired but changed at runtime: kept and reported (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[gateway]\nmodel = \"qwen\"\nextra = \"nix\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"gateway\": {\n    \"extra\": \"nix\",\n    \"model\": \"qwen\"\n  }\n}\n",
+     "config.toml": "[gateway]\nmodel = \"qwen\"\nextra = \"nix\"\n"
+    }
+   },
+   {
+    "declared": "[gateway]\nmodel = \"qwen\"\n",
+    "pre": {
+     "config.toml": "[gateway]\nmodel = \"qwen\"\nextra = \"changed at runtime\"\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: kept gateway.extra — no longer declared in Nix, but its value changed after Nix wrote it\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"gateway\": {\n    \"model\": \"qwen\"\n  }\n}\n",
+     "config.toml": "[gateway]\nmodel = \"qwen\"\nextra = \"changed at runtime\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "first-run-removes-nothing-and-reports-orphans",
+  "kind": "config",
+  "doc": "no state: nothing removed, undeclared keys listed (python tests)",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[model]\ndefault = \"qwen\"\n",
+    "pre": {
+     "config.toml": "[legacy]\nmodel = \"gone\"\n[model]\ndefault = \"old\"\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: no record of what Nix wrote previously, so nothing was retracted on this run. These keys are on disk and not declared in Nix — runtime settings, or leftovers from a Nix generation that predates this state file:\n  legacy.model\nIf they are leftovers, re-run this script with --adopt (add --dry-run first) to prune them in one pass. Otherwise ignore this: from now on, retiring a key in Nix removes it.\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"model\": {\n    \"default\": \"qwen\"\n  }\n}\n",
+     "config.toml": "[legacy]\nmodel = \"gone\"\n\n[model]\ndefault = \"qwen\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "adopt-prunes-undeclared",
+  "kind": "config",
+  "doc": "--adopt treats the on-disk file as Nix's (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[custom_providers.custom.models.qwen]\n",
+    "pre": {
+     "config.toml": "[custom_providers.custom.models.qwen]\n[custom_providers.custom.models.retired]\n[gateway]\nmultiplex_profiles = true\n"
+    },
+    "args": [
+     "--adopt"
+    ],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed custom_providers.custom.models.retired (retired in Nix)\nconfig.toml: removed gateway (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"custom_providers\": {\n    \"custom\": {\n      \"models\": {\n        \"qwen\": {}\n      }\n    }\n  }\n}\n",
+     "config.toml": "[custom_providers]\n\n[custom_providers.custom]\n\n[custom_providers.custom.models]\n\n[custom_providers.custom.models.qwen]\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "dry-run-writes-nothing",
+  "kind": "config",
+  "doc": "--dry-run on a first run (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[model]\ndefault = \"qwen\"\n",
+    "pre": {
+     "config.toml": "[model]\ndefault = \"old\"\n"
+    },
+    "args": [
+     "--dry-run"
+    ],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "--dry-run: nothing written.\n",
+    "files": {
+     "config.toml": "[model]\ndefault = \"old\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "state-records-what-nix-wrote",
+  "kind": "config",
+  "doc": "the state file is the declared tree as JSON (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[model]\ndefault = \"qwen\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"model\": {\n    \"default\": \"qwen\"\n  }\n}\n",
+     "config.toml": "[model]\ndefault = \"qwen\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "corrupt-state-degrades-safely",
+  "kind": "config",
+  "doc": "an unreadable state file is a first run (python test)",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[model]\ndefault = \"qwen\"\n",
+    "pre": {
+     "config.toml": "legacy = 1\n",
+     ".nix-managed.json": "{not json"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: no record of what Nix wrote previously, so nothing was retracted on this run. These keys are on disk and not declared in Nix — runtime settings, or leftovers from a Nix generation that predates this state file:\n  legacy\nIf they are leftovers, re-run this script with --adopt (add --dry-run first) to prune them in one pass. Otherwise ignore this: from now on, retiring a key in Nix removes it.\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"model\": {\n    \"default\": \"qwen\"\n  }\n}\n",
+     "config.toml": "legacy = 1\n\n[model]\ndefault = \"qwen\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "dry-run-with-state-reports-removals",
+  "kind": "config",
+  "doc": "dry run reports what would be removed and writes nothing",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\nb = 2\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1,\n  \"b\": 2\n}\n",
+     "config.toml": "a = 1\nb = 2\n"
+    }
+   },
+   {
+    "declared": "a = 1\n",
+    "pre": {},
+    "args": [
+     "--dry-run"
+    ],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed b (retired in Nix)\n--dry-run: nothing written.\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1,\n  \"b\": 2\n}\n",
+     "config.toml": "a = 1\nb = 2\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "adopt-dry-run",
+  "kind": "config",
+  "doc": "--adopt --dry-run lists the prune, writes nothing",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {
+     "config.toml": "a = 1\nb = 2\n[c]\nd = 3\n"
+    },
+    "args": [
+     "--adopt",
+     "--dry-run"
+    ],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed b (retired in Nix)\nconfig.toml: removed c (retired in Nix)\n--dry-run: nothing written.\n",
+    "files": {
+     "config.toml": "a = 1\nb = 2\n[c]\nd = 3\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "adopt-with-existing-state",
+  "kind": "config",
+  "doc": "--adopt uses the disk file as base even when a state exists",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1\n}\n",
+     "config.toml": "a = 1\n"
+    }
+   },
+   {
+    "declared": "a = 1\n",
+    "pre": {
+     "config.toml": "a = 1\nrt = \"x\"\n"
+    },
+    "args": [
+     "--adopt"
+    ],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed rt (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1\n}\n",
+     "config.toml": "a = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "adopt-nothing-extra",
+  "kind": "config",
+  "doc": "--adopt on a file with nothing undeclared reports nothing",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {
+     "config.toml": "a = 2\n"
+    },
+    "args": [
+     "--adopt"
+    ],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1\n}\n",
+     "config.toml": "a = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "retire-whole-model-collapses-report",
+  "kind": "config",
+  "doc": "removing the only setting of an entry reports the entry",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[custom_providers.custom.models.qwen]\ncontext_length = 1\n[custom_providers.custom.models.gemma]\ncontext_length = 2\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"custom_providers\": {\n    \"custom\": {\n      \"models\": {\n        \"gemma\": {\n          \"context_length\": 2\n        },\n        \"qwen\": {\n          \"context_length\": 1\n        }\n      }\n    }\n  }\n}\n",
+     "config.toml": "[custom_providers]\n\n[custom_providers.custom]\n\n[custom_providers.custom.models]\n\n[custom_providers.custom.models.qwen]\ncontext_length = 1\n\n[custom_providers.custom.models.gemma]\ncontext_length = 2\n"
+    }
+   },
+   {
+    "declared": "[custom_providers.custom.models.qwen]\ncontext_length = 1\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed custom_providers.custom.models.gemma (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"custom_providers\": {\n    \"custom\": {\n      \"models\": {\n        \"qwen\": {\n          \"context_length\": 1\n        }\n      }\n    }\n  }\n}\n",
+     "config.toml": "[custom_providers]\n\n[custom_providers.custom]\n\n[custom_providers.custom.models]\n\n[custom_providers.custom.models.qwen]\ncontext_length = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "retire-leaf-keeps-parent",
+  "kind": "config",
+  "doc": "a table that still has children is not removed",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[a]\nb = 1\nc = 2\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": {\n    \"b\": 1,\n    \"c\": 2\n  }\n}\n",
+     "config.toml": "[a]\nb = 1\nc = 2\n"
+    }
+   },
+   {
+    "declared": "[a]\nb = 1\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed a.c (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": {\n    \"b\": 1\n  }\n}\n",
+     "config.toml": "[a]\nb = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "retire-mixed-removed-and-kept",
+  "kind": "config",
+  "doc": "removed and kept messages together, in order",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "z = 1\n[a]\nx = 1\ny = 2\nw = 3\n[m]\nk = \"v\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": {\n    \"w\": 3,\n    \"x\": 1,\n    \"y\": 2\n  },\n  \"m\": {\n    \"k\": \"v\"\n  },\n  \"z\": 1\n}\n",
+     "config.toml": "z = 1\n\n[a]\nx = 1\ny = 2\nw = 3\n\n[m]\nk = \"v\"\n"
+    }
+   },
+   {
+    "declared": "z = 1\n",
+    "pre": {
+     "config.toml": "z = 1\n[a]\nx = 1\ny = 99\nw = 3\n[m]\nk = \"v\"\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed a.w (retired in Nix)\nconfig.toml: removed a.x (retired in Nix)\nconfig.toml: removed m (retired in Nix)\nconfig.toml: kept a.y — no longer declared in Nix, but its value changed after Nix wrote it\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"z\": 1\n}\n",
+     "config.toml": "z = 1\n\n[a]\ny = 99\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "undeclared-nested-and-arrays-untouched",
+  "kind": "config",
+  "doc": "undeclared tables, arrays, arrays of tables survive many runs",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[model]\ndefault = \"qwen\"\n",
+    "pre": {
+     "config.toml": "list = [1, 2, 3]\nnested = [[1, 2], [\"a\"]]\n[[hooks]]\nname = \"h1\"\n[[hooks]]\nname = \"h2\"\n[ui.deep.er]\nx = true\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: no record of what Nix wrote previously, so nothing was retracted on this run. These keys are on disk and not declared in Nix — runtime settings, or leftovers from a Nix generation that predates this state file:\n  list\n  nested\n  hooks\n  ui.deep.er.x\nIf they are leftovers, re-run this script with --adopt (add --dry-run first) to prune them in one pass. Otherwise ignore this: from now on, retiring a key in Nix removes it.\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"model\": {\n    \"default\": \"qwen\"\n  }\n}\n",
+     "config.toml": "list = [1, 2, 3]\nnested = [[1, 2], [\"a\"]]\n\n[[hooks]]\nname = \"h1\"\n\n[[hooks]]\nname = \"h2\"\n\n[ui]\n\n[ui.deep]\n\n[ui.deep.er]\nx = true\n\n[model]\ndefault = \"qwen\"\n"
+    }
+   },
+   {
+    "declared": "[model]\ndefault = \"qwen\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"model\": {\n    \"default\": \"qwen\"\n  }\n}\n",
+     "config.toml": "list = [1, 2, 3]\nnested = [[1, 2], [\"a\"]]\n\n[[hooks]]\nname = \"h1\"\n\n[[hooks]]\nname = \"h2\"\n\n[ui]\n\n[ui.deep]\n\n[ui.deep.er]\nx = true\n\n[model]\ndefault = \"qwen\"\n"
+    }
+   },
+   {
+    "declared": "[model]\ndefault = \"other\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"model\": {\n    \"default\": \"other\"\n  }\n}\n",
+     "config.toml": "list = [1, 2, 3]\nnested = [[1, 2], [\"a\"]]\n\n[[hooks]]\nname = \"h1\"\n\n[[hooks]]\nname = \"h2\"\n\n[ui]\n\n[ui.deep]\n\n[ui.deep.er]\nx = true\n\n[model]\ndefault = \"other\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "array-of-tables-declared-and-retired",
+  "kind": "config",
+  "doc": "arrays of tables declared, changed, then retired",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[mcp]]\nname = \"a\"\ncmd = \"x\"\n\n[[mcp]]\nname = \"b\"\ncmd = \"y\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"mcp\": [\n    {\n      \"cmd\": \"x\",\n      \"name\": \"a\"\n    },\n    {\n      \"cmd\": \"y\",\n      \"name\": \"b\"\n    }\n  ]\n}\n",
+     "config.toml": "[[mcp]]\nname = \"a\"\ncmd = \"x\"\n\n[[mcp]]\nname = \"b\"\ncmd = \"y\"\n"
+    }
+   },
+   {
+    "declared": "[[mcp]]\nname = \"a\"\ncmd = \"z\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"mcp\": [\n    {\n      \"cmd\": \"z\",\n      \"name\": \"a\"\n    }\n  ]\n}\n",
+     "config.toml": "[[mcp]]\nname = \"a\"\ncmd = \"z\"\n"
+    }
+   },
+   {
+    "declared": "top = 1\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed mcp (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"top\": 1\n}\n",
+     "config.toml": "top = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "array-of-tables-edited-then-retired",
+  "kind": "config",
+  "doc": "an array of tables edited at runtime is kept when retired",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[mcp]]\nname = \"a\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"mcp\": [\n    {\n      \"name\": \"a\"\n    }\n  ]\n}\n",
+     "config.toml": "[[mcp]]\nname = \"a\"\n"
+    }
+   },
+   {
+    "declared": "top = 1\n",
+    "pre": {
+     "config.toml": "top = 1\n[[mcp]]\nname = \"a\"\nextra = true\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: kept mcp — no longer declared in Nix, but its value changed after Nix wrote it\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"top\": 1\n}\n",
+     "config.toml": "top = 1\n\n[[mcp]]\nname = \"a\"\nextra = true\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "array-of-tables-with-subtables",
+  "kind": "config",
+  "doc": "[[a]] with [a.b] sub-tables round-trips",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[[srv]]\nname = \"a\"\n[srv.env]\nK = \"v\"\n\n[[srv]]\nname = \"b\"\n[srv.env]\nK = \"w\"\n[srv.env.deep]\nz = 1\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"srv\": [\n    {\n      \"env\": {\n        \"K\": \"v\"\n      },\n      \"name\": \"a\"\n    },\n    {\n      \"env\": {\n        \"K\": \"w\",\n        \"deep\": {\n          \"z\": 1\n        }\n      },\n      \"name\": \"b\"\n    }\n  ]\n}\n",
+     "config.toml": "[[srv]]\nname = \"a\"\n\n[srv.env]\nK = \"v\"\n\n[[srv]]\nname = \"b\"\n\n[srv.env]\nK = \"w\"\n\n[srv.env.deep]\nz = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "quoted-keys-with-slash-and-dot",
+  "kind": "config",
+  "doc": "keys like unholy/glm5.3-flash and a.b are quoted, and retire",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[custom_providers.custom.models.\"unholy/glm5.3-flash\"]\ncontext_length = 4096\n\"a.b\" = 1\n\"with space\" = \"x\"\n[custom_providers.custom.models.\"other/m.1\"]\nr = 1\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"custom_providers\": {\n    \"custom\": {\n      \"models\": {\n        \"other/m.1\": {\n          \"r\": 1\n        },\n        \"unholy/glm5.3-flash\": {\n          \"a.b\": 1,\n          \"context_length\": 4096,\n          \"with space\": \"x\"\n        }\n      }\n    }\n  }\n}\n",
+     "config.toml": "[custom_providers]\n\n[custom_providers.custom]\n\n[custom_providers.custom.models]\n\n[custom_providers.custom.models.\"unholy/glm5.3-flash\"]\ncontext_length = 4096\n\"a.b\" = 1\n\"with space\" = \"x\"\n\n[custom_providers.custom.models.\"other/m.1\"]\nr = 1\n"
+    }
+   },
+   {
+    "declared": "[custom_providers.custom.models.\"unholy/glm5.3-flash\"]\ncontext_length = 4096\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed custom_providers.custom.models.other/m.1 (retired in Nix)\nconfig.toml: removed custom_providers.custom.models.unholy/glm5.3-flash.a.b (retired in Nix)\nconfig.toml: removed custom_providers.custom.models.unholy/glm5.3-flash.with space (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"custom_providers\": {\n    \"custom\": {\n      \"models\": {\n        \"unholy/glm5.3-flash\": {\n          \"context_length\": 4096\n        }\n      }\n    }\n  }\n}\n",
+     "config.toml": "[custom_providers]\n\n[custom_providers.custom]\n\n[custom_providers.custom.models]\n\n[custom_providers.custom.models.\"unholy/glm5.3-flash\"]\ncontext_length = 4096\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "quoted-key-orphans-render",
+  "kind": "config",
+  "doc": "first run orphans with dotted names render joined by dots",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "x = 1\n",
+    "pre": {
+     "config.toml": "\"a.b\" = 1\n[q.\"r/s\"]\nt = 2\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: no record of what Nix wrote previously, so nothing was retracted on this run. These keys are on disk and not declared in Nix — runtime settings, or leftovers from a Nix generation that predates this state file:\n  a.b\n  q.r/s.t\nIf they are leftovers, re-run this script with --adopt (add --dry-run first) to prune them in one pass. Otherwise ignore this: from now on, retiring a key in Nix removes it.\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"x\": 1\n}\n",
+     "config.toml": "\"a.b\" = 1\nx = 1\n\n[q]\n\n[q.\"r/s\"]\nt = 2\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "unicode-and-escapes",
+  "kind": "config",
+  "doc": "strings and keys with quotes, backslashes, controls, accents, emoji",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "s1 = \"say \\\"hi\\\" \\\\ back\"\ns2 = \"line1\\nline2\\ttab\\u0001ctl\"\ns3 = \"caf\\u00e9 \\U0001F600 \\u2028\"\n\"k\\\"q\" = 1\n\"\\u00e9t\\u00e9\" = 2\n\"tab\\tkey\" = 3\n[tbl.\"x y\"]\nv = \"ok\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"k\\\"q\": 1,\n  \"s1\": \"say \\\"hi\\\" \\\\ back\",\n  \"s2\": \"line1\\nline2\\ttab\\u0001ctl\",\n  \"s3\": \"caf\\u00e9 \\ud83d\\ude00 \\u2028\",\n  \"tab\\tkey\": 3,\n  \"tbl\": {\n    \"x y\": {\n      \"v\": \"ok\"\n    }\n  },\n  \"\\u00e9t\\u00e9\": 2\n}\n",
+     "config.toml": "s1 = \"say \\\"hi\\\" \\\\ back\"\ns2 = \"line1\\nline2\\ttab\\u0001ctl\"\ns3 = \"café 😀  \"\n\"k\\\"q\" = 1\n\"été\" = 2\n\"tab\\tkey\" = 3\n\n[tbl]\n\n[tbl.\"x y\"]\nv = \"ok\"\n"
+    }
+   },
+   {
+    "declared": "s1 = \"say \\\"hi\\\" \\\\ back\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed k\"q (retired in Nix)\nconfig.toml: removed s2 (retired in Nix)\nconfig.toml: removed s3 (retired in Nix)\nconfig.toml: removed tab\tkey (retired in Nix)\nconfig.toml: removed tbl (retired in Nix)\nconfig.toml: removed été (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"s1\": \"say \\\"hi\\\" \\\\ back\"\n}\n",
+     "config.toml": "s1 = \"say \\\"hi\\\" \\\\ back\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "scalar-types",
+  "kind": "config",
+  "doc": "ints, floats, bools, empty containers and nested arrays",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "i = 42\nneg = -7\nbig = 9007199254740993\nf = 1.5\nf0 = 0.0\nfe = 1e22\nfs = 1e-7\nt = true\nfl = false\nea = []\nna = [[1, 2], [\"a\", \"b\"], []]\nmix = [1, \"a\", 2.5, true]\n[et]\n[et2.inner]\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"big\": 9007199254740993,\n  \"ea\": [],\n  \"et\": {},\n  \"et2\": {\n    \"inner\": {}\n  },\n  \"f\": 1.5,\n  \"f0\": 0.0,\n  \"fe\": 1e+22,\n  \"fl\": false,\n  \"fs\": 1e-07,\n  \"i\": 42,\n  \"mix\": [\n    1,\n    \"a\",\n    2.5,\n    true\n  ],\n  \"na\": [\n    [\n      1,\n      2\n    ],\n    [\n      \"a\",\n      \"b\"\n    ],\n    []\n  ],\n  \"neg\": -7,\n  \"t\": true\n}\n",
+     "config.toml": "i = 42\nneg = -7\nbig = 9007199254740993\nf = 1.5\nf0 = 0.0\nfe = 1e+22\nfs = 1e-07\nt = true\nfl = false\nea = []\nna = [[1, 2], [\"a\", \"b\"], []]\nmix = [1, \"a\", 2.5, true]\n\n[et]\n\n[et2]\n\n[et2.inner]\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "on-disk-dates-pass-through",
+  "kind": "config",
+  "doc": "local date, datetime, offset datetime and time on disk survive as written kinds",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "x = 1\n",
+    "pre": {
+     "config.toml": "d = 2026-11-01\ndt = 2026-11-01T10:00:00\nodt = 2026-11-01T10:00:00Z\noff = 2026-11-01T10:00:00+02:00\ntm = 10:30:00\narr = [2026-01-01, 2026-02-02]\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: no record of what Nix wrote previously, so nothing was retracted on this run. These keys are on disk and not declared in Nix — runtime settings, or leftovers from a Nix generation that predates this state file:\n  d\n  dt\n  odt\n  off\n  tm\n  arr\nIf they are leftovers, re-run this script with --adopt (add --dry-run first) to prune them in one pass. Otherwise ignore this: from now on, retiring a key in Nix removes it.\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"x\": 1\n}\n",
+     "config.toml": "d = 2026-11-01\ndt = 2026-11-01T10:00:00\nodt = 2026-11-01T10:00:00+00:00\noff = 2026-11-01T10:00:00+02:00\ntm = 10:30:00\narr = [2026-01-01, 2026-02-02]\nx = 1\n"
+    }
+   },
+   {
+    "declared": "x = 2\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"x\": 2\n}\n",
+     "config.toml": "d = 2026-11-01\ndt = 2026-11-01T10:00:00\nodt = 2026-11-01T10:00:00+00:00\noff = 2026-11-01T10:00:00+02:00\ntm = 10:30:00\narr = [2026-01-01, 2026-02-02]\nx = 2\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "no-state-argument",
+  "kind": "config",
+  "doc": "without --state the merge never retracts and writes no state",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\nb = 2\n",
+    "pre": {},
+    "args": [],
+    "state": null,
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     "config.toml": "a = 1\nb = 2\n"
+    }
+   },
+   {
+    "declared": "a = 1\n",
+    "pre": {},
+    "args": [],
+    "state": null,
+    "exit": 0,
+    "stderr": "config.toml: no record of what Nix wrote previously, so nothing was retracted on this run. These keys are on disk and not declared in Nix — runtime settings, or leftovers from a Nix generation that predates this state file:\n  b\nIf they are leftovers, re-run this script with --adopt (add --dry-run first) to prune them in one pass. Otherwise ignore this: from now on, retiring a key in Nix removes it.\n",
+    "files": {
+     "config.toml": "a = 1\nb = 2\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "state-in-a-new-directory",
+  "kind": "config",
+  "doc": "the state's parent directory is created",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {},
+    "args": [],
+    "state": "sub/dir/state.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     "config.toml": "a = 1\n",
+     "sub/dir/state.json": "{\n  \"a\": 1\n}\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "state-not-a-dict",
+  "kind": "config",
+  "doc": "a JSON list as state is no state",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {
+     "config.toml": "old = 1\n",
+     ".nix-managed.json": "[1, 2]"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: no record of what Nix wrote previously, so nothing was retracted on this run. These keys are on disk and not declared in Nix — runtime settings, or leftovers from a Nix generation that predates this state file:\n  old\nIf they are leftovers, re-run this script with --adopt (add --dry-run first) to prune them in one pass. Otherwise ignore this: from now on, retiring a key in Nix removes it.\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1\n}\n",
+     "config.toml": "old = 1\na = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "state-empty-dict",
+  "kind": "config",
+  "doc": "an empty state is a state: not a first run, nothing attributed",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {
+     "config.toml": "old = 1\n",
+     ".nix-managed.json": "{}"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1\n}\n",
+     "config.toml": "old = 1\na = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "state-not-utf8",
+  "kind": "config",
+  "doc": "an undecodable state file is no state",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {
+     "config.toml": "old = 1\n",
+     ".nix-managed.json": {
+      "hex": "fffe7b7d"
+     }
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: no record of what Nix wrote previously, so nothing was retracted on this run. These keys are on disk and not declared in Nix — runtime settings, or leftovers from a Nix generation that predates this state file:\n  old\nIf they are leftovers, re-run this script with --adopt (add --dry-run first) to prune them in one pass. Otherwise ignore this: from now on, retiring a key in Nix removes it.\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1\n}\n",
+     "config.toml": "old = 1\na = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "state-with-keys-from-an-older-generation",
+  "kind": "config",
+  "doc": "a hand-made state attributes keys to Nix",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {
+     "config.toml": "a = 1\nold = 1\n[tbl]\nx = \"same\"\ny = \"changed\"\n",
+     ".nix-managed.json": "{\"a\": 1, \"old\": 1, \"tbl\": {\"x\": \"same\", \"y\": \"was\"}}"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed old (retired in Nix)\nconfig.toml: removed tbl.x (retired in Nix)\nconfig.toml: kept tbl.y — no longer declared in Nix, but its value changed after Nix wrote it\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1\n}\n",
+     "config.toml": "a = 1\n\n[tbl]\ny = \"changed\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "numeric-equality-follows-python",
+  "kind": "config",
+  "doc": "on-disk 1.0 equals recorded 1, true equals 1",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\nb = 1\nc = 2\nd = [1, 2]\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1,\n  \"b\": 1,\n  \"c\": 2,\n  \"d\": [\n    1,\n    2\n  ]\n}\n",
+     "config.toml": "a = 1\nb = 1\nc = 2\nd = [1, 2]\n"
+    }
+   },
+   {
+    "declared": "z = 0\n",
+    "pre": {
+     "config.toml": "a = 1.0\nb = true\nc = 2.5\nd = [1.0, 2]\nz = 0\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed a (retired in Nix)\nconfig.toml: removed b (retired in Nix)\nconfig.toml: removed d (retired in Nix)\nconfig.toml: kept c — no longer declared in Nix, but its value changed after Nix wrote it\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"z\": 0\n}\n",
+     "config.toml": "c = 2.5\nz = 0\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "table-becomes-scalar",
+  "kind": "config",
+  "doc": "Nix replaces a table by a scalar",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[a]\nb = 1\nc = 2\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": {\n    \"b\": 1,\n    \"c\": 2\n  }\n}\n",
+     "config.toml": "[a]\nb = 1\nc = 2\n"
+    }
+   },
+   {
+    "declared": "a = \"x\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed a.b (retired in Nix)\nconfig.toml: removed a.c (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": \"x\"\n}\n",
+     "config.toml": "a = \"x\"\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "scalar-becomes-table",
+  "kind": "config",
+  "doc": "Nix replaces a scalar by a table",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = \"x\"\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": \"x\"\n}\n",
+     "config.toml": "a = \"x\"\n"
+    }
+   },
+   {
+    "declared": "[a]\nb = 1\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": {\n    \"b\": 1\n  }\n}\n",
+     "config.toml": "[a]\nb = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "empty-table-leaf-retired",
+  "kind": "config",
+  "doc": "an empty declared table is a leaf; retiring it removes the emptied parent",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "keep = 1\n[a.b]\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": {\n    \"b\": {}\n  },\n  \"keep\": 1\n}\n",
+     "config.toml": "keep = 1\n\n[a]\n\n[a.b]\n"
+    }
+   },
+   {
+    "declared": "keep = 1\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed a (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"keep\": 1\n}\n",
+     "config.toml": "keep = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "declared-empty-file-first-run",
+  "kind": "config",
+  "doc": "an empty declared file on a first run only reports",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "",
+    "pre": {
+     "config.toml": "a = 1\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: no record of what Nix wrote previously, so nothing was retracted on this run. These keys are on disk and not declared in Nix — runtime settings, or leftovers from a Nix generation that predates this state file:\n  a\nIf they are leftovers, re-run this script with --adopt (add --dry-run first) to prune them in one pass. Otherwise ignore this: from now on, retiring a key in Nix removes it.\n",
+    "files": {
+     ".nix-managed.json": "{}\n",
+     "config.toml": "a = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "declared-empty-file-retires-everything-unchanged",
+  "kind": "config",
+  "doc": "an empty declared file after a real one retires it all",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n[t]\nb = 2\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1,\n  \"t\": {\n    \"b\": 2\n  }\n}\n",
+     "config.toml": "a = 1\n\n[t]\nb = 2\n"
+    }
+   },
+   {
+    "declared": "",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed a (retired in Nix)\nconfig.toml: removed t (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{}\n",
+     "config.toml": ""
+    }
+   }
+  ]
+ },
+ {
+  "name": "config-missing-with-state",
+  "kind": "config",
+  "doc": "retired keys with no config.toml: nothing to remove, file is created",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\nb = 2\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1,\n  \"b\": 2\n}\n",
+     "config.toml": "a = 1\nb = 2\n"
+    }
+   },
+   {
+    "declared": "a = 1\n",
+    "pre": {
+     "config.toml": null
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1\n}\n",
+     "config.toml": "a = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "retired-key-already-gone-from-disk",
+  "kind": "config",
+  "doc": "retired and already removed by hand: silent",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\nb = 2\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1,\n  \"b\": 2\n}\n",
+     "config.toml": "a = 1\nb = 2\n"
+    }
+   },
+   {
+    "declared": "a = 1\n",
+    "pre": {
+     "config.toml": "a = 1\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1\n}\n",
+     "config.toml": "a = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "dry-run-first-run-no-config",
+  "kind": "config",
+  "doc": "dry run with no config: orphans none, nothing written",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {},
+    "args": [
+     "--dry-run"
+    ],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "--dry-run: nothing written.\n",
+    "files": {}
+   }
+  ]
+ },
+ {
+  "name": "adopt-first-run",
+  "kind": "config",
+  "doc": "--adopt without any state prunes and reports removals",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {
+     "config.toml": "a = 5\nstale = true\n[t]\nx = 1\n"
+    },
+    "args": [
+     "--adopt"
+    ],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed stale (retired in Nix)\nconfig.toml: removed t (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1\n}\n",
+     "config.toml": "a = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "declared-with-dotted-and-inline-keys",
+  "kind": "config",
+  "doc": "dotted keys and inline tables in the declared file",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a.b.c = 1\nd = {e = 2, f = {g = \"h\"}}\nlist = [{x = 1}, {x = 2}]\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": {\n    \"b\": {\n      \"c\": 1\n    }\n  },\n  \"d\": {\n    \"e\": 2,\n    \"f\": {\n      \"g\": \"h\"\n    }\n  },\n  \"list\": [\n    {\n      \"x\": 1\n    },\n    {\n      \"x\": 2\n    }\n  ]\n}\n",
+     "config.toml": "[a]\n\n[a.b]\nc = 1\n\n[d]\ne = 2\n\n[d.f]\ng = \"h\"\n\n[[list]]\nx = 1\n\n[[list]]\nx = 2\n"
+    }
+   },
+   {
+    "declared": "a.b.c = 1\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed d (retired in Nix)\nconfig.toml: removed list (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": {\n    \"b\": {\n      \"c\": 1\n    }\n  }\n}\n",
+     "config.toml": "[a]\n\n[a.b]\nc = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "declared-overrides-undeclared-table-with-scalar",
+  "kind": "config",
+  "doc": "declared scalar over an on-disk table",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {
+     "config.toml": "[a]\nb = 2\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: no record of what Nix wrote previously, so nothing was retracted on this run. These keys are on disk and not declared in Nix — runtime settings, or leftovers from a Nix generation that predates this state file:\n  a.b\nIf they are leftovers, re-run this script with --adopt (add --dry-run first) to prune them in one pass. Otherwise ignore this: from now on, retiring a key in Nix removes it.\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1\n}\n",
+     "config.toml": "a = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "config-not-parsing",
+  "kind": "config",
+  "doc": "a config.toml that does not parse is never overwritten (exit 1)",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {
+     "config.toml": "[[broken\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 1,
+    "stderr": null,
+    "files": {
+     "config.toml": "[[broken\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "declared-not-parsing",
+  "kind": "config",
+  "doc": "a declared file that does not parse changes nothing (exit 1)",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1\n}\n",
+     "config.toml": "a = 1\n"
+    }
+   },
+   {
+    "declared": "[broken",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 1,
+    "stderr": null,
+    "files": {
+     ".nix-managed.json": "{\n  \"a\": 1\n}\n",
+     "config.toml": "a = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "config-not-utf8",
+  "kind": "config",
+  "doc": "a config.toml that is not UTF-8 is never overwritten (exit 1)",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "a = 1\n",
+    "pre": {
+     "config.toml": {
+      "hex": "61203d20ff0a"
+     }
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 1,
+    "stderr": null,
+    "files": {
+     "config.toml": {
+      "hex": "61203d20ff0a"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "name": "declared-missing",
+  "kind": "config",
+  "doc": "a missing declared file exits 1 and changes nothing",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": null,
+    "pre": {
+     "config.toml": "a = 1\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 1,
+    "stderr": null,
+    "files": {
+     "config.toml": "a = 1\n"
+    }
+   }
+  ]
+ },
+ {
+  "name": "long-run-sequence",
+  "kind": "config",
+  "doc": "declare, runtime edit, retire, re-declare: five activations",
+  "parse_detail": false,
+  "tracked": [
+   "config.toml",
+   ".nix-managed.json"
+  ],
+  "steps": [
+   {
+    "declared": "[p.m1]\nc = 1\n[p.m2]\nc = 2\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"p\": {\n    \"m1\": {\n      \"c\": 1\n    },\n    \"m2\": {\n      \"c\": 2\n    }\n  }\n}\n",
+     "config.toml": "[p]\n\n[p.m1]\nc = 1\n\n[p.m2]\nc = 2\n"
+    }
+   },
+   {
+    "declared": "[p.m1]\nc = 1\n[p.m2]\nc = 2\n[p.m3]\nc = 3\n",
+    "pre": {
+     "config.toml": "[p.m1]\nc = 1\n[p.m2]\nc = 2\n[user]\nk = 1\n"
+    },
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"p\": {\n    \"m1\": {\n      \"c\": 1\n    },\n    \"m2\": {\n      \"c\": 2\n    },\n    \"m3\": {\n      \"c\": 3\n    }\n  }\n}\n",
+     "config.toml": "[p]\n\n[p.m1]\nc = 1\n\n[p.m2]\nc = 2\n\n[p.m3]\nc = 3\n\n[user]\nk = 1\n"
+    }
+   },
+   {
+    "declared": "[p.m1]\nc = 1\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed p.m2 (retired in Nix)\nconfig.toml: removed p.m3 (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"p\": {\n    \"m1\": {\n      \"c\": 1\n    }\n  }\n}\n",
+     "config.toml": "[p]\n\n[p.m1]\nc = 1\n\n[user]\nk = 1\n"
+    }
+   },
+   {
+    "declared": "[p.m1]\nc = 1\n[p.m2]\nc = 20\n",
+    "pre": {},
+    "args": [],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "",
+    "files": {
+     ".nix-managed.json": "{\n  \"p\": {\n    \"m1\": {\n      \"c\": 1\n    },\n    \"m2\": {\n      \"c\": 20\n    }\n  }\n}\n",
+     "config.toml": "[p]\n\n[p.m1]\nc = 1\n\n[p.m2]\nc = 20\n\n[user]\nk = 1\n"
+    }
+   },
+   {
+    "declared": "[p.m1]\nc = 1\n",
+    "pre": {},
+    "args": [
+     "--adopt"
+    ],
+    "state": ".nix-managed.json",
+    "exit": 0,
+    "stderr": "config.toml: removed p.m2 (retired in Nix)\nconfig.toml: removed user (retired in Nix)\n",
+    "files": {
+     ".nix-managed.json": "{\n  \"p\": {\n    \"m1\": {\n      \"c\": 1\n    }\n  }\n}\n",
+     "config.toml": "[p]\n\n[p.m1]\nc = 1\n"
+    }
+   }
+  ]
+ }
+]

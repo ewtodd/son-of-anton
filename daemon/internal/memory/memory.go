@@ -776,3 +776,11 @@ func tomlValue(v any) (string, bool) {
 // localDate marks a TOML local date, as the toml decoder does (its zone is
 // named "date-local"); tomlValue writes such a time as a bare date.
 var localDate = time.FixedZone("date-local", 0)
+
+// TOMLKey renders a key, quoted unless it is bare-safe.
+func TOMLKey(k string) string { return tomlKey(k) }
+
+// TOMLValue renders a decoded TOML scalar or array of them (a local date,
+// datetime or time keeps its kind); ok is false for a value with no
+// representation.
+func TOMLValue(v any) (string, bool) { return tomlValue(v) }
