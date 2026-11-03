@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
@@ -224,7 +225,9 @@ func TestPlainTextAndJSONPassThrough(t *testing.T) {
 	}
 }
 
-func service(t *testing.T, got *[]string) string {
+// service is a fake extract service; it records the URLs it was asked for
+// (concurrently: web_extract fetches URLs in parallel).
+func service(t *testing.T, mu *sync.Mutex, got *[]string) string {
 	return serve(t, func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ URL string }
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -232,7 +235,9 @@ func service(t *testing.T, got *[]string) string {
 			http.Error(w, "no", http.StatusNotFound)
 			return
 		}
+		mu.Lock()
 		*got = append(*got, body.URL)
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"title": "Rendered", "content": "rendered by the browser service for " + body.URL})
 	})
@@ -240,8 +245,9 @@ func service(t *testing.T, got *[]string) string {
 
 func TestABlockedPageGoesToTheService(t *testing.T) {
 	f, w := webFixture(t)
+	var mu sync.Mutex
 	var asked []string
-	w.ExtractService = service(t, &asked)
+	w.ExtractService = service(t, &mu, &asked)
 	site := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		switch r.URL.Path {
@@ -260,6 +266,8 @@ func TestABlockedPageGoesToTheService(t *testing.T) {
 			t.Errorf("result %d = %v", i, g)
 		}
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	if len(asked) != 3 {
 		t.Fatalf("service asked for %v", asked)
 	}
