@@ -87,6 +87,17 @@ type Runner struct {
 	// client's own retries (before any output); the next request tries Model
 	// again. A session switched to another model has no fallback.
 	Fallback *Fallback
+	// Default is the route a session of this runner starts on. A request that
+	// fails with HTTP 404 on another model means that model is gone: the
+	// session is set back to Default, OnDeadPin is told, and the request is
+	// sent again, once.
+	Default   *Fallback
+	OnDeadPin func(old string, def Fallback)
+	// ModelNote, when set, returns the model that answered the last reply (""
+	// before any); the turn's context then ends with a line naming it.
+	// OnReply is told the model that answered each response.
+	ModelNote func() string
+	OnReply   func(served string)
 	// MCP reaches the MCP servers (tools.Env.MCP).
 	MCP *mcp.Manager
 	// Cron backs the cronjob tool for this session (nil: unavailable).
@@ -366,6 +377,11 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			apiText = text + "\n\n" + block
 		}
 	}
+	if r.ModelNote != nil {
+		if served := r.ModelNote(); served != "" {
+			apiText += "\n\n[Model: your last reply came from " + served + ".]"
+		}
+	}
 	msgs, err := s.build(ctx, apiText)
 	if err != nil {
 		return Result{}, err
@@ -442,6 +458,17 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			}
 		}
 		resp, err := client.Complete(reqCtx, req, onDelta)
+		var httpErr *provider.HTTPError
+		if def := r.Default; err != nil && def != nil && model != def.Model && !stopped() && errors.As(err, &httpErr) && httpErr.Status == 404 {
+			old := model
+			s.SetModel(def.Client, def.Model, def.Effort)
+			client, model, effort = def.Client, def.Model, def.Effort
+			if r.OnDeadPin != nil {
+				r.OnDeadPin(old, *def)
+			}
+			req.Model, req.ReasoningEffort = model, effort
+			resp, err = client.Complete(reqCtx, req, onDelta)
+		}
 		if fb := r.Fallback; err != nil && fb != nil && model == r.Model && !stopped() && provider.Fallbackable(err) {
 			req.Model, req.ReasoningEffort = fb.Model, fb.Effort
 			resp, err = fb.Client.Complete(reqCtx, req, onDelta)
@@ -473,6 +500,9 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 		s.mu.Lock()
 		s.served = resp.ServedModel
 		s.mu.Unlock()
+		if r.OnReply != nil {
+			r.OnReply(s.ServedModel())
+		}
 		total.APICalls++
 		s.noteResponse(resp.Usage.PromptTokens, emit)
 		total.Last = resp.Usage

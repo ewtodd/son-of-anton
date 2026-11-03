@@ -88,6 +88,7 @@ type Server struct {
 	mcp     *mcp.Manager // nil: no MCP server is enabled
 	lsp     *lsp.Service // nil: LSP is disabled
 	chats   *chatHub     // nil: Signal is off
+	served  sync.Map     // session id -> the model that answered its last reply in this run
 	mem     *memory.Store
 	idx     *recall.Index   // nil: recall is off
 	base    context.Context // cancelled when shutdown starts
@@ -148,6 +149,7 @@ func New(o Options) (*Server, error) {
 
 // Serve accepts connections until ctx is done, then shuts down cleanly.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	s.applyRenames()
 	s.backfill()
 	if s.cfg.Daemon.Cron {
 		s.cron.start()
@@ -261,6 +263,9 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 		LSP:             s.lsp,
 		Vision:          VisionConfig(s.cfg, ep),
 		Cron:            s.cronHost(""),
+		Default:         s.defaultRoute(""),
+		OnDeadPin:       func(old string, def agent.Fallback) { s.deadPin(l, old, def) },
+		OnReply:         func(served string) { s.served.Store(l.id, served) },
 		Prompt: func(_ context.Context, ss store.Session) (string, error) {
 			r, err := prompt.Build(prompt.Options{
 				Home: s.opt.Home, Cwd: ss.Cwd, Scope: "common", Memory: true,
@@ -368,7 +373,7 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 		r = s.childRunner(r, l, rec)
 	}
 	if rec.Kind == "chat" {
-		s.chatRunner(r, rec.Chat)
+		s.chatRunner(r, rec.Chat, l)
 		if s.chats != nil {
 			l.chat = &chatLink{cs: s.chats.state(rec.Chat), l: l}
 		}

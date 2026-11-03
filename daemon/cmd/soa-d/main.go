@@ -388,6 +388,7 @@ func runServe(args []string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "soa-d serve: %v\n", err)
 		return 1
 	}
+	retirePython(home, stderr)
 	srv, err := server.New(server.Options{Home: home, Version: version})
 	if err != nil {
 		_ = ln.Close()

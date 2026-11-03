@@ -129,6 +129,14 @@ its approvals and questions come to the chat. The chat takes `/new`, `/stop`,
 `/status`, `/sendnow [text]`, `/sendall`, `/approve [id] [always]` and
 `/deny [id] [reason]`; a typed `/new` no longer asks to confirm.
 
+`/model` in a chat shows the model the chat runs on and the one that answered last;
+`/model <name>` switches the chat to a model `model.list` knows, from the next
+message. Each message after a reply also tells the agent which model answered.
+A session pinned to a model the endpoint no longer serves (HTTP 404) falls back
+to the default model with a notice. `[models] renamed = { "old" = "new" }` maps a
+renamed model to its new name: pins on it keep working and stored sessions are
+rewritten at start.
+
 With soa-d the chat's agent is fiona, the front desk of the instance
 (`[daemon] instance` names it). She has her own identity, takes real work to a
 worker rather than doing it, and has memory, session search, the web tools and
@@ -230,6 +238,9 @@ services.son-of-anton.instances.work = {
   daemon (the same unit then runs `soa-d serve`: Signal, cron and the socket
   the TUI attaches to; the TUI never starts a daemon of its own there). Run
   `soa-d import --from ~/.son-of-anton` once to bring the Python sessions over.
+  With `[daemon] import_python = true` (Nix sets it on these instances) the first
+  `soa-d serve` does that itself and retires the Python `state.db` to
+  `state.db.imported`.
   The default is `python`. On a `managedAccount` (a person's own account) the
   unit drops its filesystem sandbox, since its daemon is that person's terminal
   agent too; nothing soa-d runs can gain privileges (no sudo), on any instance.

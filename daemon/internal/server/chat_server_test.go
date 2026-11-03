@@ -204,7 +204,7 @@ func TestABusyChatQueuesAndAcksOnce(t *testing.T) {
 	r.reply(sigGroup, "first answer")
 	r.reply(sigGroup, "second answer")
 	r.reply(sigGroup, "third answer")
-	if lastUser(t, fake, 1) != "two" || lastUser(t, fake, 2) != "three" {
+	if noModelNote(lastUser(t, fake, 1)) != "two" || noModelNote(lastUser(t, fake, 2)) != "three" {
 		t.Fatalf("each queued message is its own turn: %q, %q", lastUser(t, fake, 1), lastUser(t, fake, 2))
 	}
 }
@@ -250,7 +250,7 @@ func TestCommandsNeverReachTheModel(t *testing.T) {
 	fake := fakellm.New(t, fakellm.Turn{Content: "checking"})
 	r := newChatRig(t, fake, "")
 	r.say("/frobnicate")
-	r.reply(sigGroup, "Unknown command /frobnicate. Commands: /new, /stop, /status, /sendnow, /sendall, /approve, /deny.")
+	r.reply(sigGroup, "Unknown command /frobnicate. Commands: /new, /stop, /status, /model, /sendnow, /sendall, /approve, /deny.")
 	r.say("/sendnow")
 	r.reply(sigGroup, "Nothing is running.")
 	r.say("/sendall")
@@ -381,7 +381,7 @@ func TestAttachmentsAndQuotes(t *testing.T) {
 	sent["quote"] = map[string]any{"id": m.TS, "text": "nice picture", "author": sigAccount}
 	r.sig.Push(env)
 	r.reply(sigGroup, "a cat")
-	if got := lastUser(t, fake, 1); got != "[Replying to your previous message: \"nice picture\"]\n\nwhat is in it?" {
+	if got := noModelNote(lastUser(t, fake, 1)); got != "[Replying to your previous message: \"nice picture\"]\n\nwhat is in it?" {
 		t.Fatalf("a quote of our reply = %q", got)
 	}
 }
@@ -553,4 +553,10 @@ func TestAStaleLockIsTaken(t *testing.T) {
 	if _, err := os.Stat(lockPath(lock)); !os.IsNotExist(err) {
 		t.Fatalf("the lock is removed at shutdown: %v", err)
 	}
+}
+
+// noModelNote drops the per-turn line that names the model which answered
+// last (phase 8g), which every message after a reply carries.
+func noModelNote(s string) string {
+	return strings.TrimSuffix(s, "\n\n[Model: your last reply came from test-model.]")
 }

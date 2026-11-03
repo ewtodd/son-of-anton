@@ -22,6 +22,11 @@ type Config struct {
 		Provider        string `toml:"provider"`
 		ReasoningEffort any    `toml:"reasoning_effort"`
 	} `toml:"model"`
+	Models struct {
+		// Renamed maps a model name that was renamed to its new name; a pin on
+		// the old one keeps working (chains are not followed).
+		Renamed map[string]string `toml:"renamed"`
+	} `toml:"models"`
 	Agent struct {
 		ReasoningEffort    any            `toml:"reasoning_effort"`
 		ReasoningOverrides map[string]any `toml:"reasoning_overrides"`
@@ -57,6 +62,9 @@ type Config struct {
 		// Autostart false: a system unit serves this home, so a client never
 		// starts a daemon of its own here (Nix sets it for backend = "soa-d").
 		Autostart *bool `toml:"autostart"`
+		// ImportPython: serve imports the home's Python state.db at start and
+		// retires it (Nix sets it for backend = "soa-d").
+		ImportPython bool `toml:"import_python"`
 	} `toml:"daemon"`
 	Cron struct {
 		Model string `toml:"model"` // the model of jobs that pin none
@@ -199,6 +207,9 @@ func Load(home string) (*Config, error) {
 func (c *Config) Endpoint(model string) (Endpoint, error) {
 	if model == "" {
 		model = c.Model.Default
+	}
+	if to, ok := c.Models.Renamed[model]; ok && to != "" {
+		model = to
 	}
 	providerName := c.Model.Provider
 	prov, ok := c.CustomProviders[providerName]

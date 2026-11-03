@@ -413,3 +413,13 @@ func (s *Store) QueuedWorkers(ctx context.Context) ([]string, error) {
 	}
 	return out, rows.Err()
 }
+
+// RenameModel points every session pinned to the model old at new, and
+// returns how many it changed.
+func (s *Store) RenameModel(ctx context.Context, old, new string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET model = ? WHERE model = ?`, new, old)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}

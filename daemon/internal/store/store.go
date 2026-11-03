@@ -179,7 +179,7 @@ UPDATE schema_version SET version = 10;`,
 UPDATE schema_version SET version = 11;`,
 	// v12 held Signal messages for active hours (phase 5e), reverted the same
 	// day: fiona's chat is always on. Kept so the version numbers of databases
-	// that ran it stay the same as everyone's; the tables are unused.
+	// that ran it stay the same as everyone's (v13 drops the tables).
 	`CREATE TABLE held_messages (
 	chat   TEXT NOT NULL,
 	seq    INTEGER NOT NULL,
@@ -190,6 +190,10 @@ UPDATE schema_version SET version = 11;`,
 );
 CREATE TABLE held_asked (chat TEXT PRIMARY KEY);
 UPDATE schema_version SET version = 12;`,
+	// v13 drops them: unused since the revert.
+	`DROP TABLE held_messages;
+DROP TABLE held_asked;
+UPDATE schema_version SET version = 13;`,
 }
 
 func migrate(db *sql.DB) error {

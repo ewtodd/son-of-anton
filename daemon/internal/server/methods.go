@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -393,26 +392,8 @@ func (s *Server) models(params json.RawMessage, bad func(error) (any, *rpcError)
 			current = rec.Model
 		}
 	}
-	routes := s.cfg.Routes()
-	if ep, err := s.cfg.Endpoint(""); err == nil {
-		ctx, cancel := context.WithTimeout(s.base, 5*time.Second)
-		infos, err := provider.New(ep.BaseURL, ep.APIKey).ModelInfo(ctx)
-		cancel()
-		if err == nil {
-			s.refreshMeta(ep, infos)
-			for _, info := range infos {
-				id := info.ID
-				if _, ok := routes[id]; !ok {
-					routes[id] = nil
-				}
-			}
-		}
-	}
-	names := make([]string, 0, len(routes))
-	for n := range routes {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	routes := s.modelRoutes()
+	names := sortedKeys(routes)
 	models := make([]map[string]any, len(names))
 	for i, n := range names {
 		efforts := routes[n]

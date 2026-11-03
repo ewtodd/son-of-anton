@@ -464,6 +464,8 @@ let
           cron = true;
           # The unit serves this home: a TUI connects, never starts its own.
           autostart = false;
+          # First start imports the Python state.db and retires it.
+          import_python = true;
         }
         // extra;
       }

@@ -37,7 +37,7 @@ const (
 	quoteMax      = 500
 	queuedAck     = "Queued for the next turn. I'll respond once the current task finishes."
 	noResponse    = "The model returned no response."
-	commandsHelp  = "/new, /stop, /status, /sendnow, /sendall, /approve, /deny"
+	commandsHelp  = "/new, /stop, /status, /model, /sendnow, /sendall, /approve, /deny"
 	noApproval    = "Nothing is waiting for approval."
 	nothingToStop = "No active task to stop."
 )
@@ -422,7 +422,7 @@ func (s *Server) notesDir() string { return filepath.Join(s.opt.Home, "notes", "
 // toolset, file tools confined to the notes folder, fiona's identity, recall
 // and session_search as the chat's own, and the default model as the fallback
 // when the chat's own route is down.
-func (s *Server) chatRunner(r *agent.Runner, stamp string) {
+func (s *Server) chatRunner(r *agent.Runner, stamp string, l *live) {
 	r.Scope, r.Chat, r.MemoryScope = "gateway", stamp, "gateway"
 	r.Policy.Confine = s.notesDir()
 	r.Policy.ReadAlso = []string{filepath.Join(s.opt.Home, "cache", "signal")}
@@ -430,6 +430,15 @@ func (s *Server) chatRunner(r *agent.Runner, stamp string) {
 	if chat := s.cfg.ChatModel(); chat != "" && chat != s.cfg.Model.Default && r.Model == chat {
 		if ep, err := s.cfg.Endpoint(""); err == nil {
 			r.Fallback = &agent.Fallback{Client: r.Client, Model: ep.Model, Effort: ep.ReasoningEffort}
+		}
+	}
+	r.ModelNote = func() string { return s.lastServed(l.id) }
+	r.Default = s.defaultRoute(s.cfg.ChatModel())
+	deadPin := r.OnDeadPin
+	r.OnDeadPin = func(old string, def agent.Fallback) {
+		deadPin(old, def)
+		if s.chats != nil {
+			s.chats.state(stamp).say(deadPinText(old, def.Model))
 		}
 	}
 	r.Tools = s.regChat
@@ -474,7 +483,7 @@ func (s *Server) createChat(ctx context.Context, stamp string) (string, error) {
 	}
 	mode := s.cfg.PermissionMode()
 	r := s.runner(&live{}, ep, mode, "signal", nil)
-	s.chatRunner(r, stamp)
+	s.chatRunner(r, stamp, &live{})
 	cwd := s.notesDir()
 	if err := os.MkdirAll(cwd, 0o700); err != nil {
 		return "", err
@@ -852,6 +861,8 @@ func (h *chatHub) command(cs *chatState, name, args string) {
 		h.sendnow(cs, args)
 	case "sendall":
 		h.sendall(cs)
+	case "model":
+		cs.say(h.modelCommand(cs, args))
 	case "status":
 		cs.say(h.status(cs))
 	case "approve":
