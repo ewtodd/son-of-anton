@@ -293,7 +293,8 @@ merge is the one running.
   > your notes folder. Real work (code, files, commands, anything in a
   > repository or on a machine) goes to a son-of-anton worker through the
   > relay tool: pass the user's request on as they gave it, then tell them
-  > what the worker reports.
+  > what the worker reports. A worker cannot see your memory, so add
+  > anything from it the worker needs, marked as context from you.
 
   then, with no worker hours:
 
