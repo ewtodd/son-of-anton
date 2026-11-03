@@ -61,7 +61,6 @@ type chatHub struct {
 	cl      *signal.Client
 	in      *signal.Intake
 	release func()
-	started bool // the account's lock is held and events are being read
 	wg      sync.WaitGroup
 
 	mu    sync.Mutex
@@ -101,7 +100,6 @@ func (h *chatHub) start() {
 		return
 	}
 	h.release = release
-	h.started = true
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
@@ -128,9 +126,6 @@ type chatState struct {
 	cmds  *outbox // control commands, in order
 
 	sessMu sync.Mutex // picking, creating and replacing the chat's session
-
-	hoursMu sync.Mutex // the chat's held messages and its question about them
-	told    string     // the closed stretch the chat was last told about
 
 	mu      sync.Mutex
 	pending []pendingReq
@@ -533,12 +528,7 @@ func (h *chatHub) handle(data []byte) {
 	}
 	cs := h.state(in.Chat)
 	if name, args, ok := parseCommand(in.Text); ok {
-		cs.cmds.push(func() {
-			if controlCommands[name] {
-				h.dropHeldQuestion(cs)
-			}
-			h.command(cs, name, args)
-		})
+		cs.cmds.push(func() { h.command(cs, name, args) })
 		return
 	}
 	cs.work.push(func() { h.message(cs, in) })
@@ -565,14 +555,6 @@ var commandWord = regexp.MustCompile(`^/[A-Za-z]+$`)
 // question, or becomes a turn (or a queued turn).
 func (h *chatHub) message(cs *chatState, in signal.Inbound) {
 	if len(in.Attachments) == 0 && h.answerWaiting(cs, in.Text) {
-		return
-	}
-	used, turn := h.holdGate(cs, in)
-	if used && turn == "" {
-		return
-	}
-	if turn != "" {
-		h.deliver(cs, turn, false)
 		return
 	}
 	text := h.userText(in)

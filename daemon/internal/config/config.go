@@ -68,8 +68,6 @@ type Config struct {
 		Model                string `toml:"model"`
 		SingleUser           bool   `toml:"single_user"`
 		GroupSessionsPerUser *bool  `toml:"group_sessions_per_user"`
-		ActiveHours          any    `toml:"active_hours"`     // [start, end] hours; see ActiveHours
-		InactiveMessage      string `toml:"inactive_message"` // the notice outside them; empty is the default
 	} `toml:"gateway"`
 	Terminal struct {
 		Cwd string `toml:"cwd"`
@@ -403,17 +401,7 @@ func (c *Config) ChatModel() string { return strings.TrimSpace(c.Gateway.Model) 
 // any time: the key is absent or empty, the hours are equal, or the value is
 // malformed (warn then says so).
 func (c *Config) WorkerHours() (start, end int, ok bool, warn string) {
-	return parseHours("relay.worker_hours", c.Relay.WorkerHours, "workers may run at any time")
-}
-
-// ActiveHours is gateway.active_hours, read as WorkerHours reads its key: the
-// window in which Signal chats get answers. ok is false when the chats are
-// answered at any time.
-func (c *Config) ActiveHours() (start, end int, ok bool, warn string) {
-	return parseHours("gateway.active_hours", c.Gateway.ActiveHours, "chats are answered at any time")
-}
-
-func parseHours(key string, v any, always string) (start, end int, ok bool, warn string) {
+	v := c.Relay.WorkerHours
 	if v == nil {
 		return 0, 0, false, ""
 	}
@@ -432,7 +420,7 @@ func parseHours(key string, v any, always string) (start, end int, ok bool, warn
 		hours[i] = int(n)
 	}
 	if !valid {
-		return 0, 0, false, fmt.Sprintf("%s = %v is not two hours (0-23); %s", key, v, always)
+		return 0, 0, false, fmt.Sprintf("relay.worker_hours = %v is not two hours (0-23); workers may run at any time", v)
 	}
 	if hours[0] == hours[1] {
 		return 0, 0, false, ""

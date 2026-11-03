@@ -177,6 +177,9 @@ UPDATE schema_version SET version = 10;`,
 	PRIMARY KEY (source, foreign_id)
 );
 UPDATE schema_version SET version = 11;`,
+	// v12 held Signal messages for active hours (phase 5e), reverted the same
+	// day: fiona's chat is always on. Kept so the version numbers of databases
+	// that ran it stay the same as everyone's; the tables are unused.
 	`CREATE TABLE held_messages (
 	chat   TEXT NOT NULL,
 	seq    INTEGER NOT NULL,
