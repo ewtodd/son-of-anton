@@ -1,0 +1,204 @@
+[
+ {
+  "in": "plain text",
+  "text": "plain text",
+  "styles": []
+ },
+ {
+  "in": "**bold** and *italic* and `code`",
+  "text": "bold and italic and code",
+  "styles": [
+   "0:4:BOLD",
+   "9:6:ITALIC",
+   "20:4:MONOSPACE"
+  ]
+ },
+ {
+  "in": "__also bold__ and _also italic_",
+  "text": "also bold and also italic",
+  "styles": [
+   "0:9:BOLD",
+   "14:11:ITALIC"
+  ]
+ },
+ {
+  "in": "~~struck~~ out",
+  "text": "struck out",
+  "styles": [
+   "0:6:STRIKETHROUGH"
+  ]
+ },
+ {
+  "in": "# Heading\nbody",
+  "text": "Heading\nbody",
+  "styles": [
+   "0:7:BOLD"
+  ]
+ },
+ {
+  "in": "### Third level\n\nmore",
+  "text": "Third level\n\nmore",
+  "styles": [
+   "0:11:BOLD"
+  ]
+ },
+ {
+  "in": "- one\n- two\n  - nested\n* star\n+ plus",
+  "text": "• one\n• two\n  • nested\n• star\n• plus",
+  "styles": []
+ },
+ {
+  "in": "1. numbered\n2. list",
+  "text": "1. numbered\n2. list",
+  "styles": []
+ },
+ {
+  "in": "```\ncode block\n  indented\n```\nafter",
+  "text": "code block\n  indented\nafter",
+  "styles": [
+   "0:21:MONOSPACE"
+  ]
+ },
+ {
+  "in": "```go\nfunc main() {}\n```",
+  "text": "func main() {}",
+  "styles": [
+   "0:14:MONOSPACE"
+  ]
+ },
+ {
+  "in": "- inside fence below\n```\n- not a bullet\n```",
+  "text": "• inside fence below\n- not a bullet",
+  "styles": [
+   "21:14:MONOSPACE"
+  ]
+ },
+ {
+  "in": "a\n\n\n\nb\n\n\nc",
+  "text": "a\n\nb\n\nc",
+  "styles": []
+ },
+ {
+  "in": "  leading and trailing  \n\n",
+  "text": "leading and trailing",
+  "styles": []
+ },
+ {
+  "in": "emoji 👍 then **bold** after",
+  "text": "emoji 👍 then bold after",
+  "styles": [
+   "14:4:BOLD"
+  ]
+ },
+ {
+  "in": "🎉🎉 **party** 🎉",
+  "text": "🎉🎉 party 🎉",
+  "styles": [
+   "5:5:BOLD"
+  ]
+ },
+ {
+  "in": "naïve café **résumé**",
+  "text": "naïve café résumé",
+  "styles": [
+   "11:6:BOLD"
+  ]
+ },
+ {
+  "in": "snake_case_name and file_name.py",
+  "text": "snake_case_name and file_name.py",
+  "styles": []
+ },
+ {
+  "in": "a * b * c and 2*3*4",
+  "text": "a * b * c and 234",
+  "styles": [
+   "15:1:ITALIC"
+  ]
+ },
+ {
+  "in": "**bold with `code` inside**",
+  "text": "bold with `code` inside",
+  "styles": [
+   "0:23:BOLD"
+  ]
+ },
+ {
+  "in": "*italic **bold** inside*",
+  "text": "*italic bold inside*",
+  "styles": [
+   "8:4:BOLD"
+  ]
+ },
+ {
+  "in": "**unclosed bold",
+  "text": "**unclosed bold",
+  "styles": []
+ },
+ {
+  "in": "`unclosed code",
+  "text": "`unclosed code",
+  "styles": []
+ },
+ {
+  "in": "[a link](https://example.com) and <https://example.com>",
+  "text": "[a link](https://example.com) and <https://example.com>",
+  "styles": []
+ },
+ {
+  "in": "> a quote\n> more",
+  "text": "> a quote\n> more",
+  "styles": []
+ },
+ {
+  "in": "Mixed: **b** _i_ ~~s~~ `m` # not heading",
+  "text": "Mixed: b i s m # not heading",
+  "styles": [
+   "7:1:BOLD",
+   "9:1:ITALIC",
+   "11:1:STRIKETHROUGH",
+   "13:1:MONOSPACE"
+  ]
+ },
+ {
+  "in": "**a**b**c**",
+  "text": "abc",
+  "styles": [
+   "0:1:BOLD",
+   "2:1:BOLD"
+  ]
+ },
+ {
+  "in": "line with trailing **bold**\n- bullet **bold**\n## Head **x**",
+  "text": "line with trailing bold\n• bullet bold\nHead x",
+  "styles": [
+   "19:4:BOLD",
+   "33:4:BOLD",
+   "38:6:BOLD",
+   "43:1:BOLD"
+  ]
+ },
+ {
+  "in": "汉字 **粗体** 文字",
+  "text": "汉字 粗体 文字",
+  "styles": [
+   "3:2:BOLD"
+  ]
+ },
+ {
+  "in": "tab\tseparated **x**",
+  "text": "tab\tseparated x",
+  "styles": [
+   "14:1:BOLD"
+  ]
+ },
+ {
+  "in": "x **y** z\n\n```\n**not bold in code**\n```",
+  "text": "x y z\n\nnot bold in code",
+  "styles": [
+   "2:1:BOLD",
+   "7:16:BOLD",
+   "7:16:MONOSPACE"
+  ]
+ }
+]
