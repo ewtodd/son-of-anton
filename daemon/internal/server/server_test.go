@@ -784,10 +784,14 @@ func TestCommitIsATemplatedTurn(t *testing.T) {
 	}
 	start := of(c.turn(), "turn.start")[0]
 	got := str(start, "text")
-	for _, want := range []string{"uncommitted", "The user adds: only the docs", `--author="Bot <bot@example.com>"`} {
+	for _, want := range []string{"uncommitted", "The user adds: only the docs", `--author="Bot <bot@example.com>"`, `-F - <<'EOF'`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("commit prompt %q lacks %q", got, want)
 		}
+	}
+	// A message given as -m "..." runs whatever backticks it contains.
+	if strings.Contains(got, `-m "`) {
+		t.Fatalf("the commit prompt suggests -m with a double-quoted message: %q", got)
 	}
 	last := wire(t, fake, 0)
 	if str(last[len(last)-1], "content") != got {

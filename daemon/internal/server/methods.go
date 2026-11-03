@@ -489,7 +489,7 @@ func (s *Server) commitPrompt(extra string) string {
 	name, email := strings.TrimSpace(s.cfg.Git.AuthorName), strings.TrimSpace(s.cfg.Git.AuthorEmail)
 	if name != "" && email != "" {
 		lines = append(lines, "The author of the commit is "+name+" <"+email+">, so commit with "+
-			"`git commit --author=\""+name+" <"+email+">\" -m \"<message>\"`. "+
+			"`git commit --author=\""+name+" <"+email+">\" -F - <<'EOF'`. "+
 			"Do not touch the committer: it stays whatever the repository or the global git config sets. "+
 			"That means no GIT_COMMITTER_NAME or GIT_COMMITTER_EMAIL and no -c user.name or user.email.")
 		lines = append(lines, "Authorship goes to "+name+", not to you. Finish the message body with a single line "+
@@ -499,6 +499,11 @@ func (s *Server) commitPrompt(extra string) string {
 		lines = append(lines, "Commit under the git identity the repository is already configured with, "+
 			"and leave both author and committer alone.")
 	}
+	// A message in -m "..." is shell text: backticks and $(...) in it run as
+	// commands, and their output, or nothing, lands in the message.
+	lines = append(lines, "Give git the message on standard input from a quoted heredoc: `-F - <<'EOF'`, the message, "+
+		"then a line holding only EOF. Never use -m: inside double quotes the shell runs anything in backticks "+
+		"or $(...), and a commit message often has both.")
 	if extra = strings.TrimSpace(extra); extra != "" {
 		lines = append(lines, "The user adds: "+extra)
 	}
