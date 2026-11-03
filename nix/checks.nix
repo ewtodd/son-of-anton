@@ -136,6 +136,54 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # ── An instance on soa-d (phase 8b) ───────────────────────────────
+        # backend = "soa-d" makes the instance's unit run the Go daemon
+        # instead of the Python gateway (one unit, so the two can never both
+        # serve an instance), and seeds [daemon] for it; an explicit setting
+        # still wins. The package ships soa-d wrapped with the runtime tools
+        # and a Python for execute_code.
+        nixos-soad-backend =
+          let
+            account = name: {
+              enable = true;
+              user = "e-${name}";
+              createUser = false;
+              managedAccount = true;
+              son-of-antonHome = "/home/e-${name}/.son-of-anton";
+              workingDirectory = "/home/e-${name}";
+            };
+            eval = evalNixosModule {
+              play = account "play" // { backend = "soa-d"; };
+              work = account "work" // {
+                backend = "soa-d";
+                settings.daemon.cron = false;
+                settings.model.default = "auto";
+              };
+              house = account "house";
+            };
+            units = eval.config.systemd.services;
+            exec = name: execStr units."son-of-anton-${name}".serviceConfig.ExecStart;
+            inst = eval.config.services.son-of-anton.instances;
+          in
+          assert lib.hasSuffix "/bin/soa-d serve" (exec "play");
+          assert lib.hasSuffix "/bin/soa-d serve" (exec "work");
+          assert lib.hasInfix "bin/son-of-anton gateway" (exec "house");
+          assert inst.house.backend == "python";
+          assert inst.play.settings.daemon == { instance = "play"; signal = true; cron = true; };
+          assert inst.work.settings.daemon == { instance = "work"; signal = true; cron = false; };
+          assert inst.work.settings.model.default == "auto";
+          assert !(inst.house.settings ? daemon);
+          assert units."son-of-anton-play".environment.SON_OF_ANTON_HOME == "/home/e-play/.son-of-anton";
+          pkgs.runCommand "son-of-anton-soad-backend" { } ''
+            test -x ${son-of-anton}/bin/soa-d
+            grep -q SON_OF_ANTON_PYTHON ${son-of-anton}/bin/soa-d
+            grep -q ripgrep ${son-of-anton}/bin/soa-d
+            ${son-of-anton}/bin/soa-d version
+            echo "PASS: backend = soa-d runs the daemon, seeds [daemon], and soa-d is wrapped"
+            mkdir -p $out
+            echo "ok" > $out/result
+          '';
+
         # ── The NixOS module ─────────────────────────────────────────────
         nixos-module =
           let
