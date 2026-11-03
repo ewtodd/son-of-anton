@@ -55,6 +55,7 @@ type Runner struct {
 	MaxSteps           int
 	MaxToolResultChars int
 	Policy             paths.Policy
+	CommandHome        string // HOME of the commands tools run ("" keeps the daemon's)
 	Mode               approval.Mode
 	Approver           approval.Approver
 	Allowlist          approval.Allowlist
@@ -520,7 +521,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 // calls not yet started are not run (each gets a cancellation result); a
 // running call keeps whatever its tool returned.
 func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emitEvent func(Event), maxChars int) []store.Message {
-	base := tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
+	base := tools.Env{Policy: s.runner.Policy, CommandHome: s.runner.CommandHome, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
 		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval,
 		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, WallChat: s.runner.WallChat, Web: s.runner.Web, MCP: s.runner.MCP,
 		Vision: s.runner.Vision, LSP: s.runner.LSP, NoScripts: s.runner.NoScripts, Cron: s.runner.Cron, Relay: s.runner.Relay}

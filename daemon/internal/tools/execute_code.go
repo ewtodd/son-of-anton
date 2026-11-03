@@ -372,7 +372,7 @@ func (t executeCodeTool) run(ctx context.Context, env *Env, py, code string) str
 
 	cmd := exec.Command(py, script)
 	cmd.Dir = env.State.Cwd()
-	cmd.Env = scrubEnv(os.Environ(), dir, sock, token)
+	cmd.Env = withHome(scrubEnv(os.Environ(), dir, sock, token), env.CommandHome)
 	out := &headTail{maxH: codeStdoutHead, maxT: codeStdoutTail}
 	errOut := &headTail{maxH: codeStderrMax}
 	cmd.Stdout, cmd.Stderr = out, errOut

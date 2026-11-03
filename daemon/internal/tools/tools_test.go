@@ -647,3 +647,20 @@ func TestTerminalDoesNotWaitForAGrandchildHoldingThePipe(t *testing.T) {
 		t.Fatalf("a leftover child holding stdout must not hang the call: %v after %v", r, time.Since(start))
 	}
 }
+
+func TestCommandsRunWithTheCommandHome(t *testing.T) {
+	f := setup(t, approval.NewGate(approval.Yolo, nil, nil))
+	if r := f.call(t, "terminal", map[string]any{"command": "echo \"home=$HOME\""}); !strings.Contains(str(r, "output"), "home="+os.Getenv("HOME")) {
+		t.Fatalf("without CommandHome HOME is the daemon's: %v", r)
+	}
+	// A session's CommandHome is fixed for its life (its environment
+	// snapshot keeps HOME from the first command), so a fresh one.
+	g := setup(t, approval.NewGate(approval.Yolo, nil, nil))
+	g.env.CommandHome = g.cwd
+	if r := g.call(t, "terminal", map[string]any{"command": "echo \"home=$HOME\""}); !strings.Contains(str(r, "output"), "home="+g.cwd) {
+		t.Fatalf("with CommandHome: %v", r)
+	}
+	if r := g.call(t, "terminal", map[string]any{"command": "cd /tmp && echo \"home=$HOME\""}); !strings.Contains(str(r, "output"), "home="+g.cwd) {
+		t.Fatalf("HOME followed a cd (it stays the working directory): %v", r)
+	}
+}

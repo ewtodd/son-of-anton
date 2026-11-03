@@ -164,3 +164,22 @@ func TestWorkspaceIsTheGitRootElseTheDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteExceptionsOpenOnlyTheirPrefix(t *testing.T) {
+	p := paths.Policy{Home: "/home/u", SoaHome: "/home/u/.son-of-anton", WriteExceptions: []string{"/etc/nixos/"}}
+	for path, denied := range map[string]bool{
+		"/etc/nixos":                    false,
+		"/etc/nixos/hosts/a/config.nix": false,
+		"/etc/nixosx/file":              true, // a prefix of the name is not inside
+		"/etc/passwd":                   true,
+		"/boot/loader.conf":             true,
+		"/home/u/.ssh/config":           true, // exceptions open system configuration only
+	} {
+		if got := p.CheckWrite(path).Denied; got != denied {
+			t.Errorf("CheckWrite(%s).Denied = %v, want %v", path, got, denied)
+		}
+	}
+	if !(paths.Policy{}).CheckWrite("/etc/nixos/configuration.nix").Denied {
+		t.Error("without the exception /etc/nixos is denied")
+	}
+}

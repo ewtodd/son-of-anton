@@ -102,7 +102,7 @@ func (terminalTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 	if a.Background {
 		return runBackground(env, cwd, a)
 	}
-	out, newCwd, code, done := runShell(ctx, env.State.SnapshotPath(), cwd, a.Command, timeout, env.Model)
+	out, newCwd, code, done := runShell(ctx, env.State.SnapshotPath(), cwd, a.Command, timeout, env.Model, env.CommandHome)
 	out = stripANSI(out)
 	out = strings.TrimSpace(out)
 
@@ -142,18 +142,27 @@ func refuseBackgrounding(command string) error {
 	return nil
 }
 
+// withHome sets HOME in environ when home is not "" (the last value of a
+// variable is the one a process gets).
+func withHome(environ []string, home string) []string {
+	if home == "" {
+		return environ
+	}
+	return append(environ, "HOME="+home)
+}
+
 // runShell runs one command in a throwaway bash that sources the session's
 // environment snapshot, and captures the post-command cwd and environment.
 // It returns the output (stdout+stderr merged), the new cwd (empty when the
 // command exited before the marker), the exit code, and whether the marker
 // was seen.
-func runShell(ctx context.Context, snapshot, cwd, command string, timeoutSeconds int, model string) (string, string, int, bool) {
+func runShell(ctx context.Context, snapshot, cwd, command string, timeoutSeconds int, model, home string) (string, string, int, bool) {
 	nonce := newNonce()
 	wrapper := buildWrapper(snapshot, cwd, nonce)
 
 	cmd := exec.Command("bash", "-c", wrapper)
 	cmd.Dir = cwd
-	cmd.Env = append(append([]string{}, os.Environ()...), "SOA_D_CMD="+command, "SOA_MODEL="+model)
+	cmd.Env = withHome(append(append([]string{}, os.Environ()...), "SOA_D_CMD="+command, "SOA_MODEL="+model), home)
 	cmd.Stdin = openNull()
 	buf := &boundedBuffer{}
 	cmd.Stdout = buf

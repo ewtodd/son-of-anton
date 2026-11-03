@@ -31,6 +31,9 @@ type Env struct {
 	// Model is the model serving this step; shell commands see it as
 	// $SOA_MODEL (for a commit's Model: line).
 	Model string
+	// CommandHome is the HOME of the commands the tools run ("" keeps the
+	// daemon's; see config.CommandHome).
+	CommandHome string
 	// Memory is the rule and fact store (nil: the memory tool is unavailable);
 	// MemoryScope is the calling session's scope and MemoryApproval is
 	// memory.write_approval.

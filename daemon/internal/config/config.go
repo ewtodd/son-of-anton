@@ -37,6 +37,9 @@ type Config struct {
 	} `toml:"approvals"`
 	Security struct {
 		Lockdown bool `toml:"lockdown"`
+		// Path prefixes the file tools may write although they are system
+		// configuration (e.g. "/etc/nixos/" on a NixOS host).
+		SensitivePathExceptions []string `toml:"sensitive_path_exceptions"`
 	} `toml:"security"`
 	Git struct {
 		AuthorName  string `toml:"author_name"`
@@ -70,6 +73,9 @@ type Config struct {
 	} `toml:"gateway"`
 	Terminal struct {
 		Cwd string `toml:"cwd"`
+		// HomeMode "cwd": commands get HOME = Cwd, so ~ is the instance's
+		// working directory (a service account's home is its state dir).
+		HomeMode string `toml:"home_mode"`
 	} `toml:"terminal"`
 	Display struct {
 		Skin string `toml:"skin"` // the TUI's skin; empty is "default"
@@ -99,6 +105,15 @@ type Config struct {
 	CustomProviders map[string]CustomProvider `toml:"custom_providers"`
 
 	dotenv map[string]string
+}
+
+// CommandHome is the HOME commands run with: terminal.cwd under
+// terminal.home_mode = "cwd", else "" (the daemon's own).
+func (c *Config) CommandHome() string {
+	if strings.EqualFold(strings.TrimSpace(c.Terminal.HomeMode), "cwd") {
+		return c.Terminal.Cwd
+	}
+	return ""
 }
 
 // PermissionMode resolves the [approvals] mode (and the [security] lockdown

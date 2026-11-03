@@ -273,3 +273,23 @@ func TestWorkerHours(t *testing.T) {
 		}
 	}
 }
+
+func TestCommandHomeIsTheWorkingDirectoryUnderCwdMode(t *testing.T) {
+	for _, c := range []struct{ toml, want string }{
+		{"[terminal]\ncwd = \"/srv/shop\"\nhome_mode = \"cwd\"\n", "/srv/shop"},
+		{"[terminal]\ncwd = \"/srv/shop\"\n", ""},
+		{"[terminal]\ncwd = \"/srv/shop\"\nhome_mode = \"auto\"\n", ""},
+	} {
+		home := t.TempDir()
+		if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(c.toml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.Load(home)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.CommandHome(); got != c.want {
+			t.Errorf("%q: CommandHome = %q, want %q", c.toml, got, c.want)
+		}
+	}
+}

@@ -14,6 +14,9 @@ import (
 type Policy struct {
 	Home    string // the user's home
 	SoaHome string // the instance home (~/.son-of-anton)
+	// WriteExceptions are path prefixes writable although they are system
+	// configuration (security.sensitive_path_exceptions, e.g. /etc/nixos/).
+	WriteExceptions []string
 	// Confine, when set, limits reads and writes to this directory, symlinks
 	// resolved (a link inside that points out is outside).
 	Confine string
@@ -185,7 +188,14 @@ func (p Policy) CheckWrite(abs string) WriteCheck {
 			return WriteCheck{Denied: true, Reason: "denied: " + base + " holds credentials"}
 		}
 	}
+	exempt := false
+	for _, pre := range p.WriteExceptions {
+		if pre = strings.TrimSuffix(pre, "/"); pre != "" && under(abs, pre) {
+			exempt = true
+		}
+	}
 	switch {
+	case exempt:
 	case abs == "/etc" || strings.HasPrefix(abs, "/etc/"):
 		return WriteCheck{Denied: true, Reason: "denied: /etc is system configuration (use the terminal with sudo if you must)"}
 	case abs == "/boot" || strings.HasPrefix(abs, "/boot/"):
