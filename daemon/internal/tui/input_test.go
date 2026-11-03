@@ -205,6 +205,26 @@ func TestHistorySuggestions(t *testing.T) {
 	}
 }
 
+// Tab and End take the suggestion too.
+func TestTabAndEndTakeTheSuggestion(t *testing.T) {
+	fake := fakellm.New(t, fakellm.Turn{Content: "first"}, fakellm.Turn{Content: "second"})
+	d := newDaemon(t, fake)
+	if err := tui.AppendHistory(filepath.Join(d.home, ".son_of_anton_history"), "explain the relay worker"); err != nil {
+		t.Fatal(err)
+	}
+	a := open(t, d, tui.Options{})
+	for i, key := range []string{"tab", "end"} {
+		a.Type("expl")
+		waitDock(t, a, "explain the relay worker")
+		a.Press(key, "enter")
+		waitScreen(t, a, []string{"first", "second"}[i])
+		idle(t, a)
+		if n := len(fake.Messages(i)); n == 0 || !strings.Contains(string(fake.Messages(i)[n-1]), "explain the relay worker") {
+			t.Fatalf("%s did not take the suggestion: %s", key, fake.Messages(i)[n-1])
+		}
+	}
+}
+
 func TestThePalette(t *testing.T) {
 	fake := fakellm.New(t)
 	d := newDaemon(t, fake)

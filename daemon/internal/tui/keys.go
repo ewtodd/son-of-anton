@@ -66,12 +66,15 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		return nil
 	case "ctrl+g":
 		return m.editor()
-	case "tab":
-		return m.tab()
-	case "right":
+	case "tab", "right", "end":
+		// The grey history suggestion is taken by any of them; without one,
+		// Tab completes and → and End move the cursor.
 		if sg := m.suggestion(); sg != "" {
 			m.ta.SetValue(m.ta.Value() + sg)
 			return m.refreshComp()
+		}
+		if s == "tab" {
+			return m.tab()
 		}
 	case "ctrl+q":
 		return m.quit(false)
