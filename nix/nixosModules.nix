@@ -559,6 +559,14 @@
                 ExecStart = lib.escapeShellArgs (common.gatewayArgv inst);
               };
 
+              # A rebuild that changes the settings or the environment restarts
+              # the process, which reads them only at start.
+              restartTriggers = common.restartTriggersFor {
+                inherit pkgs;
+                cfg = inst;
+                inherit (inst) workingDirectory;
+              };
+
               path = common.processPath {
                 inherit pkgs;
                 cfg = inst;

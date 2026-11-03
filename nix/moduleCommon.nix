@@ -282,6 +282,25 @@ let
       rulesMergeScript = pkgs.callPackage ./rulesMergeScript.nix { };
     };
 
+  # What a running daemon or gateway read when it started: its settings and
+  # the non-secret environment. Their store paths change with them, so as the
+  # unit's restartTriggers a rebuild that changes either restarts the process
+  # (it reads config.toml and .env only at start). Secrets come from runtime
+  # paths Nix cannot see; changing only a secret still needs a restart by hand.
+  restartTriggersFor =
+    {
+      pkgs,
+      cfg,
+      workingDirectory,
+    }:
+    [
+      (mkConfigFiles { inherit pkgs cfg workingDirectory; }).generated
+      (mkEnvScript {
+        inherit pkgs;
+        inherit (cfg) environment;
+      })
+    ];
+
   # ── How .env is built ───────────────────────────────────────────────────
   # The values that are not secret come from the Nix store. Activation adds
   # the secrets from paths outside the store. This is one command, so it is
@@ -490,6 +509,7 @@ in
     mkStateScript
     processEnvironment
     processPath
+    restartTriggersFor
     sharedOptions
     soadSettings
     stateSubdirs

@@ -191,6 +191,10 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           assert inst.work.settings.model.default == "auto";
           assert !(inst.house.settings ? daemon);
           assert units."son-of-anton-play".environment.SON_OF_ANTON_HOME == "/home/e-play/.son-of-anton";
+          # Settings changes restart the process: the rendered config is a trigger,
+          # so two instances with different settings have different triggers.
+          assert lib.any (t: lib.hasSuffix "son-of-anton-config.toml" (toString t)) units."son-of-anton-play".restartTriggers;
+          assert units."son-of-anton-play".restartTriggers != units."son-of-anton-work".restartTriggers;
           pkgs.runCommand "son-of-anton-soad-backend" { } ''
             test -x ${son-of-anton}/bin/soa-d
             grep -q SON_OF_ANTON_PYTHON ${son-of-anton}/bin/soa-d
