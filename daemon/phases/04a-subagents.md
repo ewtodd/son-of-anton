@@ -131,6 +131,9 @@ Schema v7: `sessions.agent`. `Session.Agent`; `Children(ctx, parentID)
   "Background task updated", text BACKGROUND_UPDATED (`oc/tool/task.ts:36-41`).
   Any other id: "no task <id> in this session" (**fix**: opencode silently
   starts a fresh child).
+- A child is never a `session_search` result and is never indexed for
+  recall (the Python hid "subagent" sessions the same way): its answer is
+  already the parent's tool result. (Added in review.)
 - The session object gains `parent_id` and `agent`. New request
   `session.children {session}` → `{children: [session objects]}` in creation
   order. `approval.request` from a child gains `child_session`.

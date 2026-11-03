@@ -255,3 +255,50 @@ func TestTaskIDContinuesTheSameChild(t *testing.T) {
 		t.Fatalf("an unknown task_id: %v", rows)
 	}
 }
+
+// A subagent's run never turns up in session_search, by words or by meaning
+// (it is never indexed): its answer is already the parent's tool result.
+func TestSessionSearchNeverFindsAChild(t *testing.T) {
+	fake := fakellm.New(t,
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Find the ledger","prompt":"find the wombat ledger","subagent_type":"explore"}`)}},
+		fakellm.Turn{When: explorePrompt, Content: "the wombat ledger is in /srv"},
+		fakellm.Turn{Content: "all done here"},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("s1", "session_search", `{"query":"wombat"}`)}},
+		fakellm.Turn{Content: "searched"},
+	)
+	h := newHarness(t, fake, ragConfig(fake))
+	c := h.dial()
+	parent := c.create(t.TempDir())
+	c.attach(parent, "driver")
+	c.send(parent, "where is the ledger")
+	created := of(c.turn(), "child.created")
+	if len(created) != 1 {
+		t.Fatal("no child")
+	}
+	child := str(obj(created[0], "child"), "id")
+	waitUntil(t, "the parent's rows to be indexed", func() bool {
+		for _, call := range fake.EmbedCalls() {
+			for _, in := range call {
+				if strings.Contains(in, "all done here") {
+					return true
+				}
+			}
+		}
+		return false
+	})
+
+	other := c.create(t.TempDir())
+	c.attach(other, "driver")
+	c.send(other, "what about the wombat")
+	rows := toolRows(c.turn())
+	if len(rows) != 1 || strings.Contains(rows[0], child) {
+		t.Fatalf("session_search = %v; a child (%s) is never a result", rows, child)
+	}
+	for _, call := range fake.EmbedCalls() {
+		for _, in := range call {
+			if strings.Contains(in, "the wombat ledger is in /srv") {
+				t.Fatalf("a child's rows were indexed: %q", in)
+			}
+		}
+	}
+}

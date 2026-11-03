@@ -40,8 +40,9 @@ type MessageQuery struct {
 
 // SearchMessages full-text-searches message content. The wall, the roles and
 // Exclude are conditions of the query itself, so rows the caller may not
-// read can never crowd out ones it may. An FTS5 syntax error retries once
-// with every term quoted.
+// read can never crowd out ones it may. A subagent's run (a child session)
+// is never a hit: its answer is already in the parent's tool result. An
+// FTS5 syntax error retries once with every term quoted.
 func (s *Store) SearchMessages(ctx context.Context, q MessageQuery) ([]Hit, error) {
 	hits, err := s.searchMessages(ctx, q, q.Query)
 	if err != nil && ctx.Err() == nil {
@@ -69,7 +70,7 @@ func (s *Store) searchMessages(ctx context.Context, q MessageQuery, match string
 	if len(roles) == 0 {
 		roles = []string{"user", "assistant"}
 	}
-	where := `messages_fts MATCH ? AND m.role IN (` + strings.TrimSuffix(strings.Repeat("?,", len(roles)), ",") + `)`
+	where := `messages_fts MATCH ? AND s.kind <> 'child' AND m.role IN (` + strings.TrimSuffix(strings.Repeat("?,", len(roles)), ",") + `)`
 	args := []any{match}
 	for _, r := range roles {
 		args = append(args, r)

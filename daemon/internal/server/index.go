@@ -70,11 +70,15 @@ func (s *Server) backfill() {
 
 // indexSession passes the session's rows not yet indexed to the index. A
 // session stamped with a chat counts as gateway whatever its scope says, so
-// its text can never reach a common caller.
+// its text can never reach a common caller. A subagent's run is never
+// indexed (session_search never returns one).
 func (s *Server) indexSession(ctx context.Context, id string) error {
 	sess, err := s.st.Session(ctx, id)
 	if err != nil {
 		return err
+	}
+	if sess.Kind == "child" {
+		return nil
 	}
 	scope := sess.Scope
 	if sess.Chat != "" {
