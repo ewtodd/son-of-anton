@@ -17,8 +17,8 @@ import (
 
 // children is session.children: a session's child sessions in creation order.
 func (s *Server) children(id string) (any, *rpcError) {
-	if _, err := s.st.Session(s.base, id); err != nil {
-		return nil, notFound(err, id)
+	if _, e := s.socketSession(id); e != nil {
+		return nil, e
 	}
 	kids, err := s.st.Children(s.base, id)
 	if err != nil {

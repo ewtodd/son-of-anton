@@ -41,6 +41,9 @@ type Env struct {
 	Store          *store.Store
 	SessionID      string
 	SearchMessages MessageSearch
+	// WallChat walls a gateway caller to one chat's sessions and the common
+	// ones; "" lets it read every session.
+	WallChat string
 	// CallID is the id of the tool call being run.
 	CallID string
 }

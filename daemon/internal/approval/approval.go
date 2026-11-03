@@ -9,6 +9,7 @@ package approval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -52,6 +53,12 @@ type Request struct {
 	PatternKeys   []string
 	AllowRemember bool // false in lockdown and for protected writes
 }
+
+// DeniedError is what an approver returns with Deny to pass the user's reason
+// on to the model.
+type DeniedError struct{ Reason string }
+
+func (e *DeniedError) Error() string { return "denied: " + e.Reason }
 
 // Approver is asked when the mode requires it.
 type Approver func(ctx context.Context, req Request) (Choice, error)
@@ -246,6 +253,10 @@ func (g *Gate) ask(ctx context.Context, req Request) Verdict {
 		return Verdict{Allowed: false, Message: g.nobodyMessage(req)}
 	}
 	choice, err := g.approver(ctx, req)
+	var denied *DeniedError
+	if errors.As(err, &denied) {
+		return Verdict{Allowed: false, Asked: true, Message: "BLOCKED: the user denied this: " + denied.Reason + ". Do not retry it."}
+	}
 	if err != nil {
 		return Verdict{Allowed: false, Asked: true, Message: fmt.Sprintf("BLOCKED: approval failed: %v", err)}
 	}
@@ -360,6 +371,10 @@ func (g *Gate) Memory(ctx context.Context, summary, detail string) Verdict {
 	choice, err := g.approver(ctx, Request{
 		Kind: "memory", Subject: detail, Reasons: []string{"Save to memory: " + summary}, AllowRemember: false,
 	})
+	var denied *DeniedError
+	if errors.As(err, &denied) {
+		return Verdict{Asked: true, Message: memoryDenied + " The user said: " + denied.Reason}
+	}
 	if err != nil || ctx.Err() != nil || (choice != Once && choice != Session) {
 		return Verdict{Asked: true, Message: memoryDenied}
 	}

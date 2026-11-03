@@ -79,6 +79,8 @@ type Server struct {
 	st      *store.Store
 	reg     *tools.Registry // the builtin tools (a child's are drawn from it)
 	regTask *tools.Registry // reg plus the task tool: an interactive session's
+	regChat *tools.Registry // a chat session's: memory, session_search, clarify, todo
+	chats   *chatHub        // nil: Signal is off
 	mem     *memory.Store
 	idx     *recall.Index   // nil: recall is off
 	base    context.Context // cancelled when shutdown starts
@@ -115,6 +117,8 @@ func New(o Options) (*Server, error) {
 		live: map[string]*live{}, indexed: map[string]int64{}, conns: map[*conn]struct{}{},
 		meta: map[string]map[string]int{}, learned: map[string]int{}}
 	s.regTask = tools.NewRegistry(append(tools.Builtin(), subagent.Tool(subagent.Builtin(), true, s.spawnTask))...)
+	s.regChat = s.reg.Only("todo", "clarify", "memory", "session_search")
+	s.chats = s.newChatHub()
 	s.base, s.stop = context.WithCancel(context.Background())
 	return s, nil
 }
@@ -122,6 +126,9 @@ func New(o Options) (*Server, error) {
 // Serve accepts connections until ctx is done, then shuts down cleanly.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	s.backfill()
+	if s.chats != nil {
+		s.chats.start()
+	}
 	stopAccept := context.AfterFunc(ctx, func() { _ = ln.Close() })
 	defer stopAccept()
 	var acceptErr error
@@ -181,6 +188,9 @@ func (s *Server) shutdown() {
 	}
 	for _, l := range lives {
 		_ = l.sess.Close()
+	}
+	if s.chats != nil {
+		s.chats.stop()
 	}
 	if s.idx != nil {
 		_ = s.idx.Close()
@@ -310,6 +320,13 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 	r := s.runner(l, ep, mode, rec.Source, nil)
 	if rec.Kind == "child" {
 		r = s.childRunner(r, l, rec)
+	}
+	if rec.Kind == "chat" {
+		s.chatRunner(r, rec.Chat)
+		if s.chats != nil {
+			l.chat = &chatLink{cs: s.chats.state(rec.Chat), l: l}
+		}
+		l.waiting = false
 	}
 	sess, err := r.Resume(ctx, id)
 	if err != nil {

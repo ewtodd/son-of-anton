@@ -94,6 +94,7 @@ func argStr(in map[string]any, key string) string {
 type searcher struct {
 	env     *Env
 	caller  string
+	chat    string // the chat a gateway caller is walled to ("": none)
 	roles   []string
 	roleSet map[string]bool
 }
@@ -108,7 +109,7 @@ func (sessionSearchTool) Run(ctx context.Context, env *Env, raw json.RawMessage)
 			return errorResult("invalid arguments: " + err.Error()), nil
 		}
 	}
-	sr := &searcher{env: env, caller: env.MemoryScope}
+	sr := &searcher{env: env, caller: env.MemoryScope, chat: env.WallChat}
 	sr.roles = []string{"user", "assistant"}
 	if rf := argStr(in, "role_filter"); rf != "" {
 		var got []string
@@ -160,7 +161,7 @@ func (sr *searcher) readable(ctx context.Context, id string) (store.Session, boo
 	if err != nil {
 		return store.Session{}, false, err
 	}
-	if id == sr.env.SessionID || !store.Readable(sr.caller, s) {
+	if id == sr.env.SessionID || !store.ReadableFrom(sr.caller, sr.chat, s) {
 		return store.Session{}, false, nil
 	}
 	return s, true, nil
@@ -213,7 +214,7 @@ func (sr *searcher) objs(ms []store.Message, max int, skip map[int64]bool) []map
 }
 
 func (sr *searcher) browse(ctx context.Context) (string, error) {
-	sums, err := sr.env.Store.ListReadable(ctx, sr.caller, browseKinds, browseMax+1)
+	sums, err := sr.env.Store.ListReadableIn(ctx, sr.caller, sr.chat, "", browseKinds, browseMax+1)
 	if err != nil {
 		return searchFail("listing sessions failed: " + err.Error())
 	}
@@ -293,7 +294,7 @@ type found struct {
 }
 
 func (sr *searcher) discover(ctx context.Context, query string, limit int, sortBy string, full bool) (string, error) {
-	hits, err := sr.env.Store.SearchMessages(ctx, store.MessageQuery{Query: query, Caller: sr.caller, Roles: sr.roles,
+	hits, err := sr.env.Store.SearchMessages(ctx, store.MessageQuery{Query: query, Caller: sr.caller, Chat: sr.chat, Roles: sr.roles,
 		Sort: sortBy, Exclude: sr.env.SessionID, Limit: limit, PerSession: true})
 	if err != nil {
 		return searchFail("search failed: " + err.Error())

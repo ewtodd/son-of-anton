@@ -11,24 +11,37 @@ import (
 // caller (common, or unknown, which counts as the terminal) reads only
 // sessions of scope common with no chat stamp. wallSQL is the same rule as a
 // condition on the sessions table aliased s.
-func Readable(caller string, s Session) bool {
+func Readable(caller string, s Session) bool { return ReadableFrom(caller, "", s) }
+
+// ReadableFrom is Readable for a gateway caller that belongs to one chat. With
+// a chat stamp it reads common sessions and that chat's own, nothing else of
+// the gateway's; with none it reads everything.
+func ReadableFrom(caller, chat string, s Session) bool {
+	common := (s.Scope == "" || s.Scope == "common") && s.Chat == ""
 	if caller == "gateway" {
-		return true
+		return chat == "" || common || s.Chat == chat
 	}
-	return (s.Scope == "" || s.Scope == "common") && s.Chat == ""
+	return common
 }
 
-func wallSQL(caller string) string {
-	if caller == "gateway" {
-		return ""
+// wallSQL is ReadableFrom as a condition (and its arguments) on the sessions
+// table aliased s; "" means no condition.
+func wallSQL(caller, chat string) (string, []any) {
+	const common = `(s.scope = 'common' AND COALESCE(s.chat, '') = '')`
+	if caller != "gateway" {
+		return common, nil
 	}
-	return `s.scope = 'common' AND COALESCE(s.chat, '') = ''`
+	if chat == "" {
+		return "", nil
+	}
+	return "(" + common + " OR s.chat = ?)", []any{chat}
 }
 
 // MessageQuery is one message search.
 type MessageQuery struct {
 	Query   string   // an FTS5 expression
 	Caller  string   // the wall: rows of sessions the caller cannot read never match
+	Chat    string   // a gateway caller's own chat, when it is walled to it (ReadableFrom)
 	Roles   []string // e.g. user, assistant (and tool when asked)
 	Sort    string   // "" (relevance), "newest", "oldest"
 	Exclude string   // a session id to leave out (the caller's own)
@@ -75,8 +88,9 @@ func (s *Store) searchMessages(ctx context.Context, q MessageQuery, match string
 	for _, r := range roles {
 		args = append(args, r)
 	}
-	if w := wallSQL(q.Caller); w != "" {
+	if w, wargs := wallSQL(q.Caller, q.Chat); w != "" {
 		where += ` AND ` + w
+		args = append(args, wargs...)
 	}
 	if q.Exclude != "" {
 		where += ` AND m.session_id <> ?`

@@ -159,6 +159,11 @@ ALTER TABLE sessions ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN api_calls INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0;
 UPDATE schema_version SET version = 8;`,
+	`CREATE TABLE chats (
+	chat       TEXT PRIMARY KEY,
+	session_id TEXT NOT NULL REFERENCES sessions(id)
+);
+UPDATE schema_version SET version = 9;`,
 }
 
 func migrate(db *sql.DB) error {

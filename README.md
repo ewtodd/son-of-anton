@@ -21,9 +21,9 @@ separate physics research mode that runs only when you ask for it.
 The Python backend is being replaced, one phase at a time, by `soa-d`, a Go
 daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`).
 
-- **On soa-d now:** the terminal TUI (`son-of-anton`), `-q` and `-z`.
-- **Still Python:** the Signal gateway and its relay workers, cron, physics
-  runs.
+- **On soa-d now:** the terminal TUI (`son-of-anton`), `-q` and `-z`, and
+  Signal chats (off until an instance moves; `[daemon] signal = true`).
+- **Still Python:** the relay workers, cron, physics runs.
 - **Not in the daemon yet:** `/handoff` and `/pickup` (5); MCP
   servers and web tools (7); the Python sessions in `state.db` (imported in 8).
 
@@ -102,6 +102,12 @@ headless terminal session in the directory you name (`son-of-anton chat -Q`),
 the chat reports each result, and a dangerous command asks there as
 `/approve <id>` / `/deny <id>`. Sessions started in the TUI cannot be relayed
 until phase 5.
+
+soa-d serves a chat itself when `[daemon] signal = true`: each chat is a session
+of its own (a small toolset: memory, session search, questions and todos) and
+its approvals and questions come to the chat. The chat takes `/new`, `/stop`,
+`/status`, `/sendnow [text]`, `/sendall`, `/approve [id] [always]` and
+`/deny [id] [reason]`; a typed `/new` no longer asks to confirm.
 
 ## Memory
 

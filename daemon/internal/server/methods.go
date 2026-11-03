@@ -103,8 +103,8 @@ func (s *Server) dispatch(c *conn, req *request) (any, *rpcError) {
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return bad(err)
 		}
-		if _, err := s.st.Session(s.base, p.Session); err != nil {
-			return nil, notFound(err, p.Session)
+		if _, e := s.socketSession(p.Session); e != nil {
+			return nil, e
 		}
 		rows, more, err := s.st.MessagesBefore(s.base, p.Session, p.BeforeSeq, clampLimit(p.Limit))
 		if err != nil {
@@ -298,6 +298,9 @@ func (s *Server) attach(c *conn, req *request, bad func(error) (any, *rpcError))
 	if p.As != "driver" && p.As != "viewer" {
 		return nil, errf(codeBadParams, "as must be driver or viewer")
 	}
+	if _, e := s.socketSession(p.Session); e != nil {
+		return nil, e
+	}
 	for range 3 {
 		l, err := s.load(s.base, p.Session)
 		if err != nil {
@@ -338,7 +341,7 @@ func (s *Server) list(params json.RawMessage, bad func(error) (any, *rpcError)) 
 		}
 		workspace = paths.Workspace(p.Cwd)
 	}
-	sums, err := s.st.ListSessionsIn(s.base, p.Kinds, workspace, p.Limit)
+	sums, err := s.st.ListReadableIn(s.base, "common", "", workspace, p.Kinds, p.Limit)
 	if err != nil {
 		return nil, errf(codeInternal, "%v", err)
 	}
@@ -382,9 +385,9 @@ func (s *Server) models(params json.RawMessage, bad func(error) (any, *rpcError)
 	}
 	current := s.cfg.Model.Default
 	if p.Session != "" {
-		rec, err := s.st.Session(s.base, p.Session)
-		if err != nil {
-			return nil, notFound(err, p.Session)
+		rec, e := s.socketSession(p.Session)
+		if e != nil {
+			return nil, e
 		}
 		if rec.Model != "" {
 			current = rec.Model

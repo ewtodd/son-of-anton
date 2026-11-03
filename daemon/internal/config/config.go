@@ -45,6 +45,23 @@ type Config struct {
 		Enabled   *bool   `toml:"enabled"`
 		Threshold float64 `toml:"threshold"`
 	} `toml:"compaction"`
+	Daemon struct {
+		Signal bool `toml:"signal"` // serve this instance's Signal chats
+	} `toml:"daemon"`
+	Gateway struct {
+		Model                string `toml:"model"`
+		SingleUser           bool   `toml:"single_user"`
+		GroupSessionsPerUser *bool  `toml:"group_sessions_per_user"`
+	} `toml:"gateway"`
+	Terminal struct {
+		Cwd string `toml:"cwd"`
+	} `toml:"terminal"`
+	Platforms struct {
+		Signal struct {
+			RequireMention  any `toml:"require_mention"`
+			TypingIndicator any `toml:"typing_indicator"`
+		} `toml:"signal"`
+	} `toml:"platforms"`
 	AuxTasks        map[string]AuxiliaryTask  `toml:"auxiliary"`
 	CustomProviders map[string]CustomProvider `toml:"custom_providers"`
 
@@ -320,3 +337,35 @@ type RAG struct {
 // Getenv is the value of an environment variable: the process environment
 // when set and non-empty, else .env.
 func (c *Config) Getenv(name string) string { return c.envKey(name) }
+
+// ChatModel is the model for chat sessions: gateway.model when set, else the
+// default model ("").
+func (c *Config) ChatModel() string { return strings.TrimSpace(c.Gateway.Model) }
+
+// ChatCwd is the directory a chat session works in: terminal.cwd, and for
+// "", "." , "auto" or "cwd" the user's home.
+func (c *Config) ChatCwd(home string) string {
+	switch cwd := strings.TrimSpace(c.Terminal.Cwd); cwd {
+	case "", ".", "auto", "cwd":
+		return home
+	default:
+		return cwd
+	}
+}
+
+// SignalSetting reads a Signal setting that config.toml may spell as a
+// boolean or as a string ("true", "yes", ...); set is false when absent.
+func SignalSetting(v any) (value, set bool) {
+	switch x := v.(type) {
+	case bool:
+		return x, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(x)) {
+		case "true", "1", "yes", "on":
+			return true, true
+		case "false", "0", "no", "off":
+			return false, true
+		}
+	}
+	return false, false
+}

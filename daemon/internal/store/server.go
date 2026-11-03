@@ -103,21 +103,30 @@ func (s *Store) ListSessions(ctx context.Context, kinds []string, limit int) ([]
 // ListSessionsIn is ListSessions limited to one workspace (Session.Workspace);
 // an empty workspace means every session.
 func (s *Store) ListSessionsIn(ctx context.Context, kinds []string, workspace string, limit int) ([]Summary, error) {
-	return s.listSessions(ctx, kinds, workspace, "", limit)
+	return s.listSessions(ctx, kinds, workspace, "", nil, limit)
 }
 
 // ListReadable is ListSessions with the wall: only sessions the caller can
 // read (Readable), decided in the query.
 func (s *Store) ListReadable(ctx context.Context, caller string, kinds []string, limit int) ([]Summary, error) {
-	return s.listSessions(ctx, kinds, "", wallSQL(caller), limit)
+	return s.ListReadableIn(ctx, caller, "", "", kinds, limit)
 }
 
-func (s *Store) listSessions(ctx context.Context, kinds []string, workspace, wall string, limit int) ([]Summary, error) {
+// ListReadableIn is ListReadable for a gateway caller walled to chat
+// (ReadableFrom), limited to one workspace; an empty workspace means every
+// one.
+func (s *Store) ListReadableIn(ctx context.Context, caller, chat, workspace string, kinds []string, limit int) ([]Summary, error) {
+	wall, args := wallSQL(caller, chat)
+	return s.listSessions(ctx, kinds, workspace, wall, args, limit)
+}
+
+func (s *Store) listSessions(ctx context.Context, kinds []string, workspace, wall string, wallArgs []any, limit int) ([]Summary, error) {
 	var out []Summary
 	for _, kind := range kinds {
 		where, args := `s.parent_id IS NULL AND s.kind = ?`, []any{kind}
 		if wall != "" {
 			where += ` AND ` + wall
+			args = append(args, wallArgs...)
 		}
 		if workspace != "" {
 			where, args = where+` AND s.workspace = ?`, append(args, workspace)
@@ -337,4 +346,28 @@ func (s *Store) SetTitle(ctx context.Context, id, title, source string) (changed
 		return false, err
 	}
 	return false, nil
+}
+
+// ChatSession is the id of a chat's current session, ErrNotFound when the
+// chat has none.
+func (s *Store) ChatSession(ctx context.Context, chat string) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT session_id FROM chats WHERE chat = ?`, chat).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return id, err
+}
+
+// SetChatSession makes id the chat's current session; an empty id leaves the
+// chat without one (the next message starts a new session).
+func (s *Store) SetChatSession(ctx context.Context, chat, id string) error {
+	if id == "" {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM chats WHERE chat = ?`, chat)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO chats (chat, session_id) VALUES (?, ?)
+		 ON CONFLICT(chat) DO UPDATE SET session_id = excluded.session_id`, chat, id)
+	return err
 }

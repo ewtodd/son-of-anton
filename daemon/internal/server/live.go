@@ -33,6 +33,7 @@ type tailEv struct {
 type pendingApproval struct {
 	ch      chan approval.Choice
 	choices []string
+	reason  string // why a chat denied it, set before the answer is sent
 }
 
 type answer struct {
@@ -80,6 +81,7 @@ type live struct {
 	resolved            map[string]bool
 	bg                  map[string]context.CancelFunc       // running background tasks of this session, by child id
 	watchers            []func(status, text, errMsg string) // told when the session is idle after a turn (a task call waits here)
+	chat                chatSink                            // the Signal chat this session belongs to (nil: none)
 }
 
 func newLive(s *Server, rec store.Session, sum store.Summary) *live {
@@ -144,6 +146,9 @@ func (l *live) sendTail(c *conn) {
 
 func (l *live) startTurn(text string) {
 	l.nameSession(text)
+	if l.chat != nil {
+		l.chat.turnStart()
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	l.running, l.startedAt, l.stop, l.turnCancel, l.tail = true, time.Now(), stopNone, cancel, nil
 	l.emit("turn.start", map[string]any{"text": text})
@@ -249,12 +254,18 @@ func (l *live) finish(res agent.Result, err error) {
 		end["error"] = msg
 	}
 	l.emit("turn.end", end)
+	if l.chat != nil {
+		l.chat.turnEnd(status, res.Content, msg)
+	}
 	l.running, l.turnCancel, l.tail = false, nil, nil
 	switch status {
 	case "done":
 		l.waiting = false
 	case "interrupted", "error":
 		l.waiting = true
+	}
+	if l.chat != nil {
+		l.waiting = false // nobody at a terminal steers a chat; its messages run in order
 	}
 	l.emitSession()
 	l.next()
@@ -301,6 +312,9 @@ func (l *live) next() {
 func (l *live) send(text, mode string) (bool, string, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.unloaded {
+		return false, "", false, errUnloaded
+	}
 	if l.closing {
 		return false, "", false, errors.New("the daemon is shutting down")
 	}
@@ -339,6 +353,9 @@ func (l *live) steerWith(text string) {
 func (l *live) steerQueue(all bool) (started, steered bool, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.unloaded {
+		return false, false, errUnloaded
+	}
 	if l.closing {
 		return false, false, errors.New("the daemon is shutting down")
 	}
@@ -441,6 +458,9 @@ func (l *live) closeRequest(id, kind string, f map[string]any) {
 		}
 	}
 	l.tail = open
+	if l.chat != nil {
+		l.chat.closed(id)
+	}
 	l.emit(kind, f)
 }
 
@@ -486,9 +506,15 @@ func (l *live) approveAs(ctx context.Context, req approval.Request, child string
 		f["child_session"] = child
 	}
 	l.request("approval.request", id, f)
+	if l.chat != nil {
+		l.chat.approval(id, req, choices)
+	}
 	l.mu.Unlock()
 	select {
 	case c := <-p.ch:
+		if c == approval.Deny && p.reason != "" {
+			return c, &approval.DeniedError{Reason: p.reason}
+		}
 		return c, nil
 	case <-ctx.Done():
 		l.mu.Lock()
@@ -511,6 +537,9 @@ func (l *live) ask(ctx context.Context, q tools.Question) ([]string, error) {
 	l.mu.Lock()
 	l.questions[id] = p
 	l.request("question.request", id, map[string]any{"question_id": id, "text": q.Text, "choices": choices, "multi_select": q.MultiSelect})
+	if l.chat != nil {
+		l.chat.question(id, q)
+	}
 	l.mu.Unlock()
 	var a answer
 	select {
@@ -532,6 +561,11 @@ func (l *live) ask(ctx context.Context, q tools.Question) ([]string, error) {
 
 // answerApproval handles approval.answer (driver already checked).
 func (l *live) answerApproval(id, choice string) *rpcError {
+	return l.answerApprovalWith(id, choice, "")
+}
+
+// answerApprovalWith is answerApproval with the reason a denial gives the model.
+func (l *live) answerApprovalWith(id, choice, reason string) *rpcError {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	p, ok := l.approvals[id]
@@ -545,6 +579,7 @@ func (l *live) answerApproval(id, choice string) *rpcError {
 	if !valid {
 		return errf(codeBadParams, "choice %q is not offered (%s)", choice, strings.Join(p.choices, ", "))
 	}
+	p.reason = reason
 	l.resolveApproval(id, p, approval.Choice(choice))
 	return nil
 }

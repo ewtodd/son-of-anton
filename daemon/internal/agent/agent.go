@@ -72,6 +72,10 @@ type Runner struct {
 	MemoryApproval bool
 	// SearchMessages adds meaning-based matches to session_search (nil: off).
 	SearchMessages tools.MessageSearch
+	// WallChat walls session_search to one chat (tools.Env.WallChat).
+	WallChat string
+	// Scope and Chat stamp the sessions NewSession creates ("" Scope is common).
+	Scope, Chat string
 }
 
 // NewSession builds the prompt (exactly once), stores it, and creates the
@@ -84,6 +88,8 @@ func (r *Runner) NewSession(ctx context.Context, kind, cwd string) (*Session, er
 		Cwd:       cwd,
 		Workspace: paths.Workspace(cwd),
 		Model:     r.Model,
+		Scope:     r.Scope,
+		Chat:      r.Chat,
 	}
 	text, err := r.Prompt(ctx, pending)
 	if err != nil {
@@ -474,7 +480,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emitEvent func(Event), maxChars int) []store.Message {
 	base := tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
 		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval,
-		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages}
+		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, WallChat: s.runner.WallChat}
 	var emitMu sync.Mutex
 	emit := func(e Event) {
 		emitMu.Lock()
