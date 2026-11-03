@@ -466,7 +466,7 @@ func (s *Store) add(kind string, entries []entry, caller, dest, text, why string
 	}
 	n["source"] = "agent"
 	now := time.Now()
-	n["added"] = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	n["added"] = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, localDate)
 	next := append(append([]entry{}, entries...), n)
 	if kind == "rule" {
 		if e := s.capRefusal(entries, next); e != nil {
@@ -728,11 +728,16 @@ func tomlValue(v any) (string, bool) {
 	case string:
 		return quote(x), true
 	case time.Time:
-		switch {
-		case x.Location() == time.Local && x.Hour() == 0 && x.Minute() == 0 && x.Second() == 0 && x.Nanosecond() == 0:
+		// The decoder marks TOML's local date, datetime and time with these
+		// locations; keep each kind as it was written (the Python writes
+		// `added` as a local date).
+		switch x.Location().String() { // the toml package's zones for local values
+		case localDate.String():
 			return x.Format("2006-01-02"), true
-		case x.Location() == time.Local:
+		case "datetime-local":
 			return x.Format("2006-01-02T15:04:05.999999999"), true
+		case "time-local":
+			return x.Format("15:04:05.999999999"), true
 		}
 		return x.Format(time.RFC3339Nano), true
 	case []any:
@@ -767,3 +772,7 @@ func tomlValue(v any) (string, bool) {
 	}
 	return "", false
 }
+
+// localDate marks a TOML local date, as the toml decoder does (its zone is
+// named "date-local"); tomlValue writes such a time as a bare date.
+var localDate = time.FixedZone("date-local", 0)

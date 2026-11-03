@@ -295,3 +295,26 @@ func TestConcurrentWritersKeepEveryEntry(t *testing.T) {
 		t.Fatalf("writes lock the same <file>.lock sidecar as the Python fork: %v", err)
 	}
 }
+
+// The Python writes `added` as a TOML local date; a rewrite must keep every
+// entry's local dates, datetimes and times as they were (review fix: they
+// came back as offset datetimes).
+func TestARewriteKeepsTOMLDatesAsTheyWere(t *testing.T) {
+	st, home := newStore(t)
+	write(t, home, "facts.toml", "[[fact]]\nid = \"old\"\ntext = \"An older fact here\"\nsource = \"user\"\nadded = 2026-10-01\nseen = 2026-10-01T08:30:00\nat = 07:15:00\n")
+	if _, err := st.Apply(memory.Change{Kind: "fact", Action: "add", Text: "A brand new fact"}, "common"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Apply(memory.Change{Kind: "fact", Action: "add", Text: "Another separate thing entirely"}, "common"); err != nil {
+		t.Fatal(err)
+	}
+	raw := read(t, home, "facts.toml")
+	for _, want := range []string{"added = 2026-10-01\n", "seen = 2026-10-01T08:30:00\n", "at = 07:15:00\n"} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("facts.toml lost %q:\n%s", want, raw)
+		}
+	}
+	if strings.Count(raw, "T00:00:00") != 0 {
+		t.Fatalf("an added date became a datetime:\n%s", raw)
+	}
+}
