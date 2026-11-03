@@ -19,6 +19,7 @@ const (
 	drawEvery   = 120 * time.Millisecond
 	maxTextRows = 10
 	minFeedRows = 3
+	maxHeld     = 5000
 )
 
 // ---- messages the program receives besides keys ----
@@ -73,6 +74,9 @@ type model struct {
 	histPath string
 
 	modals []*modal
+	// held are events of other sessions: the one being switched to sends its
+	// live tail right after the attach reply, before the switch is applied.
+	held []client.Event
 
 	spin       int
 	ticking    bool
@@ -109,8 +113,9 @@ func newModel(a *App, c *client.Client, o Options, res attachResult, resumed boo
 
 func (m *model) Init() tea.Cmd { return m.afterAttach() }
 
-// adopt makes the attached session the current one and redraws the feed.
-func (m *model) adopt(res attachResult, resumed bool) {
+// adopt makes the attached session the current one and redraws the feed,
+// then plays the events it sent meanwhile.
+func (m *model) adopt(res attachResult, resumed bool) tea.Cmd {
 	m.sess = parseSession(res.Session, sessState{})
 	m.role = res.Role
 	m.queue = queueTexts(res.Queue)
@@ -121,6 +126,15 @@ func (m *model) adopt(res attachResult, resumed bool) {
 	m.feed = newFeed()
 	m.addIntro()
 	m.drawHistory(res, resumed)
+	held := m.held
+	m.held = nil
+	var cmds []tea.Cmd
+	for _, ev := range held {
+		if ev.Session == m.sess.ID {
+			cmds = append(cmds, m.onEvent(ev))
+		}
+	}
+	return tea.Batch(cmds...)
 }
 
 // afterAttach starts what a running session needs: the spinner.
@@ -237,6 +251,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.key(msg)
 	case evMsg:
 		if msg.c == m.cl && !m.quitting {
+			if msg.ev.Session != m.sess.ID {
+				if m.held = append(m.held, msg.ev); len(m.held) > maxHeld {
+					m.held = m.held[len(m.held)-maxHeld:]
+				}
+				return m, nil
+			}
 			return m, m.onEvent(msg.ev)
 		}
 	case lostMsg:

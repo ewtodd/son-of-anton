@@ -674,3 +674,52 @@ func TestHistoryRecall(t *testing.T) {
 		t.Fatalf("the history file holds %q", got)
 	}
 }
+
+func TestResumingARunningSessionShowsItsTurn(t *testing.T) {
+	rel := make(chan struct{})
+	fake := fakellm.New(t, fakellm.Turn{Content: "streaming along nicely", ChunkRunes: 10, Release: rel})
+	d := newDaemon(t, fake)
+	a := open(t, d, tui.Options{})
+	send(a, "go")
+	waitScreen(t, a, "streaming")
+	running := a.Session()
+	send(a, ":q")
+	waitExit(t, a)
+
+	// The live tail follows the attach reply at once, before the switch is
+	// applied: it must not be lost.
+	b := open(t, d, tui.Options{})
+	send(b, "/resume "+running)
+	waitScreen(t, b, "▎  go", "streaming", "ctrl+c interrupt")
+	close(rel)
+	waitScreen(t, b, "streaming along nicely")
+	idle(t, b)
+}
+
+func TestAutoShowsTheModelThatAnswered(t *testing.T) {
+	fake := fakellm.New(t, fakellm.Turn{Content: "hi", ServedModel: "radiance/qwen3.8-27b"})
+	d := newDaemon(t, fake)
+	restartWith(t, d, "\n[custom_providers.custom.models.\"auto\"]\n")
+	a := open(t, d, tui.Options{Model: "auto"})
+	s := waitScreen(t, a, "Message Son of Anton…")
+	if strings.Contains(s, "auto →") || !strings.Contains(lineWith(dock(s), "reasoning"), "auto") {
+		t.Fatalf("before any turn the model is plain auto:\n%s", dock(s))
+	}
+	send(a, "hello")
+	waitScreen(t, a, "auto → qwen3.8-27b")
+}
+
+// restartWith appends extra to the daemon's config.toml and restarts it.
+func restartWith(t *testing.T, d *daemon, extra string) {
+	t.Helper()
+	d.stop()
+	f, err := os.OpenFile(filepath.Join(d.home, "config.toml"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(extra); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	d.start()
+}

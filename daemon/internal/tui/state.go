@@ -53,7 +53,7 @@ func modelShort(model, served string) string {
 		return strings.TrimSuffix(s, ".gguf")
 	}
 	r := short(model)
-	if model == "auto" && served != "" {
+	if model == "auto" && served != "" && served != model { // the daemon reports the model itself until one answers
 		r = "auto → " + short(served)
 	}
 	if rs := []rune(r); len(rs) > 26 {

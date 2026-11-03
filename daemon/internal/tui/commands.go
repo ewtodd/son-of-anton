@@ -468,8 +468,7 @@ func (m *model) switchSession(pick func(context.Context, *client.Client) (string
 			if m.cl != c {
 				return nil
 			}
-			m.adopt(res, resumed && len(res.Messages) > 0)
-			return m.afterAttach()
+			return tea.Batch(m.adopt(res, resumed && len(res.Messages) > 0), m.afterAttach())
 		}}
 	}
 }
