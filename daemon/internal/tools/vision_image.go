@@ -80,10 +80,9 @@ func normalizeImage(data []byte, mime string) ([]byte, string, error) {
 				return out.Bytes(), "image/png", nil
 			}
 		}
-		return nil, "", errors.New("This is an SVG, which vision models cannot read directly, and no " +
-			"SVG rasterizer is installed (tried rsvg-convert, inkscape). Convert " +
-			"the SVG to PNG first — e.g. open it in a browser " +
-			"and screenshot it — then re-run vision_analyze on the PNG.")
+		return nil, "", errors.New("Vision models cannot read SVG, and no SVG converter is installed " +
+			"(rsvg-convert and inkscape were tried). Turn the file into a PNG yourself, " +
+			"for instance by screenshotting it in a browser, and run vision_analyze on that.")
 	}
 	img, err := decodeImage(data, mime)
 	if err == nil {
@@ -92,8 +91,8 @@ func normalizeImage(data []byte, mime string) ([]byte, string, error) {
 			return out, "image/png", nil
 		}
 	}
-	return nil, "", fmt.Errorf("Image format '%s' is not supported by the vision API "+
-		"and could not be converted to PNG. Convert it to PNG or JPEG and try again.", mime)
+	return nil, "", fmt.Errorf("The vision model does not take '%s' images and this one could not be turned "+
+		"into PNG. Save it as PNG or JPEG and try again.", mime)
 }
 
 // decodeImage decodes any type the tool takes (the first frame of a GIF).
@@ -180,21 +179,20 @@ func cropImage(data []byte, mime string, region []any) ([]byte, *regionOffset, e
 		v[i] = int(f)
 	}
 	if !ok {
-		return nil, nil, errors.New("Invalid region: expected [x1, y1, x2, y2] as four numbers " +
-			"(pixel coordinates in the original image).")
+		return nil, nil, errors.New("Invalid region: need four numbers [x1, y1, x2, y2], " +
+			"in pixels of the original image.")
 	}
 	img, err := decodeImage(data, mime)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to crop region: %v", err)
+		return nil, nil, fmt.Errorf("Could not crop the region: %v", err)
 	}
 	b := img.Bounds()
 	width, height := b.Dx(), b.Dy()
 	clamp := func(n, hi int) int { return max(0, min(n, hi)) }
 	cx1, cy1, cx2, cy2 := clamp(v[0], width), clamp(v[1], height), clamp(v[2], width), clamp(v[3], height)
 	if cx2 <= cx1 || cy2 <= cy1 {
-		return nil, nil, fmt.Errorf("Invalid region [%d, %d, %d, %d]: crops to zero "+
-			"area after clamping to the image bounds. The image is "+
-			"%dx%d px — pick x1<x2 and y1<y2 inside "+
+		return nil, nil, fmt.Errorf("Invalid region [%d, %d, %d, %d]: after being pulled inside the image it crops to zero "+
+			"area. The image is %dx%d pixels, so choose x1<x2 and y1<y2 within "+
 			"[0, 0, %d, %d].", v[0], v[1], v[2], v[3], width, height, width, height)
 	}
 	dst := image.NewNRGBA(image.Rect(0, 0, cx2-cx1, cy2-cy1))
@@ -223,16 +221,16 @@ func scaleNote(s *scaleInfo, c *regionOffset) string {
 		}
 		var clause string
 		if fmt.Sprintf("%.2f", fx) == fmt.Sprintf("%.2f", fy) {
-			clause = fmt.Sprintf("multiply any coordinates you report by %.2f to map back to the original image.", fx)
+			clause = fmt.Sprintf("scale any coordinates you give by %.2f to get original-image positions.", fx)
 		} else {
-			clause = fmt.Sprintf("multiply any x coordinates you report by %.2f and any y coordinates by %.2f to map back to the original image.", fx, fy)
+			clause = fmt.Sprintf("scale x coordinates by %.2f and y coordinates by %.2f to get original-image positions.", fx, fy)
 		}
-		parts = append(parts, fmt.Sprintf("Image downscaled from %dx%d to %dx%d for vision; %s", s.ow, s.oh, s.nw, s.nh, clause))
+		parts = append(parts, fmt.Sprintf("Image downscaled from %dx%d to %dx%d before analysis; %s", s.ow, s.oh, s.nw, s.nh, clause))
 	}
 	if c != nil {
-		parts = append(parts, fmt.Sprintf("Analysis was performed on a cropped region of the original "+
-			"image starting at offset (%d, %d); coordinates are relative to that crop "+
-			"origin — add the offset to map back to the full image.", c.x, c.y))
+		parts = append(parts, fmt.Sprintf("Only a cropped part of the original image was analyzed. The crop starts at "+
+			"offset (%d, %d) in the original, and coordinates are measured from that corner, "+
+			"so add the offset to get positions in the full image.", c.x, c.y))
 	}
 	return strings.Join(parts, " ")
 }

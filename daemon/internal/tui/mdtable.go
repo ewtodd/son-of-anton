@@ -5,12 +5,11 @@ import (
 	"strings"
 )
 
-// A port of agent/markdown_tables.py's realign_markdown_tables: pipe tables
-// are rebuilt with column widths in terminal cells, and a table too wide for
+// Pipe tables are rebuilt with column widths in terminal cells, and a table too wide for
 // the room becomes "Header: value" blocks.
 
 // A column is at least 3 cells wide, matching the divider's minimum dash run
-// (MT's _MIN_COL_WIDTH).
+// (three dashes).
 const minColWidth = 3
 
 func splitTableRow(row string) []string {

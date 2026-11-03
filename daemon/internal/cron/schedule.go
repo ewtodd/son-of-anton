@@ -63,11 +63,11 @@ func parseDuration(s string) (int, error) {
 	s = strings.ToLower(strings.TrimSpace(s))
 	m := durationRE.FindStringSubmatch(s)
 	if m == nil {
-		return 0, fmt.Errorf("Invalid duration: '%s'. Use format like '30m', '2h', or '1d'", s)
+		return 0, fmt.Errorf("'%s' is not a duration. Write a number and a unit such as 30m, 2h or 1d", s)
 	}
 	n, err := strconv.Atoi(m[1])
 	if err != nil {
-		return 0, fmt.Errorf("Invalid duration: '%s'. Use format like '30m', '2h', or '1d'", s)
+		return 0, fmt.Errorf("'%s' is not a duration. Write a number and a unit such as 30m, 2h or 1d", s)
 	}
 	switch m[2][0] {
 	case 'h':
@@ -98,10 +98,10 @@ func ParseSchedule(s string, now time.Time) (Schedule, error) {
 		}
 		if all {
 			if len(parts) > 5 {
-				return Schedule{}, fmt.Errorf("Invalid cron expression '%s': expected 5 fields, got %d", original, len(parts))
+				return Schedule{}, fmt.Errorf("Cron expression '%s' has %d fields; it needs 5", original, len(parts))
 			}
 			if _, err := parseCron(original); err != nil {
-				return Schedule{}, fmt.Errorf("Invalid cron expression '%s': %v", original, err)
+				return Schedule{}, fmt.Errorf("Cron expression '%s' is not valid: %v", original, err)
 			}
 			return Schedule{Kind: "cron", Expr: original, Display: original}, nil
 		}
@@ -109,18 +109,18 @@ func ParseSchedule(s string, now time.Time) (Schedule, error) {
 	if strings.Contains(original, "T") || dateRE.MatchString(original) {
 		t, err := ParseISO(original, now.Location())
 		if err != nil {
-			return Schedule{}, fmt.Errorf("Invalid timestamp '%s': %v", original, err)
+			return Schedule{}, fmt.Errorf("Timestamp '%s' is not valid: %v", original, err)
 		}
 		return Schedule{Kind: "once", RunAt: ISO(t), Display: "once at " + t.Format("2006-01-02 15:04")}, nil
 	}
 	if minutes, err := parseDuration(original); err == nil {
 		return Schedule{Kind: "once", RunAt: ISO(now.Add(time.Duration(minutes) * time.Minute)), Display: "once in " + original}, nil
 	}
-	return Schedule{}, fmt.Errorf("Invalid schedule '%s'. Use:\n"+
-		"  - Duration: '30m', '2h', '1d' (one-shot)\n"+
-		"  - Interval: 'every 30m', 'every 2h' (recurring)\n"+
-		"  - Cron: '0 9 * * *' (cron expression)\n"+
-		"  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)", original)
+	return Schedule{}, fmt.Errorf("'%s' is not a schedule I understand. Accepted forms:\n"+
+		"  - a delay, runs once: 30m, 2h, 1d\n"+
+		"  - an interval, repeats: every 30m, every 2h\n"+
+		"  - a cron expression, repeats: 0 9 * * *\n"+
+		"  - a date and time, runs once: 2026-02-03T14:00:00", original)
 }
 
 // NextRun is when the schedule next fires: a one-shot at its time when it

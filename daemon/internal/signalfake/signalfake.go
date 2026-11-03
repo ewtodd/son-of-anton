@@ -1,7 +1,7 @@
 // Package signalfake is a fake signal-cli HTTP daemon for tests: the health
-// check, the SSE event stream and the JSON-RPC endpoint, as
-// gateway/platforms/signal.py uses them. Tests push envelopes onto the
-// stream and read back the RPC calls made.
+// check, the SSE event stream and the JSON-RPC endpoint, as the Signal
+// client uses them. Tests push envelopes onto the stream and read back the
+// RPC calls made.
 package signalfake
 
 import (

@@ -15,17 +15,17 @@ type patchTool struct{}
 func (patchTool) Schema() provider.Tool {
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
 		Name: "patch",
-		Description: "Edit a file with a targeted find-and-replace. " +
-			"old_string must uniquely identify the text to change; use replace_all for repeated blocks. " +
-			"Matching tolerates leading-whitespace and internal-whitespace differences. " +
-			"Returns a unified diff of the change.",
+		Description: "Change part of an existing file by swapping one piece of text for another. " +
+			"Give enough of the surrounding text in old_string that it occurs only once, or set replace_all to change every occurrence. " +
+			"Differences in indentation or runs of spaces do not stop a match. " +
+			"The reply is a unified diff of what changed.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "path": {"type": "string", "description": "File path to edit."},
-    "old_string": {"type": "string", "description": "Exact text to find and replace. Must be unique in the file unless replace_all=true."},
-    "new_string": {"type": "string", "description": "Replacement text. Must differ from old_string."},
-    "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring a unique match (default false).", "default": false}
+    "path": {"type": "string", "description": "The file to modify."},
+    "old_string": {"type": "string", "description": "The text to be replaced. It must occur exactly once in the file, unless replace_all is true."},
+    "new_string": {"type": "string", "description": "What to put in its place. It cannot equal old_string."},
+    "replace_all": {"type": "boolean", "description": "Change every occurrence rather than insisting on a single one. Defaults to false.", "default": false}
   },
   "required": ["path", "old_string", "new_string"]
 }`),
@@ -49,16 +49,16 @@ func (patchTool) Run(ctx context.Context, env *Env, args json.RawMessage) (strin
 		return errorResult("invalid arguments: " + err.Error()), nil
 	}
 	if a.Mode == "patch" {
-		return errorResult("V4A patch mode is not supported; use mode \"replace\" with old_string/new_string"), nil
+		return errorResult("Multi-file patch text is not accepted; send path, old_string and new_string"), nil
 	}
 	if a.Path == "" {
 		return errorResult("path is required"), nil
 	}
 	if a.OldString == "" {
-		return errorResult("old_string must not be empty"), nil
+		return errorResult("old_string cannot be empty"), nil
 	}
 	if a.OldString == a.NewString {
-		return errorResult("new_string must differ from old_string"), nil
+		return errorResult("new_string is identical to old_string, so there is nothing to change"), nil
 	}
 	abs, err := env.Policy.Resolve(env.State.Cwd(), a.Path)
 	if err != nil {
@@ -84,15 +84,15 @@ func (patchTool) Run(ctx context.Context, env *Env, args json.RawMessage) (strin
 			out, _ := jsonResult(map[string]any{"success": true, "no_change": true, "resolved_path": abs})
 			return out, nil
 		}
-		return errorResult(fmt.Sprintf("old_string not found in %s (%s)", a.Path, strategyHint())), nil
+		return errorResult(fmt.Sprintf("old_string does not occur in %s (%s)", a.Path, strategyHint())), nil
 	}
 	if len(spans) > 1 && !a.ReplaceAll {
 		lines := matchLineNumbers(text, spans)
-		return errorResult(fmt.Sprintf("old_string matches %d locations in %s (lines %s); add surrounding context to make it unique, or set replace_all=true",
+		return errorResult(fmt.Sprintf("old_string occurs %d times in %s (lines %s); include more of the surrounding text so only one matches, or set replace_all",
 			len(spans), a.Path, strings.Join(lines, ", "))), nil
 	}
 	if len(spans) > 1 && a.ReplaceAll && strategy != "exact" {
-		return errorResult("replace_all is only supported for exact matches; add context to pin the block"), nil
+		return errorResult("replace_all needs an exact match; this one only matched loosely, so add context and replace a single block"), nil
 	}
 
 	newText := applySpans(text, spans, a.NewString, a.OldString, strategy)
@@ -118,7 +118,7 @@ func (patchTool) Run(ctx context.Context, env *Env, args json.RawMessage) (strin
 }
 
 func strategyHint() string {
-	return "tried exact, line-trimmed and whitespace-normalized matching"
+	return "looked for an exact match, then ignoring indentation, then ignoring whitespace runs"
 }
 
 // findMatches locates old in text with the three strategies, in order:

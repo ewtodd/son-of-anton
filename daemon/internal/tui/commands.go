@@ -109,7 +109,7 @@ func (m *model) send(text, mode string) tea.Cmd {
 func (m *model) bang(cmd, line string) tea.Cmd {
 	m.feed.note(line, true)
 	if cmd == "" {
-		m.feed.note("Usage: !<command> — run a shell command without spending a model turn (e.g. !git status)", false)
+		m.feed.note("Type ! followed by a shell command to run it directly, with no model turn, for example !git status", false)
 		return nil
 	}
 	cwd, send := m.sess.Cwd, m.app.send

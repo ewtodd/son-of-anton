@@ -15,13 +15,10 @@ import (
 )
 
 // DefaultIdentity is the identity when the home has no SOUL.md.
-const DefaultIdentity = "You are Son of Anton Agent, an intelligent AI assistant. " +
-	"You are helpful, knowledgeable, and direct. You assist users with a wide " +
-	"range of tasks including answering questions, writing and editing code, " +
-	"analyzing information, creative work, and executing actions via your tools. " +
-	"You communicate clearly, admit uncertainty when appropriate, and prioritize " +
-	"being genuinely useful over being verbose unless otherwise directed below. " +
-	"Be targeted and efficient in your exploration and investigations."
+const DefaultIdentity = "You are Son of Anton, an assistant that works through tools on the user's machine. " +
+	"Answer plainly and get to the point. Read before you change things, " +
+	"check your work, and say so when you are unsure or when something failed. " +
+	"Keep your investigations proportionate to the question."
 
 //go:embed guidance.md
 var guidanceFile string
@@ -85,7 +82,7 @@ func Build(o Options) (Result, error) {
 	return res, nil
 }
 
-// zoneSuffix names Now's zone as the Python does: the zone name, the
+// zoneSuffix names Now's zone: the zone name, the
 // abbreviation when it differs, and the UTC offset, so the model never has
 // to guess between standard and daylight time. An unnamed local zone
 // ("Local") gives only the abbreviation and the offset.

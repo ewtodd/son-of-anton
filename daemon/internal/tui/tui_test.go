@@ -277,7 +277,7 @@ func TestAnApprovalIsAnsweredFromTheModal(t *testing.T) {
 	}
 	a := open(t, d, tui.Options{})
 	send(a, "make it writable")
-	s := waitScreen(t, a, "The agent wants to run a command", "chmod 777 f.txt", "Allow once", "Allow for this session", "Always allow", "Deny")
+	s := waitScreen(t, a, "The agent asks to run a command", "chmod 777 f.txt", "Allow once", "Allow for this session", "Always allow", "Deny")
 	checkFrame(t, s, 100, 30)
 	a.Press("1")
 	s = waitScreen(t, a, "changed it")
@@ -301,7 +301,7 @@ func TestEscDeniesAnApproval(t *testing.T) {
 	}
 	a := open(t, d, tui.Options{})
 	send(a, "make it writable")
-	waitScreen(t, a, "The agent wants to run a command")
+	waitScreen(t, a, "The agent asks to run a command")
 	a.Press("esc")
 	waitScreen(t, a, "left it alone")
 	if fi, _ := os.Stat(f); fi.Mode().Perm() != 0o644 {
@@ -319,7 +319,7 @@ func TestAQuestionIsAnsweredFromTheModal(t *testing.T) {
 	d := newDaemon(t, fake)
 	a := open(t, d, tui.Options{})
 	send(a, "ice cream")
-	waitScreen(t, a, "Son of Anton needs your input", "Which flavour?", "vanilla", "chocolate", "Other…")
+	waitScreen(t, a, "Son of Anton has a question", "Which flavour?", "vanilla", "chocolate", "Other…")
 	a.Press("down", "enter")
 	waitScreen(t, a, "chocolate it is")
 	if m := lastMessage(fake, 1); !strings.Contains(m, "chocolate") {
@@ -492,7 +492,7 @@ func TestBangRunsAShellCommandHere(t *testing.T) {
 	send(a, "!exit 3")
 	waitScreen(t, a, "! exited 3")
 	send(a, "!")
-	waitScreen(t, a, "Usage: !<command>")
+	waitScreen(t, a, "Type ! followed by a shell command")
 	if fake.Count() != 0 {
 		t.Fatalf("%d model requests", fake.Count())
 	}

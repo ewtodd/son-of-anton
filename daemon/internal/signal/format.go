@@ -9,7 +9,8 @@ import (
 	"unicode/utf8"
 )
 
-// ws is Python's \s for str patterns: RE2's \s is ASCII only.
+// ws is the whitespace class the patterns below need: RE2's \s is ASCII
+// only, and this adds the separators and control characters that count.
 const ws = `[\s\x0b\x1c-\x1f\x85\p{Z}]`
 
 var (
@@ -42,12 +43,11 @@ type styled struct {
 	style         string
 }
 
-// Format is markdown_to_signal (gateway/platforms/signal_format.py): plain
-// text and Signal text styles ("start:length:STYLE", in UTF-16 code units).
-// Signal does not render Markdown, so the text loses its markers and the
-// styles say what they covered. The port keeps the Python's behavior exactly,
-// quirks included, because its output is what the owner's chats have always
-// shown.
+// Format turns Markdown into plain text and Signal text styles
+// ("start:length:STYLE", in UTF-16 code units). Signal does not render
+// Markdown, so the text loses its markers and the styles say what they
+// covered. The output is kept exactly as it has always been, quirks included,
+// because it is what the owner's chats have always shown.
 func Format(markdown string) (string, []string) {
 	text := reBlankRuns.ReplaceAllString(markdown, "\n\n")
 	text = strings.TrimFunc(text, isPySpace)
@@ -225,7 +225,7 @@ func regexFinder(pattern string) func(string, []rune) []span {
 	}
 }
 
-// italics finds the Python's two italic patterns for the marker * or _:
+// italics finds the two italic patterns for the marker * or _:
 //
 //	(?<!\*)\*(?!\*| )(.+?)(?<!\*)\*(?!\*)
 //	(?<!\w)_(?!_)(.+?)(?<!_)_(?!\w)
@@ -267,12 +267,13 @@ func italics(r []rune, marker rune) []span {
 
 func isWordRune(r rune) bool { return r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r) }
 
-// isPySpace is Python's str.isspace for the characters that matter here.
+// isPySpace is whitespace for the characters that matter here: Unicode
+// spaces plus the control separators 0x1c to 0x1f.
 func isPySpace(r rune) bool { return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f) }
 
 func runeLen(s string) int { return utf8.RuneCountInString(s) }
 
-// slice is Python's s[a:b]: empty when a >= b, never out of range.
+// slice is s[a:b] with no panics: empty when a >= b, never out of range.
 func slice(s string, a, b int) string {
 	if a >= b {
 		return ""

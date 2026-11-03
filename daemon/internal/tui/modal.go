@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const dismissedAnswer = "The user dismissed the question without answering; use your best judgement."
+const dismissedAnswer = "The user closed the question with no answer. Decide for yourself."
 
 type choice struct{ value, label, desc string }
 
@@ -35,10 +35,10 @@ type modal struct {
 }
 
 var approvalChoices = map[string]choice{
-	"once":    {"once", "Allow once", "run this now"},
-	"session": {"session", "Allow for this session", "no more prompts for this until exit"},
-	"always":  {"always", "Always allow", "add to the allowlist"},
-	"deny":    {"deny", "Deny", "the agent is told it was refused"},
+	"once":    {"once", "Allow once", "just this time"},
+	"session": {"session", "Allow for this session", "no further prompts for this until the session ends"},
+	"always":  {"always", "Always allow", "put it on the allowlist"},
+	"deny":    {"deny", "Deny", "the agent is told no"},
 }
 
 func newModal(kind string, p map[string]any) *modal {
@@ -60,10 +60,10 @@ func newModal(kind string, p map[string]any) *modal {
 		}
 		return md
 	}
-	md := &modal{id: str(p, "approval_id"), subject: str(p, "subject"), title: "The agent wants to run a command"}
+	md := &modal{id: str(p, "approval_id"), subject: str(p, "subject"), title: "The agent asks to run a command"}
 	memory := str(p, "approval_kind") == "memory"
 	if memory {
-		md.title = "Save to memory?"
+		md.title = "Remember this?"
 	}
 	if raw, ok := p["reasons"].([]any); ok {
 		for _, r := range raw {
@@ -82,9 +82,9 @@ func newModal(kind string, p map[string]any) *modal {
 			if memory {
 				switch s {
 				case "once":
-					c = choice{s, "Save", "write it to memory"}
+					c = choice{s, "Save", "store it in memory"}
 				case "deny":
-					c = choice{s, "Don't save", "the agent is told it was refused"}
+					c = choice{s, "Don't save", "the agent is told no"}
 				}
 			}
 			md.choices = append(md.choices, c)
@@ -262,7 +262,7 @@ func (md *modal) view(w int, th *theme) []string {
 		}
 	}
 	if md.question {
-		add(th.bld.Render("Son of Anton needs your input"))
+		add(th.bld.Render("Son of Anton has a question"))
 		add("")
 		for _, l := range wrapText(clean(md.text), inner) {
 			add(l)

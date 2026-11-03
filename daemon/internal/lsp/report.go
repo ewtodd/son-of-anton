@@ -41,7 +41,7 @@ func (d Diagnostic) key() key {
 	return key{d.severity(), codeText(d.Code), d.Source, d.Message}
 }
 
-// severity treats a missing severity as an error, as the Python does.
+// severity treats a missing severity as an error.
 func (d Diagnostic) severity() int {
 	if d.Severity == 0 {
 		return errorSev

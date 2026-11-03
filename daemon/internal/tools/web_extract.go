@@ -29,7 +29,7 @@ const (
 	pageMax        = 10 << 20
 	thinPage       = 200 // under this many characters, an HTML page is a script-built shell
 
-	blockedPrivate = "Blocked: URL targets a private or internal network address"
+	blockedPrivate = "Refused: the URL points at a private or internal network address"
 )
 
 var (
@@ -59,7 +59,7 @@ type page struct {
 func (w *Web) extract(ctx context.Context, raw string, budget int) extractResult {
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-		return failed(raw, "Invalid URL: expected an http(s) URL")
+		return failed(raw, "Not a usable address: only http and https URLs can be fetched")
 	}
 	if !w.AllowPrivate && w.privateHost(ctx, u.Hostname()) {
 		return failed(raw, blockedPrivate)
@@ -414,6 +414,6 @@ func (w *Web) fitToBudget(raw, content string, budget int) (string, error) {
 	tail := string(runes[len(runes)-int(float64(budget)*0.3):])
 	omitted := len(runes) - utf8.RuneCountInString(head) - utf8.RuneCountInString(tail)
 	middle := strings.Count(head, "\n") + 1
-	return fmt.Sprintf("%s\n\n[... %d characters omitted ...]\n\n%s\n\n[Truncated: the page has %d characters. The full text is saved at %s; "+
-		"the omitted part starts at line %d (read_file with offset=%d).]", head, omitted, tail, len(runes), path, middle, middle), nil
+	return fmt.Sprintf("%s\n\n[... %d characters left out ...]\n\n%s\n\n[Shortened: the page is %d characters long. All of it is saved in %s; "+
+		"the cut part begins at line %d, so read_file with offset=%d shows it.]", head, omitted, tail, len(runes), path, middle, middle), nil
 }

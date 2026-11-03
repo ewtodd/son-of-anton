@@ -1,7 +1,6 @@
-// Package recall is per-turn recall of facts and notes, ported from
-// ../agent/rag.py: an embedding index over memory/facts*.toml and notes/,
-// a keyword fallback when the embedder is down, and the fenced block that
-// rides a user message.
+// Package recall is per-turn recall of facts and notes: an embedding index
+// over memory/facts*.toml and notes/, a keyword fallback when the embedder is
+// down, and the fenced block that rides a user message.
 package recall
 
 import (

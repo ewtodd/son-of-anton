@@ -57,7 +57,7 @@ func TestHeadTailKeepsTheEndsAndCountsTheRest(t *testing.T) {
 		t.Fatalf("meta = %v", meta)
 	}
 	if !strings.HasPrefix(text, string(all[:100])) || !strings.HasSuffix(text, string(all[len(all)-150:])) ||
-		!strings.Contains(text, "[OUTPUT TRUNCATED - 9,750 bytes omitted out of 10,000 total]") {
+		!strings.Contains(text, "[output cut: 9,750 of 10,000 bytes omitted]") {
 		t.Fatalf("text = %q", text)
 	}
 	small := &headTail{maxH: 100, maxT: 150}
@@ -182,7 +182,7 @@ func TestCropClampsAndReportsTheOffset(t *testing.T) {
 		t.Fatalf("cropped image = %+v %v", cfg, err)
 	}
 	for _, bad := range [][]any{{1.0, 2.0}, {"a", 1.0, 2.0, 3.0}, {true, 1.0, 2.0, 3.0}} {
-		if _, _, err := cropImage(data, "image/png", bad); err == nil || !strings.Contains(err.Error(), "Invalid region: expected") {
+		if _, _, err := cropImage(data, "image/png", bad); err == nil || !strings.Contains(err.Error(), "Invalid region: need four") {
 			t.Errorf("region %v: %v", bad, err)
 		}
 	}
@@ -208,7 +208,7 @@ func TestExecuteCodeStopsWhenTheTurnIsStopped(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(300*time.Millisecond, cancel)
 	res := runScript(t, ctx, "import time\ntime.sleep(60)")
-	if res["status"] != "interrupted" || !strings.HasSuffix(res["output"].(string), "[execution interrupted — user sent a new message]") {
+	if res["status"] != "interrupted" || !strings.HasSuffix(res["output"].(string), "[run interrupted: the user sent a new message]") {
 		t.Fatalf("result = %v", res)
 	}
 }

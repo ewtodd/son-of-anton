@@ -50,7 +50,7 @@ func TestFionaIsTheChatsIdentity(t *testing.T) {
 	if !strings.HasPrefix(sys, want) {
 		t.Fatalf("the chat's identity:\n%.900s", sys)
 	}
-	if strings.Contains(sys, "Son of Anton Agent") {
+	if strings.Contains(sys, "You are Son of Anton, an assistant") {
 		t.Fatal("the default identity never appears in a chat")
 	}
 }

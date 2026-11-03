@@ -307,7 +307,7 @@ func (m *Manager) expand(s string) (string, error) {
 		return v
 	})
 	if missing != "" {
-		return "", fmt.Errorf("environment variable %s is not set (needed by the config)", missing)
+		return "", fmt.Errorf("the config refers to the environment variable %s, which is unset", missing)
 	}
 	return out, nil
 }
@@ -592,7 +592,7 @@ func (m *Manager) Unavailable(name string) string {
 }
 
 func unavailable(server, why string) string {
-	return fmt.Sprintf("MCP server '%s' is unavailable (%s); try again later or continue without it", server, why)
+	return fmt.Sprintf("The MCP server '%s' is not reachable right now (%s). Retry later, or go on without it.", server, why)
 }
 
 // Call runs the catalog's tool name and returns the JSON result. found is
@@ -622,7 +622,7 @@ func (m *Manager) Call(ctx context.Context, name string, args map[string]any, ca
 		defer cancel()
 		res, err := c.cs.CallTool(cctx, &sdk.CallToolParams{Name: e.raw, Arguments: args})
 		if err != nil && cctx.Err() != nil && ctx.Err() == nil {
-			err = fmt.Errorf("MCP call timed out after %s", s.cfg.Timeout)
+			err = fmt.Errorf("The MCP call took longer than %s and was dropped", s.cfg.Timeout)
 			return nil, &timeoutError{err}
 		}
 		return res, err
@@ -694,7 +694,7 @@ func (m *Manager) format(res *sdk.CallToolResult, callID string) string {
 	text := clip(dir, sanitize(id), strings.Join(parts, "\n"))
 	if res.IsError {
 		if text == "" {
-			text = "MCP tool returned an error"
+			text = "The MCP tool reported an error with no details"
 		}
 		return errorJSON(text)
 	}

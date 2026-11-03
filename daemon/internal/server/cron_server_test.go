@@ -19,11 +19,11 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/signalfake"
 )
 
-const cronHint = "[IMPORTANT: You are running as a scheduled cron job. DELIVERY: Your final response will be automatically delivered " +
-	"to the user — do NOT use send_message or try to deliver the output yourself. Just produce your report/output as your " +
-	"final response and the system handles the rest. SILENT: If there is genuinely nothing new to report, respond " +
-	"with exactly \"[SILENT]\" (nothing else) to suppress delivery. Never combine [SILENT] with content — either report your " +
-	"findings normally, or say [SILENT] and nothing more.]\n\n"
+const cronHint = "[Scheduled run. No one is present and no one can answer questions. " +
+	"Whatever you reply last is sent to the user as it stands, so make it a finished report " +
+	"and do not try to send it yourself. " +
+	"If there is nothing worth telling the user, reply with the single word [SILENT] " +
+	"and nothing else; that sends nothing. [SILENT] must never be mixed with other text.]\n\n"
 
 func cronJob(id, name, prompt string, extra map[string]any) map[string]any {
 	j := map[string]any{
@@ -101,6 +101,9 @@ func TestACronJobRunsAndIsRecorded(t *testing.T) {
 	if got := lastUser(t, fake, 0); got != cronHint+"check the disk" {
 		t.Fatalf("the cron prompt = %q", got)
 	}
+	if !strings.Contains(lastUser(t, fake, 0), "[SILENT]") {
+		t.Fatal("the cron hint must name the [SILENT] marker")
+	}
 	for _, n := range toolNames(t, fake.Request(0)) {
 		if n == "cronjob" || n == "clarify" || n == "task" {
 			t.Fatalf("a cron run has %s", n)
@@ -155,7 +158,7 @@ func TestCronDeliversToTheOriginChat(t *testing.T) {
 	r.reply(sigGroup, digest)
 	health, _ := signal.Format(cron.Frame("Health", "aaaaaaaaaaa2", "health ok"))
 	r.reply(sigGroup, health)
-	r.replyLike(sigGroup, "⚠️ Cron 'Broken' failed: ")
+	r.replyLike(sigGroup, "⚠️ The scheduled job 'Broken' failed: ")
 	broken := waitJob(t, r.h.home, "aaaaaaaaaaa4", "the failure to be recorded", func(j map[string]any) bool { return j["last_status"] == "error" })
 	if broken["failure_streak"] != float64(1) || broken["last_error"] == nil {
 		t.Fatalf("a failed run = %v", broken)
@@ -246,7 +249,7 @@ func TestTheCronjobTool(t *testing.T) {
 		t.Fatalf("remove = %v", removed)
 	}
 	if missing := decodeRow(t, rows[4]); missing["success"] != false ||
-		!strings.Contains(str(missing, "error"), "Job with ID or name 'nope' not found") {
+		!strings.Contains(str(missing, "error"), "No job has the id or name 'nope'") {
 		t.Fatalf("an unknown job = %v", missing)
 	}
 	if jobs, _ := cron.Load(h.home); len(jobs) != 0 {

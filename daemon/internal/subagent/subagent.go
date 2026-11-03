@@ -1,7 +1,6 @@
-// Package subagent is the task tool: it runs a subagent as a child session,
-// opencode v1.19.5's model (packages/opencode/src/tool/task.ts). The texts
-// are opencode's with the tool names mapped to this daemon's; the server
-// supplies the Spawner that makes and runs the child session.
+// Package subagent is the task tool: it runs a subagent as a child session
+// and returns the child's final message. The server supplies the Spawner
+// that makes and runs the child session.
 package subagent
 
 import (
@@ -21,20 +20,20 @@ var taskText string
 //go:embed explore.txt
 var exploreText string
 
-// BackgroundDescription, BackgroundStarted and BackgroundUpdated are
-// opencode's (tool/task.ts:25-41).
+// BackgroundDescription is added to the task tool's description when the
+// background parameter is offered. BackgroundStarted and BackgroundUpdated
+// are the results of a background launch and of a message sent to a
+// background task that is still running.
 const (
-	BackgroundDescription = "Background mode: background=true launches the subagent asynchronously and returns immediately. " +
-		"Foreground is the default; use it when you need the result before continuing. " +
-		"Use background only for independent work that can run while you continue elsewhere. " +
-		"You will be notified automatically when it finishes."
-	BackgroundStarted = "The task is working in the background. You will be notified automatically when it finishes.\n" +
-		"DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.\n" +
-		"Work on non-overlapping tasks, or briefly tell the user what you launched and end your response."
-	BackgroundUpdated = "Additional context sent to the running background task.\n" +
-		"The task is still working in the background. You will be notified automatically when it finishes.\n" +
-		"DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.\n" +
-		"Work on non-overlapping tasks, or briefly tell the user what you sent and end your response."
+	BackgroundDescription = "Background option: set background to true and the task call returns at once while the subagent keeps working. " +
+		"The result arrives later as a message of its own. Leave it false (the default) when your next step needs the answer. " +
+		"Use it only for work that is independent of what you do meanwhile."
+	BackgroundStarted = "The subagent is running in the background and its result will be delivered here when it is done.\n" +
+		"Do not wait for it, poll it, ask it for progress, or do its work yourself. Stay off the files and questions it covers.\n" +
+		"Carry on with unrelated work, or tell the user briefly what you started and finish your reply."
+	BackgroundUpdated = "Your message was passed to the subagent, which is still running in the background.\n" +
+		"Its result will be delivered here when it is done. Do not wait for it, poll it, or do its work yourself.\n" +
+		"Carry on with unrelated work, or tell the user briefly what you sent and finish your reply."
 )
 
 // Type is one kind of subagent. Tools nil means every tool the child may have.
@@ -48,19 +47,17 @@ func Builtin() []Type {
 	return []Type{
 		{
 			Name: "explore",
-			Description: `Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), ` +
-				`search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). ` +
-				`When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, ` +
-				`or "very thorough" for comprehensive analysis across multiple locations and naming conventions.`,
+			Description: "Read-only searcher for finding things in a codebase: files by name pattern, code by keyword, or an answer to a question about how something works. " +
+				"In the prompt, give the depth you want: quick, medium or very thorough.",
 			Prompt: strings.TrimSpace(exploreText),
 			Tools:  []string{"terminal", "read_file", "search_files"},
 		},
 		{
 			Name:        "general",
-			Description: "General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.",
-			Prompt: "You are a subagent: another agent gave you one task. Do it fully and on your own, " +
-				"then reply with one final message that contains exactly what the task asked for; " +
-				"that message is all the agent that called you will see.",
+			Description: "Full-capability agent for any job that needs several steps: research, investigation, or changes to make. Use it to run separate jobs side by side.",
+			Prompt: "Another agent has handed you one job. Carry it out completely without asking anything back; " +
+				"nobody will answer. Finish with a single message holding what the job asked for. " +
+				"The calling agent sees only that message.",
 		},
 	}
 }
@@ -85,7 +82,7 @@ func ChildMay(tool string) bool {
 	return true
 }
 
-// Description is the task tool's description: opencode's task.txt, the
+// Description is the task tool's description: the text in task.txt, the
 // background paragraph when offered, then the available types by name.
 func Description(types []Type, background bool) string {
 	d := taskText
@@ -98,20 +95,22 @@ func Description(types []Type, background bool) string {
 	for i, t := range sorted {
 		lines[i] = "- " + t.Name + ": " + t.Description
 	}
-	return d + "\nAvailable agent types and the tools they have access to:\n" + strings.Join(lines, "\n")
+	return d + "\nSubagent types:\n" + strings.Join(lines, "\n")
 }
 
-// Render is opencode's renderOutput (tool/task.ts:64-79).
+// Render is the task result as the model reads it. The first line,
+// <task id=... state=...>, is read by the server and the TUI; the rest is for
+// the model: an optional one-line summary, then the text under a label.
 func Render(id, state, summary, text string) string {
-	tag := "task_result"
+	label := "Result:"
 	if state == "error" {
-		tag = "task_error"
+		label = "Error:"
 	}
 	parts := []string{`<task id="` + id + `" state="` + state + `">`}
 	if summary != "" {
-		parts = append(parts, "<summary>"+summary+"</summary>")
+		parts = append(parts, summary)
 	}
-	return strings.Join(append(parts, "<"+tag+">", text, "</"+tag+">", "</task>"), "\n")
+	return strings.Join(append(parts, label, text, "</task>"), "\n")
 }
 
 // Request is one task call.
@@ -144,15 +143,13 @@ func (taskTool) Concurrent() bool { return true }
 
 func (t taskTool) Schema() provider.Tool {
 	props := map[string]any{
-		"description":   map[string]string{"type": "string", "description": "A short (3-5 words) description of the task"},
-		"prompt":        map[string]string{"type": "string", "description": "The task for the agent to perform"},
-		"subagent_type": map[string]string{"type": "string", "description": "The type of specialized agent to use for this task"},
-		"task_id": map[string]string{"type": "string", "description": "This should only be set if you mean to resume a previous task " +
-			"(you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)"},
+		"description":   map[string]string{"type": "string", "description": "Three to five words naming the job (used as the subagent session's title)"},
+		"prompt":        map[string]string{"type": "string", "description": "The full brief for the subagent: goal, context, and what its final message must contain"},
+		"subagent_type": map[string]string{"type": "string", "description": "Which subagent to use, by name from the list in this tool's description"},
+		"task_id":       map[string]string{"type": "string", "description": "A task_id from an earlier result. Give it to send this prompt to that same subagent, which remembers its earlier work; omit it to start a new one."},
 	}
 	if t.background {
-		props["background"] = map[string]string{"type": "boolean", "description": "Run the agent in the background. You will be notified when it completes. " +
-			"DO NOT sleep, poll, or proactively check on its progress"}
+		props["background"] = map[string]string{"type": "boolean", "description": "true to return immediately and receive the result later as a message; do not wait for or poll it"}
 	}
 	params, _ := json.Marshal(map[string]any{
 		"type": "object", "properties": props, "required": []string{"description", "prompt", "subagent_type"},
@@ -174,11 +171,11 @@ func (t taskTool) Run(ctx context.Context, env *tools.Env, args json.RawMessage)
 		return "invalid arguments: " + err.Error(), nil
 	}
 	if p.Description == "" || p.Prompt == "" || p.SubagentType == "" {
-		return "invalid arguments: description, prompt and subagent_type are required", nil
+		return "description, prompt and subagent_type must all be given", nil
 	}
 	typ, ok := Lookup(t.types, p.SubagentType)
 	if !ok {
-		return "Unknown agent type: " + p.SubagentType + " is not a valid agent type", nil
+		return "There is no subagent type called " + p.SubagentType + "; choose one from the list in this tool's description", nil
 	}
 	res, err := t.spawn(ctx, env, Request{Description: p.Description, Prompt: p.Prompt, TaskID: p.TaskID, Type: typ,
 		Background: t.background && p.Background, CallID: env.CallID})

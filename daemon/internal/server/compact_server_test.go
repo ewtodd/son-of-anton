@@ -65,7 +65,7 @@ func TestTheCompactCommand(t *testing.T) {
 	if str(e, "summary") != "SUMMARY-BODY" || e["through_seq"] != 2.0 || e["before_tokens"] == nil {
 		t.Fatalf("compaction event = %v", e)
 	}
-	if !bytes.Contains(aux.Bodies()[0], []byte(`FOCUS TOPIC: \"the parser\"`)) {
+	if !bytes.Contains(aux.Bodies()[0], []byte(`FOCUS: \"the parser\"`)) {
 		t.Fatal("the args are the focus topic")
 	}
 	att := h.dial().attach(id, "viewer")

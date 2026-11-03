@@ -84,23 +84,23 @@ func (t executeCodeTool) Schema() provider.Tool {
 	if len(examples) > 0 {
 		imports = strings.Join(examples, ", ") + ", ..."
 	}
-	desc := "Run a Python script that calls Son of Anton tools, for 3+ calls with logic between " +
-		"them: filtering large outputs before they reach your context, branching, or loops " +
-		"over pages and files. Use plain tool calls for single calls, results you need to read " +
-		"in full, or anything that needs the user.\n\n" +
-		"Available via `from son_of_anton_tools import ...`:\n" + strings.Join(lines, "\n") + "\n\n" +
-		"Limits: 5 minutes, 50 KB of stdout, 50 tool calls; terminal() runs in the foreground " +
-		"only. Scripts run in the session's working directory with Python 3, and the " +
-		"stdlib is available. Print the result to stdout. Helpers (no import): json_parse(text), " +
-		"shell_quote(s), retry(fn, max_attempts=3, delay=2)."
+	desc := "Execute a Python 3 script that drives this session's tools as functions. It pays off when a job takes " +
+		"several tool calls with code in between: trimming a bulky result before it enters your context, " +
+		"branching on what came back, or looping over pages or files. A single call, a result you want to " +
+		"read whole, or anything that involves the user is better done as an ordinary tool call.\n\n" +
+		"The functions, imported with `from son_of_anton_tools import ...`:\n" + strings.Join(lines, "\n") + "\n\n" +
+		"A script gets 5 minutes, 50 calls and 50 KB of stdout, and terminal() cannot background anything. " +
+		"It runs in the session's working directory with the standard library. Whatever it prints to stdout is " +
+		"returned. Three helpers need no import: json_parse(text), shell_quote(s) and " +
+		"retry(fn, max_attempts=3, delay=2)."
 	params, _ := json.Marshal(map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"code": map[string]any{
 				"type": "string",
-				"description": "Python code to execute. Import tools with " +
+				"description": "The Python source. Start with " +
 					"`from son_of_anton_tools import " + imports + "` " +
-					"and print your final result to stdout.",
+					"and print what you want returned.",
 			},
 		},
 		"required": []string{"code"},
@@ -122,36 +122,31 @@ func (t executeCodeTool) Run(ctx context.Context, env *Env, args json.RawMessage
 	}
 	if _, hasCode := in["code"]; !hasCode {
 		if _, hasCommand := in["command"]; hasCommand {
-			return errorResult("execute_code received a 'command' parameter, but it requires " +
-				"Python source in 'code'. Use terminal(command=...) for shell " +
-				"commands; for Python, retry as execute_code(code=...)."), nil
+			return errorResult("This tool takes Python source in 'code'; a 'command' was sent instead. " +
+				"For a shell command call terminal, and for Python send the source as code."), nil
 		}
 	}
 	var code string
 	if raw := in["code"]; len(raw) > 0 && string(raw) != "null" {
 		if err := json.Unmarshal(raw, &code); err != nil {
-			return errorResult(fmt.Sprintf("execute_code received a %s in 'code', but it "+
-				"requires Python source as a string. Retry as "+
-				"execute_code(code=\"...\").", jsonTypeName(raw))), nil
+			return errorResult(fmt.Sprintf("'code' arrived with JSON type %s; it has to be the Python source as a single string.", jsonTypeName(raw))), nil
 		}
 	}
 	if strings.TrimSpace(code) == "" {
-		return errorResult("No code provided. execute_code requires a non-empty 'code' " +
-			"parameter containing Python source. To run shell commands, use " +
-			"terminal(command=...) instead."), nil
+		return errorResult("'code' is empty. Send the Python source to run; for a shell command, call terminal."), nil
 	}
 	if env.NoScripts != "" {
 		return codeError(env.NoScripts), nil
 	}
 	py := findPython()
 	if py == "" {
-		return jsonOut(map[string]any{"status": "error", "error": "execute_code needs a Python 3 interpreter and found none"}), nil
+		return jsonOut(map[string]any{"status": "error", "error": "no Python 3 interpreter is installed for execute_code to use"}), nil
 	}
 	if v := env.Gate.Script(ctx, code); !v.Allowed {
 		return codeError(v.Message), nil
 	}
 	if env.Call == nil {
-		return codeError("execute_code cannot call tools in this run"), nil
+		return codeError("tool calls from scripts are not available in this run"), nil
 	}
 	return t.run(ctx, env, py, code), nil
 }
@@ -305,10 +300,9 @@ func (h *headTail) text() (string, map[string]any) {
 	}
 	out := string(h.head) + string(tail)
 	if omitted > 0 {
-		out = string(h.head) + fmt.Sprintf("\n\n... [OUTPUT TRUNCATED - %s bytes omitted out of %s total] ...\n\n", commas(omitted), commas(h.total)) + string(tail)
-		meta["warning"] = "execute_code stdout was truncated; the script did run, but only " +
-			"the captured head/tail output is included. Re-run only with " +
-			"narrower output if the omitted data is required."
+		out = string(h.head) + fmt.Sprintf("\n\n... [output cut: %s of %s bytes omitted] ...\n\n", commas(omitted), commas(h.total)) + string(tail)
+		meta["warning"] = "The script ran, but its stdout was too long: only the start and the end are shown. " +
+			"If you need the middle, run it again and print less."
 	}
 	return strings.ToValidUTF8(out, "�"), meta
 }
@@ -416,7 +410,7 @@ func (t executeCodeTool) run(ctx context.Context, env *Env, py, code string) str
 	}
 	switch {
 	case status == "timeout":
-		msg := fmt.Sprintf("Script timed out after %ds and was killed.", int(codeTimeout/time.Second))
+		msg := fmt.Sprintf("The script timed out after %ds and was stopped.", int(codeTimeout/time.Second))
 		res["error"] = msg
 		if stdout != "" {
 			res["output"] = stdout + "\n\n⏰ " + msg
@@ -424,7 +418,7 @@ func (t executeCodeTool) run(ctx context.Context, env *Env, py, code string) str
 			res["output"] = "⏰ " + msg
 		}
 	case status == "interrupted":
-		res["output"] = stdout + "\n[execution interrupted — user sent a new message]"
+		res["output"] = stdout + "\n[run interrupted: the user sent a new message]"
 	case exit != 0:
 		res["status"] = "error"
 		if stderr != "" {
@@ -432,7 +426,7 @@ func (t executeCodeTool) run(ctx context.Context, env *Env, py, code string) str
 			// The stdout's last newline (a print's) is the separator's.
 			res["output"] = strings.TrimSuffix(stdout, "\n") + "\n--- stderr ---\n" + stderr
 		} else {
-			res["error"] = fmt.Sprintf("Script exited with code %d", exit)
+			res["error"] = fmt.Sprintf("The script exited with status %d", exit)
 		}
 	}
 	return jsonOut(res)

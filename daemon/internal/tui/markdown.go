@@ -13,8 +13,8 @@ import (
 )
 
 // Markdown is a markdown block's rows at feed width width, styled: the Textual
-// feed's renderer (son_of_anton_tui/feed.py render_markdown_lines) in the
-// fork's plain aesthetic. Rows are not padded to the width.
+// feed's renderer, in the project's plain aesthetic. Rows are not padded to
+// the width.
 func Markdown(src string, width int) []string {
 	return markdownRows(markdownTheme(), src, width)
 }

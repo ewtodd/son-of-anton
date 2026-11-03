@@ -30,7 +30,7 @@ const (
 	sigMember  = "+15551111111"
 	sigGroup   = "gW"
 	sigGroup2  = "gX"
-	queuedAck  = "Queued for the next turn. I'll respond once the current task finishes."
+	queuedAck  = "Got it. This will be handled after the current task is done."
 )
 
 type chatRig struct {
@@ -219,14 +219,14 @@ func TestStopAndNew(t *testing.T) {
 	r.say("a long job")
 	r.requests(1)
 	r.say("/stop")
-	r.reply(sigGroup, "Stopped. You can continue this session.")
+	r.reply(sigGroup, "Stopped. The session is still here if you want to carry on.")
 	r.say("/stop")
-	r.reply(sigGroup, "No active task to stop.")
+	r.reply(sigGroup, "There is nothing running to stop.")
 
 	r.say("the word is kiwi")
 	r.reply(sigGroup, "noted")
 	r.say("/new")
-	r.reply(sigGroup, "New session started.")
+	r.reply(sigGroup, "Fresh session started.")
 	r.say("what was the word?")
 	r.reply(sigGroup, "no idea")
 	for _, m := range wire(t, fake, 2) {
@@ -250,13 +250,13 @@ func TestCommandsNeverReachTheModel(t *testing.T) {
 	fake := fakellm.New(t, fakellm.Turn{Content: "checking"})
 	r := newChatRig(t, fake, "")
 	r.say("/frobnicate")
-	r.reply(sigGroup, "Unknown command /frobnicate. Commands: /new, /stop, /status, /model, /sendnow, /sendall, /approve, /deny.")
+	r.reply(sigGroup, "/frobnicate is not a command here. Available: /new, /stop, /status, /model, /sendnow, /sendall, /approve, /deny.")
 	r.say("/sendnow")
-	r.reply(sigGroup, "Nothing is running.")
+	r.reply(sigGroup, "No turn is in progress.")
 	r.say("/sendall")
-	r.reply(sigGroup, "Nothing is running.")
+	r.reply(sigGroup, "No turn is in progress.")
 	r.say("/approve")
-	r.reply(sigGroup, "Nothing is waiting for approval.")
+	r.reply(sigGroup, "No approval is pending.")
 	r.say("/status")
 	r.replyLike(sigGroup, "test-model", "idle")
 	r.quiet(0)
@@ -277,7 +277,7 @@ func TestSendnowSteersTheRunningTurn(t *testing.T) {
 	r.say("start walking")
 	r.requests(1)
 	r.say("/sendnow go left instead")
-	r.reply(sigGroup, "Steered into the current turn.")
+	r.reply(sigGroup, "Your queued message was added to the turn in progress.")
 	close(hold)
 	r.reply(sigGroup, "went left")
 	if !strings.Contains(lastUser(t, fake, 1), "go left instead") {
@@ -303,7 +303,7 @@ func TestAChatApprovesARule(t *testing.T) {
 		return string(b)
 	}
 	r.say("remember: plain English")
-	r.replyLike(sigGroup, "⚠️ Approval needed", "Answer in plain English", "Reply /approve")
+	r.replyLike(sigGroup, "⚠️ Permission requested", "Answer in plain English", "Answer with /approve")
 	r.say("/approve")
 	r.reply(sigGroup, "Approved.")
 	r.reply(sigGroup, "saved it")
@@ -311,7 +311,7 @@ func TestAChatApprovesARule(t *testing.T) {
 		t.Fatal("the approved rule is saved")
 	}
 	r.say("and never use tables")
-	r.replyLike(sigGroup, "⚠️ Approval needed", "Never use tables")
+	r.replyLike(sigGroup, "⚠️ Permission requested", "Never use tables")
 	r.say("no")
 	r.reply(sigGroup, "Denied.")
 	r.reply(sigGroup, "left it")
@@ -327,7 +327,7 @@ func TestAChatAnswersAQuestion(t *testing.T) {
 	)
 	r := newChatRig(t, fake, "")
 	r.say("ask me")
-	r.reply(sigGroup, "❓ Which flavour?\n\n  1. vanilla\n  2. chocolate\n\nReply with the number, the option text, or your own answer.")
+	r.reply(sigGroup, "❓ Which flavour?\n\n  1. vanilla\n  2. chocolate\n\nAnswer with a number, the text of an option, or something else of your own.")
 	r.say("2")
 	r.reply(sigGroup, "picked")
 	var result string
@@ -367,7 +367,7 @@ func TestAttachmentsAndQuotes(t *testing.T) {
 	r.sig.Push(env)
 	m := r.reply(sigGroup, "nice picture")
 	got := lastUser(t, fake, 0)
-	found := regexp.MustCompile(`^look\n\[The user sent shot\.png \(image/png\), saved at (.+)\]$`).FindStringSubmatch(got)
+	found := regexp.MustCompile(`^look\n\[Attachment from the user: shot\.png \(image/png\), stored at (.+)\]$`).FindStringSubmatch(got)
 	if found == nil {
 		t.Fatalf("the user text = %q", got)
 	}
@@ -381,7 +381,7 @@ func TestAttachmentsAndQuotes(t *testing.T) {
 	sent["quote"] = map[string]any{"id": m.TS, "text": "nice picture", "author": sigAccount}
 	r.sig.Push(env)
 	r.reply(sigGroup, "a cat")
-	if got := noModelNote(lastUser(t, fake, 1)); got != "[Replying to your previous message: \"nice picture\"]\n\nwhat is in it?" {
+	if got := noModelNote(lastUser(t, fake, 1)); got != "[In reply to your earlier message: \"nice picture\"]\n\nwhat is in it?" {
 		t.Fatalf("a quote of our reply = %q", got)
 	}
 }

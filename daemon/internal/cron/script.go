@@ -25,7 +25,7 @@ const keepOutputs = 50
 // leaves that directory, by ".." or a symlink, is refused.
 func ScriptPath(home, script string) (string, error) {
 	if strings.ContainsRune(script, 0) {
-		return "", fmt.Errorf("Blocked: script path contains a NUL byte: %q", script)
+		return "", fmt.Errorf("script path %q contains a NUL byte", script)
 	}
 	dir := filepath.Join(home, "scripts")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -45,7 +45,7 @@ func ScriptPath(home, script string) (string, error) {
 		path = filepath.Clean(path)
 	}
 	if rel, err := filepath.Rel(root, path); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("Blocked: script path resolves outside the scripts directory (%s): %q", root, script)
+		return "", fmt.Errorf("script %q resolves to a place outside the scripts directory %s", script, root)
 	}
 	return path, nil
 }
@@ -60,10 +60,10 @@ func RunScript(ctx context.Context, home, script, workdir string) (out string, o
 	}
 	fi, err := os.Stat(path)
 	if err != nil {
-		return "Script not found: " + path, false
+		return "No script at " + path, false
 	}
 	if !fi.Mode().IsRegular() {
-		return "Script path is not a file: " + path, false
+		return "The script path is not a regular file: " + path, false
 	}
 	argv := []string{"python3", path}
 	if py := os.Getenv("SON_OF_ANTON_PYTHON"); py != "" {
@@ -82,7 +82,7 @@ func RunScript(ctx context.Context, home, script, workdir string) (out string, o
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Start(); err != nil {
-		return "Script execution failed: " + err.Error(), false
+		return "Could not start the script: " + err.Error(), false
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -96,18 +96,18 @@ func RunScript(ctx context.Context, home, script, workdir string) (out string, o
 	case err = <-done:
 	case <-timer.C:
 		kill()
-		return fmt.Sprintf("Script timed out after %ds: %s", int(ScriptTimeout.Seconds()), path), false
+		return fmt.Sprintf("The script ran longer than %ds and was stopped: %s", int(ScriptTimeout.Seconds()), path), false
 	case <-ctx.Done():
 		kill()
-		return "Script cancelled: " + ctx.Err().Error(), false
+		return "The script was cancelled: " + ctx.Err().Error(), false
 	}
 	text, errText := strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String())
 	if err != nil {
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) {
-			return "Script execution failed: " + err.Error(), false
+			return "The script could not be run: " + err.Error(), false
 		}
-		parts := []string{fmt.Sprintf("Script exited with code %d", exit.ExitCode())}
+		parts := []string{fmt.Sprintf("The script finished with exit code %d", exit.ExitCode())}
 		if errText != "" {
 			parts = append(parts, "stderr:\n"+errText)
 		}

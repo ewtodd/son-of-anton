@@ -43,7 +43,7 @@ const (
 	defaultContextLength = 256000
 	defaultThreshold     = 0.75
 	minTailRows          = 2
-	summaryCooldown      = 60 * time.Second // CC:4608
+	summaryCooldown      = 60 * time.Second
 )
 
 var thinkRE = regexp.MustCompile(`(?is)<think>.*?</think>|<thinking>.*?</thinking>|<reasoning>.*?</reasoning>`)

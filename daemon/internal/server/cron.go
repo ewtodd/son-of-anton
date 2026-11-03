@@ -1,7 +1,7 @@
 package server
 
 // Cron (phase 6): the daemon runs the instance's scheduled jobs from
-// cron/jobs.json, the file the Python's `son-of-anton cron` shares, and
+// cron/jobs.json (the file the `son-of-anton cron` command also uses), and
 // delivers their results to Signal through the chat hub's client.
 
 import (
@@ -24,16 +24,14 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
 )
 
-// cronHint opens every agent job's prompt (SCH:2698-2708).
-const cronHint = "[IMPORTANT: You are running as a scheduled cron job. " +
-	"DELIVERY: Your final response will be automatically delivered " +
-	"to the user — do NOT use send_message or try to deliver " +
-	"the output yourself. Just produce your report/output as your " +
-	"final response and the system handles the rest. " +
-	"SILENT: If there is genuinely nothing new to report, respond " +
-	"with exactly \"[SILENT]\" (nothing else) to suppress delivery. " +
-	"Never combine [SILENT] with content — either report your " +
-	"findings normally, or say [SILENT] and nothing more.]\n\n"
+// cronHint opens every agent job's prompt. It tells the model that nobody is
+// watching the run, that its final reply is what gets delivered, and that a
+// reply of exactly [SILENT] (see cron.Silent) delivers nothing.
+const cronHint = "[Scheduled run. No one is present and no one can answer questions. " +
+	"Whatever you reply last is sent to the user as it stands, so make it a finished report " +
+	"and do not try to send it yourself. " +
+	"If there is nothing worth telling the user, reply with the single word [SILENT] " +
+	"and nothing else; that sends nothing. [SILENT] must never be mixed with other text.]\n\n"
 
 // cronIdle is how long an agent job may go without any event.
 var cronIdle = 600 * time.Second
@@ -239,7 +237,7 @@ func (c *cronSched) runJob(job cron.Job, extra string) {
 	}
 }
 
-// recordRun writes a finished run into its job (JOBS:2162-2309).
+// recordRun writes a finished run into its job.
 func recordRun(j cron.Job, o outcome, deliveryErr string, end time.Time) {
 	j["last_run_at"] = cron.ISO(end)
 	if o.ok {
@@ -282,7 +280,7 @@ func recordRun(j cron.Job, o outcome, deliveryErr string, end time.Time) {
 	if sched.Kind == "cron" || sched.Kind == "interval" {
 		j["state"] = "error"
 		if e, _ := j["last_error"].(string); e == "" {
-			j["last_error"] = "Failed to compute next run for recurring schedule"
+			j["last_error"] = "Could not work out the next run time for this repeating schedule"
 		}
 		return
 	}
@@ -321,7 +319,7 @@ func (c *cronSched) jobPrompt(job cron.Job, extra string) (text string, skip *ou
 	s := c.srv
 	user := fmt.Sprint(job["prompt"])
 	if extra != "" {
-		user += "\n\n## Run Context\n" + extra
+		user += "\n\n## Extra instructions for this run\n" + extra
 	}
 	body := user
 	if script := jobText(job, "script"); script != "" {
@@ -330,15 +328,15 @@ func (c *cronSched) jobPrompt(job cron.Job, extra string) (text string, skip *ou
 		switch {
 		case ok && !cron.WakeGate(out):
 			return "", &outcome{ok: true, silent: true,
-				doc: header(job, "", at) + "\nScript gate returned `wakeAgent=false` — agent skipped.\n"}
+				doc: header(job, "", at) + "\nThe script's gate said wakeAgent=false, so the agent did not run.\n"}
 		case ok && out == "":
 			return "", &outcome{ok: true, silent: true,
-				doc: header(job, "", at) + "\nThe script produced no output — agent skipped.\n"}
+				doc: header(job, "", at) + "\nThe script printed nothing, so the agent did not run.\n"}
 		case ok:
-			body = "## Script Output\nThe following data was collected by a pre-run script. " +
-				"Use it as context for your analysis.\n\n```\n" + out + "\n```\n\n" + user
+			body = "## Script output\nA script ran just before this job and printed the text below. " +
+				"Treat it as input for the task.\n\n```\n" + out + "\n```\n\n" + user
 		default:
-			body = "## Script Error\nThe data-collection script failed. Report this to the user.\n\n```\n" + out + "\n```\n\n" + user
+			body = "## Script failure\nThe script that runs before this job failed and printed the text below. Tell the user about the failure.\n\n```\n" + out + "\n```\n\n" + user
 		}
 	}
 	return cronHint + body, nil
@@ -421,11 +419,11 @@ func (c *cronSched) agentRun(job cron.Job, extra string) (o outcome) {
 	res, err := sess.Send(ctx, userPrompt, func(agent.Event) { timer.Reset(cronIdle) })
 	switch {
 	case idled.Load():
-		return fail(fmt.Sprintf("Cron job '%s' idle for %ds", name, int(cronIdle.Seconds())))
+		return fail(fmt.Sprintf("The job '%s' made no progress for %ds and was stopped", name, int(cronIdle.Seconds())))
 	case err != nil:
 		return fail(err.Error())
 	case strings.TrimSpace(res.Content) == "":
-		return fail("Agent completed but produced empty response")
+		return fail("The agent finished but its reply was empty")
 	}
 	return outcome{ok: true, silent: cron.Silent(res.Content), response: res.Content,
 		doc: header(job, "", time.Now().In(zone)) +

@@ -16,13 +16,13 @@ type writeFileTool struct{}
 func (writeFileTool) Schema() provider.Tool {
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
 		Name: "write_file",
-		Description: "Write content to a file, completely replacing any existing content. " +
-			"Creates parent directories. Use patch for targeted edits to existing files.",
+		Description: "Save text as a file, overwriting whatever the file held. Missing parent directories are created. " +
+			"To change part of an existing file, use patch instead.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "path": {"type": "string", "description": "Path to the file to write (absolute, relative to the working directory, or ~/path)."},
-    "content": {"type": "string", "description": "Complete content to write to the file."}
+    "path": {"type": "string", "description": "Where to write: absolute, relative to the working directory, or starting with ~/."},
+    "content": {"type": "string", "description": "The full new contents of the file."}
   },
   "required": ["path", "content"]
 }`),
@@ -163,10 +163,10 @@ func stalenessWarning(env *Env, abs string) string {
 		return ""
 	}
 	if st.partial {
-		return "the file was only partially read before; re-read it before relying on its full content"
+		return "you had read only part of this file; read all of it before assuming you know what it holds now"
 	}
 	if fi.ModTime().UnixNano() != st.mtime || fi.Size() != st.size {
-		return "the file changed since it was last read; the write proceeded, but re-read to verify the result"
+		return "the file was modified after you last read it; this write went through anyway, so read it again to confirm the outcome"
 	}
 	return ""
 }

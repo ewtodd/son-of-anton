@@ -47,8 +47,8 @@ type sentRecord struct {
 }
 
 // Intake decides which of signal-cli's events are messages for the agent
-// (gateway/platforms/signal.py _handle_envelope), and remembers what we sent
-// so the echoes of our own replies are not answered.
+// and remembers what we sent so the echoes of our own replies are not
+// answered.
 type Intake struct {
 	cfg Config
 

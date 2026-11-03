@@ -21,23 +21,22 @@ type Question struct {
 // means nobody can answer.
 type Questioner func(ctx context.Context, q Question) ([]string, error)
 
-const clarifyNobody = "No one can answer questions in this run. Make the most reasonable choice yourself, " +
-	"say which one you made and why in your final answer, and continue."
+const clarifyNobody = "No one is available to answer here. Decide by yourself on the most sensible option, " +
+	"say in your final reply which option you chose and why, and keep going."
 
 type clarifyTool struct{}
 
 func (clarifyTool) Schema() provider.Tool {
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
 		Name: "clarify",
-		Description: "Ask the user a question when a choice matters and you cannot settle it yourself. " +
-			"Offer up to 4 choices when the answers are a short list; the user can always answer freely. " +
-			"Do not use it for confirmations of routine work.",
+		Description: "Put a question to the user and wait for the answer. Reserve it for a decision that changes the outcome and that you cannot make from the context. " +
+			"A short list of likely answers can be attached (at most four); the user may still reply in their own words. Routine go-aheads are not worth a question.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "question": {"type": "string", "description": "The question to ask."},
-    "choices": {"type": "array", "items": {"type": "string"}, "description": "Up to 4 suggested answers."},
-    "multi_select": {"type": "boolean", "description": "Allow choosing several of the choices."}
+    "question": {"type": "string", "description": "The question, worded so it can be answered without seeing the rest of the conversation."},
+    "choices": {"type": "array", "items": {"type": "string"}, "description": "Likely answers to offer, four at most. Leave out for an open question."},
+    "multi_select": {"type": "boolean", "description": "Let the user pick more than one of the choices."}
   },
   "required": ["question"]
 }`),
@@ -70,7 +69,7 @@ func (clarifyTool) Run(ctx context.Context, env *Env, raw json.RawMessage) (stri
 	}
 	answers, err := env.Ask(ctx, Question{Text: q, Choices: choices, MultiSelect: a.MultiSelect})
 	if err != nil {
-		return errorResult("the question was not answered: " + err.Error()), nil
+		return errorResult("no answer came back: " + err.Error()), nil
 	}
 	if a.MultiSelect {
 		if answers == nil {

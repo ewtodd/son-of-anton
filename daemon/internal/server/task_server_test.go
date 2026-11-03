@@ -16,7 +16,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/subagent"
 )
 
-const explorePrompt = "You are a file search specialist."
+const explorePrompt = "You are a read-only code explorer."
 
 func task(id, args string) fakellm.ToolCall { return call(id, "task", args) }
 
@@ -144,8 +144,8 @@ func TestABackgroundTaskReportsBackAsANotice(t *testing.T) {
 	c.send(parent, "start it")
 	evs := c.turns(2)
 	rows := toolRows(evs)
-	if len(rows) == 0 || !strings.Contains(rows[0], `state="running"`) || !strings.Contains(rows[0], "<summary>Background task started</summary>") ||
-		!strings.Contains(rows[0], "The task is working in the background.") {
+	if len(rows) == 0 || !strings.Contains(rows[0], `state="running"`) || !strings.Contains(rows[0], "Started in the background") ||
+		!strings.Contains(rows[0], "running in the background") {
 		t.Fatalf("a background task returns at once: %v", rows)
 	}
 	starts := of(evs, "turn.start")
@@ -153,7 +153,7 @@ func TestABackgroundTaskReportsBackAsANotice(t *testing.T) {
 		t.Fatalf("turns = %v", kinds(evs))
 	}
 	notice := str(starts[1], "text")
-	if !strings.Contains(notice, `state="completed"`) || !strings.Contains(notice, "<summary>Background task completed: Look around</summary>") ||
+	if !strings.Contains(notice, `state="completed"`) || !strings.Contains(notice, "Finished in the background: Look around") ||
 		!strings.Contains(notice, "bg result") {
 		t.Fatalf("the result arrives as a notice turn: %q", notice)
 	}
@@ -209,7 +209,7 @@ func TestInterruptingTheParentCancelsItsChildren(t *testing.T) {
 	if done := of(evs, "child.done"); len(done) != 1 || str(done[0], "status") != "interrupted" {
 		t.Fatalf("child.done = %v", done)
 	}
-	if rows := toolRows(evs); len(rows) != 1 || !strings.Contains(rows[0], "Task cancelled") {
+	if rows := toolRows(evs); len(rows) != 1 || !strings.Contains(rows[0], "The subagent was interrupted before it finished") {
 		t.Fatalf("the task's result = %v", rows)
 	}
 }

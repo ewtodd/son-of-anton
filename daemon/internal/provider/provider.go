@@ -21,8 +21,8 @@ import (
 	"time"
 )
 
-// Message is one conversation message, serialized exactly as the Python
-// fork sends it (byte-stable across requests).
+// Message is one conversation message. Its serialization is byte-stable
+// across requests, which keeps the provider's prompt cache valid.
 type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content"`
@@ -590,7 +590,7 @@ type ModelInfo struct {
 }
 
 // contextKeys are the fields servers use for a model's context window, in
-// the order they are tried (../agent/model_metadata.py:259-271).
+// the order they are tried.
 var contextKeys = []string{
 	"context_length", "context_window", "context_size", "max_context_length",
 	"max_position_embeddings", "max_model_len", "max_input_tokens",

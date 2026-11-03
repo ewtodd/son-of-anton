@@ -41,8 +41,8 @@ func parseMessageKey(key string) (sessionID string, seq int64, ok bool) {
 	return rest[:i], n, err == nil
 }
 
-// indexable is RAG:555-570: a user row, or an assistant row without tool
-// calls, by its content only.
+// indexable says whether a row is indexed: a user row, or an assistant row
+// without tool calls, by its content only.
 func indexable(m store.Message) bool {
 	if strings.TrimSpace(m.Content) == "" {
 		return false

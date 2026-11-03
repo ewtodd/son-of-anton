@@ -38,7 +38,7 @@ const (
 
 var browseKinds = []string{"interactive", "chat", "oneshot"}
 
-// sessionSearchTool is ../tools/session_search_tool.py, behind the wall.
+// sessionSearchTool searches past sessions, behind the wall.
 type sessionSearchTool struct{}
 
 func (sessionSearchTool) Schema() provider.Tool {

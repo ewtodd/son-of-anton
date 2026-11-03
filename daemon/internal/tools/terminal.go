@@ -29,19 +29,19 @@ type terminalTool struct{}
 func (terminalTool) Schema() provider.Tool {
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
 		Name: "terminal",
-		Description: "Run a shell command in the session's working directory. " +
-			"The working directory and exported environment variables persist across calls. " +
-			"Use background processes only through the background parameter; do not background " +
-			"with &, nohup or setsid. Prefer the file tools for reading, writing and searching; " +
-			"use the terminal for builds, installs, git, processes and scripts.",
+		Description: "Execute a shell command, starting in the session's working directory. " +
+			"A cd, or an export, carries over to the next call. " +
+			"To leave something running, set background; a trailing &, nohup or setsid is not allowed. " +
+			"Reading, writing and searching files have their own tools, so keep this one for builds, installs, git, " +
+			"running programs and scripts.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "command": {"type": "string", "description": "The shell command to run."},
-    "timeout": {"type": "integer", "description": "Seconds to wait (default 180, max 600). Long-running work must use background=true."},
-    "workdir": {"type": "string", "description": "Run in this directory for this call only; the session cwd is unchanged."},
-    "background": {"type": "boolean", "description": "Run in the background and return a session id; manage it with the process tool."},
-    "notify_on_complete": {"type": "boolean", "description": "With background: notify when the process exits."}
+    "command": {"type": "string", "description": "The command line, run by bash."},
+    "timeout": {"type": "integer", "description": "How many seconds to wait before giving up: 180 unless set, 600 at most. Anything slower belongs in background mode."},
+    "workdir": {"type": "string", "description": "Directory to run in, for this call only. The session's working directory stays as it was."},
+    "background": {"type": "boolean", "description": "Start the command and return at once with a session id; follow it up with the process tool."},
+    "notify_on_complete": {"type": "boolean", "description": "With background: send a message when the process exits."}
   },
   "required": ["command"]
 }`),
@@ -71,20 +71,20 @@ func (terminalTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 		return errorResult("invalid arguments: " + err.Error()), nil
 	}
 	if a.Command == "" {
-		return errorResult("command is required"), nil
+		return errorResult("no command given"), nil
 	}
 	timeout := terminalDefaultTimeout
 	if a.Timeout != nil {
 		if *a.Timeout <= 0 {
-			return errorResult("timeout must be a positive number of seconds"), nil
+			return errorResult("timeout has to be a number of seconds above zero"), nil
 		}
 		timeout = *a.Timeout
 	}
 	if timeout > terminalMaxTimeout {
-		return errorResult(fmt.Sprintf("foreground timeout is capped at %d seconds; long-running work must use background=true", terminalMaxTimeout)), nil
+		return errorResult(fmt.Sprintf("a foreground command may wait at most %d seconds; use background for longer work", terminalMaxTimeout)), nil
 	}
 	if a.Workdir != "" && !workdirRe.MatchString(a.Workdir) {
-		return errorResult("workdir must be a plain path (no shell metacharacters)"), nil
+		return errorResult("workdir must be a plain path with no shell special characters"), nil
 	}
 	if err := refuseBackgrounding(a.Command); err != nil {
 		return errorResult(err.Error()), nil
@@ -117,7 +117,7 @@ func (terminalTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 // refuseBackgrounding rejects commands that try to outlive the call.
 func refuseBackgrounding(command string) error {
 	if trailingAmpRe.MatchString(command) {
-		return fmt.Errorf("backgrounding with & is refused: run the command in the foreground, or use background mode")
+		return fmt.Errorf("a trailing & is not allowed: run the command normally, or set background")
 	}
 	for _, seg := range strings.FieldsFunc(command, func(r rune) bool {
 		return r == ';' || r == '&' || r == '|' || r == '\n'
@@ -173,7 +173,7 @@ func runShell(ctx context.Context, snapshot, cwd, command string, timeoutSeconds
 	cmd.WaitDelay = 2 * time.Second
 
 	if err := cmd.Start(); err != nil {
-		return "failed to start bash: " + err.Error(), "", 126, false
+		return "could not start bash: " + err.Error(), "", 126, false
 	}
 
 	waitCh := make(chan error, 1)
@@ -190,7 +190,7 @@ func runShell(ctx context.Context, snapshot, cwd, command string, timeoutSeconds
 		killGroup(cmd)
 		<-waitCh
 		before, rest := buf.result(nonce)
-		return before + rest + "\n[Command interrupted]", "", 130, false
+		return before + rest + "\n[command interrupted]", "", 130, false
 	case <-waitCh:
 		deadline.Stop()
 		// A foreground call leaves nothing running: whatever the command
@@ -201,7 +201,7 @@ func runShell(ctx context.Context, snapshot, cwd, command string, timeoutSeconds
 	before, rest := buf.result(nonce)
 	if rest == "" {
 		if atomic.LoadInt32(&timedOut) == 1 {
-			return before + "\n[Command timed out after " + fmt.Sprint(timeoutSeconds) + "s]", "", 124, false
+			return before + "\n[command timed out after " + fmt.Sprint(timeoutSeconds) + "s]", "", 124, false
 		}
 		return before, "", cmdExitCodeFromRun(cmd), false
 	}
@@ -361,6 +361,6 @@ func (b *boundedBuffer) truncated(head, tail string, total int) string {
 	if len(tail) > terminalTailKeep {
 		tail = tail[len(tail)-terminalTailKeep:]
 	}
-	notice := fmt.Sprintf("\n\n... [OUTPUT TRUNCATED - %d chars omitted out of %d total] ...\n\n", total-len(head)-len(tail), total)
+	notice := fmt.Sprintf("\n\n... [output cut: %d of %d chars omitted] ...\n\n", total-len(head)-len(tail), total)
 	return head + notice + tail
 }

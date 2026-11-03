@@ -33,13 +33,13 @@ type Cron struct {
 	Run func(id, extra string) bool
 }
 
-// cronjobTool is ../tools/cronjob_tools.py.
+// cronjobTool lets the model schedule and manage the instance's jobs.
 type cronjobTool struct{ home string }
 
 // CronJob is the cronjob tool for the instance at home.
 func CronJob(home string) Tool { return cronjobTool{home: home} }
 
-// displayHome is the home as the Python prints it: under the user's home as
+// displayHome is the home as the model is shown it: under the user's home as
 // ~/..., else in full.
 func displayHome(home string) string {
 	if u, err := os.UserHomeDir(); err == nil && u != "" {
@@ -57,25 +57,25 @@ func (t cronjobTool) Schema() provider.Tool {
 	params := `{
   "type": "object",
   "properties": {
-    "action": {"type": "string", "description": "create, list, update, pause, resume, remove or run."},
-    "job_id": {"type": "string", "description": "Required for update, pause, resume, remove and run."},
-    "prompt": {"type": "string", "description": "create: the job's self-contained prompt. run: extra context for that one run."},
-    "schedule": {"type": "string", "description": "Required for create. A delay ('30m' = once, 30 minutes from now), an interval ('every 2h', repeats), a cron expression ('0 9 * * *', repeats) or a timestamp ('2026-06-01T09:00:00', once). A timestamp without a UTC offset is local time in your system prompt's timezone: write the time the user said, don't convert it to UTC. Use a repeating form only when the user asks for a repeat."},
-    "name": {"type": "string", "description": "Short label."},
-    "repeat": {"type": "integer", "description": "Number of runs. Default: once for one-time schedules, forever for repeating ones."},
-    "deliver": {"type": "string", "description": "Where results go. Omit to reply in this chat, which is almost always right. 'local' saves without sending, 'all' sends to every connected home channel, 'signal:<chat_id>' to a specific chat; combine with commas ('origin,all')."},
-    "script": {"type": "string", "description": ` + quote("Script run before each run: its stdout is added to the prompt, or with no_agent it is the message. Relative paths are under "+displayHome(t.home)+"/scripts/; .sh/.bash run with bash, others with Python. Empty string clears it on update.") + `},
-    "no_agent": {"type": "boolean", "default": false, "description": "Run only the script, no model: non-empty stdout is sent as the message, empty stdout sends nothing, a failure sends an alert. Needs script; prompt is ignored. For watchdogs whose script prints the message; anything that needs judgement needs the agent."},
-    "workdir": {"type": "string", "description": "Existing absolute path the job runs in: its AGENTS.md is loaded and the terminal and file tools start there. Such jobs run one at a time. Empty string clears it."}
+    "action": {"type": "string", "description": "What to do: create, list, update, pause, resume, remove or run."},
+    "job_id": {"type": "string", "description": "The job to act on (its id or its name). Needed by every action except create and list."},
+    "prompt": {"type": "string", "description": "For create, the instructions the job will follow each time; they must make sense with no other context. For run, extra instructions for that single run."},
+    "schedule": {"type": "string", "description": "When to run; create needs it. Four forms: a delay such as '30m' (one run, that long from now); an interval such as 'every 2h' (repeating); a five-field cron expression such as '0 9 * * *' (repeating); or a timestamp such as '2026-06-01T09:00:00' (one run). A timestamp with no UTC offset is read as local time in the timezone named in your system prompt, so give the time the user stated and do not convert it. Pick a repeating form only if the user wants repetition."},
+    "name": {"type": "string", "description": "A short name for the job."},
+    "repeat": {"type": "integer", "description": "How many times to run before the job ends. One-time schedules run once and repeating ones never end, unless this says otherwise."},
+    "deliver": {"type": "string", "description": "Where each result is sent. Leave it out to answer in the current chat, which is nearly always what is wanted. Values: 'local' (keep it on disk, send nothing), 'all' (every connected home channel), 'signal:<chat_id>' (that chat). Several can be joined with commas, as in 'origin,all'."},
+    "script": {"type": "string", "description": ` + quote("A script to run before each run. Its stdout is appended to the prompt; with no_agent, its stdout is the message itself. Give a path relative to "+displayHome(t.home)+"/scripts/. Files ending in .sh or .bash are run with bash and any others with Python. On update, an empty string removes the script.") + `},
+    "no_agent": {"type": "boolean", "default": false, "description": "Run the script alone, without a model. Output on stdout is sent as the message, no output sends nothing, and a failing script sends an alert. This requires script and ignores prompt. It suits checks whose script prints the text to deliver; anything that calls for judgement needs the model."},
+    "workdir": {"type": "string", "description": "An absolute path of an existing directory to run the job in. The job reads that directory's AGENTS.md and its terminal and file tools start there. Jobs with a workdir run one after another, never together. An empty string removes it."}
   },
   "required": ["action"]
 }`
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
 		Name: "cronjob",
-		Description: "Schedule and manage jobs that run a prompt later or on a schedule. Actions: create (needs schedule and prompt), list, update, pause, resume, remove, run.\n\n" +
-			"A job runs in a fresh session with no chat context and no one to answer questions: its prompt must be self-contained, and its final response is what gets delivered. " +
-			"To change or stop a job, list first to get its job_id (never guess one); prefer updating a job over creating a near-duplicate. " +
-			"run fires a job now in the background and its result arrives later as a new message, so don't wait or poll for it.",
+		Description: "Set up and look after jobs that run a prompt at a later time or repeatedly. Actions: create (needs schedule and prompt), list, update, pause, resume, remove, run.\n\n" +
+			"Each run is a new session. It has no memory of this chat and nobody to ask, so the prompt has to stand on its own, and whatever the run replies last is what gets delivered. " +
+			"Before changing or stopping a job, list to find its job_id; do not guess one. Update an existing job rather than adding a near copy of it. " +
+			"run starts a job right now in the background and its result comes back later as a new message, so do not wait for it or poll.",
 		Parameters: json.RawMessage(params),
 	}}
 }
@@ -103,7 +103,8 @@ type cronArgs struct {
 	IncludeDisabled *bool    `json:"include_disabled"`
 }
 
-// indented is the Python's json.dumps(indent=2, ensure_ascii=False).
+// indented renders v as JSON with two-space indentation and no escaping of
+// non-ASCII text.
 func indented(v any) (string, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -166,7 +167,7 @@ func (h *cronHandler) run(a cronArgs) (any, error) {
 		return answer{"success": true, "count": len(out), "jobs": out}, nil
 	}
 	if a.JobID == "" {
-		return nil, fmt.Errorf("job_id is required for action '%s'", action)
+		return nil, fmt.Errorf("the %s action needs a job_id", action)
 	}
 	jobs, err := cron.Load(h.c.Home)
 	if err != nil {
@@ -182,10 +183,10 @@ func (h *cronHandler) run(a cronArgs) (any, error) {
 			list[i] = map[string]any{"id": n["id"], "name": n["name"], "schedule": n["schedule_display"], "next_run_at": n["next_run_at"]}
 		}
 		return answer{"success": false, "matches": list,
-			"error": fmt.Sprintf("Job name '%s' is ambiguous — matches %d jobs: %s. Use the job ID instead.", a.JobID, len(matches), strings.Join(ids, ", "))}, nil
+			"error": fmt.Sprintf("'%s' is the name of %d jobs (%s); pass the job id to pick one.", a.JobID, len(matches), strings.Join(ids, ", "))}, nil
 	}
 	if job == nil {
-		return answer{"success": false, "error": fmt.Sprintf("Job with ID or name '%s' not found. Use cronjob(action='list') to inspect jobs.", a.JobID)}, nil
+		return answer{"success": false, "error": fmt.Sprintf("No job has the id or name '%s'. List the jobs to see what exists.", a.JobID)}, nil
 	}
 	job = cron.Normalize(job)
 	id := job["id"].(string)
@@ -208,7 +209,7 @@ func (h *cronHandler) run(a cronArgs) (any, error) {
 	case "resume":
 		next, ok := cron.NextRun(cron.ScheduleOf(job), nil, h.now())
 		if !ok && cron.ScheduleOf(job).Kind == "once" {
-			return nil, fmt.Errorf("Cannot resume: one-shot time %s is in the past (grace window: 120s) and will never fire.", cron.ScheduleOf(job).RunAt)
+			return nil, fmt.Errorf("This job cannot be resumed: its single run time, %s, has passed by more than the 120 second allowance, so it would never run.", cron.ScheduleOf(job).RunAt)
 		}
 		updated, err := h.change(id, func(j cron.Job) error {
 			j["enabled"], j["state"], j["paused_at"], j["paused_reason"] = true, "scheduled", nil, nil
@@ -227,7 +228,7 @@ func (h *cronHandler) run(a cronArgs) (any, error) {
 	case "update":
 		return h.update(id, job, a)
 	}
-	return nil, fmt.Errorf("Unknown cron action '%s'", a.Action)
+	return nil, fmt.Errorf("'%s' is not a cronjob action", a.Action)
 }
 
 // resolveJob finds a job by id, else by case-insensitive name. More than one
@@ -263,7 +264,7 @@ func (h *cronHandler) change(id string, f func(cron.Job) error) (cron.Job, error
 				return jobs, nil
 			}
 		}
-		return nil, fmt.Errorf("Job with ID or name '%s' not found. Use cronjob(action='list') to inspect jobs.", id)
+		return nil, fmt.Errorf("No job has the id or name '%s'. List the jobs to see what exists.", id)
 	})
 	return out, err
 }
@@ -284,12 +285,12 @@ func (h *cronHandler) remove(id string, job cron.Job) (any, error) {
 		return nil, err
 	}
 	if !removed {
-		return nil, fmt.Errorf("Failed to remove job '%s'", id)
+		return nil, fmt.Errorf("Job '%s' could not be removed", id)
 	}
 	if id != "" && !strings.ContainsAny(id, "/\\") && id != "." && id != ".." {
 		_ = os.RemoveAll(filepath.Join(cron.Dir(h.c.Home), "output", id))
 	}
-	return answer{"success": true, "message": fmt.Sprintf("Cron job '%s' removed.", job["name"]),
+	return answer{"success": true, "message": fmt.Sprintf("Removed the job '%s'.", job["name"]),
 		"removed_job": map[string]any{"id": id, "name": job["name"], "schedule": job["schedule_display"]}}, nil
 }
 
@@ -305,28 +306,28 @@ func (h *cronHandler) runNow(id string, job cron.Job, a cronArgs) (any, error) {
 	f := formatJob(job)
 	if !started {
 		f["executed"] = false
-		f["execution_skipped"] = "Already running; not run again."
+		f["execution_skipped"] = "It is already running, so no second run was started."
 		return answer{"success": true, "job": f}, nil
 	}
 	f["executed"] = true
 	f["execution_mode"] = "background"
-	return answer{"success": true, "job": f, "note": "The job is running in the background. You and the user can keep working; " +
-		"its outcome is delivered as the job's deliver setting says and recorded in its last_status. " +
-		"Do not wait or poll, just continue."}, nil
+	return answer{"success": true, "job": f, "note": "The job has been started in the background. Carry on with other work. " +
+		"Its result goes wherever the job's deliver setting points, and its last_status is updated. " +
+		"There is nothing to wait for."}, nil
 }
 
 func (h *cronHandler) create(a cronArgs) (any, error) {
 	if a.Schedule == nil || *a.Schedule == "" {
-		return nil, errors.New("schedule is required for create")
+		return nil, errors.New("create needs a schedule")
 	}
 	prompt, script := deref(a.Prompt), strings.TrimSpace(deref(a.Script))
 	noAgent := a.NoAgent != nil && *a.NoAgent
 	if noAgent {
 		if script == "" {
-			return nil, errors.New("create with no_agent=True requires a script — the script is the job.")
+			return nil, errors.New("A job with no_agent is just its script, so create needs a script.")
 		}
 	} else if prompt == "" {
-		return nil, errors.New("create requires a prompt")
+		return nil, errors.New("create needs a prompt")
 	}
 	if prompt != "" {
 		if msg := scanPrompt(prompt); msg != "" {
@@ -363,7 +364,7 @@ func (h *cronHandler) create(a cronArgs) (any, error) {
 	}
 	next, ok := cron.NextRun(sched, nil, now)
 	if sched.Kind == "once" && !ok {
-		return nil, fmt.Errorf("Requested one-shot time %s is more than 120s in the past and cannot be scheduled.", sched.RunAt)
+		return nil, fmt.Errorf("The requested time, %s, is more than 120 seconds ago, so the job cannot be scheduled.", sched.RunAt)
 	}
 	label := prompt
 	if label == "" && noAgent {
@@ -394,12 +395,11 @@ func (h *cronHandler) create(a cronArgs) (any, error) {
 	if err := cron.Update(h.c.Home, func(jobs []cron.Job) ([]cron.Job, error) { return append(jobs, job), nil }); err != nil {
 		return nil, err
 	}
-	message := fmt.Sprintf("Cron job '%s' created.", name)
+	message := fmt.Sprintf("Created the job '%s'.", name)
 	if strings.ToLower(userDeliver) != "local" {
 		if targets, _ := cron.ResolveTargets(job, h.c.HomeChannel); len(targets) == 0 {
-			message += " This is a local-only cron job: its output is saved (view it with cronjob(action='list')) " +
-				"but will NOT be delivered back into this session. To be notified when it runs, recreate or update " +
-				"the job with deliver set to a Signal chat, e.g. deliver='signal' or deliver='signal:<chat_id>'."
+			message += " Nothing will be sent for this job: results are only stored on disk and do not come back into this session. " +
+				"To be told when it runs, update the job so deliver names a Signal chat, for example 'signal' or 'signal:<chat_id>'."
 		}
 	}
 	return answer{"success": true, "job_id": job["id"], "name": name, "schedule": sched.Display, "repeat": repeatDisplay(job),
@@ -409,7 +409,7 @@ func (h *cronHandler) create(a cronArgs) (any, error) {
 func (h *cronHandler) update(id string, job cron.Job, a cronArgs) (any, error) {
 	if a.Prompt == nil && a.Name == nil && a.Deliver == nil && a.Script == nil && a.Workdir == nil &&
 		a.NoAgent == nil && a.Repeat == nil && a.Schedule == nil {
-		return nil, errors.New("No updates provided.")
+		return nil, errors.New("Nothing to update: no fields were given.")
 	}
 	if a.Prompt != nil {
 		if msg := scanPrompt(*a.Prompt); msg != "" {
@@ -424,7 +424,7 @@ func (h *cronHandler) update(id string, job cron.Job, a cronArgs) (any, error) {
 		}
 	}
 	if a.NoAgent != nil && *a.NoAgent && (script == nil || script == "") {
-		return nil, errors.New("Cannot set no_agent=True on a job without a script. Set `script` in the same update, or on the job first.")
+		return nil, errors.New("no_agent needs a script. Set script in the same update, or give the job one first.")
 	}
 	var workdir any
 	if a.Workdir != nil {
@@ -484,7 +484,7 @@ func (h *cronHandler) update(id string, job cron.Job, a cronArgs) (any, error) {
 				j["state"], j["enabled"] = "scheduled", true
 				var ok bool
 				if next, ok = cron.NextRun(sched, nil, h.now()); !ok && sched.Kind == "once" {
-					return fmt.Errorf("Requested one-shot time %s is more than 120s in the past and cannot be scheduled.", sched.RunAt)
+					return fmt.Errorf("The requested time, %s, is more than 120 seconds ago, so the job cannot be scheduled.", sched.RunAt)
 				}
 				j["next_run_at"] = nil
 				if ok {
@@ -527,15 +527,15 @@ func normalizeWorkdir(raw string) (string, error) {
 		}
 	}
 	if !filepath.IsAbs(raw) {
-		return "", fmt.Errorf("Cron workdir must be an absolute path (got %q). Cron jobs run detached from any shell cwd, so relative paths are ambiguous.", raw)
+		return "", fmt.Errorf("workdir must be an absolute path, not %q: a job does not start from any particular directory.", raw)
 	}
 	resolved, err := filepath.EvalSymlinks(raw)
 	if err != nil {
-		return "", fmt.Errorf("Cron workdir does not exist: %s", raw)
+		return "", fmt.Errorf("workdir %s does not exist", raw)
 	}
 	fi, err := os.Stat(resolved)
 	if err != nil || !fi.IsDir() {
-		return "", fmt.Errorf("Cron workdir is not a directory: %s", resolved)
+		return "", fmt.Errorf("workdir %s is not a directory", resolved)
 	}
 	return resolved, nil
 }
@@ -547,11 +547,11 @@ func (h *cronHandler) checkScript(script string) error {
 		return nil
 	}
 	if strings.HasPrefix(script, "/") || strings.HasPrefix(script, "~") {
-		return fmt.Errorf("Script path must be relative to %s/scripts/. Got absolute or home-relative path: %q. Place scripts in %s/scripts/ and use just the filename.",
+		return fmt.Errorf("script must be a path inside %s/scripts/, but %q starts at the root or the home directory. Put the file in %s/scripts/ and name it relative to that.",
 			displayHome(h.c.Home), script, displayHome(h.c.Home))
 	}
 	if _, err := cron.ScriptPath(h.c.Home, script); err != nil {
-		return fmt.Errorf("Script path escapes the scripts directory via traversal: %q", script)
+		return fmt.Errorf("script %q leaves the scripts directory", script)
 	}
 	return nil
 }
@@ -643,41 +643,51 @@ func orEmpty(v any) any {
 	return v
 }
 
-// ---- the prompt scan (CJT:_scan_cron_prompt) ----
+// ---- screening job prompts ----
 
-const secretVar = `\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)\w*\}?`
+// A job prompt is stored and later run with no one watching, so a prompt that
+// tries to steer the model against its user, or to move secrets off the
+// machine, is refused when the job is created or changed.
 
-var threatPatterns = []struct {
-	re *regexp.Regexp
-	id string
+// secretRef matches a shell reference to a variable whose name suggests a
+// secret, such as $API_KEY or ${GITHUB_TOKEN}.
+const secretRef = `\$\{?[A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)[A-Za-z0-9_]*\}?`
+
+var promptThreats = []struct {
+	name string
+	re   *regexp.Regexp
 }{
-	{regexp.MustCompile(`(?i)ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions`), "prompt_injection"},
-	{regexp.MustCompile(`(?i)do\s+not\s+tell\s+the\s+user`), "deception_hide"},
-	{regexp.MustCompile(`(?i)system\s+prompt\s+override`), "sys_prompt_override"},
-	{regexp.MustCompile(`(?i)disregard\s+(your|all|any)\s+(instructions|rules|guidelines)`), "disregard_rules"},
-	{regexp.MustCompile(`(?i)cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|id_rsa|id_ed25519|id_ecdsa)`), "read_secrets"},
-	{regexp.MustCompile(`(?i)authorized_keys`), "ssh_backdoor"},
-	{regexp.MustCompile(`(?i)/etc/sudoers|visudo`), "sudoers_mod"},
-	{regexp.MustCompile(`(?i)rm\s+-rf\s+/`), "destructive_root_rm"},
-	{regexp.MustCompile("(?i)curl\\s+[^\\n]*https?://[^\\s\"'`]*" + secretVar), "exfil_curl_url"},
-	{regexp.MustCompile("(?i)wget\\s+[^\\n]*https?://[^\\s\"'`]*" + secretVar), "exfil_wget_url"},
-	{regexp.MustCompile(`(?i)curl\s+[^\n]*(?:--data(?:-raw|-binary|-urlencode)?|-d|--form|-F)\s+[^\n]*` + secretVar), "exfil_curl_data"},
-	{regexp.MustCompile(`(?i)wget\s+[^\n]*--post-(?:data|file)=[^\n]*` + secretVar), "exfil_wget_post"},
-	{regexp.MustCompile(`(?i)curl\s+[^\n]*(?:-H|--header)\s+["']Authorization:\s*(?:Bearer|token)\s+` + secretVar + `["']`), "exfil_curl_auth_header"},
+	{"override-instructions", regexp.MustCompile(`(?i)\b(?:ignore|disregard|forget)\b[^.\n]{0,60}\b(?:previous|prior|above|earlier|all|any|your)\b[^.\n]{0,40}\b(?:instructions|rules|guidelines)\b`)},
+	{"conceal-from-user", regexp.MustCompile(`(?i)\b(?:do\s+not|don'?t|never)\s+(?:tell|inform|notify)\s+the\s+user\b`)},
+	{"prompt-override", regexp.MustCompile(`(?i)system\s+prompt\s+override`)},
+	{"read-secret-file", regexp.MustCompile(`(?i)\b(?:cat|less|more|head|tail|bat)\s+[^\n]*(?:\.env\b|credentials|\.netrc|\.pgpass|id_(?:rsa|ed25519|ecdsa))`)},
+	{"ssh-key-install", regexp.MustCompile(`(?i)authorized_keys`)},
+	{"sudo-config", regexp.MustCompile(`(?i)/etc/sudoers|\bvisudo\b`)},
+	{"wipe-root", regexp.MustCompile(`(?i)\brm\s+-[a-z]*r[a-z]*\s+(?:-[a-z]+\s+)*/`)},
+	{"secret-upload", regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*` + secretRef)},
 }
 
-// githubAuth is the one authenticated call the exfil rules let through.
-var githubAuth = regexp.MustCompile("(?i)curl\\s+[^\\n;&|$`]*(?:-H|--header)\\s+[\"']Authorization:\\s*token\\s+" + secretVar +
-	"[\"']\\s+[\"']?https://api\\.github\\.com(?::\\d+)?(?:/|\\s|$|[\"'])[^\\s;&|$`]*")
+// githubTokenCall is the one authenticated request that may name a secret:
+// a curl to api.github.com whose only secret is the token in its
+// Authorization header.
+var githubTokenCall = regexp.MustCompile("(?i)\\bcurl\\s+[^\\n;&|$`]*(?:-H|--header)\\s+[\"']Authorization:\\s*token\\s+" + secretRef +
+	"[\"']\\s+[\"']?https://api\\.github\\.com(?::\\d+)?(?:/[^\\s;&|$`]*)?")
 
-var invisibleChars = string([]rune{0x200b, 0x200c, 0x200d, 0x2060, 0x2062, 0x2063, 0x2064, 0xfeff, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069})
+// hiddenRunes are code points that render as nothing (zero-width and
+// direction-control characters), which can hide text from a reader.
+var hiddenRunes = map[rune]bool{
+	0x200b: true, 0x200c: true, 0x200d: true, 0x2060: true, 0x2062: true, 0x2063: true, 0x2064: true, 0xfeff: true,
+	0x202a: true, 0x202b: true, 0x202c: true, 0x202d: true, 0x202e: true,
+	0x2066: true, 0x2067: true, 0x2068: true, 0x2069: true,
+}
 
 func isEmojiRune(r rune) bool {
 	return (r >= 0x1F000 && r <= 0x1FFFF) || (r >= 0x2600 && r <= 0x27BF) || (r >= 0x2300 && r <= 0x23FF) || r == 0x20E3
 }
 
-// zwjInEmoji says whether the joiner at runes[i] sits between emoji.
-func zwjInEmoji(runes []rune, i int) bool {
+// joinsEmoji says whether the zero-width joiner at runes[i] ties two emoji
+// together, which is legitimate (variation selectors may sit in between).
+func joinsEmoji(runes []rune, i int) bool {
 	l, r := i-1, i+1
 	for l >= 0 && runes[l] == 0xFE0F {
 		l--
@@ -688,18 +698,18 @@ func zwjInEmoji(runes []rune, i int) bool {
 	return l >= 0 && r < len(runes) && isEmojiRune(runes[l]) && isEmojiRune(runes[r])
 }
 
-// scanPrompt returns why a job prompt is refused, "" when it is fine.
+// scanPrompt returns the reason a job prompt is refused, "" when it is fine.
 func scanPrompt(prompt string) string {
-	prompt = githubAuth.ReplaceAllString(prompt, "curl https://api.github.com/user")
 	runes := []rune(prompt)
 	for i, r := range runes {
-		if strings.ContainsRune(invisibleChars, r) && !(r == 0x200d && zwjInEmoji(runes, i)) {
-			return fmt.Sprintf("Blocked: prompt contains invisible unicode U+%04X (possible injection).", r)
+		if hiddenRunes[r] && !(r == 0x200d && joinsEmoji(runes, i)) {
+			return fmt.Sprintf("Refused: the prompt contains the invisible character U+%04X, which can hide instructions.", r)
 		}
 	}
-	for _, p := range threatPatterns {
-		if p.re.MatchString(prompt) {
-			return fmt.Sprintf("Blocked: prompt matches threat pattern '%s'. Cron prompts must not contain injection or exfiltration payloads.", p.id)
+	cleaned := githubTokenCall.ReplaceAllString(prompt, "curl https://api.github.com/user")
+	for _, p := range promptThreats {
+		if p.re.MatchString(cleaned) {
+			return fmt.Sprintf("Refused: the prompt matches the '%s' check. A scheduled prompt may not try to override instructions, hide things from the user, or send secrets out.", p.name)
 		}
 	}
 	return ""

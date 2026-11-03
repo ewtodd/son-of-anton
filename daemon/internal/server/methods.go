@@ -481,28 +481,26 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// commitPrompt is /commit's turn text (../son_of_anton_cli/cli_commands_mixin.py:1454).
+// commitPrompt is the text of the turn /commit starts.
 func (s *Server) commitPrompt(extra string) string {
-	lines := []string{"You are a summarization agent. Your job is to review all uncommitted git " +
-		"changes in the current repository, write an accurate commit message " +
-		"matching the existing style, and then stage+commit them."}
+	lines := []string{"Commit the work that is currently uncommitted in this repository. " +
+		"Read the diff, look at recent log entries to learn how this project words its " +
+		"commits, write a message that says what changed and why, then stage everything and commit."}
 	name, email := strings.TrimSpace(s.cfg.Git.AuthorName), strings.TrimSpace(s.cfg.Git.AuthorEmail)
 	if name != "" && email != "" {
-		lines = append(lines, "Author the commit as "+name+" <"+email+">: commit with "+
+		lines = append(lines, "The author of the commit is "+name+" <"+email+">, so commit with "+
 			"`git commit --author=\""+name+" <"+email+">\" -m \"<message>\"`. "+
-			"Leave the committer untouched — it must stay whatever identity the "+
-			"repository or your global git config already sets (do not override "+
-			"the committer; no GIT_COMMITTER_NAME / GIT_COMMITTER_EMAIL, no "+
-			"-c user.name / user.email).")
-		lines = append(lines, "The commit is authored by "+name+", not by you, so end the message body "+
-			"with one line `Model: <id>`, where <id> is the value of $SOA_MODEL in your "+
-			"shell: the model writing this commit. Add no Co-authored-by trailer.")
+			"Do not touch the committer: it stays whatever the repository or the global git config sets. "+
+			"That means no GIT_COMMITTER_NAME or GIT_COMMITTER_EMAIL and no -c user.name or user.email.")
+		lines = append(lines, "Authorship goes to "+name+", not to you. Finish the message body with a single line "+
+			"`Model: <id>`, taking <id> from $SOA_MODEL in your shell, which names the model writing this commit. "+
+			"Do not add a Co-authored-by trailer.")
 	} else {
-		lines = append(lines, "Commit with the repository's already-configured git identity; do not "+
-			"override author or committer.")
+		lines = append(lines, "Commit under the git identity the repository is already configured with, "+
+			"and leave both author and committer alone.")
 	}
 	if extra = strings.TrimSpace(extra); extra != "" {
-		lines = append(lines, "Additional instructions from the user: "+extra)
+		lines = append(lines, "The user adds: "+extra)
 	}
 	return strings.Join(lines, "\n\n")
 }

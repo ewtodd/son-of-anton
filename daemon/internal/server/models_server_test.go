@@ -63,7 +63,7 @@ func TestTheModelCommandInAChat(t *testing.T) {
 		t.Fatalf("after /model other-model the request used %v", got)
 	}
 	r.say("/nonsense")
-	r.replyLike(sigGroup, "Unknown command /nonsense", "/model")
+	r.replyLike(sigGroup, "/nonsense is not a command here", "/model")
 }
 
 func TestADeadModelPinFallsBackToTheDefault(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const editorHeader = "#! Compose your prompt below. Lines starting with '#!' are ignored.\n" +
-	"#! Save and quit to send; leave empty to cancel.\n\n"
+const editorHeader = "#! Write the message under this header. Any line that begins with '#!' is dropped.\n" +
+	"#! Saving and closing the editor sends it. An empty file sends nothing.\n\n"
 
 // editor is ctrl+g: the draft goes through $VISUAL, else $EDITOR, else nano,
 // with the program suspended and the prompt empty; what the file holds is

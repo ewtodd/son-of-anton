@@ -199,9 +199,9 @@ UPDATE schema_version SET version = 13;`,
 	// so every stored chat model was the config of its day.
 	`UPDATE sessions SET model = '', reasoning_effort = '' WHERE kind = 'chat';
 UPDATE schema_version SET version = 14;`,
-	// v15: the chats the Python import stored with the Python's model, before
-	// it stored them following: none has a prompt yet (the import missed the
-	// Python's), and none could choose a model since (loading them failed).
+	// v15: chats imported from the old Python store were saved with that
+	// store's model, before the import stored them following: none has a
+	// prompt yet, and none could choose a model since (loading them failed).
 	`UPDATE sessions SET model = '', reasoning_effort = '' WHERE kind = 'chat' AND COALESCE(prompt_hash, '') = '';
 UPDATE schema_version SET version = 15;`,
 }

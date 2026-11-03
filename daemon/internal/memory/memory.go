@@ -1,7 +1,6 @@
-// Package memory is the rule and fact stores, ported from
-// ../tools/memory_tool.py. The files are the Python fork's own (the gateway
-// and soa-d share a home until phase 8), so the TOML shape and the
-// <file>.lock flock convention match it exactly.
+// Package memory is the rule and fact stores. The files are TOML under the
+// home, written with a <file>.lock flock convention, and files written by
+// earlier releases must keep loading, so the TOML shape does not change.
 package memory
 
 import (
@@ -241,7 +240,7 @@ func readEntries(path, key string) ([]entry, error) {
 }
 
 // withLock runs f holding the process mutex and an exclusive flock on
-// <path>.lock (the Python's lock file).
+// <path>.lock (the lock file every writer of the store uses).
 func withLock(path string, f func() error) error {
 	writeMu.Lock()
 	defer writeMu.Unlock()
@@ -729,8 +728,8 @@ func tomlValue(v any) (string, bool) {
 		return quote(x), true
 	case time.Time:
 		// The decoder marks TOML's local date, datetime and time with these
-		// locations; keep each kind as it was written (the Python writes
-		// `added` as a local date).
+		// locations; keep each kind as it was written (`added` is a local date
+		// in files from earlier releases).
 		switch x.Location().String() { // the toml package's zones for local values
 		case localDate.String():
 			return x.Format("2006-01-02"), true

@@ -1,5 +1,5 @@
 // Package title names sessions: an instant title derived from the opening
-// message, then one from the title model. A port of ../agent/title_generator.py.
+// message, then one from the title model.
 package title
 
 import (
@@ -13,32 +13,25 @@ import (
 )
 
 const (
-	maxDerived    = 48   // MAX_DERIVED_TITLE_CHARS
+	maxDerived    = 48   // characters in the instant title
 	maxInput      = 1000 // the opening message sent to the title model
 	maxTitleWords = 12
 )
 
-// systemPrompt is _TITLE_PROMPT_TEMPLATE (TG:62-81), verbatim.
-const systemPrompt = "You name chat sessions. Given the user's opening message, write a title " +
-	"that lets them find this conversation again in a list.\n\n" +
-	"Rules:\n" +
-	"- 3 to 7 words, sentence case (capitalize only the first word and proper nouns).\n" +
-	"- Name what the user wants DONE, not that they asked a question.\n" +
-	"- Keep technical terms, filenames, numbers, and error codes exact.\n" +
-	"- Drop filler words: the, this, my, a, an.\n" +
-	"- No trailing punctuation, no quotes, no tool names, no 'Title:' prefix.\n" +
-	"- Never answer the message. Name it.\n" +
-	"- Always produce something, even for a bare greeting.\n" +
-	"- Write the title in the same language as the user's message.\n" +
-	"Good: {\"title\": \"Fix login button on mobile\"}\n" +
-	"Good: {\"title\": \"Postgres connection pool exhaustion\"}\n" +
-	"Good: {\"title\": \"Friendly greeting\"}\n" +
-	"Too vague: {\"title\": \"Code changes\"}\n" +
-	"Too long: {\"title\": \"Investigate and fix the issue where the login button " +
-	"does not respond on mobile devices\"}\n\n" +
-	"Reply with JSON only: {\"title\": \"...\"}"
+// systemPrompt asks for a short title that names the request, as JSON.
+const systemPrompt = "The text you receive is the first message of a conversation with an assistant. " +
+	"Reply with a JSON object holding a title for that conversation, so its author can pick it out of a long list later.\n\n" +
+	"A good title is a noun phrase or a short imperative of about five words, never more than seven, " +
+	"that states the job the user wants done. Keep identifiers, file names, numbers and error codes character for character. " +
+	"Write it in the message's own language, with no trailing period, no quotes, no \"Title:\" label and no mention of tools. " +
+	"Do not respond to the message itself, and do not leave the title empty even if the message is just a greeting.\n\n" +
+	"Message: \"my cron job on the NAS stopped firing after the update\"\n" +
+	"Reply: {\"title\": \"Cron job stopped firing after update\"}\n" +
+	"Message: \"hello!\"\n" +
+	"Reply: {\"title\": \"Greeting\"}\n\n" +
+	"Output the JSON object and nothing else."
 
-// responseFormat is _TITLE_RESPONSE_FORMAT (TG:87-99).
+// responseFormat is the JSON schema the title reply must match.
 const responseFormat = `{"type":"json_schema","json_schema":{"name":"session_title","strict":true,"schema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}}}`
 
 // Derive is the instant title: the first non-empty line, cut at 48
@@ -104,7 +97,7 @@ var (
 	thinkRE  = regexp.MustCompile(`(?is)<think>.*?</think>|<thinking>.*?</thinking>|<reasoning>.*?</reasoning>`)
 )
 
-// extract pulls the title out of a reply (TG:230-280).
+// extract pulls the title out of a reply.
 func extract(content string) string {
 	raw := strings.TrimSpace(content)
 	if raw == "" {
@@ -145,7 +138,7 @@ func extract(content string) string {
 	return strings.TrimSpace(strings.Trim(raw, `"'`))
 }
 
-// clean normalizes a title (TG:283-295).
+// clean normalizes a title.
 func clean(s string) string {
 	t := strings.Join(strings.Fields(s), " ")
 	t = strings.TrimSpace(strings.Trim(t, `"'`))
@@ -160,7 +153,7 @@ func clean(s string) string {
 }
 
 // degenerate is true for brace leaks and runs of 4 or more identical words
-// (TG:298-318).
+// .
 func degenerate(t string) bool {
 	if strings.ContainsAny(t, "{}") {
 		return true

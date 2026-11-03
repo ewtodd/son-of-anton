@@ -15,7 +15,7 @@ import (
 )
 
 // explorePrompt is in an explore child's system prompt, never the parent's.
-const explorePrompt = "You are a file search specialist."
+const explorePrompt = "You are a read-only code explorer."
 
 func taskCall(id, args string) fakellm.ToolCall {
 	return fakellm.ToolCall{ID: id, Name: "task", Arguments: args}
@@ -143,7 +143,7 @@ func TestAChildsApprovalNamesTheTask(t *testing.T) {
 	}
 	a := open(t, d, tui.Options{})
 	send(a, "fix the perms")
-	waitScreen(t, a, "General Task — Open it up: The agent wants to run a command", "chmod 777 f.txt")
+	waitScreen(t, a, "General Task — Open it up: The agent asks to run a command", "chmod 777 f.txt")
 	a.Press("1")
 	waitScreen(t, a, "all set")
 }

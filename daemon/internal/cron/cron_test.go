@@ -141,8 +141,8 @@ func TestSilentAndFrame(t *testing.T) {
 			t.Errorf("Silent(%q) = true", s)
 		}
 	}
-	want := "Cronjob Response: Morning digest\n(job_id: abc123abc123)\n-------------\n\nAll good.\n\n" +
-		"To stop or manage this job, send me a new message (e.g. \"stop reminder Morning digest\")."
+	want := "Scheduled job: Morning digest (id abc123abc123)\n\nAll good.\n\n" +
+		"To change or cancel this job, message me, for instance \"cancel the Morning digest job\"."
 	if got := cron.Frame("Morning digest", "abc123abc123", "All good."); got != want {
 		t.Fatalf("Frame =\n%s", got)
 	}

@@ -25,14 +25,14 @@ type readFileTool struct{}
 func (readFileTool) Schema() provider.Tool {
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
 		Name: "read_file",
-		Description: "Read a text file with line numbers (\"LINE|CONTENT\"). " +
-			"Use offset and limit for large files. Prefer this to cat/head/tail.",
+		Description: "Return the contents of a text file, each line prefixed with its number as NUMBER|TEXT. " +
+			"Long files come back in windows: continue with offset and limit. This replaces cat, head and tail.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "path": {"type": "string", "description": "Path to the file to read (absolute, relative to the working directory, or ~/path)."},
-    "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default 1).", "default": 1, "minimum": 1},
-    "limit": {"type": "integer", "description": "Maximum number of lines to read (default 2000, max 2000).", "default": 2000, "maximum": 2000}
+    "path": {"type": "string", "description": "The file to read: absolute, relative to the working directory, or starting with ~/."},
+    "offset": {"type": "integer", "description": "First line to return, counting from 1.", "default": 1, "minimum": 1},
+    "limit": {"type": "integer", "description": "How many lines to return, at most 2000.", "default": 2000, "maximum": 2000}
   },
   "required": ["path"]
 }`),
@@ -64,21 +64,21 @@ func (readFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 	if err != nil {
 		if os.IsNotExist(err) {
 			return jsonResult(map[string]any{
-				"error":         "File not found: " + a.Path,
+				"error":         "No such file: " + a.Path,
 				"similar_files": similarFiles(abs),
 			})
 		}
 		return errorResult(err.Error()), nil
 	}
 	if fi.IsDir() {
-		return errorResult(abs + " is a directory, not a file"), nil
+		return errorResult(abs + " is a directory; read a file inside it"), nil
 	}
 	data, err := os.ReadFile(abs)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
 	if isBinary(data) {
-		return errorResult("Cannot read binary file: " + abs), nil
+		return errorResult(abs + " holds binary data, not text"), nil
 	}
 
 	lines := splitLines(string(data))

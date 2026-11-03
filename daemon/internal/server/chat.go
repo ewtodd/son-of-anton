@@ -35,11 +35,11 @@ const (
 	ackEvery      = 30 * time.Second
 	typingEvery   = 5 * time.Second
 	quoteMax      = 500
-	queuedAck     = "Queued for the next turn. I'll respond once the current task finishes."
-	noResponse    = "The model returned no response."
+	queuedAck     = "Got it. This will be handled after the current task is done."
+	noResponse    = "The model sent back an empty reply."
 	commandsHelp  = "/new, /stop, /status, /model, /sendnow, /sendall, /approve, /deny"
-	noApproval    = "Nothing is waiting for approval."
-	nothingToStop = "No active task to stop."
+	noApproval    = "No approval is pending."
+	nothingToStop = "There is nothing running to stop."
 )
 
 // chatSink is what a chat session tells its chat. Every method is called with
@@ -290,7 +290,7 @@ func (k *chatLink) turnEnd(status, content, errMsg string) {
 		text, styles := signal.Format(content)
 		k.cs.sayStyled(text, styles)
 	case "error":
-		k.cs.say("Sorry, that failed: " + errMsg)
+		k.cs.say("That did not work: " + errMsg)
 	}
 }
 
@@ -372,7 +372,7 @@ func approvalText(req approval.Request, choices []string, id string, many bool, 
 	if what == "" {
 		what = req.Kind
 	}
-	head := prefix + "⚠️ Approval needed: " + what
+	head := prefix + "⚠️ Permission requested: " + what
 	if many {
 		head += " [" + shortID(id) + "]"
 	}
@@ -393,9 +393,9 @@ func approvalText(req approval.Request, choices []string, id string, many bool, 
 		always = always || c == "always"
 	}
 	if always {
-		text += "\n\nReply /approve, /approve always, or /deny."
+		text += "\n\nAnswer with /approve, /approve always or /deny."
 	} else {
-		text += "\n\nReply /approve or /deny."
+		text += "\n\nAnswer with /approve or /deny."
 	}
 	return text, styles
 }
@@ -409,7 +409,7 @@ func questionText(q tools.Question, prefix string) string {
 	for i, c := range q.Choices {
 		text += "\n  " + strconv.Itoa(i+1) + ". " + c
 	}
-	return text + "\n\nReply with the number, the option text, or your own answer."
+	return text + "\n\nAnswer with a number, the text of an option, or something else of your own."
 }
 
 // ---- chat sessions (the server's side) ----
@@ -600,11 +600,11 @@ func (h *chatHub) deliver(cs *chatState, text string, now bool) (ok bool) {
 			}
 		}
 		if s.base.Err() == nil {
-			cs.say("Sorry, that failed: " + err.Error())
+			cs.say("That did not work: " + err.Error())
 		}
 		return false
 	}
-	cs.say("Sorry, that failed: the session kept unloading")
+	cs.say("That did not work: the session kept unloading")
 	return false
 }
 
@@ -630,9 +630,9 @@ func (h *chatHub) userText(in signal.Inbound) string {
 		if r := []rune(quoted); len(r) > quoteMax {
 			quoted = string(r[:quoteMax])
 		}
-		lead := "[Replying to: \"" + quoted + "\"]"
+		lead := "[In reply to the message: \"" + quoted + "\"]"
 		if q.Own {
-			lead = "[Replying to your previous message: \"" + quoted + "\"]"
+			lead = "[In reply to your earlier message: \"" + quoted + "\"]"
 		}
 		text = strings.TrimSpace(lead + "\n\n" + text)
 	}
@@ -653,7 +653,7 @@ func (h *chatHub) userText(in signal.Inbound) string {
 		if kind == "" {
 			kind = "unknown type"
 		}
-		lines = append(lines, fmt.Sprintf("[The user sent %s (%s), saved at %s]", name, kind, path))
+		lines = append(lines, fmt.Sprintf("[Attachment from the user: %s (%s), stored at %s]", name, kind, path))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -806,7 +806,7 @@ func (h *chatHub) resolveApproval(cs *chatState, idTok string, approve, always b
 			}
 		}
 		if len(found) != 1 {
-			return "No single waiting approval matches " + idTok + "."
+			return "Exactly one pending approval should match " + idTok + ", and none or several do."
 		}
 		target = found[0]
 	}
@@ -815,7 +815,7 @@ func (h *chatHub) resolveApproval(cs *chatState, idTok string, approve, always b
 		choice, reply = "once", "Approved."
 		for _, c := range target.choices {
 			if always && c == "always" {
-				choice, reply = "always", "Approved, and remembered."
+				choice, reply = "always", "Approved. This choice will be remembered."
 			}
 		}
 	}
@@ -841,7 +841,7 @@ func (h *chatHub) command(cs *chatState, name, args string) {
 	switch name {
 	case "stop":
 		if l, _ := h.current(cs); l != nil && l.stopChat() {
-			cs.say("Stopped. You can continue this session.")
+			cs.say("Stopped. The session is still here if you want to carry on.")
 		} else {
 			cs.say(nothingToStop)
 		}
@@ -851,13 +851,13 @@ func (h *chatHub) command(cs *chatState, name, args string) {
 		err := h.srv.st.SetChatSession(h.srv.base, cs.stamp, "")
 		cs.sessMu.Unlock()
 		if err != nil {
-			cs.say("Sorry, that failed: " + err.Error())
+			cs.say("That did not work: " + err.Error())
 			return
 		}
 		if l != nil {
 			l.stopChat()
 		}
-		cs.say("New session started.")
+		cs.say("Fresh session started.")
 	case "sendnow":
 		h.sendnow(cs, args)
 	case "sendall":
@@ -883,7 +883,7 @@ func (h *chatHub) command(cs *chatState, name, args string) {
 		}
 		cs.say(h.resolveApproval(cs, idTok, false, false, reason))
 	default:
-		cs.say("Unknown command /" + name + ". Commands: " + commandsHelp + ".")
+		cs.say("/" + name + " is not a command here. Available: " + commandsHelp + ".")
 	}
 }
 
@@ -907,19 +907,19 @@ func (h *chatHub) sendnow(cs *chatState, text string) {
 		h.deliver(cs, text, false)
 	case text != "":
 		if h.deliver(cs, text, true) {
-			cs.say("Steered into the current turn.")
+			cs.say("Your queued message was added to the turn in progress.")
 		}
 	case !running:
-		cs.say("Nothing is running.")
+		cs.say("No turn is in progress.")
 	default:
 		started, steered, err := l.steerQueue(false)
 		switch {
 		case err != nil:
-			cs.say("Sorry, that failed: " + err.Error())
+			cs.say("That did not work: " + err.Error())
 		case !started && !steered:
-			cs.say("Nothing queued to steer.")
+			cs.say("No messages are queued.")
 		default:
-			reply := "Steered the oldest queued message into the current turn."
+			reply := "Added the oldest queued message to the turn in progress."
 			if items, err := h.srv.st.QueueItems(h.srv.base, l.id); err == nil && len(items) > 0 {
 				reply += " (" + strconv.Itoa(len(items)) + " still queued)"
 			}
@@ -931,18 +931,18 @@ func (h *chatHub) sendnow(cs *chatState, text string) {
 func (h *chatHub) sendall(cs *chatState) {
 	l, _ := h.current(cs)
 	if l == nil || !l.chatRunning() {
-		cs.say("Nothing is running.")
+		cs.say("No turn is in progress.")
 		return
 	}
 	items, _ := h.srv.st.QueueItems(h.srv.base, l.id)
 	started, steered, err := l.steerQueue(true)
 	switch {
 	case err != nil:
-		cs.say("Sorry, that failed: " + err.Error())
+		cs.say("That did not work: " + err.Error())
 	case !started && !steered:
-		cs.say("Nothing queued to steer.")
+		cs.say("No messages are queued.")
 	default:
-		cs.say("Steered " + strconv.Itoa(len(items)) + " queued messages into the current turn.")
+		cs.say("Added " + strconv.Itoa(len(items)) + " queued messages to the turn in progress.")
 	}
 }
 
@@ -961,11 +961,11 @@ func (h *chatHub) status(cs *chatState) string {
 	lines := []string{}
 	state, queued, tokens, window, served := "idle", 0, 0, 0, ""
 	if err != nil {
-		lines = append(lines, "Session: none yet (the next message starts one)")
+		lines = append(lines, "Session: none yet (your next message opens one)")
 	} else {
 		rec, err := s.st.Session(s.base, id)
 		if err != nil {
-			return "Sorry, that failed: " + err.Error()
+			return "That did not work: " + err.Error()
 		}
 		model, tokens = rec.Model, rec.ContextTokens
 		title := rec.Title

@@ -19,7 +19,7 @@ import (
 
 const (
 	asFiona  = "You never run commands or edit project files."
-	asWorker = "You are Son of Anton Agent"
+	asWorker = "You are Son of Anton, an assistant"
 )
 
 func relayCall(id string, args map[string]any) fakellm.ToolCall {
@@ -207,7 +207,7 @@ func TestAWorkersApprovalAsksItsChat(t *testing.T) {
 	)
 	r := newChatRig(t, fake, "")
 	r.say("make f.txt writable")
-	r.replyLike(sigGroup, "Worker ", "⚠️ Approval needed", "chmod 777")
+	r.replyLike(sigGroup, "Worker ", "⚠️ Permission requested", "chmod 777")
 	r.say("/approve")
 	r.reply(sigGroup, "Done, f.txt is writable.")
 	if fi, _ := os.Stat(f); fi.Mode().Perm() != 0o777 {
@@ -257,7 +257,7 @@ func TestAPickedUpWorkerAsksTheTerminal(t *testing.T) {
 		t.Fatalf("approval = %v", req)
 	}
 	for _, m := range r.sig.Sends() {
-		if strings.Contains(m.Text, "Approval needed") {
+		if strings.Contains(m.Text, "Permission requested") {
 			t.Fatal("a picked-up worker's approval went to the chat")
 		}
 	}

@@ -116,7 +116,7 @@ func (s *Server) spawnTask(ctx context.Context, env *tools.Env, req subagent.Req
 		break
 	}
 	if queued {
-		return subagent.Result{ID: id, State: "running", Summary: "Background task updated", Text: subagent.BackgroundUpdated}, nil
+		return subagent.Result{ID: id, State: "running", Summary: "Message passed to the running subagent", Text: subagent.BackgroundUpdated}, nil
 	}
 	if req.TaskID == "" {
 		obj := child.snapshot()
@@ -140,15 +140,15 @@ func (s *Server) spawnTask(ctx context.Context, env *tools.Env, req subagent.Req
 			parent.mu.Unlock()
 			parent.childDone(id, e.status)
 			if e.status != "interrupted" {
-				state, summary, text := "completed", "Background task completed: "+req.Description, e.text
+				state, summary, text := "completed", "Finished in the background: "+req.Description, e.text
 				if e.status == "error" {
-					state, summary, text = "error", "Background task failed: "+req.Description, e.errMsg
+					state, summary, text = "error", "Failed in the background: "+req.Description, e.errMsg
 				}
 				parent.sess.Notify(subagent.Render(id, state, summary, text))
 			}
 			s.maybeUnload(parent)
 		}()
-		return subagent.Result{ID: id, State: "running", Summary: "Background task started", Text: subagent.BackgroundStarted}, nil
+		return subagent.Result{ID: id, State: "running", Summary: "Started in the background", Text: subagent.BackgroundStarted}, nil
 	}
 
 	e := waitChild(ctx, child, ended)
@@ -157,9 +157,9 @@ func (s *Server) spawnTask(ctx context.Context, env *tools.Env, req subagent.Req
 	case "done":
 		return subagent.Result{ID: id, State: "completed", Text: e.text}, nil
 	case "interrupted":
-		return subagent.Result{ID: id, State: "error", Text: "Task cancelled"}, nil
+		return subagent.Result{ID: id, State: "error", Text: "The subagent was interrupted before it finished"}, nil
 	}
-	return subagent.Result{ID: id, State: "error", Text: fmt.Sprintf("Subagent failed (task_id: %s): %s", id, e.errMsg)}, nil
+	return subagent.Result{ID: id, State: "error", Text: fmt.Sprintf("The subagent stopped with an error (task_id: %s): %s", id, e.errMsg)}, nil
 }
 
 // waitChild waits for the child's run to end; if ctx is cancelled first, the

@@ -1,19 +1,15 @@
-Launch a new agent to handle complex, multistep tasks autonomously.
+Hand a self-contained job to a subagent, a separate assistant that works in its own conversation and sends back one final message.
 
-When using the Task tool, you must specify a subagent_type parameter to select which agent type to use.
+Pick the subagent by name with subagent_type. The types are listed at the end of this description.
 
-When NOT to use the Task tool:
-- If you want to read a specific file path, use read_file or search_files instead of the Task tool, to find the match more quickly
-- If you are searching for a specific class definition like "class Foo", use search_files instead, to find the match more quickly
-- If you are searching for code within a specific file or set of 2-3 files, use read_file instead of the Task tool, to find the match more quickly
-- If no available agent is a good fit for the task, use other tools directly
+Do the job yourself when it is small: reading a known file, looking up one definition, or searching inside a few files is quicker done directly. Also work directly when no listed type suits the job.
 
-
-Usage notes:
-1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
-2. Once you have delegated work to an agent, do not duplicate that work yourself. Continue with non-overlapping tasks, or wait for the result. For background tasks, you will be notified automatically when the result is ready.
-3. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result. The output includes a task_id you can reuse later to continue the same subagent session.
-4. Each agent invocation starts with a fresh context unless you provide task_id to resume the same subagent session (which continues with its previous messages and tool outputs). When starting fresh, your prompt should contain a highly detailed task description for the agent to perform autonomously and you should specify exactly what information the agent should return back to you in its final and only message to you.
-5. The agent's outputs should generally be trusted
-6. Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent. Tell it how to verify its work if possible (e.g., relevant test commands).
-7. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
+How it works:
+- The subagent starts with no memory of this conversation. Write the prompt as a full brief: the goal, the relevant paths and facts, what to leave alone, and exactly what its final message must contain.
+- Say whether the subagent should change files or only look and report. It cannot tell on its own. If there is a way to check the work, such as a test command, include it.
+- Its final message comes back to you as the tool result. The user does not see it, so tell the user what matters.
+- The result carries a task_id. Pass that id in a later call to continue the same subagent with everything it already knows; without it, each call starts fresh.
+- Several task calls in one message run at the same time. Use that for independent jobs.
+- While a subagent works on something, do not do the same work yourself. Take up a different part, or wait.
+- Treat its report as reliable unless it contradicts something you have seen.
+- If a type's description says to use it proactively, do so without waiting to be asked.

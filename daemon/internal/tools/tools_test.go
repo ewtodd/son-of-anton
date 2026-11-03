@@ -590,7 +590,7 @@ func TestTerminalTruncatesHugeOutputKeepingHeadAndTail(t *testing.T) {
 	f := setup(t, nil)
 	r := f.call(t, "terminal", map[string]any{"command": `printf 'START'; head -c 200000 /dev/zero | tr '\0' a; printf 'END'`})
 	out := str(r, "output")
-	if len(out) > 52_000 || !strings.Contains(out, "OUTPUT TRUNCATED") || !strings.HasPrefix(out, "START") || !strings.HasSuffix(out, "END") {
+	if len(out) > 52_000 || !strings.Contains(out, "output cut") || !strings.HasPrefix(out, "START") || !strings.HasSuffix(out, "END") {
 		t.Fatalf("truncated output: %d chars, starts %q, ends %q", len(out), out[:min(10, len(out))], out[max(0, len(out)-10):])
 	}
 }

@@ -404,3 +404,14 @@ measured use. Anything wanted later comes back as a deliberate feature.
   uncommitted changes in the session's directory, write a message in the
   repo's style, commit), so every client gets it and the Go TUI has nothing
   extra to port.
+
+
+## 20. Provenance
+
+From phase 10c on, the words, tables, code and packaging of this repository are
+this project's own. The prompts, tool descriptions and messages were rewritten
+from the behaviour they have to produce, the pattern tables and stub code were
+replaced by this project's own, and the Nix packaging is its own. The Python
+files and the opencode sources that the sections above name were the
+behavioural reference for the port. They are kept in those sections as
+history; nothing in the daemon copies them.

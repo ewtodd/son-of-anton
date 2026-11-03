@@ -11,7 +11,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/fakellm"
 )
 
-const generalPrompt = "You are a subagent:"
+const generalPrompt = "Another agent has handed you one job."
 
 func num(m map[string]any, k string) float64 { v, _ := m[k].(float64); return v }
 
@@ -113,7 +113,7 @@ func TestBackgroundAndFailedTaskRows(t *testing.T) {
 	if done := of(evs, "child.done"); len(done) != 1 || num(done[0], "tool_calls") != 0 {
 		t.Fatalf("child.done = %v", done)
 	}
-	if !strings.Contains(text(evs, "turn.start"), "Background task completed: Look around") {
+	if !strings.Contains(text(evs, "turn.start"), "Finished in the background: Look around") {
 		t.Fatal("the notice turn")
 	}
 }

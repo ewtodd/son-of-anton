@@ -9,7 +9,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 )
 
-// memoryTool is ../tools/memory_tool.py: rules and facts by id.
+// memoryTool keeps rules and facts, addressed by id.
 type memoryTool struct{}
 
 func (memoryTool) Schema() provider.Tool {

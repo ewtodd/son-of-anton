@@ -82,7 +82,7 @@ func TestARuleChangeAsksTheUserEvenInYolo(t *testing.T) {
 	}
 	req := (*asked)[0]
 	if req.Kind != "memory" || !strings.Contains(req.Subject, "Answer in plain English") || !strings.Contains(req.Subject, "why: readability") ||
-		len(req.Reasons) == 0 || req.Reasons[0] != "Save to memory: add rule (common)" || req.AllowRemember {
+		len(req.Reasons) == 0 || req.Reasons[0] != "Memory change: add rule (common)" || req.AllowRemember {
 		t.Fatalf("request = %+v", req)
 	}
 	if !strings.Contains(rulesFile(t, f), "Answer in plain English") {
@@ -93,7 +93,7 @@ func TestARuleChangeAsksTheUserEvenInYolo(t *testing.T) {
 func TestADeniedRuleIsNotWritten(t *testing.T) {
 	f, _ := memFixture(t, approval.Default, approval.Deny)
 	r := f.call(t, "memory", map[string]any{"kind": "rule", "action": "add", "text": "Never do anything"})
-	if r["success"] != false || str(r, "error") != "Memory write denied by user. The change was not saved." {
+	if r["success"] != false || str(r, "error") != "The user refused this memory change, so nothing was saved." {
 		t.Fatalf("result = %v", r)
 	}
 	if rulesFile(t, f) != "" {
@@ -123,7 +123,7 @@ func TestFactsAskOnlyWhenWriteApprovalIsOn(t *testing.T) {
 	}
 	f.env.MemoryApproval = true
 	r := f.call(t, "memory", map[string]any{"kind": "fact", "action": "add", "text": "The router lives in the closet"})
-	if r["success"] != true || len(*asked) != 1 || (*asked)[0].Reasons[0] != "Save to memory: add fact (common)" {
+	if r["success"] != true || len(*asked) != 1 || (*asked)[0].Reasons[0] != "Memory change: add fact (common)" {
 		t.Fatalf("write_approval on: %v, asked %+v", r, *asked)
 	}
 }

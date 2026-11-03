@@ -1,7 +1,7 @@
 // Package cron is the job store and the scheduling rules of soa-d's cron
-// (daemon/phases/06-cron.md). The jobs file is the Python's cron/jobs.json,
-// shared with `son-of-anton cron`: same format, same locks, and every field
-// this package does not know survives each write.
+// (daemon/phases/06-cron.md). The jobs file is cron/jobs.json, shared with
+// `son-of-anton cron` and with files written by earlier releases: same format,
+// same locks, and every field this package does not know survives each write.
 package cron
 
 import (
@@ -166,9 +166,9 @@ func readJobs(home string) ([]Job, error) {
 	return jobs, nil
 }
 
-// writeJobs writes {"jobs": [...], "updated_at": now} the way the Python
-// does: two-space indents, text unescaped, a temp file in cron/ renamed into
-// place, mode 0600.
+// writeJobs writes {"jobs": [...], "updated_at": now} in the layout earlier
+// releases used: two-space indents, text unescaped, a temp file in cron/
+// renamed into place, mode 0600.
 func writeJobs(home string, jobs []Job) error {
 	if jobs == nil {
 		jobs = []Job{}
@@ -230,12 +230,11 @@ func Zone(home string) *time.Location {
 	return time.Local
 }
 
-// ISO is the Python's isoformat: seconds, microseconds when not zero, and a
-// numeric offset.
+// ISO formats a time as the jobs file stores it: seconds, microseconds when
+// not zero, and a numeric offset.
 func ISO(t time.Time) string { return t.Format("2006-01-02T15:04:05.999999-07:00") }
 
-// ParseISO reads the forms the Python's fromisoformat takes (a trailing Z
-// too). A time without an offset is in loc.
+// ParseISO reads the time forms a jobs file may hold, including a trailing Z. A time without an offset is in loc.
 func ParseISO(s string, loc *time.Location) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	for _, layout := range []string{

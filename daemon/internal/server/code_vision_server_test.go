@@ -92,7 +92,7 @@ func TestExecuteCodeCallsTheSessionsTools(t *testing.T) {
 		t.Fatalf("a failing script = %v", failed)
 	}
 	long := decodeRow(t, rows[2])
-	if long["stdout_truncated"] != true || !strings.Contains(str(long, "output"), "[OUTPUT TRUNCATED - ") ||
+	if long["stdout_truncated"] != true || !strings.Contains(str(long, "output"), "[output cut: ") ||
 		len(str(long, "output")) > 52000 || long["warning"] == nil {
 		t.Fatalf("a long output = %.300v", long)
 	}
@@ -103,7 +103,7 @@ func TestExecuteCodeCallsTheSessionsTools(t *testing.T) {
 			desc = str(fn, "description")
 		}
 	}
-	if !strings.HasPrefix(desc, "Run a Python script that calls Son of Anton tools") || !strings.Contains(desc, "terminal(command: str") ||
+	if !strings.HasPrefix(desc, "Execute a Python 3 script that drives this session's tools") || !strings.Contains(desc, "terminal(command: str") ||
 		strings.Contains(desc, "cross_profile") || strings.Contains(desc, "venv's python") {
 		t.Fatalf("the schema = %q", desc)
 	}
@@ -181,7 +181,7 @@ func visionImages(t *testing.T, fake *fakellm.Server) []image.Config {
 		if json.Unmarshal(body.Messages[0].Content, &parts) != nil || len(parts) != 2 {
 			continue
 		}
-		if !strings.HasPrefix(parts[0].Text, "Fully describe and explain everything about this image, then answer the following question:\n\n") ||
+		if !strings.HasPrefix(parts[0].Text, "Describe this image in full, then answer the question that follows it.\n\nQuestion:\n") ||
 			body.Temperature != 0.1 {
 			t.Fatalf("the vision request: %+v (temperature %v)", parts[0], body.Temperature)
 		}
@@ -210,7 +210,7 @@ func TestVisionAnalyzeSendsTheImage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("not an image"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	asks := "Fully describe and explain everything about this image"
+	asks := "Describe this image in full, then answer the question"
 	fake := fakellm.New(t,
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("v1", "vision_analyze", `{"image_url":"pic.png","question":"what is it?"}`)}},
 		fakellm.Turn{When: asks, Content: "<think>hmm</think>a red rectangle"},

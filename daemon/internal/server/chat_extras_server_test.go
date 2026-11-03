@@ -43,7 +43,7 @@ func TestFionaSeesWhatTheChatSends(t *testing.T) {
 				return map[string]any{"path": filepath.Join(h, "cache", "signal", "planted.txt"), "content": "x"}
 			})},
 		}},
-		fakellm.Turn{When: "Fully describe and explain everything about this image", Content: "a red square"},
+		fakellm.Turn{When: "Describe this image in full, then answer the question", Content: "a red square"},
 		fakellm.Turn{When: asFiona, Content: "A red square, and your notes."},
 	)
 	r = newChatRig(t, fake, "")

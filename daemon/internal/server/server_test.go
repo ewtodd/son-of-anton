@@ -731,7 +731,7 @@ func TestABackgroundNoticeStartsATurn(t *testing.T) {
 	c.send(id, "run it")
 	evs := c.turns(2)
 	starts := of(evs, "turn.start")
-	if len(starts) != 2 || !strings.Contains(str(starts[1], "text"), "[Background process") || !strings.Contains(str(starts[1], "text"), "bgdone") {
+	if len(starts) != 2 || !strings.Contains(str(starts[1], "text"), "[Process ") || !strings.Contains(str(starts[1], "text"), "bgdone") {
 		t.Fatalf("a completion notice starts a turn: %v", starts)
 	}
 	last := wire(t, fake, 2)
@@ -784,7 +784,7 @@ func TestCommitIsATemplatedTurn(t *testing.T) {
 	}
 	start := of(c.turn(), "turn.start")[0]
 	got := str(start, "text")
-	for _, want := range []string{"uncommitted", "Additional instructions from the user: only the docs", `--author="Bot <bot@example.com>"`} {
+	for _, want := range []string{"uncommitted", "The user adds: only the docs", `--author="Bot <bot@example.com>"`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("commit prompt %q lacks %q", got, want)
 		}

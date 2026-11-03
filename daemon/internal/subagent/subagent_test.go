@@ -1,8 +1,6 @@
 package subagent_test
 
-// Phase 4a: the task tool's text, types and result format, ported from
-// opencode v1.19.5 (packages/opencode/src/tool/task.ts, task.txt,
-// src/agent/agent.ts; reference clone ~/.cache/claude-ref/opencode-v1.19.5).
+// Phase 4a: the task tool's text, types and result format.
 
 import (
 	"context"
@@ -17,15 +15,15 @@ import (
 func TestTheBuiltinTypes(t *testing.T) {
 	types := subagent.Builtin()
 	explore, ok := subagent.Lookup(types, "explore")
-	if !ok || !strings.HasPrefix(explore.Description, "Fast agent specialized for exploring codebases.") ||
-		!strings.HasPrefix(explore.Prompt, "You are a file search specialist.") {
+	if !ok || !strings.HasPrefix(explore.Description, "Read-only searcher for finding things in a codebase") ||
+		!strings.HasPrefix(explore.Prompt, "You are a read-only code explorer.") {
 		t.Fatalf("explore = %+v", explore)
 	}
 	if strings.Join(explore.Tools, ",") != "terminal,read_file,search_files" {
 		t.Fatalf("explore tools = %v", explore.Tools)
 	}
 	general, ok := subagent.Lookup(types, "general")
-	if !ok || !strings.HasPrefix(general.Description, "General-purpose agent for researching complex questions") || general.Prompt == "" || general.Tools != nil {
+	if !ok || !strings.HasPrefix(general.Description, "Full-capability agent for any job that needs several steps") || general.Prompt == "" || general.Tools != nil {
 		t.Fatalf("general = %+v; every tool its parent may give it", general)
 	}
 	if _, ok := subagent.Lookup(types, "nope"); ok {
@@ -41,15 +39,15 @@ func TestTheBuiltinTypes(t *testing.T) {
 	}
 }
 
-func TestTheDescriptionIsOpencodes(t *testing.T) {
+func TestTheDescriptionCoversTheTool(t *testing.T) {
 	d := subagent.Description(subagent.Builtin(), false)
 	for _, want := range []string{
-		"Launch a new agent to handle complex, multistep tasks autonomously.",
-		"When using the Task tool, you must specify a subagent_type parameter to select which agent type to use.",
-		"If you are searching for a specific class definition like \"class Foo\", use search_files instead, to find the match more quickly",
-		"1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses",
-		"The output includes a task_id you can reuse later to continue the same subagent session.",
-		"\nAvailable agent types and the tools they have access to:\n- explore: Fast agent specialized for exploring codebases.",
+		"Hand a self-contained job to a subagent",
+		"Pick the subagent by name with subagent_type.",
+		"Do the job yourself when it is small",
+		"Several task calls in one message run at the same time.",
+		"The result carries a task_id.",
+		"\nSubagent types:\n- explore: Read-only searcher for finding things in a codebase",
 	} {
 		if !strings.Contains(d, want) {
 			t.Errorf("description lacks %q", want)
@@ -58,27 +56,22 @@ func TestTheDescriptionIsOpencodes(t *testing.T) {
 	if strings.Index(d, "- explore:") > strings.Index(d, "- general:") {
 		t.Error("agents are listed by name")
 	}
-	for _, old := range []string{"Glob tool", "Grep tool", "Read tool"} {
-		if strings.Contains(d, old) {
-			t.Errorf("an opencode tool name survived: %q", old)
-		}
-	}
-	if strings.Contains(d, "Background mode:") {
+	if strings.Contains(d, "Background option:") {
 		t.Error("the background paragraph appears only when background is offered")
 	}
-	if !strings.Contains(subagent.Description(subagent.Builtin(), true), "Background mode: background=true launches the subagent asynchronously and returns immediately.") {
-		t.Error("the background paragraph, verbatim")
+	if !strings.Contains(subagent.Description(subagent.Builtin(), true), "Background option: set background to true") {
+		t.Error("the background paragraph")
 	}
 }
 
-func TestResultsRenderLikeOpencode(t *testing.T) {
+func TestResultsRender(t *testing.T) {
 	got := subagent.Render("20261102_100000_aaaaaa", "completed", "", "found it")
-	want := "<task id=\"20261102_100000_aaaaaa\" state=\"completed\">\n<task_result>\nfound it\n</task_result>\n</task>"
+	want := "<task id=\"20261102_100000_aaaaaa\" state=\"completed\">\nResult:\nfound it\n</task>"
 	if got != want {
 		t.Fatalf("Render = %q", got)
 	}
-	got = subagent.Render("x", "error", "Background task failed: look", "boom")
-	want = "<task id=\"x\" state=\"error\">\n<summary>Background task failed: look</summary>\n<task_error>\nboom\n</task_error>\n</task>"
+	got = subagent.Render("x", "error", "Failed in the background: look", "boom")
+	want = "<task id=\"x\" state=\"error\">\nFailed in the background: look\nError:\nboom\n</task>"
 	if got != want {
 		t.Fatalf("Render error = %q", got)
 	}
@@ -113,7 +106,27 @@ func TestTheToolCallsTheSpawner(t *testing.T) {
 		t.Fatalf("request = %+v", got)
 	}
 	out, _ = tool.Run(context.Background(), &tools.Env{}, json.RawMessage(`{"description":"x","prompt":"y","subagent_type":"nope"}`))
-	if !strings.Contains(out, "Unknown agent type: nope is not a valid agent type") {
+	if !strings.Contains(out, "There is no subagent type called nope") {
 		t.Fatalf("unknown type: %q", out)
+	}
+}
+
+func TestTheTaskToolAndItsParametersAreDescribed(t *testing.T) {
+	s := subagent.Tool(subagent.Builtin(), true, nil).Schema()
+	if strings.TrimSpace(s.Function.Description) == "" {
+		t.Fatal("the task tool has no description")
+	}
+	var params struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(s.Function.Parameters, &params); err != nil {
+		t.Fatal(err)
+	}
+	for name, p := range params.Properties {
+		if strings.TrimSpace(p.Description) == "" {
+			t.Errorf("task parameter %s has no description", name)
+		}
 	}
 }

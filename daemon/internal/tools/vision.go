@@ -27,7 +27,7 @@ type Vision struct {
 const (
 	visionDefaultTimeout  = 120 * time.Second
 	visionDownloadTimeout = 30 * time.Second
-	visionFailed          = "There was a problem with the request and the image could not be analyzed."
+	visionFailed          = "The image could not be analyzed because the request failed."
 )
 
 var (
@@ -42,26 +42,23 @@ func (visionTool) Concurrent() bool { return true }
 func (visionTool) Schema() provider.Tool {
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
 		Name: "vision_analyze",
-		Description: "Get a text description of an image by sending it to the " +
-			"configured vision model. Accepts a URL, local file path, or " +
-			"data: URL, plus an optional crop region. The image is sent to " +
-			"auxiliary.vision (or the main endpoint when none is set) and you " +
-			"receive a text analysis back; the raw image is not added to your " +
-			"own context. Use this when you have a path or URL and need to " +
-			"know what is in the image, including a zoomed crop of a region. " +
-			"If an image is already attached to your conversation, read it " +
-			"directly instead of calling this again.",
+		Description: "Have a vision model look at an image and tell you about it in text. " +
+			"The image may be an http(s) URL, a file path or a data: URL, and you may restrict it to a rectangle. " +
+			"The picture goes to the auxiliary.vision model (the main endpoint if none is set); " +
+			"you get its written answer and the picture itself stays out of your context. " +
+			"Use it for an image you only know by path or address, and to zoom in on a part of one. " +
+			"An image that is already attached to the conversation can simply be looked at, with no call.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "image_url": {"type": "string", "description": "Image URL (http/https), local file path, or data: URL to load."},
-    "question": {"type": "string", "description": "Your specific question or request about the image. Optional context the model uses on the next turn after seeing the image."},
+    "image_url": {"type": "string", "description": "Where the image is: an http(s) URL, a file path, or a data: URL."},
+    "question": {"type": "string", "description": "What you want to know about the image. The vision model answers this after describing the image."},
     "region": {
       "type": "array",
       "items": {"type": "integer"},
       "minItems": 4,
       "maxItems": 4,
-      "description": "Optional [x1, y1, x2, y2] crop region in pixel coordinates of the ORIGINAL image, applied before any downscaling so the region keeps full resolution. Intended flow: load the full image first, then call again with a region to zoom into a detail (small text, UI element, fine print). Coordinates are clamped to the image bounds."
+      "description": "A rectangle [x1, y1, x2, y2] in pixels of the original image. It is cut out before any shrinking, so it keeps full detail. A good pattern is to look at the whole image once, then ask again with a region around something small such as fine print or a control. Values outside the image are pulled back to its edges."
     }
   },
   "required": ["image_url", "question"]
@@ -71,7 +68,7 @@ func (visionTool) Schema() provider.Tool {
 
 // visionFail is the result of a call that could not analyze its image.
 func visionFail(err error) string {
-	return jsonOut(map[string]any{"success": false, "error": "Error analyzing image: " + err.Error(), "analysis": visionFailed})
+	return jsonOut(map[string]any{"success": false, "error": "Could not analyze the image: " + err.Error(), "analysis": visionFailed})
 }
 
 func (visionTool) Run(ctx context.Context, env *Env, args json.RawMessage) (string, error) {
@@ -97,7 +94,7 @@ func (visionTool) Run(ctx context.Context, env *Env, args json.RawMessage) (stri
 		question = string(b)
 	}
 	if env.Vision == nil {
-		return visionFail(errors.New("no vision model is configured")), nil
+		return visionFail(errors.New("no vision model has been set up")), nil
 	}
 
 	data, mime, err := loadImage(ctx, env, src)
@@ -123,8 +120,8 @@ func (visionTool) Run(ctx context.Context, env *Env, args json.RawMessage) (stri
 	if len(imageURL) > visionMaxPayload {
 		imageURL, scale = shrinkImage(data, mime, visionShrinkTarget)
 		if len(imageURL) > visionMaxPayload {
-			return visionFail(fmt.Errorf("Image too large for vision API: base64 payload is "+
-				"%.1f MB (limit %d MB) even after resizing. Compress or crop the image manually.",
+			return visionFail(fmt.Errorf("Image too big for the vision model: %.1f MB encoded, and the limit is "+
+				"%d MB even after shrinking it. Crop or compress it yourself first.",
 				float64(len(imageURL))/(1<<20), visionMaxPayload>>20)), nil
 		}
 	}
@@ -158,7 +155,7 @@ func (v *Vision) describe(ctx context.Context, question, imageURL string) (strin
 	req := provider.Request{Model: v.Model, Temperature: &temperature, Messages: []provider.Message{{
 		Role: "user",
 		Parts: []provider.ContentPart{
-			{Type: "text", Text: "Fully describe and explain everything about this image, then answer the following question:\n\n" + question},
+			{Type: "text", Text: "Describe this image in full, then answer the question that follows it.\n\nQuestion:\n" + question},
 			{Type: "image_url", ImageURL: &provider.ImageURL{URL: imageURL}},
 		},
 	}}}
@@ -183,17 +180,17 @@ func (v *Vision) describe(ctx context.Context, question, imageURL string) (strin
 func loadImage(ctx context.Context, env *Env, src string) ([]byte, string, error) {
 	s := strings.TrimSpace(src)
 	if s == "" {
-		return nil, "", errors.New("image_url is required")
+		return nil, "", errors.New("image_url is missing")
 	}
 	var data []byte
 	switch {
 	case strings.HasPrefix(s, "data:"):
 		header, payload, _ := strings.Cut(s, ",")
 		if !strings.Contains(header, ";base64") {
-			return nil, "", errors.New("data: URL must be base64-encoded")
+			return nil, "", errors.New("a data: URL has to carry base64 data")
 		}
 		if len(payload)*3/4 > visionMaxSource {
-			return nil, "", errors.New("data: URL exceeds size limit")
+			return nil, "", errors.New("the data: URL is over the size limit")
 		}
 		var err error
 		if data, err = base64.StdEncoding.DecodeString(payload); err != nil {
@@ -205,8 +202,8 @@ func loadImage(ctx context.Context, env *Env, src string) ([]byte, string, error
 			return nil, "", err
 		}
 	case schemeRe.MatchString(s) && !strings.HasPrefix(strings.ToLower(s), "file://"):
-		return nil, "", errors.New("Unrecognized image source scheme. Use an http(s) URL, a local " +
-			"file path, a file:// URI, or a data: URL.")
+		return nil, "", errors.New("Unrecognized image source scheme. Give an http(s) URL, a file path, " +
+			"a file:// URI or a data: URL.")
 	default:
 		path := s
 		if strings.HasPrefix(strings.ToLower(path), "file://") {
@@ -217,7 +214,7 @@ func loadImage(ctx context.Context, env *Env, src string) ([]byte, string, error
 			return nil, "", err
 		}
 		if fi, err := os.Stat(abs); err != nil || !fi.Mode().IsRegular() {
-			return nil, "", fmt.Errorf("media file not found: '%s'", path)
+			return nil, "", fmt.Errorf("no file at '%s'", path)
 		}
 		if err := env.Policy.CheckRead(abs); err != nil {
 			return nil, "", err
@@ -232,7 +229,7 @@ func loadImage(ctx context.Context, env *Env, src string) ([]byte, string, error
 		}
 	}
 	if len(data) > visionMaxSource {
-		return nil, "", errors.New("media exceeds size limit")
+		return nil, "", errors.New("the file is over the size limit")
 	}
 	if mime := sniffImage(data); mime != "" {
 		return data, mime, nil
@@ -249,10 +246,10 @@ func downloadImage(ctx context.Context, env *Env, raw string) ([]byte, error) {
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Hostname() == "" {
-		return nil, errors.New("invalid image URL")
+		return nil, errors.New("the image URL could not be parsed")
 	}
 	if !w.AllowPrivate && w.privateHost(ctx, u.Hostname()) {
-		return nil, errors.New("blocked: unsafe or private URL")
+		return nil, errors.New("refused: the URL is unsafe or private")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
@@ -269,14 +266,14 @@ func downloadImage(ctx context.Context, env *Env, raw string) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	if resp.ContentLength > visionMaxSource {
-		return nil, fmt.Errorf("Image too large (%d bytes, max %d)", resp.ContentLength, visionMaxSource)
+		return nil, fmt.Errorf("Image is %d bytes; the most allowed is %d", resp.ContentLength, visionMaxSource)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, visionMaxSource+1))
 	if err != nil {
 		return nil, err
 	}
 	if len(data) > visionMaxSource {
-		return nil, fmt.Errorf("Image too large (more than %d bytes)", visionMaxSource)
+		return nil, fmt.Errorf("Image is larger than the %d bytes allowed", visionMaxSource)
 	}
 	return data, nil
 }

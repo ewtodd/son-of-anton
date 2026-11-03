@@ -141,10 +141,10 @@ func TestCompletion(t *testing.T) {
 	clearPrompt(t, a)
 
 	a.Type("/mo")
-	waitScreen(t, a, "/model", "Switch this session's model")
+	waitScreen(t, a, "/model", "Change the model for this session")
 	a.Press("tab")
 	waitDock(t, a, "/model ")
-	waitGone(t, a, "Switch this session's model")
+	waitGone(t, a, "Change the model for this session")
 	a.Type("oth")
 	waitScreen(t, a, "other-model")
 	a.Press("tab")
@@ -173,15 +173,15 @@ func TestCompletion(t *testing.T) {
 	clearPrompt(t, a)
 
 	a.Type("/hel")
-	waitScreen(t, a, "Show the commands")
+	waitScreen(t, a, "List the commands")
 	a.Press("enter") // accepts, does not send
 	waitDock(t, a, "/help ")
 	if strings.Contains(a.Screen(), "commands:") {
 		t.Fatal("enter on an open list sent the command")
 	}
 	a.Press("enter")
-	waitScreen(t, a, "commands:", "/compact [focus topic | --preview] — Summarize older turns",
-		"/new — Start a new session", "ctrl+p opens the palette")
+	waitScreen(t, a, "commands:", "/compact [focus topic | --preview] — Condense older turns into a summary",
+		"/new — Open a new session", "ctrl+p opens the palette")
 }
 
 func TestHistorySuggestions(t *testing.T) {
@@ -231,7 +231,7 @@ func TestThePalette(t *testing.T) {
 	a := open(t, d, tui.Options{})
 	a.Resize(100, 40)
 	a.Press("ctrl+p")
-	waitScreen(t, a, "Commands", "/new", "Session · Start a new session", "Configuration · Switch this session's model")
+	waitScreen(t, a, "Commands", "/new", "Session · Open a new session", "Configuration · Change the model for this session")
 	a.Type("comp")
 	waitGone(t, a, "/new")
 	a.Press("enter")

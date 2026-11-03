@@ -53,7 +53,7 @@ func (w *Web) search(ctx context.Context, query string, limit int) string {
 		failures = append(failures, "duckduckgo: "+err.Error())
 	}
 	if len(failures) == 0 {
-		return jsonOut(map[string]any{"success": false, "error": "no search backend is configured"})
+		return jsonOut(map[string]any{"success": false, "error": "no search engine is set up"})
 	}
 	return jsonOut(map[string]any{"success": false, "error": strings.Join(failures, "; ")})
 }
@@ -123,7 +123,7 @@ func doSearch(req *http.Request) ([]byte, int, error) {
 	return body, resp.StatusCode, err
 }
 
-const ddgRefused = "DuckDuckGo refused the query (rate limited)"
+const ddgRefused = "DuckDuckGo turned the query away (rate limit)"
 
 func (w *Web) searchDuckDuckGo(ctx context.Context, query string, limit int) ([]searchHit, error) {
 	form := url.Values{"q": {query}}

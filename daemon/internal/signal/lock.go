@@ -23,7 +23,7 @@ func (e *HeldError) Error() string {
 	return fmt.Sprintf("signal: the account is in use by process %d (another gateway)", e.PID)
 }
 
-// lockDir is gateway/status.py _get_lock_dir.
+// lockDir is where the per-account lock files live.
 func lockDir() (string, error) {
 	if d := os.Getenv("SON_OF_ANTON_GATEWAY_LOCK_DIR"); d != "" {
 		return d, nil
@@ -70,9 +70,8 @@ func pidAlive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// AcquireLock takes the machine-local lock the Python gateway takes for a
-// Signal account (gateway/status.py acquire_scoped_lock), so the two never
-// serve one account at once. A *HeldError means a live process holds it. The
+// AcquireLock takes the machine-local lock for a Signal account, so two
+// processes never serve one account at once. A *HeldError means a live process holds it. The
 // release function removes the lock if it is still ours.
 func AcquireLock(account string) (release func(), err error) {
 	dir, err := lockDir()

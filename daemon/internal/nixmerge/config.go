@@ -1,6 +1,6 @@
 // Package nixmerge is the activation-time merges of NixOS and Home Manager,
-// ported from nix/config_merge.py and nix/rules_merge.py: the declared
-// settings into config.toml, the declared rules into memories/rules.toml,
+// the declared settings into config.toml, the declared rules into
+// memories/rules.toml,
 // each three-way against a state file recording what Nix wrote last.
 package nixmerge
 
@@ -58,8 +58,8 @@ func RunConfig(args []string, stderr io.Writer) int {
 	return 0
 }
 
-// mergeConfig is main() of config_merge.py. An error is what the Python
-// would die of with a traceback (exit 1).
+// mergeConfig merges the declared settings into the config file. An error
+// is a failure that ends the activation step (exit 1).
 func mergeConfig(declaredPath, configPath, statePath string, adopt, dryRun bool, stderr io.Writer) error {
 	theirs, err := loadTOML(declaredPath)
 	if err != nil {

@@ -139,15 +139,16 @@ type todoTool struct{}
 func (todoTool) Schema() provider.Tool {
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
 		Name: "todo",
-		Description: "Manage your task list for this session. Use it for work with 3 or more steps or several tasks. " +
-			"Call with no parameters to read the list. With todos: merge=false (default) replaces the list; " +
-			"merge=true updates items by id and adds new ones. Each item: {id, content, status}, status one of " +
-			"pending, in_progress, completed, cancelled. List order is priority; keep one item in_progress. " +
-			"Mark an item completed only after the work is verified. Always returns the full list.",
+		Description: "Keeps a checklist for the current session, for work that has about three or more steps or several separate requests. " +
+			"With no arguments it just returns the list. To change it, pass todos: each entry is {id, content, status}, " +
+			"where status is pending, in_progress, completed or cancelled. By default the new todos replace the whole list; " +
+			"with merge set to true they are applied by id, updating entries that exist and appending the rest. " +
+			"Order is priority. Have a single entry in_progress at a time, and mark one completed only once you have checked the work. " +
+			"Every call returns the complete list.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "todos": {"type": "array", "description": "Items to write. Omit to read the list.", "items": {
+    "todos": {"type": "array", "description": "The entries to write. Leave out to only read the list.", "items": {
       "type": "object",
       "properties": {
         "id": {"type": "string"},
@@ -156,7 +157,7 @@ func (todoTool) Schema() provider.Tool {
       },
       "required": ["id", "content", "status"]
     }},
-    "merge": {"type": "boolean", "description": "true: update by id and add new items. false (default): replace the list."}
+    "merge": {"type": "boolean", "description": "true applies the entries by id (update or append). false, the default, replaces the list."}
   }
 }`),
 	}}

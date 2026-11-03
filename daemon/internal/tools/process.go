@@ -132,7 +132,7 @@ func startBackground(env *Env, cwd, command string, notify bool) (string, error)
 	}
 	if err := cmd.Start(); err != nil {
 		st.mu.Unlock()
-		return "", fmt.Errorf("failed to start bash: %w", err)
+		return "", fmt.Errorf("could not start bash: %w", err)
 	}
 	p.pid = cmd.Process.Pid
 	st.procs[p.id] = p
@@ -150,7 +150,7 @@ func startBackground(env *Env, cwd, command string, notify bool) (string, error)
 		queued := p.notify && !p.consumed
 		if queued {
 			st.notes = append(st.notes, note{p.id, fmt.Sprintf(
-				"[Background process %s exited with code %d. Command: %s. Output (last %d chars):\n%s]",
+				"[Process %s has finished, exit code %d. It ran: %s. Last %d characters of its output:\n%s]",
 				p.id, code, p.command, procExitedChars, cleanOutput(p.buf.String(), procExitedChars))})
 		}
 		cb, exit := st.onNote, st.onExit
@@ -196,7 +196,7 @@ func (s *State) TakeNotifications() []string {
 func (s *State) lookupProc(ref string) (*bgProc, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
-		return nil, fmt.Errorf("session_id is required")
+		return nil, fmt.Errorf("give a session_id")
 	}
 	short := strings.TrimPrefix(ref, "proc_")
 	s.mu.Lock()
@@ -215,10 +215,10 @@ func (s *State) lookupProc(ref string) (*bgProc, error) {
 			return found[0], nil
 		}
 		if len(found) > 1 {
-			return nil, fmt.Errorf("session_id prefix %q is ambiguous", ref)
+			return nil, fmt.Errorf("%q fits more than one process; use more of the id", ref)
 		}
 	}
-	return nil, fmt.Errorf("no such process: %s", ref)
+	return nil, fmt.Errorf("there is no process with id %s", ref)
 }
 
 func (s *State) snapshotProc(p *bgProc) (exited bool, code int, ended time.Time) {
@@ -232,19 +232,19 @@ type processTool struct{}
 func (processTool) Schema() provider.Tool {
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
 		Name: "process",
-		Description: "Manage background processes started with terminal(background=true). " +
-			"Actions: list; poll (status and recent output); log (output lines, with offset and limit); " +
-			"wait (block until it exits or timeout seconds pass, default 180, max 600); kill. " +
-			"session_id is the id terminal returned; a unique prefix of 4 or more characters works. " +
-			"Processes have no stdin.",
+		Description: "Inspect and control the processes that terminal started with background set. " +
+			"Choose an action: list shows them all; poll gives status plus the latest output; log pages through output lines " +
+			"(offset, limit); wait blocks until the process ends or timeout seconds pass (180 by default, 600 at most); kill stops it. " +
+			"Identify a process by the session_id terminal gave back, or by the first 4 or more characters of it if those are unique. " +
+			"A background process cannot be given input.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "action": {"type": "string", "enum": ["list", "poll", "log", "wait", "kill"]},
-    "session_id": {"type": "string", "description": "Process id (all actions except list)."},
-    "timeout": {"type": "integer", "description": "wait: seconds to wait."},
-    "offset": {"type": "integer", "description": "log: first line, 0-based (default: the last lines)."},
-    "limit": {"type": "integer", "description": "log: number of lines (default 200)."}
+    "action": {"type": "string", "enum": ["list", "poll", "log", "wait", "kill"], "description": "What to do with the background processes."},
+    "session_id": {"type": "string", "description": "Which process, for every action except list."},
+    "timeout": {"type": "integer", "description": "For wait: how many seconds."},
+    "offset": {"type": "integer", "description": "For log: the line to start at, from 0. Without it you get the most recent lines."},
+    "limit": {"type": "integer", "description": "For log: how many lines, 200 by default."}
   },
   "required": ["action"]
 }`),
@@ -271,7 +271,7 @@ func (processTool) Run(ctx context.Context, env *Env, raw json.RawMessage) (stri
 	switch a.Action {
 	case "poll", "log", "wait", "kill":
 	default:
-		return errorResult(fmt.Sprintf("unknown action %q: use list, poll, log, wait or kill", a.Action)), nil
+		return errorResult(fmt.Sprintf("%q is not an action; the actions are list, poll, log, wait and kill", a.Action)), nil
 	}
 	p, err := st.lookupProc(a.SessionID)
 	if err != nil {
@@ -384,12 +384,12 @@ func waitProc(ctx context.Context, st *State, p *bgProc, timeout *int) (string, 
 		return jsonResult(map[string]any{
 			"session_id": p.id, "status": "timeout", "process_running": true,
 			"output":       cleanOutput(p.buf.String(), procPreviewChars),
-			"timeout_note": fmt.Sprintf("Still running after %d seconds; it was not stopped. Wait again, poll, or kill it.", secs),
+			"timeout_note": fmt.Sprintf("The process is still running after %d seconds and has not been touched. You can wait more, poll, or kill it.", secs),
 		})
 	case <-ctx.Done():
 		return jsonResult(map[string]any{
 			"session_id": p.id, "status": "interrupted",
-			"note": "The wait was interrupted; the process is still running.",
+			"note": "The wait was cut short; the process is still running.",
 		})
 	}
 }
@@ -423,10 +423,10 @@ func runBackground(env *Env, cwd string, a terminalArgs) (string, error) {
 		return errorResult(err.Error()), nil
 	}
 	p, _ := env.State.lookupProc(id)
-	out := map[string]any{"output": "Background process started", "session_id": id, "pid": p.pid, "exit_code": 0}
+	out := map[string]any{"output": "Started in the background", "session_id": id, "pid": p.pid, "exit_code": 0}
 	if a.Notify && !env.AsyncDelivery {
 		out["notify_unsupported"] = true
-		out["notify_note"] = "No notification can arrive in this run; use the process tool to wait for or poll the process."
+		out["notify_note"] = "This run cannot receive a notification. To find out when the process ends, wait on it or poll it with the process tool."
 	}
 	return jsonResult(out)
 }

@@ -51,8 +51,8 @@ func TestGenerateAsksTheTitleModel(t *testing.T) {
 		t.Fatalf("title request = %v", req)
 	}
 	msgs := fake.Messages(0)
-	if len(msgs) != 2 || !strings.Contains(string(msgs[0]), "You name chat sessions") || !strings.Contains(string(msgs[0]), "Reply with JSON only") {
-		t.Fatalf("messages = %s; the system prompt is the Python one, verbatim", msgs)
+	if len(msgs) != 2 || !strings.Contains(string(msgs[0]), "first message of a conversation") || !strings.Contains(string(msgs[0]), "Output the JSON object and nothing else") {
+		t.Fatalf("messages = %s; the system prompt is the title prompt", msgs)
 	}
 	if !strings.Contains(string(msgs[1]), "login button") {
 		t.Fatalf("the user message is the opening message: %s", msgs[1])

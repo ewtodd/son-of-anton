@@ -36,7 +36,7 @@ const (
 // How a turn that did not end with a final answer is closed in the
 // transcript, so it always ends on an assistant row.
 const (
-	InterruptedText = "[response interrupted]" // ../agent/agent_runtime_helpers.py:1597
+	InterruptedText = "[response interrupted]"
 	FailedText      = "[response failed]"
 )
 

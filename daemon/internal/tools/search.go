@@ -19,20 +19,20 @@ type searchFilesTool struct{}
 func (searchFilesTool) Schema() provider.Tool {
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
 		Name: "search_files",
-		Description: "Search file contents (regex) or find files by name glob. " +
-			"Content search returns matching lines with paths and line numbers; " +
-			"file search returns paths sorted by modification time.",
+		Description: "Look for text inside files with a regular expression, or look for files by name with a glob. " +
+			"A content search answers with path, line number and the line itself. " +
+			"A file search answers with paths, most recently modified first.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "pattern": {"type": "string", "description": "Regex for content search, or a glob (e.g. *.py) for file search."},
-    "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside files, 'files' finds files by name.", "default": "content"},
-    "path": {"type": "string", "description": "Directory or file to search in (default: the working directory)."},
-    "file_glob": {"type": "string", "description": "Filter files by glob in content mode (e.g. '*.py')."},
-    "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Content mode output: 'content' shows matching lines, 'files_only' lists paths, 'count' shows match counts per file.", "default": "content"},
-    "limit": {"type": "integer", "description": "Maximum number of results to return (default 50).", "default": 50},
-    "offset": {"type": "integer", "description": "Skip the first N results for pagination (default 0).", "default": 0},
-    "context": {"type": "integer", "description": "Lines of context around each match in content mode (default 0).", "default": 0}
+    "pattern": {"type": "string", "description": "A regular expression when searching contents; a glob such as *.py when searching for files."},
+    "target": {"type": "string", "enum": ["content", "files"], "description": "content looks inside files; files looks at file names.", "default": "content"},
+    "path": {"type": "string", "description": "Where to look: a directory or a single file. Defaults to the working directory."},
+    "file_glob": {"type": "string", "description": "In content searches, only look in files whose names match this glob, such as '*.py'."},
+    "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "For content searches: content prints the matching lines, files_only prints just the paths, count prints the number of matches per file.", "default": "content"},
+    "limit": {"type": "integer", "description": "Most results to return. Defaults to 50.", "default": 50},
+    "offset": {"type": "integer", "description": "Number of results to skip, for paging through a long list. Defaults to 0.", "default": 0},
+    "context": {"type": "integer", "description": "Lines to show before and after each match in content searches. Defaults to 0.", "default": 0}
   },
   "required": ["pattern"]
 }`),
@@ -90,10 +90,10 @@ func (searchFilesTool) Run(ctx context.Context, env *Env, args json.RawMessage) 
 		return errorResult(err.Error()), nil
 	}
 	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
-		return errorResult("path does not exist: " + a.Path), nil
+		return errorResult("nothing at " + a.Path), nil
 	}
 	if _, err := exec.LookPath("rg"); err != nil {
-		return errorResult("ripgrep (rg) is required for search_files"), nil
+		return errorResult("search_files runs on ripgrep and rg was not found"), nil
 	}
 
 	switch a.Target {
@@ -102,7 +102,7 @@ func (searchFilesTool) Run(ctx context.Context, env *Env, args json.RawMessage) 
 	case "content":
 		return runContentSearch(ctx, env, a, abs)
 	default:
-		return errorResult("target must be 'content' or 'files'"), nil
+		return errorResult("target has to be content or files"), nil
 	}
 }
 

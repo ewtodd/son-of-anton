@@ -1,6 +1,6 @@
 // Package approval classifies shell commands and file writes against the
-// fork's blocklists (ported from tools/approval.py) and enforces the
-// permission modes through a gate.
+// pattern lists (patterns.go) and enforces the permission modes through a
+// gate.
 //
 // The gate is the only place a dangerous operation is permitted. It asks an
 // approver when the mode requires it; with no approver available it denies,
@@ -117,7 +117,7 @@ func (g *Gate) Decide(command string) (bool, string) {
 	case Yolo:
 		return true, ""
 	case Lockdown:
-		return false, "lockdown: approval is required for everything"
+		return false, "lockdown: every action needs approval"
 	default:
 		if !dangerous {
 			return true, ""
@@ -187,7 +187,7 @@ func (g *Gate) commandCheck(ctx context.Context, command, subject, detail string
 		return Verdict{
 			Allowed: false,
 			Message: "BLOCKED (hardline): " + hardline.Description +
-				". This command is blocked in every mode, yolo included; run it yourself in a terminal outside the agent if you must.",
+				". No mode permits this command, yolo included. If it really has to run, the user can do it in their own terminal.",
 		}
 	}
 	dangerous := len(findings) > 0
@@ -255,14 +255,14 @@ func (g *Gate) ask(ctx context.Context, req Request) Verdict {
 	choice, err := g.approver(ctx, req)
 	var denied *DeniedError
 	if errors.As(err, &denied) {
-		return Verdict{Allowed: false, Asked: true, Message: "BLOCKED: the user denied this: " + denied.Reason + ". Do not retry it."}
+		return Verdict{Allowed: false, Asked: true, Message: "BLOCKED: the user said no, giving this reason: " + denied.Reason + ". Do not try it again."}
 	}
 	if err != nil {
-		return Verdict{Allowed: false, Asked: true, Message: fmt.Sprintf("BLOCKED: approval failed: %v", err)}
+		return Verdict{Allowed: false, Asked: true, Message: fmt.Sprintf("BLOCKED: the approval request could not be completed: %v", err)}
 	}
 	switch choice {
 	case Deny:
-		return Verdict{Allowed: false, Asked: true, Message: "BLOCKED: the user denied this. Do not retry it."}
+		return Verdict{Allowed: false, Asked: true, Message: "BLOCKED: the user said no. Do not try it again."}
 	case Once:
 		return Verdict{Allowed: true, Asked: true}
 	case Session, Always:
@@ -277,7 +277,7 @@ func (g *Gate) ask(ctx context.Context, req Request) Verdict {
 		return Verdict{Allowed: true, Asked: true}
 	default:
 		// An unknown answer fails closed.
-		return Verdict{Allowed: false, Asked: true, Message: "BLOCKED: the approver gave no answer. Do not retry it."}
+		return Verdict{Allowed: false, Asked: true, Message: "BLOCKED: the approval request got no usable answer. Do not try it again."}
 	}
 }
 
@@ -292,15 +292,15 @@ func (g *Gate) remember(keys []string) {
 func (g *Gate) nobodyMessage(req Request) string {
 	switch {
 	case g.curMode() == Lockdown:
-		return "BLOCKED: lockdown mode requires approval for everything, and nobody is available to approve it. Lockdown stays on; start the run with an approver attached."
+		return "BLOCKED: lockdown mode asks for approval on every action and there is no one here to give it. Lockdown cannot be bypassed; run this with someone attached who can approve."
 	case req.Kind == "write":
-		return "BLOCKED: this write needs approval, and nobody is available to approve it. Start the run with an approver attached."
+		return "BLOCKED: this write needs approval and there is no one here to give it. Run this with someone attached who can approve."
 	default:
 		reasons := strings.Join(req.Reasons, ", ")
 		if reasons == "" {
 			reasons = "a dangerous command"
 		}
-		return fmt.Sprintf("BLOCKED: %s — nobody is available to approve this. Start the run with --yolo to allow dangerous commands without asking.", reasons)
+		return fmt.Sprintf("BLOCKED: %s, and there is no one here to approve it. Start the run with --yolo to let dangerous commands through unasked.", reasons)
 	}
 }
 
@@ -358,18 +358,18 @@ func (g *Gate) curMode() Mode {
 	return g.mode
 }
 
-// memoryDenied is the model's answer to a refused memory write (WA:360).
-const memoryDenied = "Memory write denied by user. The change was not saved."
+// memoryDenied is the model's answer to a refused memory write.
+const memoryDenied = "The user refused this memory change, so nothing was saved."
 
 // Memory asks the approver about one memory change whatever the permission
-// mode, yolo included (WA:324-375). Only "once" and "session" allow it; with
+// mode, yolo included. Only "once" and "session" allow it; with
 // no approver nothing can be saved.
 func (g *Gate) Memory(ctx context.Context, summary, detail string) Verdict {
 	if g.approver == nil {
-		return Verdict{Message: "Nobody can approve a memory change in this run; it was not saved."}
+		return Verdict{Message: "Nobody is here to approve a memory change, so nothing was saved."}
 	}
 	choice, err := g.approver(ctx, Request{
-		Kind: "memory", Subject: detail, Reasons: []string{"Save to memory: " + summary}, AllowRemember: false,
+		Kind: "memory", Subject: detail, Reasons: []string{"Memory change: " + summary}, AllowRemember: false,
 	})
 	var denied *DeniedError
 	if errors.As(err, &denied) {
@@ -389,7 +389,7 @@ func (g *Gate) Script(ctx context.Context, script string) Verdict {
 	var v Verdict
 	switch g.curMode() {
 	case Ask, Lockdown:
-		v = g.ask(ctx, Request{Kind: "command", Subject: script, Reasons: []string{"run a Python script"}, AllowRemember: false})
+		v = g.ask(ctx, Request{Kind: "command", Subject: script, Reasons: []string{"run a script"}, AllowRemember: false})
 	default:
 		v = Verdict{Allowed: true}
 	}

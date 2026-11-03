@@ -108,12 +108,12 @@ func Silent(response string) bool {
 // Frame is a delivery: the content under a header naming the job, and a
 // footer saying how to manage it.
 func Frame(name, id, content string) string {
-	return "Cronjob Response: " + name + "\n(job_id: " + id + ")\n-------------\n\n" + content +
-		"\n\nTo stop or manage this job, send me a new message (e.g. \"stop reminder " + name + "\")."
+	return "Scheduled job: " + name + " (id " + id + ")\n\n" + content +
+		"\n\nTo change or cancel this job, message me, for instance \"cancel the " + name + " job\"."
 }
 
 var (
-	wrapperRE = regexp.MustCompile(`^(RuntimeError|Exception|ValueError|HTTPStatusError):\s*`)
+	wrapperRE = regexp.MustCompile(`^(?:\w*Error|Exception):\s*`)
 	spaceRE   = regexp.MustCompile(`\s+`)
 )
 
@@ -121,7 +121,7 @@ var (
 func FailureText(name, errMsg string) string {
 	text := strings.TrimSpace(errMsg)
 	if text == "" {
-		text = "unknown error"
+		text = "no error text"
 	}
 	if r := []rune(text); len(r) > 2000 {
 		text = string(r[:2000])
@@ -130,7 +130,7 @@ func FailureText(name, errMsg string) string {
 	if utf8.RuneCountInString(text) > 180 {
 		text = strings.TrimRight(string([]rune(text)[:177]), " \t\n") + "..."
 	}
-	return fmt.Sprintf("⚠️ Cron '%s' failed: %s", name, text)
+	return fmt.Sprintf("⚠️ The scheduled job '%s' failed: %s", name, text)
 }
 
 // OriginChat is the Signal chat a job was created in, "" for none.
@@ -188,9 +188,9 @@ func ResolveTargets(j Job, homeChannel string) (targets []string, problem string
 	}
 	switch {
 	case len(bad) > 0:
-		problem = "unsupported delivery target " + strings.Join(bad, ", ") + " (Signal is the only platform)"
+		problem = "cannot deliver to " + strings.Join(bad, ", ") + "; Signal is the only channel"
 	case len(targets) == 0 && strings.ToLower(deliver) != "local" && strings.ToLower(deliver) != "origin":
-		problem = "no delivery target resolved for deliver=" + deliver
+		problem = "deliver=" + deliver + " names no chat to send to"
 	}
 	return targets, problem
 }

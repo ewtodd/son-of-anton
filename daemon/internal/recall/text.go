@@ -12,10 +12,10 @@ const (
 	chunkOverlap = 200
 )
 
-// chunkText is RAG:_chunk_text: whitespace-normalized text, one chunk up to
+// chunkText splits text: whitespace-normalized text, one chunk up to
 // chunkChars, else windows ending at the last space after the first half,
 // with chunkOverlap of overlap. maxChars > 0 cuts each chunk. Lengths are in
-// characters (runes), as in the Python.
+// characters (runes).
 func chunkText(text string, maxChars int) []string {
 	r := []rune(strings.Join(strings.Fields(text), " "))
 	if len(r) == 0 {
@@ -69,7 +69,7 @@ const preamble = "Reference excerpts retrieved automatically from stored facts a
 
 type hit struct{ label, text string }
 
-// format is RAG:format_recalled_context.
+// format renders recalled hits as the fenced block that rides a user message.
 func format(hits []hit) string {
 	if len(hits) == 0 {
 		return ""
@@ -118,7 +118,7 @@ type factDoc struct {
 	terms    []string
 }
 
-// keywordHits is RAG:keyword_facts: BM25-like over the given facts. idf is
+// keywordHits ranks facts by keyword: BM25-like over the given facts. idf is
 // ln(1 + N/df); the top three scoring at least keywordFloor are returned.
 func keywordHits(query string, docs []factDoc) []hit {
 	qset := map[string]bool{}
