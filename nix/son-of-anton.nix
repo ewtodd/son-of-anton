@@ -17,6 +17,7 @@
   openssh,
   poppler-utils,
   bubblewrap,
+  ffmpeg,
   # The Go daemon and command: the TUI, -q and -z are its clients (packages.nix).
   soa-d,
   # The physics harness environment (nix/physics-harness.nix): python3 with
@@ -38,6 +39,8 @@ let
     poppler-utils
     # The physics mode refuses to execute model-authored code without it.
     bubblewrap
+    # Agents convert audio and video in their terminal (voice notes, clips).
+    ffmpeg
   ]
   ++ extraPackages;
 

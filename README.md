@@ -13,185 +13,91 @@
 ╚═╝  ╚═╝  ╚═╝  ╚═══╝    ╚═╝     ╚═════╝  ╚═╝  ╚═══╝
 ```
 
-An always-on agent you talk to from a terminal or from Signal, with a
-separate physics research mode that runs only when you ask for it.
+An always-on agent you talk to from a terminal or from Signal, with a physics
+research mode that runs only when you ask for it.
 
-## Status: the Go rewrite
+One daemon per account, `soa-d`, written in Go, holds the sessions, runs the
+agent loop and its tools, serves Signal and runs scheduled jobs. The terminal
+UI and the `son-of-anton` command are its clients. It speaks to one
+OpenAI-compatible endpoint (here, [maitred](https://github.com/ewtodd/maitred)
+in front of local models). Linux and Nix only.
 
-`soa-d`, a Go daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`),
-replaces the Python backend. Its v1 is complete: everything below runs on it.
+## Status
 
-- **On soa-d:** the terminal TUI (`son-of-anton`, which opens `soa-d tui`,
-  written in Go), `-q` and `-z`; Signal
-  chats with fiona and her relay workers, and cron, once an instance moves
-  (`backend = "soa-d"` in the NixOS module; until then that instance's
-  Python gateway serves them).
-- **Still Python:** physics runs, the `son-of-anton` command's flag parsing,
-  and the Signal gateway of each instance that has not moved. The Python
-  backend goes once every instance has moved.
-- **MCP:** servers in `[mcp_servers.<name>]` are found with `tool_search` and
-  run with `tool_call`.
-- **LSP:** write_file and patch report new errors from the file's language server.
+Everything runs on soa-d. The physics mode is still Python until its Go port.
+Some text and data that came from hermes-agent (prompts, tool descriptions,
+the command-safety tables, the Nix layout) are still being rewritten; see
+Provenance.
 
-## Running it
+## The command
 
-```bash
-nix build            # result/bin/son-of-anton (soa-d is on its PATH)
-nix run .# --        # the TUI, on a new session in this directory
-nix run .# -- -c     # continue this workspace's latest session
+```
+son-of-anton                    the terminal UI (-c continues here, -r ID|latest resumes)
+son-of-anton "a question"       one answer, printed (also -q, --query-file FILE|-)
+son-of-anton -z "a task"        a delegated one-shot: lean prompt, no memory
+son-of-anton status             which daemon serves this home, Signal, cron, models
+son-of-anton sessions ...       list, rename, delete, import (Claude Code, Codex, opencode)
+son-of-anton problem ...        the physics mode
 ```
 
-Settings live in `~/.son-of-anton/config.toml`, secrets in `.env` next to it.
-One OpenAI-compatible provider serves everything:
+`-m MODEL`, `--reasoning LEVEL` and `--yolo` apply to all three ways in. A
+one-shot denies dangerous commands unless `--yolo`, since nobody is there to
+approve them.
 
-```toml
-[model]
-default = "qwen3.8-27b"
-provider = "custom"
+## The terminal UI
 
-[custom_providers.custom]
-base_url = "http://127.0.0.1:8080/v1"
-key_env = "MY_ENDPOINT_KEY"     # read from the environment, then .env
-```
+A port of [opencode](https://github.com/sst/opencode)'s session layout: the
+transcript, a sidebar on wide screens (`ctrl+b`), the prompt below.
 
-The TUI is a client of the daemon. `son-of-anton` starts `soa-d serve` when
-none is running (log: `~/.son-of-anton/logs/soa-d.log`); sessions, queued
-messages and pending approvals live in the daemon, so quitting the TUI leaves a
-running turn going. After an update, `pkill -f 'soa-d serve'` and the next
-launch starts the new daemon.
-
-## Sessions and the command line
-
-- `-c` continues the latest session of this workspace (the git root, or the
-  directory itself) and never another directory's; with none it starts a new
-  one. `--resume ID` opens a session, `--resume latest` the newest anywhere.
-- `-q PROMPT` answers one query. `-z PROMPT` is a one-shot for scripts: stdout
-  is only the final answer, `--usage-file F` writes token use, and the prompt
-  is lean (no identity or memory, only rules marked `delegated`). Both take
-  `-m MODEL`, `--reasoning LEVEL` and `--yolo`; without `--yolo` a dangerous
-  command is denied, since nobody is there to approve it.
-- `soa-d tui [--home DIR] [--in DIR] [-c | --resume ID|latest] [-m MODEL]
-  [--reasoning LEVEL] [--yolo]` opens the terminal client on the daemon (it
-  starts the daemon when nothing listens); `son-of-anton` with no query runs
-  it with the same flags.
-- `son-of-anton` is a small Go program (`daemon/cmd/son-of-anton`) that runs
-  `soa-d` for the above: no words is the terminal UI, words (or `-q`,
-  `--query-file FILE|-`) a query, `-z` a one-shot. Flags: `-m`, `--reasoning`,
-  `--yolo`, `--home DIR`; the UI also takes `--in DIR`, `-c`, `--resume`.
-  `--version` prints the version.
-- `son-of-anton status` shows, without starting a daemon, whether one runs
-  (pid, version), what serves it, Signal and cron, the models and the session
-  counts.
-- `son-of-anton sessions [list] [--kind KIND]... [--all] [--limit N]` lists the
-  interactive and worker sessions, newest first; `sessions rename ID TITLE...`,
-  `sessions delete ID [--yes]` (refused while the session is in use) and
-  `sessions import ARGS...` (`soa-d import`'s flags) manage them.
-- `son-of-anton problem ARGS...` is the physics mode (Python until its Go port).
-- A message typed while a turn runs is queued in the daemon and survives a
-  restart.
-- The agent can hand work to subagents (`explore` searches and reads; `general`
-  has the agent's tools), several at once. `ctrl+x ↓` opens the newest one's
-  transcript, `←`/`→` move between them, `↑` comes back.
-- The TUI's sessions are in `soa-d.db`; the gateway's and cron's are still in
-  `state.db`.
-- `soa-d import --from ~/.son-of-anton` brings the Python's sessions into the
-  TUI (safe to run again; sessions already imported are skipped).
-- `soa-d import --from-claude [ROOT]`, `--from-codex [ROOT]` and
-  `--from-opencode [DB]` bring Claude Code, Codex CLI and opencode sessions in
-  straight from those tools' own stores (read-only; defaults `~/.claude/projects`,
-  `~/.codex/sessions`, `~/.local/share/opencode/opencode.db`). A session already
-  imported is skipped; `--force` imports it again.
-- Web search falls back from SearXNG (`SEARXNG_URL`) to DuckDuckGo, and
-  `web_extract` reads pages directly, then through `WEB_EXTRACT_URL`, then any
-  opt-in `web.extract_fallbacks` (`"wayback"`, `"jina"`).
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| `/model [NAME]` | switch the session's model (bare: a picker) |
-| `/reasoning [LEVEL]` | set the reasoning effort (bare: a picker) |
-| `/perm default\|ask\|lockdown\|yolo` | how much it asks before running commands; shift+tab cycles |
-| `/new`, `/clear` | start a new session here |
-| `/resume [ID]`, `/sessions` | open a session (bare: a picker) |
-| `/compact [focus]` | summarize the older turns now, favoring a topic; `/compact --preview` shows what would be summarized |
-| `/commit [notes]` | review the uncommitted diff, write a message in the repo's style, commit |
-| `/stop` | kill the session's background processes |
-| `/sendnow [text]`, `/sendall` | steer the running turn onto this text or the oldest queued message; `/sendall` onto all of them |
-| `/cancel` | drop queued messages |
-| `/status`, `/help`, `/skin`, `/q` | |
-
-`!cmd` runs a shell command in the session's directory. `/commit` authors as
-`[git] author_name` / `author_email` when both are set, leaving you as the
-committer and ending the message with a `Model:` line naming the model that
-wrote it (under `auto`, the one that served it; the TUI shows it too).
+- `ctrl+p` opens the command palette, `ctrl+g` your editor, `shift+tab`
+  cycles the permission mode (default, ask, lockdown, yolo), `ctrl+x ↓` opens
+  the newest subagent (`←`/`→` between them, `↑` back).
+- `/model`, `/reasoning`, `/resume` and `/cancel` open pickers; `/new`,
+  `/compact`, `/commit`, `/stop`, `/sendnow`, `/sendall`, `/status`, `/skin`.
+  `!cmd` runs a shell command without a model turn.
+- A message typed during a turn queues in the daemon and survives a restart.
+- Under a routed model (maitred's `auto`), the meta row and the context bar
+  show the model that answered and its window.
 
 ## Signal
 
-Each instance's gateway answers one Signal group (all instances can share one
-signal-cli number) and also runs cron. On an instance with
-`gateway.single_user = true` the chat is a relay: project work goes to a
-headless terminal session in the directory you name (`son-of-anton chat -Q`),
-the chat reports each result, and a dangerous command asks there as
-`/approve <id>` / `/deny <id>`. Sessions started in the TUI cannot be relayed
-until phase 5.
+Each instance answers its own Signal groups (all can share one signal-cli
+number). The chat's agent is **fiona**, the front desk: she answers, looks
+things up, reads images and keeps her own notes and memory, and hands real
+work (code, files, commands) to a **worker**, a terminal session in the
+directory you name, through her `relay` tool. Workers keep
+`[relay] worker_hours`; their approvals and questions come to the chat as
+`/approve <id>` and `/deny <id>`. `/pickup` in the terminal UI takes a worker
+over.
 
-soa-d serves a chat itself when `[daemon] signal = true`: each chat is a session
-of its own (a small toolset: memory, session search, questions and todos) and
-its approvals and questions come to the chat. The chat takes `/new`, `/stop`,
-`/status`, `/sendnow [text]`, `/sendall`, `/approve [id] [always]` and
-`/deny [id] [reason]`; a typed `/new` no longer asks to confirm.
-
-`/model` in a chat shows the model the chat runs on and the one that answered last;
-`/model <name>` switches the chat to a model `model.list` knows, from the next
-message. Each message after a reply also tells the agent which model answered.
-A session pinned to a model the endpoint no longer serves (HTTP 404) falls back
-to the default model with a notice. `[models] renamed = { "old" = "new" }` maps a
-renamed model to its new name: pins on it keep working and stored sessions are
-rewritten at start.
-
-With soa-d the chat's agent is fiona, the front desk of the instance
-(`[daemon] instance` names it). She has her own identity, takes real work to a
-worker rather than doing it, and has memory, session search, the web tools and
-file tools that reach only her notes folder, `~/.son-of-anton/notes/gateway`.
-Her model is `gateway.model`; when that route is down (after the provider's
-retries, before any output) the one request is sent again on `model.default`,
-and the next request tries `gateway.model` first. `[relay] worker_hours =
-[start, end]` tells her when workers may run.
-
-Fiona relays work with the `relay` tool. A worker is a session of its own in the
-directory you name; it has the full tools of a terminal session, runs outside
-the chat, and the chat hears when each of its turns ends. Workers respect
-`[relay] worker_hours`: a request sent outside them waits in the worker's
-queue and runs when the hours begin. Their approvals and questions come to the
-chat. `/pickup` in the TUI takes one over (a picker, or `/pickup id-or-title`):
-the chat's later requests then queue on it for you, and it asks you instead of
-the chat, whatever the hours. Leaving it (another `/resume`, `/new`, quitting)
-hands it back to the chat.
+fiona runs on `gateway.model` (here maitred's `fiona` route: whatever eklow
+serves) and falls back to `model.default` when it is down. Each message tells
+her which model answered the last one. In a chat: `/new`, `/stop`, `/status`,
+`/model [name|default]`, `/sendnow`, `/sendall`, `/approve`, `/deny`.
 
 ## Memory
 
-Two kinds, as TOML under `~/.son-of-anton/memories/`, addressed by id:
+TOML under `~/.son-of-anton/memories/`, addressed by id:
 
-- **Rules** (`rules.toml`): standing instructions, in the system prompt and
-  frozen for a session. Every change needs your approval, and a full store
-  refuses rather than evicts. `scope = "gateway"` keeps a rule on Signal;
-  `delegated = true` keeps it even in lean `-z` prompts.
-- **Facts** (`facts.toml`, `facts.gateway.toml`): knowledge recalled when its
-  topic comes up, never in the system prompt. Recall runs in soa-d too
-  (`-q` and the TUI; not `-z`).
+- **Rules** (`rules.toml`): standing instructions in the system prompt,
+  frozen for a session. Every change needs your approval; a full store
+  refuses rather than evicts.
+- **Facts**: knowledge recalled when its topic comes up, never in the
+  system prompt.
 
-The terminal never sees gateway memory. On NixOS, `memoryRules` seeds
-`rules.toml` (a three-way merge by id that never clobbers your edits), and
-`memoryRulesFile` takes rules from a runtime path such as an agenix secret.
-`memory.rag` adds embedding recall of facts and notes, and lets
-`session_search` match by meaning.
+The terminal never sees the chat's memory (`scope = "gateway"`), and
+`session_search` never finds a chat from the terminal. With `memory.rag`,
+recall and `session_search` also match by meaning.
 
-## Physics runs
+## Scheduled jobs
 
-Nothing routes a chat message into physics. `son-of-anton problem create`
-writes a spec for a dataset; `problem run` runs it and prints `ANSWER.md` and
-`FORMAL_EVAL.md`. A chat agent can drive both through its terminal.
+The agent schedules with its `cronjob` tool; with `[daemon] cron = true` the
+daemon runs the jobs and delivers to the chat that asked.
+
+## Physics
+
+Nothing routes a message into physics: `son-of-anton problem create` writes a
+spec for a dataset, `problem run` runs it.
 
 ```bash
 son-of-anton problem create --data ~/lab-data/run42 \
@@ -199,39 +105,13 @@ son-of-anton problem create --data ~/lab-data/run42 \
 son-of-anton problem run problems/run42/problem.toml --max-iterations 5
 ```
 
-- One research manager (memory, scratchpad, token budget,
-  `submit_final_answer`) dispatches sub-agents that run code, in a
-  git-versioned workspace; a critic reviews each iteration
-  (`physics.critique_every_n`).
-- Model code runs in a separate scientific interpreter (`nix build
-  .#physics-runtime`, then `physics.python`) under bubblewrap: no network, no
-  home, no secrets, data mounted read-only from `physics.data_dirs`. It fails
-  closed without `bwrap`.
-- `physics.model` reasons, `physics.coder_model` writes the scripts, and
-  `physics.mcp.roles` limits which lookups each role may use.
-- Set `--max-iterations` on a first run: there is no other ceiling (default 50).
-  Raise `--script-timeout` (default 60s) for large data.
+A research manager dispatches sub-agents that run code in a git-versioned
+workspace, and a critic reviews each iteration. Model-written code runs under
+bubblewrap in a separate scientific interpreter (`physics.python`, from `nix
+build .#physics-runtime`) with no network, no home and the data read-only.
+Set `--max-iterations` on a first run.
 
-## Cron
-
-`son-of-anton cron <verb>` or `/cron` manages jobs, and the agent schedules
-with its `cronjob` tool. A job without a pinned model is skipped, with an
-alert, when the global default has changed since it was made, so an unattended
-job never drifts onto a paid model. Set `[cron] model_drift_guard = false` if
-your models cost nothing.
-
-With soa-d, `[daemon] cron = true` makes the daemon run the jobs: it reads the
-same `cron/jobs.json` and takes the same locks as the Python, so the two never
-tick at once, and it delivers to Signal through its own client. The daemon
-leaves out the monitor, `context_from`, notepad, `attach_to_session` and
-`enabled_toolsets` extras (a job keeps them in the file) and has no drift
-guard. A job without its own model uses `[cron] model`, else `model.default`.
-
-## Deploying on NixOS
-
-The NixOS module runs one gateway per account as a system service, with
-`SON_OF_ANTON_HOME=~/.son-of-anton`, so the service and your terminal share a
-home:
+## NixOS
 
 ```nix
 services.son-of-anton.instances.work = {
@@ -242,46 +122,38 @@ services.son-of-anton.instances.work = {
 };
 ```
 
-- An instance for a group with other people gets its own service account
-  (`createUser = true`); `git.github` gives one a key for GitHub.
-- `settings` is merged into `config.toml` three ways, so dropping a key from
-  Nix removes it and runtime writes survive; `pruneUnmanagedSettings = true`
-  makes the file purely declarative.
-- `backend = "soa-d"` on an instance moves it from the Python gateway to the Go
-  daemon (the same unit then runs `soa-d serve`: Signal, cron and the socket
-  the TUI attaches to; the TUI never starts a daemon of its own there). Run
-  `soa-d import --from ~/.son-of-anton` once to bring the Python sessions over.
-  With `[daemon] import_python = true` (Nix sets it on these instances) the first
-  `soa-d serve` does that itself and retires the Python `state.db` to
-  `state.db.imported`.
-  The default is `python`. On a `managedAccount` (a person's own account) the
-  unit drops its filesystem sandbox, since its daemon is that person's terminal
-  agent too; nothing soa-d runs can gain privileges (no sudo), on any instance.
-- A Home Manager module covers a terminal-only install.
-- There are no installation commands (`setup`, `update`, `config set`,
-  `gateway install`): the module declares the deployment and `systemctl` runs
-  it.
+Each instance is a `soa-d serve` unit. `settings` is merged into `config.toml`
+three ways (dropping a key from Nix removes it, runtime writes survive), and a
+rebuild that changes the settings restarts the unit. `memoryRules` or
+`memoryRulesFile` seed `rules.toml` the same way. An instance for a group with
+other people gets its own service account (`createUser = true`); on a
+person's own account (`managedAccount`) the unit drops its filesystem sandbox,
+since it is that person's terminal agent too. Nothing soa-d runs can gain
+privileges: no sudo, on any instance.
 
 ## Development
 
 ```bash
-nix flake check                      # packages, modules, Go tests, physics tests
+cd daemon && go test ./...    # the gates are in daemon/AGENTS.md
+nix flake check               # packages, modules, the physics tests
 ```
-
-The daemon's gates are in `daemon/AGENTS.md`, and the repo's rules for agents
-and contributors in `AGENTS.md`.
 
 ## Provenance
 
-A hard fork of [Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
-v0.20.5 (`fcbd1076a9`), stripped to Signal and one OpenAI-compatible provider,
-and now being rewritten in Go. The physics mode began as a port of
-[huggingface/physics-intern](https://github.com/huggingface/physics-intern)
-(`5553bb6`) and has been rebuilt for experimental data. The daemon design and
-permission modes come from the archived [temple](https://github.com/ewtodd/temple)
-harness. The TUI is a from-scratch Go port of
-[opencode](https://github.com/sst/opencode)'s session layout. The session journal follows
-[goluckyryan/letsClaw](https://github.com/goluckyryan/letsClaw).
+Son of Anton began as a hard fork of
+[Nous Research's hermes-agent](https://github.com/NousResearch/hermes-agent)
+v0.20.5, and its physics mode as a port of
+[huggingface/physics-intern](https://github.com/huggingface/physics-intern).
+The Python is gone except the physics mode: soa-d and its terminal UI are a
+new implementation in Go, written against a spec with the Python as the
+behavioural reference, not a line-by-line port. Not yet all new: soa-d still
+carries some of hermes-agent's text and data (several prompts and tool
+descriptions, the command-safety pattern tables, the skin colours, the helper
+module `execute_code` writes), and the Nix packaging keeps parts of
+hermes-agent's layout; the subagent prompts come from opencode, and the
+physics manager's prompt from physics-intern. All of that is being rewritten.
+The daemon design and permission modes come from the archived
+[temple](https://github.com/ewtodd/temple) harness.
 
 ## AI Full Disclosure
 
@@ -293,6 +165,5 @@ inspired by that of [antirez/ds4](https://github.com/antirez/ds4).)
 
 ## License
 
-MIT. Hermes Agent and physics-intern are the work of Nous Research and
-HuggingFace; letsClaw is the work of goluckyryan; opencode is the work of SST.
-See the upstream repositories for their contributor lists.
+MIT, © 2025 Nous Research and © 2026 Ethan Todd. hermes-agent is the work of
+Nous Research, physics-intern of HuggingFace and opencode of SST.
