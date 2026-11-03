@@ -346,3 +346,22 @@ func (g *Gate) curMode() Mode {
 	defer g.mu.Unlock()
 	return g.mode
 }
+
+// memoryDenied is the model's answer to a refused memory write (WA:360).
+const memoryDenied = "Memory write denied by user. The change was not saved."
+
+// Memory asks the approver about one memory change whatever the permission
+// mode, yolo included (WA:324-375). Only "once" and "session" allow it; with
+// no approver nothing can be saved.
+func (g *Gate) Memory(ctx context.Context, summary, detail string) Verdict {
+	if g.approver == nil {
+		return Verdict{Message: "Nobody can approve a memory change in this run; it was not saved."}
+	}
+	choice, err := g.approver(ctx, Request{
+		Kind: "memory", Subject: detail, Reasons: []string{"Save to memory: " + summary}, AllowRemember: false,
+	})
+	if err != nil || ctx.Err() != nil || (choice != Once && choice != Session) {
+		return Verdict{Asked: true, Message: memoryDenied}
+	}
+	return Verdict{Allowed: true, Asked: true}
+}

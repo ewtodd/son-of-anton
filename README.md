@@ -24,8 +24,7 @@ daemon per instance (`daemon/`; the plan is `daemon/SPEC.md`).
 - **On soa-d now:** the terminal TUI (`son-of-anton`), `-q` and `-z`.
 - **Still Python:** the Signal gateway and its relay workers, cron, physics
   runs.
-- **Not in the daemon yet:** the memory tool, recall and `session_search`
-  (phase 3b); subagents (4); `/handoff` and `/pickup` (5); MCP
+- **Not in the daemon yet:** `session_search` (phase 3c); subagents (4); `/handoff` and `/pickup` (5); MCP
   servers and web tools (7); the Python sessions in `state.db` (imported in 8).
 
 ## Running it
@@ -110,8 +109,8 @@ Two kinds, as TOML under `~/.son-of-anton/memories/`, addressed by id:
   refuses rather than evicts. `scope = "gateway"` keeps a rule on Signal;
   `delegated = true` keeps it even in lean `-z` prompts.
 - **Facts** (`facts.toml`, `facts.gateway.toml`): knowledge recalled when its
-  topic comes up, never in the system prompt. Recall is on the Python side
-  only until phase 3b.
+  topic comes up, never in the system prompt. Recall runs in soa-d too
+  (`-q` and the TUI; not `-z`).
 
 The terminal never sees gateway memory. On NixOS, `memoryRules` seeds
 `rules.toml` (a three-way merge by id that never clobbers your edits), and

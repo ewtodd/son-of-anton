@@ -26,7 +26,10 @@ type Config struct {
 		ReasoningOverrides map[string]any `toml:"reasoning_overrides"`
 	} `toml:"agent"`
 	Memory struct {
-		RulesCharLimit int `toml:"rules_char_limit"`
+		RulesCharLimit int  `toml:"rules_char_limit"`
+		FactCharLimit  int  `toml:"fact_char_limit"`
+		WriteApproval  bool `toml:"write_approval"`
+		RAG            RAG  `toml:"rag"`
 	} `toml:"memory"`
 	Approvals struct {
 		Mode string `toml:"mode"`
@@ -295,3 +298,25 @@ func (c *Config) HasAuxiliary(task string) bool {
 	_, ok := c.AuxTasks[task]
 	return ok
 }
+
+// RAG is the [memory.rag] table. Pointer fields are the ones whose explicit
+// value (an empty prompt, a zero score) must win over a model's default.
+type RAG struct {
+	Enabled                bool     `toml:"enabled"`
+	BaseURL                string   `toml:"base_url"`
+	APIKey                 string   `toml:"api_key"`
+	APIKeyEnv              string   `toml:"api_key_env"`
+	Model                  string   `toml:"model"`
+	TopK                   *int     `toml:"top_k"`
+	MinScore               *float64 `toml:"min_score"`
+	DocumentPrompt         *string  `toml:"document_prompt"`
+	QueryPrompt            *string  `toml:"query_prompt"`
+	SearchTimeoutSeconds   *float64 `toml:"search_timeout_seconds"`
+	FailureCooldownSeconds *float64 `toml:"failure_cooldown_seconds"`
+	NotesDir               string   `toml:"notes_dir"`
+	MaxChunkChars          int      `toml:"max_chunk_chars"`
+}
+
+// Getenv is the value of an environment variable: the process environment
+// when set and non-empty, else .env.
+func (c *Config) Getenv(name string) string { return c.envKey(name) }

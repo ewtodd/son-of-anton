@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
+	"github.com/ewtodd/son-of-anton/daemon/internal/memory"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
@@ -61,6 +62,14 @@ type Runner struct {
 	Ask           tools.Questioner
 	// Compaction configures summarizing a long transcript.
 	Compaction Compaction
+	// Recall returns the block of remembered facts and notes relevant to a
+	// turn's text, "" for none; nil for lean runs.
+	Recall func(ctx context.Context, text string) string
+	// Memory backs the memory tool (nil: unavailable) for sessions of
+	// MemoryScope; MemoryApproval is memory.write_approval.
+	Memory         *memory.Store
+	MemoryScope    string
+	MemoryApproval bool
 }
 
 // NewSession builds the prompt (exactly once), stores it, and creates the
@@ -302,7 +311,15 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 		}
 	}
 
-	msgs, err := s.build(ctx, text)
+	// What recall returns for this turn rides the user message, stored with it
+	// so every later request replays the same bytes.
+	apiText := text
+	if r.Recall != nil {
+		if block := r.Recall(ctx, text); block != "" {
+			apiText = text + "\n\n" + block
+		}
+	}
+	msgs, err := s.build(ctx, apiText)
 	if err != nil {
 		return Result{}, err
 	}
@@ -312,7 +329,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 	// pending is the user message not yet stored.
 	pending := func() string {
 		if first {
-			return text
+			return apiText
 		}
 		return ""
 	}
@@ -330,7 +347,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 	// closeTurn records a turn that did not end with a final answer: the
 	// user message if it is not stored yet, then a closing assistant row.
 	closeTurn := func(row store.Message, cause error) (Result, error) {
-		if err := s.persistStep(ctx, text, first, row, nil, emit); err != nil {
+		if err := s.persistStep(ctx, text, apiText, first, row, nil, emit); err != nil {
 			return total, err
 		}
 		return total, cause
@@ -411,7 +428,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 				Content:   resp.Message.Content,
 				Reasoning: resp.Reasoning,
 			}
-			if err := s.persistStep(ctx, text, first, assistant, nil, emit); err != nil {
+			if err := s.persistStep(ctx, text, apiText, first, assistant, nil, emit); err != nil {
 				return total, err
 			}
 			total.Content, total.Reasoning = resp.Message.Content, resp.Reasoning
@@ -424,7 +441,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 			Reasoning: resp.Reasoning,
 			ToolCalls: marshalToolCalls(resp.Message.ToolCalls),
 		}
-		if err := s.persistStep(ctx, text, first, assistant, rows, emit); err != nil {
+		if err := s.persistStep(ctx, text, apiText, first, assistant, rows, emit); err != nil {
 			return total, err
 		}
 		first = false
@@ -444,7 +461,8 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 // remaining calls are not run (each gets a cancellation result); a running
 // call keeps whatever its tool returned.
 func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emit func(Event), maxChars int) []store.Message {
-	env := &tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel()}
+	env := &tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
+		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval}
 	rows := make([]store.Message, 0, len(calls))
 	for _, call := range calls {
 		emit(Event{Kind: "tool.start", Tool: call.Function.Name, CallID: call.ID, Text: string(call.Function.Arguments)})
@@ -491,10 +509,10 @@ func (s *Session) runOneCall(ctx context.Context, env *tools.Env, call provider.
 // persistStep stores one completed step and announces each stored row. It
 // uses a context that is not cancelled: an interrupted turn must still keep
 // its steps.
-func (s *Session) persistStep(ctx context.Context, text string, first bool, assistant store.Message, toolRows []store.Message, emit func(Event)) error {
+func (s *Session) persistStep(ctx context.Context, text, apiText string, first bool, assistant store.Message, toolRows []store.Message, emit func(Event)) error {
 	msgs := make([]store.Message, 0, 2+len(toolRows))
 	if first {
-		msgs = append(msgs, store.Message{Role: "user", Content: text, APIContent: text})
+		msgs = append(msgs, store.Message{Role: "user", Content: text, APIContent: apiText})
 	}
 	msgs = append(msgs, assistant)
 	msgs = append(msgs, toolRows...)

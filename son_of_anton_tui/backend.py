@@ -445,7 +445,7 @@ class DaemonBackend:
             if self.role != "driver":
                 self.note("another client is now the driver of this session")
         elif kind == "approval.request":
-            self.emit("approval", approval_id=p.get("approval_id", ""), subject=p.get("subject", ""),
+            self.emit("approval", approval_id=p.get("approval_id", ""), approval_kind=p.get("approval_kind", ""), subject=p.get("subject", ""),
                       reasons=p.get("reasons") or [], choices=p.get("choices") or [])
         elif kind == "approval.resolved":
             self.emit("approval_resolved", approval_id=p.get("approval_id", ""))

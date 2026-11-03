@@ -22,9 +22,11 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
+	"github.com/ewtodd/son-of-anton/daemon/internal/memory"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
+	"github.com/ewtodd/son-of-anton/daemon/internal/recall"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
 )
@@ -75,6 +77,8 @@ type Server struct {
 	cfg  *config.Config
 	st   *store.Store
 	reg  *tools.Registry
+	mem  *memory.Store
+	idx  *recall.Index   // nil: recall is off
 	base context.Context // cancelled when shutdown starts
 	stop context.CancelFunc
 
@@ -101,7 +105,8 @@ func New(o Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{opt: o, cfg: cfg, st: st, reg: tools.NewRegistry(tools.Builtin()...),
+	mem, idx := recall.Memory(cfg, o.Home, true)
+	s := &Server{opt: o, cfg: cfg, st: st, reg: tools.NewRegistry(tools.Builtin()...), mem: mem, idx: idx,
 		live: map[string]*live{}, conns: map[*conn]struct{}{},
 		meta: map[string]map[string]int{}, learned: map[string]int{}}
 	s.base, s.stop = context.WithCancel(context.Background())
@@ -170,6 +175,9 @@ func (s *Server) shutdown() {
 	for _, l := range lives {
 		_ = l.sess.Close()
 	}
+	if s.idx != nil {
+		_ = s.idx.Close()
+	}
 	_ = s.st.Close()
 }
 
@@ -181,7 +189,7 @@ func (s *Server) userHome() string {
 // runner builds a per-session Runner: the shared pieces plus this session's
 // approver and questioner.
 func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source string, warnings *[]string) *agent.Runner {
-	return &agent.Runner{
+	r := &agent.Runner{
 		Store:           s.st,
 		Client:          provider.New(ep.BaseURL, ep.APIKey),
 		Model:           ep.Model,
@@ -195,6 +203,9 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 		AsyncDelivery:   true,
 		Ask:             l.ask,
 		Compaction:      s.compaction(ep, l.id),
+		Memory:          s.mem,
+		MemoryScope:     "common", // every soa-d session is common until phase 5
+		MemoryApproval:  s.cfg.Memory.WriteApproval,
 		Prompt: func(_ context.Context, ss store.Session) (string, error) {
 			r, err := prompt.Build(prompt.Options{
 				Home: s.opt.Home, Cwd: ss.Cwd, Scope: "common", Memory: true,
@@ -206,6 +217,10 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 			return r.Text, err
 		},
 	}
+	if s.idx != nil {
+		r.Recall = func(ctx context.Context, text string) string { return s.idx.Recall(ctx, "common", text) }
+	}
+	return r
 }
 
 // create makes a new interactive session and returns its ID. It is not left

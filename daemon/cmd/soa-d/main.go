@@ -20,6 +20,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
+	"github.com/ewtodd/son-of-anton/daemon/internal/recall"
 	"github.com/ewtodd/son-of-anton/daemon/internal/server"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
@@ -117,6 +118,7 @@ func parseOptions(args []string, defaultMemory, allowUsageFile bool, stderr io.W
 // setup is everything a run needs: the open store and a runner.
 type setup struct {
 	st     *store.Store
+	idx    *recall.Index // nil: no recall
 	runner *agent.Runner
 	model  string
 }
@@ -150,7 +152,8 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &setup{st: st, model: ep.Model, runner: &agent.Runner{
+	mem, idx := recall.Memory(cfg, home, source == "query" && o.memory)
+	su := &setup{st: st, model: ep.Model, runner: &agent.Runner{
 		Store:           st,
 		Client:          provider.New(ep.BaseURL, ep.APIKey),
 		Model:           ep.Model,
@@ -160,6 +163,9 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 		Allowlist:       st.Allowlist(),
 		Policy:          paths.Policy{Home: userHome(), SoaHome: home},
 		Mode:            queryMode(cfg, o.yolo),
+		Memory:          mem,
+		MemoryScope:     "common",
+		MemoryApproval:  cfg.Memory.WriteApproval,
 		Prompt: func(_ context.Context, s store.Session) (string, error) {
 			if o.system != "" {
 				return string(system), nil
@@ -173,7 +179,21 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 			}
 			return r.Text, err
 		},
-	}}, nil
+	}}
+	// A full-memory query recalls; a lean oneshot never does.
+	if idx != nil {
+		su.idx = idx
+		su.runner.Recall = func(ctx context.Context, text string) string { return idx.Recall(ctx, "common", text) }
+	}
+	return su, nil
+}
+
+// close releases the store and the recall index.
+func (su *setup) close() {
+	if su.idx != nil {
+		_ = su.idx.Close()
+	}
+	_ = su.st.Close()
 }
 
 func runQuery(args []string, stdout, stderr io.Writer) int {
@@ -193,7 +213,7 @@ func runQuery(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	defer su.st.Close()
+	defer su.close()
 	ctx := context.Background()
 	sess, err := su.runner.NewSession(ctx, "oneshot", cwd)
 	if err != nil {
@@ -231,7 +251,7 @@ func runOneshot(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return err
 		}
-		defer su.st.Close()
+		defer su.close()
 		model = su.model
 		ctx := context.Background()
 		sess, err := su.runner.NewSession(ctx, "oneshot", cwd)

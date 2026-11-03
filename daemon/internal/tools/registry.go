@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
+	"github.com/ewtodd/son-of-anton/daemon/internal/memory"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 )
@@ -27,6 +28,12 @@ type Env struct {
 	// Model is the model serving this step; shell commands see it as
 	// $SOA_MODEL (for a commit's Model: line).
 	Model string
+	// Memory is the rule and fact store (nil: the memory tool is unavailable);
+	// MemoryScope is the calling session's scope and MemoryApproval is
+	// memory.write_approval.
+	Memory         *memory.Store
+	MemoryScope    string
+	MemoryApproval bool
 }
 
 // Tool is one builtin tool.
@@ -83,6 +90,7 @@ func Builtin() []Tool {
 		searchFilesTool{},
 		todoTool{},
 		clarifyTool{},
+		memoryTool{},
 	}
 }
 

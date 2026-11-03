@@ -1339,9 +1339,9 @@ if _TEXTUAL_AVAILABLE:
             self._update_status()
 
         def _ev_approval(self, approval_id: str = "", subject: str = "", reasons: Optional[list] = None,
-                         choices: Optional[list] = None) -> None:
+                         choices: Optional[list] = None, approval_kind: str = "") -> None:
             self._add_prompt("approval", approval_id,
-                             {"subject": subject, "reasons": reasons or [], "choices": choices or []})
+                             {"kind": approval_kind, "subject": subject, "reasons": reasons or [], "choices": choices or []})
 
         def _ev_approval_resolved(self, approval_id: str = "") -> None:
             self._resolve_prompt("approval", approval_id)
@@ -1678,12 +1678,15 @@ if _TEXTUAL_AVAILABLE:
                 "always": ("Always allow", "add to the allowlist"),
                 "deny": ("Deny", "the agent is told it was refused"),
             }
+            memory = data.get("kind") == "memory"
+            if memory:
+                labels = {"once": ("Save", "write it to memory"), "deny": ("Don't save", "the agent is told it was refused")}
             choices = [(k, *labels[k]) for k in data.get("choices", []) if k in labels]
             detail = Text.assemble((str(data.get("subject", "")), "bold"))
             reasons = "; ".join(str(r) for r in data.get("reasons") or [])
             if reasons:
                 detail.append("\n" + reasons, style="dim")
-            screen = ChoiceModal("The agent wants to run a command", choices, detail, accent="warning")
+            screen = ChoiceModal("Save to memory?" if memory else "The agent wants to run a command", choices, detail, accent="warning")
 
             def _answer(result: Any) -> None:
                 if entry in self._prompts:
