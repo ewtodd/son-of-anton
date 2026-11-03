@@ -239,6 +239,10 @@ func (s *Session) ID() string { return s.id }
 // Close releases the session's tool state, killing its background processes.
 func (s *Session) Close() error { return s.state.Close() }
 
+// Notify queues a completion notice (a background subagent finished) for the
+// session.
+func (s *Session) Notify(text string) { s.state.Notify(text) }
+
 // TakeNotifications drains the queued background completion notices.
 func (s *Session) TakeNotifications() []string { return s.state.TakeNotifications() }
 
@@ -459,33 +463,78 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 	}
 }
 
-// runToolCalls executes every call in order. Once the turn is stopped the
-// remaining calls are not run (each gets a cancellation result); a running
-// call keeps whatever its tool returned.
-func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emit func(Event), maxChars int) []store.Message {
-	env := &tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
+// runToolCalls executes the calls. A run of consecutive calls to tools that
+// are tools.Concurrent runs at the same time; every other call runs alone,
+// in order. Rows come back in the calls' order. Once the turn is stopped the
+// calls not yet started are not run (each gets a cancellation result); a
+// running call keeps whatever its tool returned.
+func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emitEvent func(Event), maxChars int) []store.Message {
+	base := tools.Env{Policy: s.runner.Policy, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
 		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval,
 		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages}
-	rows := make([]store.Message, 0, len(calls))
-	for _, call := range calls {
+	var emitMu sync.Mutex
+	emit := func(e Event) {
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		emitEvent(e)
+	}
+	rows := make([]store.Message, len(calls))
+	one := func(i int) {
+		call := calls[i]
+		env := base
+		env.CallID = call.ID
 		emit(Event{Kind: "tool.start", Tool: call.Function.Name, CallID: call.ID, Text: string(call.Function.Arguments)})
 		began := time.Now()
 		var result string
 		if stopped() {
 			result = errorJSON("cancelled: the user interrupted before this call ran")
 		} else {
-			result = s.runOneCall(ctx, env, call, maxChars)
+			result = s.runOneCall(ctx, &env, call, maxChars)
 		}
 		emit(Event{Kind: "tool.end", Tool: call.Function.Name, CallID: call.ID, Text: result, Duration: time.Since(began)})
-		rows = append(rows, store.Message{
+		rows[i] = store.Message{
 			Role:       "tool",
 			ToolCallID: call.ID,
 			ToolName:   call.Function.Name,
 			Content:    result,
 			APIContent: result,
-		})
+		}
+	}
+	for i := 0; i < len(calls); {
+		j := i
+		for j < len(calls) && s.concurrent(calls[j].Function.Name) {
+			j++
+		}
+		if j == i {
+			one(i)
+			i++
+			continue
+		}
+		var wg sync.WaitGroup
+		for k := i; k < j; k++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				one(k)
+			}()
+		}
+		wg.Wait()
+		i = j
 	}
 	return rows
+}
+
+// concurrent says whether the named tool may run beside its siblings.
+func (s *Session) concurrent(name string) bool {
+	if s.runner.Tools == nil {
+		return false
+	}
+	t, ok := s.runner.Tools.Lookup(name)
+	if !ok {
+		return false
+	}
+	c, ok := t.(tools.Concurrent)
+	return ok && c.Concurrent()
 }
 
 func (s *Session) runOneCall(ctx context.Context, env *tools.Env, call provider.ToolCall, maxChars int) string {

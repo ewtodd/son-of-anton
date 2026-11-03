@@ -41,6 +41,8 @@ type Env struct {
 	Store          *store.Store
 	SessionID      string
 	SearchMessages MessageSearch
+	// CallID is the id of the tool call being run.
+	CallID string
 }
 
 // Tool is one builtin tool.
@@ -84,6 +86,24 @@ func (r *Registry) Schemas() []provider.Tool {
 func (r *Registry) Lookup(name string) (Tool, bool) {
 	t, ok := r.tools[name]
 	return t, ok
+}
+
+// Concurrent is implemented by a tool that may run beside its sibling calls
+// of one assistant message.
+type Concurrent interface{ Concurrent() bool }
+
+// Names lists the registered tool names in order.
+func (r *Registry) Names() []string { return append([]string(nil), r.order...) }
+
+// Only is a registry of the named tools (those registered), in the given order.
+func (r *Registry) Only(names ...string) *Registry {
+	var ts []Tool
+	for _, n := range names {
+		if t, ok := r.tools[n]; ok {
+			ts = append(ts, t)
+		}
+	}
+	return NewRegistry(ts...)
 }
 
 // Builtin is the builtin tool set, in canonical order.

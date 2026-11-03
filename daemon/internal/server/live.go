@@ -52,6 +52,7 @@ type live struct {
 
 	mu                  sync.Mutex
 	kind, cwd           string
+	parent, agent       string // a child session's parent and subagent type
 	model, effort, mode string
 	created, updated    time.Time
 	preview             string
@@ -76,11 +77,13 @@ type live struct {
 	approvals           map[string]*pendingApproval
 	questions           map[string]*pendingQuestion
 	resolved            map[string]bool
+	bg                  map[string]context.CancelFunc       // running background tasks of this session, by child id
+	watchers            []func(status, text, errMsg string) // told when the session is idle after a turn (a task call waits here)
 }
 
 func newLive(s *Server, rec store.Session, sum store.Summary) *live {
 	return &live{
-		srv: s, id: rec.ID, kind: rec.Kind, cwd: rec.Cwd,
+		srv: s, id: rec.ID, kind: rec.Kind, cwd: rec.Cwd, parent: rec.ParentID, agent: rec.Agent, bg: map[string]context.CancelFunc{},
 		created: rec.Created, updated: sum.Updated, preview: sum.Preview,
 		viewers: map[*conn]bool{}, waiting: true,
 		approvals: map[string]*pendingApproval{}, questions: map[string]*pendingQuestion{}, resolved: map[string]bool{},
@@ -229,6 +232,13 @@ func (l *live) finish(res agent.Result, err error) {
 	}
 	l.emitSession()
 	l.next()
+	if !l.running {
+		ws := l.watchers
+		l.watchers = nil
+		for _, w := range ws {
+			w(status, res.Content, msg)
+		}
+	}
 	l.mu.Unlock()
 	l.srv.maybeUnload(l)
 }
@@ -338,8 +348,14 @@ func (l *live) interrupt() bool {
 }
 
 func (l *live) interruptLocked() bool {
+	stopped := false
+	for id, cancel := range l.bg {
+		cancel() // the background tasks go with the interrupt
+		delete(l.bg, id)
+		stopped = true
+	}
 	if !l.running {
-		return false
+		return stopped
 	}
 	l.stop, l.steer, l.hasSteer = stopInterrupt, "", false
 	l.turnCancel()
@@ -421,6 +437,12 @@ func (l *live) request(kind, id string, f map[string]any) {
 
 // approve is the session's approval.Approver: it waits for the driver.
 func (l *live) approve(ctx context.Context, req approval.Request) (approval.Choice, error) {
+	return l.approveAs(ctx, req, "")
+}
+
+// approveAs is approve for a request of the child session child (”: this
+// session's own); the request names it so the driver can show whose it is.
+func (l *live) approveAs(ctx context.Context, req approval.Request, child string) (approval.Choice, error) {
 	id := newID("ap_")
 	choices := []string{"once", "deny"}
 	if req.AllowRemember {
@@ -433,7 +455,11 @@ func (l *live) approve(ctx context.Context, req approval.Request) (approval.Choi
 	if reasons == nil {
 		reasons = []string{}
 	}
-	l.request("approval.request", id, map[string]any{"approval_id": id, "approval_kind": req.Kind, "subject": req.Subject, "reasons": reasons, "choices": choices})
+	f := map[string]any{"approval_id": id, "approval_kind": req.Kind, "subject": req.Subject, "reasons": reasons, "choices": choices}
+	if child != "" {
+		f["child_session"] = child
+	}
+	l.request("approval.request", id, f)
 	l.mu.Unlock()
 	select {
 	case c := <-p.ch:
@@ -613,6 +639,8 @@ func (l *live) sessionObj() map[string]any {
 			"cached_tokens": l.usage.cached, "reasoning_tokens": l.usage.reasoning, "api_calls": l.usage.calls},
 		"background_processes": l.sess.BackgroundRunning(),
 		"served_model":         l.sess.ServedModel(),
+		"parent_id":            l.parent,
+		"agent":                l.agent,
 	}
 	if l.running {
 		o["status"] = "running"

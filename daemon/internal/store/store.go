@@ -150,6 +150,8 @@ UPDATE schema_version SET version = 5;`,
 	`ALTER TABLE sessions ADD COLUMN scope TEXT NOT NULL DEFAULT 'common';
 ALTER TABLE sessions ADD COLUMN chat TEXT;
 UPDATE schema_version SET version = 6;`,
+	`ALTER TABLE sessions ADD COLUMN agent TEXT;
+UPDATE schema_version SET version = 7;`,
 }
 
 func migrate(db *sql.DB) error {
@@ -213,6 +215,8 @@ type Session struct {
 	// as "signal:<id>". Together they are the wall (Readable).
 	Scope string
 	Chat  string
+	// Agent is a child session's subagent type ("explore"); "" otherwise.
+	Agent string
 }
 
 // newSessionID returns YYYYmmdd_HHMMSS_ plus six random hex chars (local
@@ -240,11 +244,11 @@ func (s *Store) CreateSession(ctx context.Context, sess Session) (Session, error
 			sess.Scope = "common"
 		}
 		_, err = s.db.ExecContext(ctx,
-			`INSERT INTO sessions (id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, scope, chat)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO sessions (id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, scope, chat, title_source, agent)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sess.ID, sess.Kind, nullStr(sess.ParentID), nullStr(sess.Source), nullStr(sess.Title),
 			nullStr(sess.Cwd), nullStr(sess.Model), nullStr(sess.PromptHash),
-			formatTime(sess.Created), nullTime(sess.Ended), nullStr(sess.ReasoningEffort), nullStr(sess.Mode), nullStr(sess.Workspace), sess.Scope, nullStr(sess.Chat))
+			formatTime(sess.Created), nullTime(sess.Ended), nullStr(sess.ReasoningEffort), nullStr(sess.Mode), nullStr(sess.Workspace), sess.Scope, nullStr(sess.Chat), nullStr(sess.TitleSource), nullStr(sess.Agent))
 		if err == nil {
 			return sess, nil
 		}
@@ -272,11 +276,12 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 		work     sql.NullString
 		tsource  sql.NullString
 		chat     sql.NullString
+		agent    sql.NullString
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, title_source, scope, chat
+		`SELECT id, kind, parent_id, source, title, cwd, model, prompt_hash, created, ended, reasoning_effort, mode, workspace, title_source, scope, chat, agent
 		 FROM sessions WHERE id = ?`, id).
-		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended, &effort, &mode, &work, &tsource, &sess.Scope, &chat)
+		Scan(&sess.ID, &sess.Kind, &parentID, &source, &title, &cwd, &model, &hash, &created, &ended, &effort, &mode, &work, &tsource, &sess.Scope, &chat, &agent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -294,6 +299,7 @@ func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 	sess.Workspace = work.String
 	sess.TitleSource = tsource.String
 	sess.Chat = chat.String
+	sess.Agent = agent.String
 	sess.Created, err = parseTime(created.String)
 	if err != nil {
 		return Session{}, err
@@ -525,4 +531,34 @@ func formatTime(t time.Time) string { return t.Format(time.RFC3339Nano) }
 
 func parseTime(s string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, s)
+}
+
+// Children lists a session's child sessions (subagents) in creation order.
+func (s *Store) Children(ctx context.Context, parentID string) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM sessions WHERE parent_id = ? ORDER BY rowid`, parentID)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]Session, 0, len(ids))
+	for _, id := range ids {
+		sess, err := s.Session(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sess)
+	}
+	return out, nil
 }

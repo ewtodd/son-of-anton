@@ -39,6 +39,7 @@ const (
 type Options struct {
 	Home, Cwd, Scope string // instance home; session cwd; "common" | "gateway"
 	Memory           bool   // identity + all rules (true), or lean (false)
+	Identity         string // when set, layer 1 whatever Memory says (a subagent's type prompt)
 	Now              time.Time
 	RulesCharLimit   int // 0 means 6000
 }
@@ -54,7 +55,9 @@ type Result struct {
 func Build(o Options) (Result, error) {
 	var res Result
 	var layers []string
-	if o.Memory {
+	if o.Identity != "" {
+		layers = append(layers, o.Identity)
+	} else if o.Memory {
 		id := DefaultIdentity
 		if data, err := os.ReadFile(filepath.Join(o.Home, "SOUL.md")); err == nil {
 			if s := strings.TrimSpace(string(data)); s != "" {

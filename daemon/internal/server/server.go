@@ -28,6 +28,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 	"github.com/ewtodd/son-of-anton/daemon/internal/recall"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
+	"github.com/ewtodd/son-of-anton/daemon/internal/subagent"
 	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
 )
 
@@ -73,14 +74,15 @@ func Listen(home string) (net.Listener, error) {
 
 // Server is one daemon.
 type Server struct {
-	opt  Options
-	cfg  *config.Config
-	st   *store.Store
-	reg  *tools.Registry
-	mem  *memory.Store
-	idx  *recall.Index   // nil: recall is off
-	base context.Context // cancelled when shutdown starts
-	stop context.CancelFunc
+	opt     Options
+	cfg     *config.Config
+	st      *store.Store
+	reg     *tools.Registry // the builtin tools (a child's are drawn from it)
+	regTask *tools.Registry // reg plus the task tool: an interactive session's
+	mem     *memory.Store
+	idx     *recall.Index   // nil: recall is off
+	base    context.Context // cancelled when shutdown starts
+	stop    context.CancelFunc
 
 	mu      sync.Mutex
 	live    map[string]*live
@@ -112,6 +114,7 @@ func New(o Options) (*Server, error) {
 	s := &Server{opt: o, cfg: cfg, st: st, reg: tools.NewRegistry(tools.Builtin()...), mem: mem, idx: idx,
 		live: map[string]*live{}, indexed: map[string]int64{}, conns: map[*conn]struct{}{},
 		meta: map[string]map[string]int{}, learned: map[string]int{}}
+	s.regTask = tools.NewRegistry(append(tools.Builtin(), subagent.Tool(subagent.Builtin(), true, s.spawnTask))...)
 	s.base, s.stop = context.WithCancel(context.Background())
 	return s, nil
 }
@@ -199,7 +202,7 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 		Model:           ep.Model,
 		ReasoningEffort: ep.ReasoningEffort,
 		Source:          source,
-		Tools:           s.reg,
+		Tools:           s.regTask,
 		Allowlist:       s.st.Allowlist(),
 		Policy:          paths.Policy{Home: s.userHome(), SoaHome: s.opt.Home},
 		Mode:            mode,
@@ -297,7 +300,11 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 	if len(last) > 0 {
 		l.announced = last[0].Seq
 	}
-	sess, err := s.runner(l, ep, mode, rec.Source, nil).Resume(ctx, id)
+	r := s.runner(l, ep, mode, rec.Source, nil)
+	if rec.Kind == "child" {
+		r = s.childRunner(r, l, rec)
+	}
+	sess, err := r.Resume(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +321,7 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 func (s *Server) maybeUnload(l *live) {
 	s.mu.Lock()
 	l.mu.Lock()
-	ok := !l.unloaded && !l.closing && len(l.viewers) == 0 && !l.running && !l.compacting && l.sess.BackgroundRunning() == 0
+	ok := !l.unloaded && !l.closing && len(l.viewers) == 0 && !l.running && !l.compacting && len(l.bg) == 0 && l.sess.BackgroundRunning() == 0
 	if ok {
 		l.unloaded = true
 		delete(s.live, l.id)

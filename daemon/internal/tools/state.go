@@ -130,3 +130,14 @@ func (s *State) KillBackground() int {
 	}
 	return n
 }
+
+// Notify queues a completion notice and tells the notify callback.
+func (s *State) Notify(text string) {
+	s.mu.Lock()
+	s.notes = append(s.notes, note{"", text})
+	cb := s.onNote
+	s.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
+}
