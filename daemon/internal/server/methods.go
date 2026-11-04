@@ -178,8 +178,8 @@ func (s *Server) driverMethod(c *conn, l *live, req *request, bad func(error) (a
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return bad(err)
 		}
-		if p.Mode != "" && p.Mode != "queue" && p.Mode != "now" {
-			return nil, errf(codeBadParams, "mode must be queue or now")
+		if p.Mode != "" && p.Mode != "queue" && p.Mode != "step" && p.Mode != "now" {
+			return nil, errf(codeBadParams, "mode must be queue, step or now")
 		}
 		if strings.TrimSpace(p.Text) == "" {
 			return nil, errf(codeBadParams, "text is empty")

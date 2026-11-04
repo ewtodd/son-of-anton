@@ -113,7 +113,7 @@ The daemon is the only writer of `state.db`. Clients never open it.
   instance name, capabilities.
 - Requests (initial set): `session.list`, `session.create`, `session.attach
   {id, as: driver|viewer, from_seq}`, `session.detach`, `session.children`,
-  `turn.send {text, attachments, mode: queue|now}`, `turn.interrupt`,
+  `turn.send {text, attachments, mode: queue|step|now}`, `turn.interrupt`,
   `queue.clear`, `approval.answer`, `question.answer`, `command.run {name,
   args}` (daemon-side slash commands), `model.list`, `model.set`.
 - Events (map onto the TUI's existing `Sink.emit` kinds in

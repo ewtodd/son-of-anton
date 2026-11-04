@@ -106,7 +106,7 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		m.scroll(1)
 		return nil
 	case "enter":
-		return m.submit("queue")
+		return m.submit("step")
 	case "alt+enter", "ctrl+j":
 		return m.edit(tea.KeyMsg{Type: tea.KeyEnter})
 	case "up":

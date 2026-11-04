@@ -366,13 +366,50 @@ func (l *live) send(text, mode string) (bool, string, bool, error) {
 		l.steerWith(text)
 		return false, "", true, nil
 	default:
-		it, err := l.srv.st.QueuePush(context.Background(), l.id, "user", text)
+		kind := "user"
+		if mode == "step" {
+			kind = "step"
+		}
+		it, err := l.srv.st.QueuePush(context.Background(), l.id, kind, text)
 		if err != nil {
 			return false, "", false, err
 		}
 		l.emitQueue()
 		return false, it.ID, false, nil
 	}
+}
+
+// stepEnded is the session's OnStep. What was sent for the next step goes in
+// now, rather than when the turn ends. It goes in as a steer, not into this
+// turn: a user message must not follow a tool result directly, and with the
+// tools done a steer cuts nothing off. An item that meets no tool step runs
+// from the queue when its turn ends.
+func (l *live) stepEnded() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.stop != stopNone {
+		return // an interrupt leaves the queue waiting; a steer takes this turn already
+	}
+	items, err := l.srv.st.QueueItems(context.Background(), l.id)
+	if err != nil {
+		l.emit("notice", map[string]any{"level": "error", "text": "reading the queue: " + err.Error()})
+		return
+	}
+	var texts, ids []string
+	for _, it := range items {
+		if it.Kind == "step" {
+			texts, ids = append(texts, it.Text), append(ids, it.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	if err := l.srv.st.QueueRemove(context.Background(), l.id, ids...); err != nil {
+		l.emit("notice", map[string]any{"level": "error", "text": "taking queued messages: " + err.Error()})
+		return
+	}
+	l.emitQueue()
+	l.steerWith(strings.Join(texts, "\n\n"))
 }
 
 // steerWith ends the running turn after its running tools finish and runs

@@ -742,3 +742,24 @@ func TestLateReasoningDoesNotSplitTheAnswer(t *testing.T) {
 		t.Fatalf("the late fragment is folded into the reasoning block, not shown in the answer:\n%s", s)
 	}
 }
+
+func TestEnterDuringAToolGoesInOnceItEnds(t *testing.T) {
+	fake := fakellm.New(t,
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "sleep 0.5; echo finished")}},
+		fakellm.Turn{Content: "took it in"},
+	)
+	d := newDaemon(t, fake)
+	a := open(t, d, tui.Options{})
+	send(a, "one")
+	waitScreen(t, a, "sleep 0.5")
+	send(a, "two")
+	waitScreen(t, a, "took it in")
+	waitGone(t, a, "↳ two")
+	idle(t, a)
+	if fake.Count() != 2 {
+		t.Fatalf("%d requests; the tool's result and the message go in one request", fake.Count())
+	}
+	if last := lastMessage(fake, 1); !strings.Contains(last, `"two"`) {
+		t.Fatalf("the request after the tool ends %s", last)
+	}
+}

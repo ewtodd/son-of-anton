@@ -53,9 +53,9 @@ transcript, a sidebar on wide screens (`ctrl+b`), the prompt below.
   `/compact`, `/commit`, `/stop`, `/sendnow`, `/sendall`, `/status`, `/skin`.
   `!cmd` runs a shell command without a model turn.
 - A message typed during a turn queues in the daemon, survives a restart and
-  goes out when the turn ends: when the model answers with no more tool calls.
-  `/sendnow` ends the turn early instead, cutting off the model but letting a
-  running tool finish, and sends it at once; so does `ctrl+enter` on a terminal
+  goes in as soon as the running tools end, or when the model answers with no
+  more tool calls. `/sendnow` sends it sooner, cutting off a reply in progress
+  but still letting a running tool finish; so does `ctrl+enter` on a terminal
   with the [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/).
 - Under a routed model (maitred's `auto`), the meta row and the context bar
   show the model that answered and its window.

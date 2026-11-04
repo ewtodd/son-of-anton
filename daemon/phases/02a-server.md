@@ -203,7 +203,7 @@ typed (never `api_content`).
 | `session.history` | `session`, `before_seq`, `limit` | `messages`, `more_before` |
 | `session.detach` | `session` | `{}` |
 | `session.set` | `session`, any of `model`, `reasoning_effort`, `mode` | `session` |
-| `turn.send` | `session`, `text`, `mode` (`queue` default \| `now`) | `started`, `queued` (item id), `steered` |
+| `turn.send` | `session`, `text`, `mode` (`queue` default \| `step` \| `now`) | `started`, `queued` (item id), `steered` |
 | `turn.interrupt` | `session` | `interrupted` |
 | `queue.steer` | `session`, `all` | `started`, `steered` |
 | `queue.remove` | `session`, `items` (ids) | `queue` |
@@ -250,7 +250,10 @@ attach.
 
 - `turn.send` on an idle session starts a turn at once (`started: true`),
   whatever the mode. While a turn runs: `queue` appends a durable queue item
-  (`queued: <id>`); `now` steers (`steered: true`).
+  (`queued: <id>`); `now` steers (`steered: true`); `step` appends a `step`
+  queue item, which steers once the running tools end (`OnStep`), every such
+  item joined by a blank line, and otherwise runs from the queue as any item.
+  A terminal's enter sends `step`; `/commit`, chats and the relay queue.
 - **Steering** (`turn.send now`, `queue.steer` while running): the session's
   `Stop(true)`; the turn ends with status `steered`, and a turn with the steer
   text starts at once, ahead of the queue. Steering again before that turn

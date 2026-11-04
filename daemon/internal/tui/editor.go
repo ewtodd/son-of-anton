@@ -83,5 +83,5 @@ func (m *model) edited(draft, raw string, runErr, readErr error) tea.Cmd {
 		return nil
 	}
 	m.record(text)
-	return m.dispatch(text, "queue")
+	return m.dispatch(text, "step")
 }

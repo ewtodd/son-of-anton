@@ -281,6 +281,8 @@ func (s *Session) registry() *tools.Registry { return s.reg }
 
 // Session is one conversation, bound to its stored transcript and prompt.
 type Session struct {
+	onStep func() // OnStep's; set before the first turn
+
 	runner *Runner
 	id     string
 	prompt string
@@ -368,6 +370,11 @@ func (s *Session) OnNotify(f func()) { s.state.SetNotify(f) }
 // OnBackgroundExit registers f, called (on any goroutine) each time one of
 // the session's background processes exits.
 func (s *Session) OnBackgroundExit(f func()) { s.state.SetOnExit(f) }
+
+// OnStep registers f, called on the turn's goroutine after each tool step is
+// stored, before the turn goes on: a Stop from f ends the turn there, with
+// nothing running to cut off. Set before the first turn.
+func (s *Session) OnStep(f func()) { s.onStep = f }
 
 // ID returns the session ID.
 func (s *Session) ID() string { return s.id }
@@ -642,6 +649,9 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 		first = false
 		steps++
 		empties = 0
+		if s.onStep != nil {
+			s.onStep()
+		}
 		if stopped() {
 			return closeTurn(store.Message{Role: "assistant", Content: InterruptedText}, stopErr())
 		}
