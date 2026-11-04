@@ -270,8 +270,9 @@ Anything else: `unknown command /<word> (/help lists them)`. A daemon error:
 ### Modals (T:533-710, 1812-1959)
 
 One at a time, queued in arrival order, deduplicated by id; a modal's
-`*.resolved` or the connection dropping closes it. While one is open it is
-drawn centred over the feed (rounded border in the accent colour, warning
+`*.resolved` or the connection dropping closes it. While one is open the whole
+screen is dimmed (the backdrop colour, muted text) and the modal is drawn on an
+opaque card centred on the screen (rounded border in the accent colour, warning
 yellow for approvals; width 76 or the content width), keys go to it, and the
 prompt keeps its draft.
 

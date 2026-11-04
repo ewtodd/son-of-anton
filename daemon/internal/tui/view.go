@@ -273,7 +273,6 @@ func (m *model) render() []string {
 	rows = min(rows, max(h-len(dock), 0))
 	lines := m.paneRows(cw, rows, now)
 	lines = append(lines, dock...)
-	m.overlay(lines, rows, cw)
 	switch {
 	case len(lines) > h:
 		lines = lines[len(lines)-h:]
@@ -290,6 +289,7 @@ func (m *model) render() []string {
 			lines[i] = l + strings.Repeat(" ", max(left-lipgloss.Width(l), 0)) + sb[i]
 		}
 	}
+	m.overlay(lines, cw)
 	for i, l := range lines {
 		lines[i] = th.fix(l)
 	}
@@ -430,8 +430,10 @@ func (m *model) paneRows(cw, rows int, now time.Time) []string {
 	return lines
 }
 
-// overlay draws the open modal or picker over the feed rows of lines.
-func (m *model) overlay(lines []string, rows, cw int) {
+// overlay draws the open modal or picker over the whole screen: the screen is
+// dimmed to the backdrop colour, and the dialog sits on an opaque card, as in
+// Textual's ModalScreen. A terminal cannot blend, so the dim is one colour.
+func (m *model) overlay(lines []string, cw int) {
 	var box []string
 	switch {
 	case len(m.modals) > 0:
@@ -442,14 +444,21 @@ func (m *model) overlay(lines []string, rows, cw int) {
 	if box == nil {
 		return
 	}
-	start := min(max((rows-len(box))/2, 0), max(len(lines)-len(box), 0))
 	bw := 0
 	for _, l := range box {
 		bw = max(bw, lipgloss.Width(l))
 	}
+	screen := m.w
+	for i := range lines {
+		lines[i] = m.th.paint(m.th.mut.Render(stripANSI(lines[i])), m.th.backdrop, screen)
+	}
+	start := min(max((len(lines)-len(box))/2, 0), max(len(lines)-len(box), 0))
+	x := max((screen-bw)/2, 0)
 	for i, l := range box {
 		if start+i < len(lines) {
-			lines[start+i] = margin + strings.Repeat(" ", max((cw-bw)/2, 0)) + l
+			lines[start+i] = m.th.paint(strings.Repeat(" ", x), m.th.backdrop, x) +
+				m.th.paint(l, m.th.card, bw) +
+				m.th.paint(strings.Repeat(" ", screen-x-bw), m.th.backdrop, screen-x-bw)
 		}
 	}
 }

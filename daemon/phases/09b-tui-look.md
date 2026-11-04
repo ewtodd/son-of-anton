@@ -99,8 +99,9 @@ timeout; not asked when `out` is not a terminal or
 `SON_OF_ANTON_TUI_NO_COLOR_QUERY=1`), unless `Options.Background` gives it.
 `Palette` is P's `build_palette` (`gray_scale`, `muted_text`, `luminance`,
 `polarity`): `panel` is the user rows' and the sidebar's background,
-`surface` the prompt frame's, `text-muted` muted text's colour. Without a
-background, 9a's adaptive greys and faint text stay.
+`surface` the prompt frame's, `text-muted` muted text's colour and `backdrop`
+the dim behind an open dialog. Without a background, 9a's adaptive greys and
+faint text stay.
 
 ## Skins (S:158-194, 225-760, 830-940)
 

@@ -9,8 +9,9 @@ import (
 // Palette is the surfaces generated from a terminal background given as
 // #rrggbb (son_of_anton_tui/palette.py build_palette, after opencode's
 // "system" theme): "panel" is the user rows' and the sidebar's background,
-// "surface" the prompt frame's, "text-muted" muted text's colour. A background
-// that is not #rrggbb gives nil.
+// "surface" the prompt frame's, "text-muted" muted text's colour, and
+// "backdrop" the dim the screen takes behind an open dialog. A background that
+// is not #rrggbb gives nil.
 func Palette(bg string) map[string]string {
 	r, g, b, ok := parseHex(bg)
 	if !ok {
@@ -20,6 +21,7 @@ func Palette(bg string) map[string]string {
 	dark := lum <= 127.5 // polarity
 	grays := grayScale(r, g, b, dark)
 	return map[string]string{
+		"backdrop":        grays[1],
 		"panel":           grays[2],
 		"surface":         grays[3],
 		"boost":           grays[3],

@@ -164,6 +164,8 @@ type theme struct {
 	accent, thinking, tool, okC, warn, errC lipgloss.TerminalColor
 	panel                                   lipgloss.TerminalColor
 	surface                                 lipgloss.TerminalColor // nil: no generated surface
+	backdrop                                lipgloss.TerminalColor // the dim card behind a dialog
+	card                                    lipgloss.TerminalColor // a dialog's own surface
 
 	// missingSkin is the display.skin that named no skin, when the start fell
 	// back to the default.
@@ -189,15 +191,19 @@ func newTheme(r *lipgloss.Renderer, sk skinDef, pal map[string]string) *theme {
 		th.panel = lipgloss.Color(pal["panel"])
 		th.surface = lipgloss.Color(pal["surface"])
 		th.mut = fg(lipgloss.Color(pal["text-muted"]))
+		th.backdrop, th.card = lipgloss.Color(pal["backdrop"]), lipgloss.Color(pal["panel"])
+	} else {
+		th.backdrop = lipgloss.AdaptiveColor{Light: "242", Dark: "233"}
+		th.card = th.panel
 	}
 	var hexes []string
-	for _, c := range []lipgloss.TerminalColor{th.accent, th.thinking, th.tool, th.okC, th.warn, th.errC} {
+	for _, c := range []lipgloss.TerminalColor{th.accent, th.thinking, th.tool, th.okC, th.warn, th.errC, th.panel, th.card, th.backdrop} {
 		if s, ok := c.(lipgloss.Color); ok && strings.HasPrefix(string(s), "#") {
 			hexes = append(hexes, string(s))
 		}
 	}
 	if pal != nil {
-		hexes = append(hexes, pal["panel"], pal["surface"], pal["text-muted"])
+		hexes = append(hexes, pal["panel"], pal["surface"], pal["text-muted"], pal["backdrop"])
 	}
 	if r.ColorProfile() == termenv.TrueColor {
 		if pairs := exactSeqs(hexes); len(pairs) > 0 {
@@ -224,6 +230,7 @@ func (th *theme) paint(line string, c lipgloss.TerminalColor, w int) string {
 	if seq == "" {
 		return line + gap
 	}
+	// A padding column inside a border box is on the card too.
 	return seq + strings.ReplaceAll(line, "\x1b[0m", "\x1b[0m"+seq) + gap + "\x1b[0m"
 }
 

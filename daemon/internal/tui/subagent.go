@@ -375,13 +375,13 @@ func (m *model) renderChild() []string {
 	var lines []string
 	m.inChild(func() tea.Cmd { lines = m.paneRows(cw, rows, now); return nil })
 	lines = append(lines, m.childFooter(cw)...)
-	m.overlay(lines, rows, cw)
 	switch {
 	case len(lines) > h:
 		lines = lines[len(lines)-h:]
 	case len(lines) < h:
 		lines = append(make([]string, h-len(lines)), lines...)
 	}
+	m.overlay(lines, cw)
 	for i, l := range lines {
 		lines[i] = m.th.fix(l)
 	}

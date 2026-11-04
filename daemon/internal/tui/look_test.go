@@ -248,6 +248,47 @@ func TestSurfacesFollowTheTerminal(t *testing.T) {
 	}
 }
 
+func TestAModalDimCoversTheWholeFeed(t *testing.T) {
+	fake := fakellm.New(t,
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
+		fakellm.Turn{Content: "changed it"},
+	)
+	d := newDaemon(t, fake)
+	if err := os.WriteFile(filepath.Join(d.cwd, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := open(t, d, tui.Options{Background: "#1e1e2e"})
+	send(a, "make it writable")
+	s := waitScreen(t, a, "The agent asks to run a command", "Allow once")
+	checkFrame(t, s, 100, 30)
+	// Textual's modal screen is `$background 60%`: the feed is dimmed, and the
+	// dialog is a card on `$panel`. The card runs from the feed's left edge to
+	// its right edge, so the dim does not reach past it.
+	const dim, card = "48;2;37;37;56", "48;2;44;44;67" // #252538 backdrop, #2c2c43 panel
+	st := a.Styled()
+	if !strings.Contains(st, dim) {
+		t.Fatal("the feed behind the dialog is not on the backdrop colour")
+	}
+	if !strings.Contains(st, card) {
+		t.Fatal("the dialog is not on the panel card")
+	}
+	for i, l := range strings.Split(st, "\n") {
+		if strings.Contains(l, "The agent asks") && !strings.Contains(l, "48;2;44;44;67") {
+			t.Fatalf("row %d is not the dialog card: %q", i, l)
+		}
+	}
+	// The card is the dialog box's own width, with the dim on either side:
+	// 100 columns, a 76-wide box, so 12 dim columns at each edge.
+	if got := strings.Split(st, "\n"); !strings.HasPrefix(got[0], "\x1b[48;2;37;37;56") {
+		t.Fatalf("top row is not dimmed: %q", got[0])
+	}
+	if strings.Contains(s, "$ chmod 777 f.txt") {
+		t.Fatalf("the feed row is still legible under the dialog:\n%s", s)
+	}
+	a.Press("1")
+	waitScreen(t, a, "changed it")
+}
+
 func TestARoutedModelReportsTheModelThatAnswered(t *testing.T) {
 	fake := fakellm.New(t, fakellm.Turn{Content: "routed", ServedModel: "radiance/small-model", PromptTokens: 300, CompletionTokens: 50})
 	fake.SetModels("auto", "radiance/small-model")
