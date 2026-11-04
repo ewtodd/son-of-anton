@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,9 @@ const (
 	DefaultMaxSteps = 500
 	// DefaultMaxToolResultChars caps a tool result's size in context.
 	DefaultMaxToolResultChars = 100_000
+	// maxEmptyRetries bounds how many times a step's request is sent again
+	// after a reply with nothing in it.
+	maxEmptyRetries = 2
 )
 
 // How a turn that did not end with a final answer is closed in the
@@ -43,6 +47,9 @@ const (
 
 // ErrStopped is Send's error after Stop.
 var ErrStopped = errors.New("agent: the turn was stopped")
+
+// ErrEmptyReply is Send's error when the model's replies stayed empty.
+var ErrEmptyReply = errors.New("the model sent back an empty reply")
 
 // Runner creates and drives sessions against one client and model.
 type Runner struct {
@@ -402,7 +409,9 @@ type Result struct {
 // system prompt, then every stored message in order), plus the new user
 // message. The model may answer directly, or call tools; each tool step is
 // persisted as it completes and the loop continues from the store, so a
-// failure never loses a step.
+// failure never loses a step. A reply with no text and no tool calls is not an
+// answer: the request goes out again, and a reply that stays empty ends the
+// turn with ErrEmptyReply, so a nil error always comes with a final answer.
 func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (Result, error) {
 	r := s.runner
 	reqCtx, reqCancel := context.WithCancel(ctx)
@@ -482,7 +491,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 		}
 		return ""
 	}
-	steps := 0
+	steps, empties := 0, 0
 	maxSteps := r.MaxSteps
 	if maxSteps <= 0 {
 		maxSteps = DefaultMaxSteps
@@ -595,6 +604,20 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 		total.Usage.ReasoningTokens += resp.Usage.ReasoningTokens
 		total.Usage.CachedTokens += resp.Usage.CachedTokens
 		if len(resp.Message.ToolCalls) == 0 || req.ToolChoice == "none" {
+			// A server can drop what the model wrote, and a model can end its
+			// turn on nothing. Nothing is stored and no message is added, so
+			// the same bytes go out again and the prompt stays cached.
+			if strings.TrimSpace(resp.Message.Content) == "" {
+				log.Printf("agent: session %s: empty reply from %s: %d completion tokens, finish_reason %s",
+					s.id, s.ServedModel(), resp.Usage.CompletionTokens, resp.FinishReason)
+				if empties == maxEmptyRetries {
+					return closeTurn(store.Message{Role: "assistant", Content: FailedText, Reasoning: resp.Reasoning}, ErrEmptyReply)
+				}
+				empties++
+				emit(Event{Kind: "warning", Text: fmt.Sprintf("The model sent back an empty reply (%d tokens generated); trying again (%d of %d).",
+					resp.Usage.CompletionTokens, empties, maxEmptyRetries)})
+				continue
+			}
 			assistant := store.Message{
 				Role:      "assistant",
 				Content:   resp.Message.Content,
@@ -618,6 +641,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 		}
 		first = false
 		steps++
+		empties = 0
 		if stopped() {
 			return closeTurn(store.Message{Role: "assistant", Content: InterruptedText}, stopErr())
 		}

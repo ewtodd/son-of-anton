@@ -29,7 +29,6 @@ const (
 	whenTerminal   = "when the terminal that picked it up gets to it"
 	whenAfterTurn  = "after the current turn"
 	noWorkerBound  = "no worker is bound to this chat: start one with new_in (a directory), or pick one from list"
-	workerNoReply  = "(no reply)"
 	workerUntitled = "untitled"
 )
 
@@ -149,9 +148,6 @@ func (k *workerLink) turnEnd(status, content, errMsg string) {
 	var text string
 	switch status {
 	case "done":
-		if strings.TrimSpace(content) == "" {
-			content = workerNoReply
-		}
 		text = head + " finished]\n" + content
 	case "error":
 		text = head + " failed: " + errMsg + "]"

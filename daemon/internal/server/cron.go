@@ -422,8 +422,6 @@ func (c *cronSched) agentRun(job cron.Job, extra string) (o outcome) {
 		return fail(fmt.Sprintf("The job '%s' made no progress for %ds and was stopped", name, int(cronIdle.Seconds())))
 	case err != nil:
 		return fail(err.Error())
-	case strings.TrimSpace(res.Content) == "":
-		return fail("The agent finished but its reply was empty")
 	}
 	return outcome{ok: true, silent: cron.Silent(res.Content), response: res.Content,
 		doc: header(job, "", time.Now().In(zone)) +

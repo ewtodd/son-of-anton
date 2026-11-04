@@ -36,7 +36,6 @@ const (
 	typingEvery   = 5 * time.Second
 	quoteMax      = 500
 	queuedAck     = "Got it. This will be handled after the current task is done."
-	noResponse    = "The model sent back an empty reply."
 	commandsHelp  = "/new, /stop, /status, /model, /sendnow, /sendall, /approve, /deny"
 	noApproval    = "No approval is pending."
 	nothingToStop = "There is nothing running to stop."
@@ -283,10 +282,6 @@ func (k *chatLink) turnEnd(status, content, errMsg string) {
 	k.cs.typingStop()
 	switch status {
 	case "done":
-		if strings.TrimSpace(content) == "" {
-			k.cs.say(noResponse)
-			return
-		}
 		text, styles := signal.Format(content)
 		k.cs.sayStyled(text, styles)
 	case "error":

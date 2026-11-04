@@ -303,13 +303,8 @@ func runOneshot(args []string, stdout, stderr io.Writer) int {
 		}
 		defer sess.Close()
 		sessionID = sess.ID()
-		if res, err = sess.Send(ctx, o.prompt, nil); err != nil {
-			return err
-		}
-		if strings.TrimSpace(res.Content) == "" {
-			return errors.New("the model returned an empty final answer")
-		}
-		return nil
+		res, err = sess.Send(ctx, o.prompt, nil)
+		return err
 	}()
 	if o.usageFile != "" {
 		if werr := writeUsage(o.usageFile, res, model, sessionID, err); werr != nil {
