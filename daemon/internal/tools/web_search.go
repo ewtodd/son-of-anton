@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -40,6 +41,8 @@ func (w *Web) search(ctx context.Context, query string, limit int) string {
 			notes = append(notes, "searxng: "+err.Error())
 		case len(hits) == 0 && w.DuckDuckGo != "":
 			notes = append(notes, "searxng: no results")
+		case len(hits) > 0 && !answersQuery(query, hits):
+			notes = append(notes, "searxng: results did not match the query")
 		default:
 			return searchAnswer("searxng", hits, nil)
 		}
@@ -47,10 +50,14 @@ func (w *Web) search(ctx context.Context, query string, limit int) string {
 	}
 	if w.DuckDuckGo != "" {
 		hits, err := w.searchDuckDuckGo(ctx, query, limit)
-		if err == nil {
+		switch {
+		case err != nil:
+			failures = append(failures, "duckduckgo: "+err.Error())
+		case len(hits) > 0 && !answersQuery(query, hits):
+			failures = append(failures, "duckduckgo: results did not match the query")
+		default:
 			return searchAnswer("duckduckgo", hits, notes)
 		}
-		failures = append(failures, "duckduckgo: "+err.Error())
 	}
 	if len(failures) == 0 {
 		return jsonOut(map[string]any{"success": false, "error": "no search engine is set up"})
@@ -67,6 +74,72 @@ func searchAnswer(backend string, hits []searchHit, notes []string) string {
 		out["notes"] = notes
 	}
 	return jsonOut(out)
+}
+
+// minQueryOverlap is the share of a query's own words a result must carry for
+// the response to count as an answer. Measured against this house's engines
+// (2026-11): block pages shared at most 0.14 of their query, real result sets
+// never fell below 0.50, so 0.25 sits between the two with room either side.
+const minQueryOverlap = 0.25
+
+// queryWordRE is the word splitter for the overlap check.
+var queryWordRE = regexp.MustCompile(`[a-z0-9]+`)
+
+// webStopwords are the words every page carries, so that counting them would
+// make any page look like an answer.
+var webStopwords = func() map[string]bool {
+	m := map[string]bool{}
+	for _, w := range strings.Fields("a an and are as at be been being but by can could did do does for from had has have how " +
+		"i if in into is it its me might must my of on or our shall should so than that the their them then there these they " +
+		"this those to was we were what when where which who why will with would you your") {
+		m[w] = true
+	}
+	return m
+}()
+
+// matchWords is the set of words text is compared by: lowercased, plurals
+// folded, nothing of one letter or in webStopwords.
+func matchWords(text string) map[string]bool {
+	words := map[string]bool{}
+	for _, w := range queryWordRE.FindAllString(strings.ToLower(text), -1) {
+		if len(w) < 2 || webStopwords[w] {
+			continue
+		}
+		if len(w) > 3 && strings.HasSuffix(w, "s") && !strings.HasSuffix(w, "ss") {
+			w = w[:len(w)-1]
+		}
+		words[w] = true
+	}
+	return words
+}
+
+// answersQuery reports whether any hit shares enough of the query's words to
+// be an answer, as distinct from a page served in place of an answer. An
+// engine that has blocked this host often replies 200 with its own front page
+// instead of an error (Bing does, and the parser reads the front page as
+// results), whereupon every hit shares nothing with the query. Rejecting the
+// whole response on that basis turns such a block into no results; individual
+// hits are never dropped, since a good result may legitimately word things
+// differently from the query. A query with no words left to compare passes,
+// there being nothing to judge.
+func answersQuery(query string, hits []searchHit) bool {
+	words := matchWords(query)
+	if len(words) == 0 {
+		return true
+	}
+	for _, h := range hits {
+		hit := matchWords(h.Title + " " + h.Description + " " + h.URL)
+		shared := 0
+		for w := range words {
+			if hit[w] {
+				shared++
+			}
+		}
+		if float64(shared)/float64(len(words)) >= minQueryOverlap {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *Web) searchSearXNG(ctx context.Context, query string, limit int) ([]searchHit, error) {

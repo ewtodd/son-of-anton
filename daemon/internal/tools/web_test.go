@@ -97,10 +97,13 @@ func ddg(t *testing.T, gotQuery *string) http.HandlerFunc {
 
 func TestWebSearchThroughSearXNG(t *testing.T) {
 	f, w := webFixture(t)
+	// The URLs carry the query's words: a response sharing nothing with the
+	// query is treated as a block page and not returned (see
+	// TestWebSearchRejectsResultsThatDoNotMatchTheQuery).
 	w.SearXNG = serve(t, searx(`[
-		{"title":"low","url":"https://a.example","content":"A","score":0.5},
-		{"title":"high","url":"https://b.example","content":"B","score":2.0},
-		{"title":"mid","url":"https://c.example","content":"C","score":1.0}]`))
+		{"title":"low","url":"https://a.example/go-modules","content":"A","score":0.5},
+		{"title":"high","url":"https://b.example/go-modules","content":"B","score":2.0},
+		{"title":"mid","url":"https://c.example/go-modules","content":"C","score":1.0}]`))
 	r := f.call(t, "web_search", map[string]any{"query": "go modules", "limit": 2})
 	got := webResults(t, r)
 	if r["success"] != true || r["backend"] != "searxng" || len(got) != 2 || got[0]["title"] != "high" || got[1]["title"] != "mid" ||
@@ -118,10 +121,12 @@ func TestWebSearchFallsBackToDuckDuckGo(t *testing.T) {
 	w.SearXNG = serve(t, func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "down", http.StatusBadGateway) })
 	var q string
 	w.DuckDuckGo = serve(t, ddg(t, &q))
-	r := f.call(t, "web_search", map[string]any{"query": "golang html parser"})
+	// The query is one ddgPage answers: an unrelated query's results are
+	// rejected as a block page would be.
+	r := f.call(t, "web_search", map[string]any{"query": "example snippet"})
 	got := webResults(t, r)
 	notes, _ := r["notes"].([]any)
-	if r["success"] != true || r["backend"] != "duckduckgo" || q != "golang html parser" || len(notes) != 1 ||
+	if r["success"] != true || r["backend"] != "duckduckgo" || q != "example snippet" || len(notes) != 1 ||
 		!strings.HasPrefix(notes[0].(string), "searxng: ") {
 		t.Fatalf("fallback = %v (query %q)", r, q)
 	}
@@ -131,12 +136,58 @@ func TestWebSearchFallsBackToDuckDuckGo(t *testing.T) {
 	}
 
 	w.SearXNG = serve(t, searx(`[]`))
-	if r := f.call(t, "web_search", map[string]any{"query": "nothing here"}); r["backend"] != "duckduckgo" {
+	if r := f.call(t, "web_search", map[string]any{"query": "example snippet"}); r["backend"] != "duckduckgo" {
 		t.Fatalf("no SearXNG results falls back: %v", r)
 	}
 	w.SearXNG = ""
-	if r := f.call(t, "web_search", map[string]any{"query": "no searxng"}); r["backend"] != "duckduckgo" || r["success"] != true {
+	if r := f.call(t, "web_search", map[string]any{"query": "example snippet"}); r["backend"] != "duckduckgo" || r["success"] != true {
 		t.Fatalf("no SearXNG at all: %v", r)
+	}
+}
+
+// A blocked engine often answers 200 with its own front page instead of an
+// error, and the hits then share nothing with the query. That has to read as
+// no results rather than as an answer.
+func TestWebSearchRejectsResultsThatDoNotMatchTheQuery(t *testing.T) {
+	f, w := webFixture(t)
+	const query = "organic scintillator pulse shape discrimination"
+	// What Bing returned for this query once it had blocked this host: the
+	// trending links off its front page.
+	w.SearXNG = serve(t, searx(`[
+		{"title":"Taylor Swift - YouTube","url":"https://www.youtube.com/@taylorswift","content":"","score":1.0},
+		{"title":"Wells Fargo - Official Site","url":"https://www.wellsfargo.com/","content":"","score":0.5}]`))
+	// DuckDuckGo answers the query, so the fallback is what the caller sees.
+	w.DuckDuckGo = serve(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, `<html><body><div class="results">
+<div class="result web-result"><a class="result__a" href="https://example.org/psd">pulse shape discrimination in organic scintillator</a>
+<a class="result__snippet">neutron and gamma separation by pulse shape</a></div>
+</div></body></html>`)
+	})
+	r := f.call(t, "web_search", map[string]any{"query": query})
+	notes, _ := r["notes"].([]any)
+	if r["backend"] != "duckduckgo" || len(notes) != 1 || notes[0].(string) != "searxng: results did not match the query" {
+		t.Fatalf("a block page must fall through: %v", r)
+	}
+
+	// Both backends answering with unrelated pages is no results at all, and
+	// says so rather than passing the pages on.
+	w.DuckDuckGo = serve(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, ddgPage)
+	})
+	r = f.call(t, "web_search", map[string]any{"query": query})
+	e, _ := r["error"].(string)
+	if r["success"] != false || !strings.Contains(e, "searxng: results did not match the query") ||
+		!strings.Contains(e, "duckduckgo: results did not match the query") {
+		t.Fatalf("both blocked = %v", r)
+	}
+
+	// A query with no words left to compare has nothing to reject.
+	w.DuckDuckGo = ""
+	w.SearXNG = serve(t, searx(`[{"title":"anything at all","url":"https://a.example","content":"x","score":1.0}]`))
+	if r := f.call(t, "web_search", map[string]any{"query": "what is it"}); r["success"] != true {
+		t.Fatalf("all-stopword query is not filtered: %v", r)
 	}
 }
 
