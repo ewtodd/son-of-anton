@@ -68,6 +68,7 @@ type model struct {
 	lastSeq    int64
 	lastDraw   time.Time
 	drawQueued bool
+	ctrlEnter  bool // the terminal reports ctrl+enter apart from enter
 
 	ta       textarea.Model
 	hist     []string
@@ -310,6 +311,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyMsg:
 		return m, m.key(msg)
+	case ctrlEnterMsg:
+		return m, m.sendNowKey()
+	case kittyKeysMsg:
+		m.ctrlEnter = true
 	case tea.MouseMsg:
 		return m, m.mouse(msg)
 	case copyExpiredMsg:

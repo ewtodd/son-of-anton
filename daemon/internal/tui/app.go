@@ -88,11 +88,15 @@ func Start(c *client.Client, o Options, in io.Reader, out io.Writer) (*App, erro
 
 	a := &App{done: make(chan struct{}), interactive: in != nil, out: out}
 	m := newModel(a, c, o, res, resumed, startTheme(o, out))
-	opts := []tea.ProgramOption{tea.WithOutput(out)}
+	screen := out
+	if f, ok := out.(*os.File); ok && in != nil {
+		screen = kittyOutput{f}
+	}
+	opts := []tea.ProgramOption{tea.WithOutput(screen)}
 	if in == nil {
 		opts = append(opts, tea.WithInput(nil), tea.WithoutSignalHandler())
 	} else {
-		opts = append(opts, tea.WithInput(in), tea.WithAltScreen(), tea.WithMouseCellMotion())
+		opts = append(opts, tea.WithInput(in), tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithFilter(kittyFilter))
 	}
 	a.p = tea.NewProgram(m, opts...)
 	go func() {

@@ -66,8 +66,8 @@ func (m *model) setMode(mode string) tea.Cmd {
 		})
 }
 
-// submit sends what the prompt holds.
-func (m *model) submit() tea.Cmd {
+// submit sends what the prompt holds; mode is turn.send's for a plain message.
+func (m *model) submit(mode string) tea.Cmd {
 	text := strings.TrimSpace(m.ta.Value())
 	if text == "" {
 		return nil
@@ -75,10 +75,10 @@ func (m *model) submit() tea.Cmd {
 	m.record(m.ta.Value())
 	m.ta.Reset()
 	m.resetPrompt()
-	return m.dispatch(text)
+	return m.dispatch(text, mode)
 }
 
-func (m *model) dispatch(text string) tea.Cmd {
+func (m *model) dispatch(text, mode string) tea.Cmd {
 	switch {
 	case text == ":q":
 		return m.quit(false)
@@ -90,7 +90,7 @@ func (m *model) dispatch(text string) tea.Cmd {
 			return m.command(word[1:], strings.TrimSpace(args), text)
 		}
 	}
-	return m.send(text, "queue")
+	return m.send(text, mode)
 }
 
 // send is turn.send; the daemon starts the turn or queues the text.

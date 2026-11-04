@@ -53,6 +53,7 @@ func (m *model) editor() tea.Cmd {
 	if !m.app.interactive { // no terminal to hand over (the tests)
 		return func() tea.Msg { return done(cmd.Run()) }
 	}
+	cmd.Stdout = m.app.out // the terminal itself: os/exec would pipe bubbletea's wrapper of it
 	return tea.ExecProcess(cmd, done)
 }
 
@@ -82,5 +83,5 @@ func (m *model) edited(draft, raw string, runErr, readErr error) tea.Cmd {
 		return nil
 	}
 	m.record(text)
-	return m.dispatch(text)
+	return m.dispatch(text, "queue")
 }

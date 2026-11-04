@@ -106,7 +106,7 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		m.scroll(1)
 		return nil
 	case "enter":
-		return m.submit()
+		return m.submit("queue")
 	case "alt+enter", "ctrl+j":
 		return m.edit(tea.KeyMsg{Type: tea.KeyEnter})
 	case "up":
@@ -121,6 +121,23 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		}
 	}
 	return m.edit(k)
+}
+
+// sendNowKey is ctrl+enter: the draft goes out now, or with no draft the
+// oldest queued message, as /sendnow. Over a list or a dialog it is enter.
+func (m *model) sendNowKey() tea.Cmd {
+	if m.quitting {
+		return nil
+	}
+	if len(m.modals) > 0 || m.picker != nil || m.view != nil || m.comp != nil {
+		return m.key(tea.KeyMsg{Type: tea.KeyEnter})
+	}
+	m.sel, m.press = nil, nil
+	m.leaderAt = time.Time{}
+	if strings.TrimSpace(m.ta.Value()) == "" {
+		return m.command("sendnow", "", "/sendnow")
+	}
+	return m.submit("now")
 }
 
 // edit hands a key to the text area.

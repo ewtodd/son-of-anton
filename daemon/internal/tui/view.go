@@ -210,7 +210,12 @@ func (m *model) queueStrip(cw int) []string {
 		out = append(out, th.mut.Render(fmt.Sprintf("   +%d more", n)))
 	}
 	hint := "/sendnow sends this now"
-	if len(m.queue) > 1 {
+	switch {
+	case m.ctrlEnter && len(m.queue) > 1:
+		hint = "ctrl+enter or /sendnow to send the oldest · /sendall to send all"
+	case m.ctrlEnter:
+		hint = "ctrl+enter or /sendnow to send now"
+	case len(m.queue) > 1:
 		hint = "/sendnow sends the oldest · /sendall sends all"
 	}
 	out = append(out, th.mut.Render(ellipsize(hint, cw)))
