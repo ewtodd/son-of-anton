@@ -39,6 +39,7 @@ type block struct {
 	took                time.Duration
 
 	folded   bool   // reasoning
+	reason   *block // assistant: its response's reasoning block, if any
 	expanded bool   // tool rows: the whole label, wrapped
 	detail   string // tool rows: a muted second line
 

@@ -419,15 +419,28 @@ func (m *model) onEvent(ev client.Event) tea.Cmd {
 		}
 		return m.startTick()
 	case "reasoning.delta":
+		if a := m.curAsst; a != nil {
+			// The answer has begun and reasoning still arrives (a server can
+			// release its reasoning's tail late): it joins the response's
+			// reasoning block rather than splitting the answer in two.
+			if a.reason == nil {
+				a.reason = m.feed.add(&block{kind: bkReasoning, folded: true})
+			}
+			r := a.reason
+			r.text += clean(str(p, "text"))
+			r.shown = r.text
+			r.ver++
+			return nil
+		}
 		if m.curReason == nil {
-			m.curAsst = nil
 			m.curReason = m.feed.add(&block{kind: bkReasoning})
 		}
 		return m.delta(m.curReason, str(p, "text"))
 	case "assistant.delta":
+		r := m.curReason
 		m.foldReasoning()
 		if m.curAsst == nil {
-			m.curAsst = m.feed.add(&block{kind: bkAssistant})
+			m.curAsst = m.feed.add(&block{kind: bkAssistant, reason: r})
 		}
 		return m.delta(m.curAsst, str(p, "text"))
 	case "tool.start":

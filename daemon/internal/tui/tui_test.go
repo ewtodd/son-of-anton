@@ -724,3 +724,21 @@ func restartWith(t *testing.T, d *daemon, extra string) {
 	f.Close()
 	d.start()
 }
+
+// A reasoning fragment that arrives after the answer has begun (a server
+// releasing its reasoning's tail late) joins the response's reasoning block:
+// the answer stays one block and no reasoning row appears inside it.
+func TestLateReasoningDoesNotSplitTheAnswer(t *testing.T) {
+	fake := fakellm.New(t, fakellm.Turn{Reasoning: "let me think\nabout it", Content: "Let me look at the recent commits.", ChunkRunes: 4, LateReasoning: " diff."})
+	d := newDaemon(t, fake)
+	a := open(t, d, tui.Options{})
+	send(a, "hi")
+	s := waitScreen(t, a, "Let me look at the recent commits.", "▶ reasoning · 2 lines")
+	s = idle(t, a)
+	if n := strings.Count(s, "▶ reasoning") + strings.Count(s, "▼ reasoning"); n != 1 {
+		t.Fatalf("one reasoning row, got %d:\n%s", n, s)
+	}
+	if strings.Contains(s, "diff.") {
+		t.Fatalf("the late fragment is folded into the reasoning block, not shown in the answer:\n%s", s)
+	}
+}

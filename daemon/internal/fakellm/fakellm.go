@@ -67,6 +67,9 @@ type Turn struct {
 	// until the channel is closed (or the client goes away) before sending
 	// the rest: a turn the test holds open mid-stream.
 	Release chan struct{}
+	// LateReasoning, when set, is sent as a reasoning delta right after the
+	// first content delta: a server releasing its reasoning's tail late.
+	LateReasoning string
 }
 
 // Server is a running fake. URL is the base URL, ending in /v1.
@@ -240,6 +243,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	for i, part := range split(turn.Content, turn.ChunkRunes) {
 		send(chunk(map[string]any{"content": part}, nil))
+		if turn.LateReasoning != "" && i == 0 {
+			send(chunk(map[string]any{"reasoning_content": turn.LateReasoning}, nil))
+		}
 		if turn.FailMidStream && i == 0 {
 			return
 		}
