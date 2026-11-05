@@ -71,8 +71,12 @@ real terminal the program takes mouse cell motion (Bubble Tea's
 ## The mouse (F:949-991, T:2239-2283)
 
 - A click on a reasoning header folds or unfolds it; on a tool row unfolds
-  it to the whole label wrapped (continuation rows indented 2) and folds it
-  again on a second click. Elsewhere a click does nothing.
+  it: the whole label wrapped (continuation rows indented 2) and, below it,
+  the call's output, wrapped and indented 4 in the muted colour, from the
+  call's stored result (`tool.end`'s `result`, or the stored tool row's
+  content in history). A second click folds it back to one line.
+  `ctrl+t` expands or folds the most recent finished tool row. Elsewhere a
+  click does nothing.
 - A drag over the feed selects from the press cell to the release cell
   (rows in between whole, the last cell excluded), drawn in reverse video;
   on release the selected text, each row's trailing spaces trimmed and rows

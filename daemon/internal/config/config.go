@@ -100,6 +100,11 @@ type Config struct {
 		TotalTokens   int     `toml:"total_tokens"`
 		Hours         float64 `toml:"hours"`
 	} `toml:"physics"`
+	Delegation struct {
+		// Model is the model a task child runs on when its call pins none and
+		// the parent's model is inherited; "" inherits the parent.
+		Model string `toml:"model"`
+	} `toml:"delegation"`
 	Terminal struct {
 		Cwd string `toml:"cwd"`
 		// HomeMode "cwd": commands get HOME = Cwd, so ~ is the instance's

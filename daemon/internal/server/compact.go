@@ -40,8 +40,8 @@ func (s *Server) contextLength(ep config.Endpoint, id string) int {
 	}
 	s.metaMu.Lock()
 	defer s.metaMu.Unlock()
-	if n := s.meta[ep.BaseURL][ep.Model]; n > 0 {
-		return n
+	if e := s.meta[ep.BaseURL][ep.Model]; e.context > 0 {
+		return e.context
 	}
 	return s.learned[id]
 }
@@ -63,7 +63,7 @@ func (s *Server) servedWindow(model, served string) int {
 	}
 	s.metaMu.Lock()
 	defer s.metaMu.Unlock()
-	return s.meta[ep.BaseURL][served]
+	return s.meta[ep.BaseURL][served].context
 }
 
 // summarizer is the summary model for a session on ep: the compaction
@@ -201,13 +201,25 @@ func compactionObjs(cs []store.Compaction) []map[string]any {
 	return out
 }
 
-// refreshMeta replaces what is known about a provider's models (model.list).
+// refreshMeta replaces what is known about a provider's models (model.list):
+// each model's context length and its live status ("serving"/"unavailable"/>
+// "" from a server that does not say).
 func (s *Server) refreshMeta(ep config.Endpoint, infos []provider.ModelInfo) {
-	got := map[string]int{}
+	got := map[string]metaEntry{}
 	for _, m := range infos {
-		got[m.ID] = m.ContextLength
+		got[m.ID] = metaEntry{context: m.ContextLength, status: lowerStatus(m.Status)}
 	}
 	s.metaMu.Lock()
 	s.meta[ep.BaseURL] = got
+	s.metaAt[ep.BaseURL] = time.Now()
 	s.metaMu.Unlock()
+}
+
+// lowerStatus normalizes a status so only "unavailable" marks a model down.
+func lowerStatus(st string) string {
+	st = strings.ToLower(strings.TrimSpace(st))
+	if st == "unavailable" {
+		return "unavailable"
+	}
+	return st // "serving", or whatever else an endpoint says
 }

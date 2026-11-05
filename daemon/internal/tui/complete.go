@@ -142,6 +142,9 @@ func (m *model) completeArg(v string, start int, word string, explicit bool) (*c
 		}
 		if cmd == "model" {
 			for _, mod := range m.models.Models {
+				if m.models.Statuses && !mod.Serving {
+					continue // the picker offers only what is being served
+				}
 				names = append(names, mod.Name)
 			}
 			break

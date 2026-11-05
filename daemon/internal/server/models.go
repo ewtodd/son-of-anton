@@ -13,28 +13,82 @@ import (
 	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
+	"github.com/ewtodd/son-of-anton/daemon/internal/config"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 )
 
+// metaEntry is what the provider's /models says about a model: its context
+// length and its live status ("serving", "unavailable", "" if unsaid).
+type metaEntry struct {
+	context int
+	status  string
+}
+
+// statusTTL is how long a reported status is trusted: maitred's statuses
+// describe the moment, not the catalog cache's hour, so the picker asks again
+// once they are this old. A mode switch therefore shows on the next open.
+const statusTTL = 10 * time.Second
+
+// catalogTimeout bounds the picker's status lookup: fail open, and never delay
+// opening the picker or attaching for more than a short timeout.
+const catalogTimeout = 2 * time.Second
+
 // modelRoutes is every model name a session may be set to, with its
-// reasoning efforts (nil for none known): the configured routes plus what the
-// provider's /models lists.
+// reasoning efforts (nil for none known); the configured routes plus what the
+// provider's /models lists. It carries no filtering: naming an unloaded model
+// stays valid.
 func (s *Server) modelRoutes() map[string][]string {
 	routes := s.cfg.Routes()
-	if ep, err := s.cfg.Endpoint(""); err == nil {
-		ctx, cancel := context.WithTimeout(s.base, 5*time.Second)
-		infos, err := provider.New(ep.BaseURL, ep.APIKey).ModelInfo(ctx)
-		cancel()
-		if err == nil {
-			s.refreshMeta(ep, infos)
-			for _, info := range infos {
-				if _, ok := routes[info.ID]; !ok {
-					routes[info.ID] = nil
-				}
-			}
+	infos, ok := s.catalog()
+	if !ok {
+		return routes
+	}
+	for _, info := range infos {
+		if _, ok := routes[info.ID]; !ok {
+			routes[info.ID] = nil
 		}
 	}
 	return routes
+}
+
+// catalog is the provider's /models listing for the default endpoint, with
+// its reported statuses, refreshed when they are older than statusTTL. It
+// fails open: a failed or status-less request gives no filtering at all.
+func (s *Server) catalog() ([]provider.ModelInfo, bool) {
+	ep, err := s.cfg.Endpoint("")
+	if err != nil {
+		return nil, false
+	}
+	s.metaMu.Lock()
+	entries, have := s.meta[ep.BaseURL]
+	reports := false
+	for _, e := range entries {
+		if e.status != "" {
+			reports = true
+			break
+		}
+	}
+	stale := reports && time.Since(s.metaAt[ep.BaseURL]) > statusTTL
+	s.metaMu.Unlock()
+	if have && !stale {
+		out := make([]provider.ModelInfo, 0, len(entries))
+		for id, e := range entries {
+			out = append(out, provider.ModelInfo{ID: id, ContextLength: e.context, Status: e.status})
+		}
+		return out, true
+	}
+	return s.fetchCatalog(ep)
+}
+
+func (s *Server) fetchCatalog(ep config.Endpoint) ([]provider.ModelInfo, bool) {
+	ctx, cancel := context.WithTimeout(s.base, catalogTimeout)
+	defer cancel()
+	infos, err := provider.New(ep.BaseURL, ep.APIKey).ModelInfo(ctx)
+	if err != nil {
+		return nil, false
+	}
+	s.refreshMeta(ep, infos)
+	return infos, true
 }
 
 func sortedKeys(m map[string][]string) []string {
@@ -54,6 +108,31 @@ func (s *Server) defaultRoute(model string) *agent.Fallback {
 		return nil
 	}
 	return &agent.Fallback{Client: provider.New(ep.BaseURL, ep.APIKey), Model: ep.Model, Effort: ep.ReasoningEffort}
+}
+
+// downText is what a session is told when its model is not being served:
+// pick another model, or (in a chat) it may come back.
+func downText(model string) string {
+	return model + " is not being served; pick another model"
+}
+
+// modelStatus reports the live status of model from the refreshed catalog:
+// "unavailable" when known down, "" when served, unsaid, or the lookup failed.
+func (s *Server) modelStatus(model string) string {
+	ep, err := s.cfg.Endpoint(model)
+	if err != nil {
+		return ""
+	}
+	cat, ok := s.catalog()
+	if !ok {
+		return ""
+	}
+	for _, info := range cat {
+		if info.ID == ep.Model {
+			return info.Status
+		}
+	}
+	return ""
 }
 
 // deadPinText is what a session is told when its model was gone.
@@ -229,7 +308,7 @@ func (s *Server) modelsNoteText() string {
 	if len(names) == 0 {
 		return ""
 	}
-	var meta map[string]int
+	var meta map[string]metaEntry
 	if ep, err := s.cfg.Endpoint(""); err == nil {
 		s.metaMu.Lock()
 		meta = s.meta[ep.BaseURL]
@@ -243,7 +322,7 @@ func (s *Server) modelsNoteText() string {
 		}
 		window := s.cfg.RouteContextLength(n)
 		if window <= 0 {
-			window = meta[n]
+			window = meta[n].context
 		}
 		if w := windowText(window); w != "" {
 			detail = append(detail, w+" context")

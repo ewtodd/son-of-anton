@@ -76,15 +76,9 @@ func TestClicksFoldAndUnfold(t *testing.T) {
 	}
 	r, c = rowOf(s, "$ echo")
 	a.Click(c+4, r)
-	s = waitRows(t, a, "yyyy", 2)
-	var cont string // the continuation row: the 2-column inset, then the 2-column indent
-	for _, l := range strings.Split(s, "\n") {
-		if strings.Contains(l, "yyyy") && !strings.Contains(l, "$ echo") {
-			cont = l
-		}
-	}
-	if strings.Contains(lineWith(s, "$ echo"), "…") || !strings.HasPrefix(cont, "    y") {
-		t.Fatalf("an unfolded row is still cut, or its continuation not indented:\n%s", s)
+	s = waitScreen(t, a, "    yyy")
+	if strings.Contains(lineWith(s, "$ echo"), "…") || !strings.HasPrefix(lineWith(s, "    yyy"), "    y") {
+		t.Fatalf("an unfolded row is still cut, or its output continuation not indented:\n%s", s)
 	}
 	r, c = rowOf(s, "$ echo")
 	a.Click(c+4, r)

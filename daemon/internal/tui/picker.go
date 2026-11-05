@@ -19,6 +19,7 @@ type pickRow struct {
 // picker is a list the user chooses from: one row, or several.
 type picker struct {
 	title      string
+	notice     string // a warning line under the title
 	rows       []pickRow
 	filterable bool
 	multi      bool
@@ -141,6 +142,9 @@ func (p *picker) view(w, h int, th *theme) []string {
 	inner := max(bw-4, 1)
 	var body []string
 	body = append(body, th.bld.Render(ellipsize(p.title, inner)))
+	if p.notice != "" {
+		body = append(body, th.warnS.Render(ellipsize(p.notice, inner)))
+	}
 	if p.filterable {
 		if p.filter == "" {
 			body = append(body, th.mut.Render("type to filter…"))
@@ -227,7 +231,14 @@ func (m *model) openPicker(p *picker) { m.picker = p }
 func (m *model) modelPicker() tea.Cmd {
 	return m.fetchModels(func(m *model, res modelList) tea.Cmd {
 		var rows []pickRow
+		currentDown := false
 		for _, mod := range res.Models {
+			if res.Statuses && !mod.Serving {
+				if mod.Name == res.Current {
+					currentDown = true
+				}
+				continue
+			}
 			r := pickRow{key: mod.Name, label: mod.Name, def: mod.Name == res.Current}
 			if r.def {
 				r.label += "  ●"
@@ -241,15 +252,45 @@ func (m *model) modelPicker() tea.Cmd {
 			m.feed.note("no models", false)
 			return nil
 		}
-		m.openPicker(newPicker("Switch model  ·  now "+res.Current, rows, true, false, func(m *model, keys []string) tea.Cmd {
-			return m.command("model", keys[0], "/model "+keys[0])
-		}))
+		if currentDown {
+			p := newPicker("Switch model  ·  now "+res.Current, rows, true, false, func(m *model, keys []string) tea.Cmd {
+				return m.setModelThenReasoning(res, keys[0])
+			})
+			p.notice = res.Current + " is not being served; pick another model"
+			m.openPicker(p)
+		} else {
+			m.openPicker(newPicker("Switch model  ·  now "+res.Current, rows, true, false, func(m *model, keys []string) tea.Cmd {
+				return m.setModelThenReasoning(res, keys[0])
+			}))
+		}
 		return nil
 	})
 }
 
+// setModelThenReasoning sets the model and, when it has reasoning levels,
+// opens the reasoning picker right away: /model alone leaves no back-to-back
+// second command. /reasoning still works on its own.
+func (m *model) setModelThenReasoning(res modelList, name string) tea.Cmd {
+	return m.set(map[string]any{"model": name}, "model: "+name+" (from the next turn)", "model",
+		func(m *model) tea.Cmd {
+			var efforts []string
+			for _, mod := range res.Models {
+				if mod.Name == name {
+					efforts = mod.Efforts
+				}
+			}
+			if len(efforts) == 0 {
+				return nil
+			}
+			m.reasoningPickerFrom(name, efforts)
+			return nil
+		})
+}
+
+// reasoningPicker is /reasoning with no argument, standing alone: it reads
+// the session's model, even a model that is not being served.
 func (m *model) reasoningPicker() tea.Cmd {
-	cur, mdl := m.sess.Effort, m.sess.Model
+	mdl := m.sess.Model
 	return m.fetchModels(func(m *model, res modelList) tea.Cmd {
 		var efforts []string
 		for _, mod := range res.Models {
@@ -261,25 +302,40 @@ func (m *model) reasoningPicker() tea.Cmd {
 			m.feed.note(modelOr(mdl, res.Current)+" has no configured reasoning levels", false)
 			return nil
 		}
-		if cur == "" {
-			cur = "default"
-		}
-		rows := []pickRow{{key: "", label: "default", desc: "the configured default", def: true}}
-		for _, e := range efforts {
-			rows = append(rows, pickRow{key: e, label: e})
-		}
-		m.openPicker(newPicker("Reasoning  ·  now "+cur, rows, false, false, func(m *model, keys []string) tea.Cmd {
-			arg := keys[0]
-			if arg == "" {
-				arg = "default"
-			}
-			return m.command("reasoning", arg, "/reasoning "+arg)
-		}))
+		m.reasoningPickerFrom(mdl, efforts)
 		return nil
 	})
 }
 
-// sessionPicker is /resume (kinds nil) and /pickup (the workers).
+// reasoningPickerFrom opens the reasoning picker for a model whose efforts
+// are known; cur is the session's current effort.
+func (m *model) reasoningPickerFrom(name string, efforts []string) {
+	cur := m.sess.Effort
+	if cur == "" {
+		cur = "default"
+	}
+	rows := []pickRow{{key: "", label: "default", desc: "the configured default", def: true}}
+	for _, e := range efforts {
+		rows = append(rows, pickRow{key: e, label: e})
+	}
+	m.openPicker(newPicker("Reasoning  ·  now "+cur+"  ·  "+modelOr(name, m.sess.Model), rows, false, false, func(m *model, keys []string) tea.Cmd {
+		arg := keys[0]
+		effort := arg
+		if arg == "default" || arg == "" {
+			effort = ""
+		}
+		return m.set(map[string]any{"reasoning_effort": effort}, "reasoning: "+arg+" (from the next turn)", "reasoning", nil)
+	}))
+}
+
+// modelNamed is /model <name>: set the model and, when it has levels, open
+// its reasoning picker.
+func (m *model) modelNamed(name string) tea.Cmd {
+	return m.fetchModels(func(m *model, res modelList) tea.Cmd {
+		return m.setModelThenReasoning(res, name)
+	})
+}
+
 func (m *model) sessionPicker(name string, kinds []string) tea.Cmd {
 	params := map[string]any{"limit": 500}
 	title, empty := "Resume session", "no sessions to resume"

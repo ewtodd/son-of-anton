@@ -136,8 +136,8 @@ All handled by the client; none reaches the Python CLI.
 
 | command | does |
 |---|---|
-| `/model [name]` | `session.set` model; bare: one picker over `model.list` (no provider stage) |
-| `/reasoning [level]` | `session.set` reasoning_effort; bare: a picker over the model's efforts |
+| `/model [name]` | `session.set` model; bare: a picker over `model.list` showing only `serving` rows. A current model marked unavailable is omitted and the picker says `<model> is not being served; pick another model`. Choosing (or naming) a model with reasoning levels opens the reasoning picker right after. |
+| `/reasoning [level]` | `session.set` reasoning_effort; bare: a picker over the session model's efforts, even when that model is unavailable |
 | `/perm [mode]` | `session.set` mode; bare: a note with the mode |
 | `/new`, `/clear` | `session.create` in the TUI's cwd, attach as driver, clear the feed |
 | `/resume [id]`, `/sessions` | attach that id; bare: the existing filterable picker over `session.list` |

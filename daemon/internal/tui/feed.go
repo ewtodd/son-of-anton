@@ -40,8 +40,9 @@ type block struct {
 
 	folded   bool   // reasoning
 	reason   *block // assistant: its response's reasoning block, if any
-	expanded bool   // tool rows: the whole label, wrapped
+	expanded bool   // tool rows: label wrapped, and the output shown
 	detail   string // tool rows: a muted second line
+	output   string // tool rows: the call's result text
 
 	ver   int // bumped on every change that alters the drawing
 	cth   *theme
@@ -329,6 +330,11 @@ func (b *block) drawTool(w int, th *theme, now time.Time, spin int) []string {
 	}
 	if b.detail != "" {
 		ls = append(ls, "  "+th.mut.Render(ellipsize(b.detail, max(w-2, 1))))
+	}
+	if b.expanded && b.output != "" {
+		for _, l := range wrapText(clean(b.output), w-4) {
+			ls = append(ls, "    "+th.mut.Render(l))
+		}
 	}
 	return ls
 }

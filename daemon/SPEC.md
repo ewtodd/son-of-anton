@@ -156,6 +156,11 @@ The daemon is the only writer of `state.db`. Clients never open it.
   the tail, rebuild the system prompt (the one exception to invariant 1).
 - `/model` and `/reasoning` change the model for the next turn; the prompt
   stays byte-stable and the server's prefix cache simply misses once.
+  `model.list` carries each model's live `status`/`serving` as maitred
+  reports it (status-less endpoints report none and filter nothing); the
+  picker lists only what is served, naming an unloaded model stays valid, a
+  503 `model_not_loaded` never changes the session's model (the dead-pin
+  fallback stays on 404).
 - Titles from the auxiliary model.
 - References: `agent/conversation_loop.py`, `agent/turn_context.py`,
   `agent/conversation_compaction.py`, `agent/context_compactor.py`,
@@ -222,13 +227,15 @@ Reference: opencode tag `v1.19.5`, `packages/opencode/src/tool/task.ts` and
 `subagent-footer.tsx`. The Python `delegate_task` was offered on every request
 and never called once; do not port it.
 
-- `task {description, prompt, subagent_type, task_id?, background?}` creates
-  a `child` session (`parent_id` set) titled "<description> (@<type>
+- `task {description, prompt, subagent_type, task_id?, background?, model?}`
+  creates a `child` session (`parent_id` set) titled "<description> (@<type>
   subagent)". Foreground by default: the parent's tool call returns the
   child's final message plus `task_id`. `background: true` returns at once and
   the result arrives as a notice when the child finishes. `task_id` resumes the
-  same child. Depth limit 1 (configurable). Several `task` calls in one
-  assistant message run concurrently.
+  same child. `model` pins the child's model; without it the child takes the
+  parent's, or the instance's `[delegation] model` when that is set. Depth
+  limit 1 (configurable). Several `task` calls in one assistant message run
+  concurrently.
 - A child's tools and permissions are derived from the parent's. Its approval
   and question requests surface in the parent's driver, which blocks the
   parent's prompt until they are answered.

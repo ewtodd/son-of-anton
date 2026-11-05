@@ -171,7 +171,7 @@ func (m *model) command(name, args, line string) tea.Cmd {
 		m.feed.note(helpText(), false)
 	case "model":
 		if args != "" {
-			return m.set(map[string]any{"model": args}, "model: "+args+" (from the next turn)", name)
+			return m.modelNamed(args)
 		}
 		return m.modelPicker()
 	case "reasoning":
@@ -180,12 +180,12 @@ func (m *model) command(name, args, line string) tea.Cmd {
 			if effort == "default" {
 				effort = ""
 			}
-			return m.set(map[string]any{"reasoning_effort": effort}, "reasoning: "+args+" (from the next turn)", name)
+			return m.set(map[string]any{"reasoning_effort": effort}, "reasoning: "+args+" (from the next turn)", name, nil)
 		}
 		return m.reasoningPicker()
 	case "perm":
 		if args != "" {
-			return m.set(map[string]any{"mode": args}, "permission mode: "+args, name)
+			return m.set(map[string]any{"mode": args}, "permission mode: "+args, name, nil)
 		}
 		m.feed.note("permission mode: "+m.sess.Mode+"  ("+strings.Join(modes, " | ")+")", false)
 	case "new", "reset", "clear":
@@ -323,12 +323,18 @@ type modelList struct {
 	Models []struct {
 		Name    string   `json:"name"`
 		Efforts []string `json:"reasoning_efforts"`
+		// Status is the model's live status ("serving"/"unavailable"/"" when
+		// unsaid); Serving is true unless it is unavailable.
+		Status  string `json:"status"`
+		Serving bool   `json:"serving"`
 	} `json:"models"`
-	Current string `json:"current"`
+	Current  string `json:"current"`
+	Statuses bool   `json:"statuses"`
 }
 
-// set is session.set with the note to show once it took.
-func (m *model) set(params map[string]any, ok, name string) tea.Cmd {
+// set is session.set with the note to show once it took; after draws what
+// follows a successful set (running once the session is updated).
+func (m *model) set(params map[string]any, ok, name string, after func(*model) tea.Cmd) tea.Cmd {
 	params["session"] = m.sess.ID
 	var res struct {
 		Session map[string]any `json:"session"`
@@ -340,6 +346,9 @@ func (m *model) set(params map[string]any, ok, name string) tea.Cmd {
 		}
 		m.sess = parseSession(res.Session, m.sess)
 		m.feed.note(ok, false)
+		if after != nil {
+			return after(m)
+		}
 		return nil
 	})
 }

@@ -79,7 +79,13 @@ top and the bottom. Rows, each cut with `…` to fit:
   accent colour, and below it `<tokens> / <length>` (`1.2K`, `3.4M` as
   T:235) plus ` · <N> compacted` when there were compactions; without a
   context length, `▱▱▱▱▱▱▱▱▱▱  —` muted and `no turns yet`; `session
-  usage`: `in <in> · out <out> · <calls> calls`; `background`: `<N>
+  usage`: `in <in> · out <out> · <calls> calls`; `todo`: the latest `todo`
+  tool result's complete checklist — a summary row (`<N> pending · <N>
+  completed`, counting in the order pending, in_progress, completed,
+  cancelled), then per item a glyph and the text (`▶` the in-progress one
+  in the accent colour, `✓` completed in the ok colour, `✗` cancelled in
+  the error colour, `·` the others muted), `+N more` when the rows run
+  out, `none` before any todo call; `background`: `<N>`
   processes`, the label and row only while some run;
 - then muted `session <duration>` since the session was created (`45s`,
   `12m`, `3h 5m`, `2d 4h`);

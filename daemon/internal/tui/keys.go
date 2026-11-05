@@ -94,6 +94,9 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		show = !show
 		m.sbForced = &show
 		return nil
+	case "ctrl+t":
+		m.toggleLastTool()
+		return nil
 	case "ctrl+l":
 		m.feed.clearKeepIntro()
 		m.curAsst, m.curReason = nil, nil

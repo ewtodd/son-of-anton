@@ -76,14 +76,15 @@ type Turn struct {
 type Server struct {
 	URL string
 
-	t       testing.TB
-	mu      sync.Mutex
-	turns   []Turn
-	used    []bool // turns already answered
-	bodies  [][]byte
-	headers []http.Header
-	models  []string
-	meta    map[string]map[string]any
+	t             testing.TB
+	mu            sync.Mutex
+	turns         []Turn
+	used          []bool // turns already answered
+	bodies        [][]byte
+	headers       []http.Header
+	models        []string
+	meta          map[string]map[string]any
+	modelRequests int
 
 	embedStatus int        // when set, /v1/embeddings answers with this status
 	embedCalls  [][]string // the inputs of every embeddings request
@@ -108,6 +109,13 @@ func (s *Server) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.bodies)
+}
+
+// ModelRequests is the number of GET /v1/models listings served.
+func (s *Server) ModelRequests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.modelRequests
 }
 
 // Bodies returns a copy of every request body, in order.
@@ -342,6 +350,7 @@ func (s *Server) SetModelMeta(id string, meta map[string]any) {
 
 func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
+	s.modelRequests++
 	data := make([]any, 0, len(s.models))
 	for _, id := range s.models {
 		entry := map[string]any{"id": id, "object": "model"}

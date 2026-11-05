@@ -101,8 +101,9 @@ type Server struct {
 	closing bool
 
 	metaMu  sync.Mutex
-	meta    map[string]map[string]int // base URL -> model -> context length
-	learned map[string]int            // session -> a limit an overflow error stated
+	meta    map[string]map[string]metaEntry // base URL -> model -> context length and live status
+	metaAt  map[string]time.Time            // base URL -> when its statuses were read
+	learned map[string]int                  // session -> a limit an overflow error stated
 
 	indexedMu sync.Mutex
 	indexed   map[string]int64 // session -> last seq passed to the recall index
@@ -133,7 +134,7 @@ func New(o Options) (*Server, error) {
 	}
 	s := &Server{opt: o, cfg: cfg, st: st, reg: tools.NewRegistry(base...), mcp: mcpm, lsp: lspS, mem: mem, idx: idx,
 		live: map[string]*live{}, indexed: map[string]int64{}, conns: map[*conn]struct{}{},
-		meta: map[string]map[string]int{}, learned: map[string]int{}}
+		meta: map[string]map[string]metaEntry{}, metaAt: map[string]time.Time{}, learned: map[string]int{}}
 	s.cron = s.newCron()
 	cronTool := tools.CronJob(o.Home)
 	s.regTask = tools.NewRegistry(append(base, subagent.Tool(subagent.Builtin(), true, s.spawnTask), cronTool)...)

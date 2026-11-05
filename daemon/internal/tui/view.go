@@ -365,6 +365,44 @@ func (m *model) sidebar(h int, now time.Time) []string {
 	}
 	label("session usage")
 	add(fmt.Sprintf("in %s · out %s · %d calls", fmtTokens(s.In), fmtTokens(s.Out), s.Calls), th.mut)
+	// The todo list stays in the sidebar: the latest todo tool result is the
+	// complete checklist.
+	label("todo")
+	if len(m.todos) == 0 {
+		add("none", th.mut)
+	} else {
+		count := map[string]int{}
+		for _, t := range m.todos {
+			count[t.Status]++
+		}
+		parts := []string{}
+		for _, st := range []string{"pending", "in_progress", "completed", "cancelled"} {
+			if count[st] > 0 {
+				parts = append(parts, fmt.Sprintf("%d %s", count[st], st))
+			}
+		}
+		add(strings.Join(parts, " · "), th.mut)
+		shown := 0
+		for _, t := range m.todos {
+			if len(body) >= h-3 {
+				break
+			}
+			glyph, style := "·", th.mut
+			switch t.Status {
+			case "completed":
+				glyph, style = "✓", th.okS
+			case "in_progress":
+				glyph, style = "▶", th.acc
+			case "cancelled":
+				glyph, style = "✗", th.errS
+			}
+			add(glyph+" "+squash(t.Content), style)
+			shown++
+		}
+		if shown < len(m.todos) {
+			add(fmt.Sprintf("+%d more", len(m.todos)-shown), th.mut)
+		}
+	}
 	if s.Bg > 0 {
 		label("background")
 		add(fmt.Sprintf("%d processes", s.Bg), th.mut)

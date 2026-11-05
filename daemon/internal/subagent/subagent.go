@@ -116,9 +116,12 @@ func Render(id, state, summary, text string) string {
 // Request is one task call.
 type Request struct {
 	Description, Prompt, TaskID string
-	Type                        Type
-	Background                  bool
-	CallID                      string
+	// Model pins the child's model; "" inherits the parent's (or, for a call
+	// that names none, the instance's delegation model).
+	Model      string
+	Type       Type
+	Background bool
+	CallID     string
 }
 
 // Result is a spawner's answer. State is completed, running or error.
@@ -147,6 +150,7 @@ func (t taskTool) Schema() provider.Tool {
 		"prompt":        map[string]string{"type": "string", "description": "The full brief for the subagent: goal, context, and what its final message must contain"},
 		"subagent_type": map[string]string{"type": "string", "description": "Which subagent to use, by name from the list in this tool's description"},
 		"task_id":       map[string]string{"type": "string", "description": "A task_id from an earlier result. Give it to send this prompt to that same subagent, which remembers its earlier work; omit it to start a new one."},
+		"model":         map[string]string{"type": "string", "description": "The model the subagent runs on, pinned for this task. Omit to inherit the parent's model (or the instance's delegation model)."},
 	}
 	if t.background {
 		props["background"] = map[string]string{"type": "boolean", "description": "true to return immediately and receive the result later as a message; do not wait for or poll it"}
@@ -165,6 +169,7 @@ func (t taskTool) Run(ctx context.Context, env *tools.Env, args json.RawMessage)
 		Prompt       string `json:"prompt"`
 		SubagentType string `json:"subagent_type"`
 		TaskID       string `json:"task_id"`
+		Model        string `json:"model"`
 		Background   bool   `json:"background"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
@@ -177,7 +182,7 @@ func (t taskTool) Run(ctx context.Context, env *tools.Env, args json.RawMessage)
 	if !ok {
 		return "There is no subagent type called " + p.SubagentType + "; choose one from the list in this tool's description", nil
 	}
-	res, err := t.spawn(ctx, env, Request{Description: p.Description, Prompt: p.Prompt, TaskID: p.TaskID, Type: typ,
+	res, err := t.spawn(ctx, env, Request{Description: p.Description, Prompt: p.Prompt, TaskID: p.TaskID, Model: p.Model, Type: typ,
 		Background: t.background && p.Background, CallID: env.CallID})
 	if err != nil {
 		return Render(res.ID, "error", "", err.Error()), nil

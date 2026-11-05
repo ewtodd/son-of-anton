@@ -49,11 +49,9 @@ func TestTheModelAndReasoningPickers(t *testing.T) {
 	waitScreen(t, a, "other-model has no configured reasoning levels")
 
 	send(a, "/model test-model")
-	waitScreen(t, a, "model: test-model (from the next turn)")
-	send(a, "/reasoning")
 	waitScreen(t, a, "Reasoning  ·  now default", "the configured default", "1-9 pick")
 	a.Press("3")
-	waitScreen(t, a, "reasoning: high (from the next turn)")
+	waitScreen(t, a, "model: test-model (from the next turn)", "reasoning: high (from the next turn)")
 	waitGone(t, a, "Reasoning  ·  now")
 
 	send(a, "/model")

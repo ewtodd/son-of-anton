@@ -407,15 +407,29 @@ func (s *Server) models(params json.RawMessage, bad func(error) (any, *rpcError)
 	}
 	routes := s.modelRoutes()
 	names := sortedKeys(routes)
+	// The status comes from the refreshed catalog; a route it does not report,
+	// or an endpoint with no statuses, stays "" (unfiltered).
+	cat, ok := s.catalog()
+	status := map[string]string{}
+	reported := false
+	if ok {
+		for _, info := range cat {
+			status[info.ID] = info.Status
+			if info.Status != "" {
+				reported = true
+			}
+		}
+	}
 	models := make([]map[string]any, len(names))
 	for i, n := range names {
 		efforts := routes[n]
 		if efforts == nil {
 			efforts = []string{}
 		}
-		models[i] = map[string]any{"name": n, "reasoning_efforts": efforts}
+		st := status[n]
+		models[i] = map[string]any{"name": n, "reasoning_efforts": efforts, "status": st, "serving": st != "unavailable"}
 	}
-	return map[string]any{"models": models, "current": current}, nil
+	return map[string]any{"models": models, "current": current, "statuses": reported}, nil
 }
 
 // set is session.set: model and effort apply from the next turn, the mode at

@@ -750,6 +750,11 @@ func (l *live) attach(c *conn, driver bool, afterSeq *int64, limit int, reply fu
 	if l.running {
 		l.sendTail(c)
 	}
+	// A session whose model is not being served is told so; a serving one is
+	// quiet. The lookup fails open and is bounded, so attaching does not wait.
+	if st := l.srv.modelStatus(l.model); st == "unavailable" {
+		l.emit("notice", map[string]any{"level": "warning", "text": downText(l.model)})
+	}
 	return nil
 }
 

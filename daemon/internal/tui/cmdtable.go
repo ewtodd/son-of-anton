@@ -42,7 +42,7 @@ func helpText() string {
 		}
 		lines = append(lines, l+" — "+c.desc)
 	}
-	lines = append(lines, "  !cmd runs a shell command here · ctrl+p opens the palette · :q quits")
+	lines = append(lines, "  !cmd runs here · ctrl+p opens the palette · ctrl+t expands a tool · :q quits")
 	return strings.Join(lines, "\n")
 }
 

@@ -67,7 +67,9 @@ line and BACKGROUND_DESCRIPTION (`oc/tool/task.ts:25-30`); then "\n" and
 
 **Parameters** (`oc/tool/task.ts:43-62`, descriptions verbatim): `description`,
 `prompt`, `subagent_type` (required), `task_id`, and `background` only when
-offered. No `command`.
+offered; plus `model`, soa-d's own (not opencode's): it pins the child's
+model, else the parent's, else the instance's `[delegation] model`. No
+`command`.
 
 **Render** (`oc/tool/task.ts:64-79`): `<task id="<id>" state="<state>">`, a
 `<summary>…</summary>` line when there is a summary, then `<task_result>` (or

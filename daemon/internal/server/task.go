@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
@@ -214,7 +215,8 @@ func (l *live) runTask(text string, w func(status, text, errMsg string)) (queued
 // makeChild stores a new child session of the calling session and returns its
 // id. The child takes the parent's directory, model, effort, scope and
 // permission mode, and a prompt of its type's identity, guidance, project
-// context and delegated rules.
+// context and delegated rules. A task call that pins a model (or the
+// instance's [delegation] model) overrides the parent's model.
 func (s *Server) makeChild(ctx context.Context, env *tools.Env, req subagent.Request) (string, error) {
 	rec, err := s.st.Session(ctx, env.SessionID)
 	if err != nil {
@@ -223,6 +225,26 @@ func (s *Server) makeChild(ctx context.Context, env *tools.Env, req subagent.Req
 	cwd := env.State.Cwd()
 	if cwd == "" {
 		cwd = rec.Cwd
+	}
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = strings.TrimSpace(s.cfg.Delegation.Model)
+	}
+	if model == "" {
+		model = rec.Model
+	}
+	if model != rec.Model {
+		if _, ok := s.modelRoutes()[model]; !ok {
+			return "", fmt.Errorf("no such model %q", model)
+		}
+	}
+	effort := rec.ReasoningEffort
+	if model != rec.Model {
+		ep, err := s.cfg.Endpoint(model)
+		if err != nil {
+			return "", err
+		}
+		effort = ep.ReasoningEffort
 	}
 	built, err := prompt.Build(prompt.Options{
 		Home: s.opt.Home, Cwd: cwd, Scope: rec.Scope, Memory: false, Identity: req.Type.Prompt,
@@ -238,8 +260,8 @@ func (s *Server) makeChild(ctx context.Context, env *tools.Env, req subagent.Req
 	child, err := s.st.CreateSession(ctx, store.Session{
 		Kind: "child", ParentID: rec.ID, Source: "task", Agent: req.Type.Name,
 		Title: req.Description + " (@" + req.Type.Name + " subagent)", TitleSource: "user",
-		Cwd: cwd, Workspace: paths.Workspace(cwd), Model: rec.Model, PromptHash: hash,
-		ReasoningEffort: rec.ReasoningEffort, Mode: rec.Mode, Scope: rec.Scope, Chat: rec.Chat,
+		Cwd: cwd, Workspace: paths.Workspace(cwd), Model: model, PromptHash: hash,
+		ReasoningEffort: effort, Mode: rec.Mode, Scope: rec.Scope, Chat: rec.Chat,
 	})
 	if err != nil {
 		return "", err

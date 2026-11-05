@@ -223,6 +223,7 @@ soa-d` and no more retries.
   and quits. Idle with text: clear the prompt. Idle and empty: quit.
 - `esc`: while busy, the muted note `interrupting…` and `turn.interrupt`.
 - `shift+tab`: the mode goes default → ask → lockdown → yolo → default
+- `ctrl+t`: expands or folds the most recent finished tool row (its output)
   (unknown → default) with `session.set`; failure: the note `could not
   switch permission mode: <error>`.
 - `ctrl+l` clears the feed except the intro, locally. `ctrl+q` quits.
@@ -245,10 +246,10 @@ soa-d` and no more retries.
 | command | does | note |
 |---|---|---|
 | `/help` | | `commands:`, then `  /<name> <args> — <what>` per command below, then `  !cmd runs a shell command here · :q quits` |
-| `/model X` | `session.set {model}` | `model: X (from the next turn)` |
-| `/model` | `model.list` | `model: <current>`, then `  ● name` (current) or `    name` per model |
+| `/model X` | `session.set {model}`; if X has levels, its reasoning picker opens next | `model: X (from the next turn)` |
+| `/model` | `model.list` | only `serving` models; current `  ●`; if the current model is unavailable, `<model> is not being served; pick another model` in the picker; choosing opens the reasoning picker when the model has levels |
 | `/reasoning X` | `session.set {reasoning_effort}` (`default` sends `""`) | `reasoning: X (from the next turn)` |
-| `/reasoning` | `model.list` | `reasoning: <effort or default>  (<the model's efforts joined by " \| ">)`, or `<model> has no configured reasoning levels` |
+| `/reasoning` | `model.list` | reasoning picker over the session model's efforts (it works even when that model is unavailable), or `<model> has no configured reasoning levels` |
 | `/perm X` | `session.set {mode}` | `permission mode: X` |
 | `/perm` | | `permission mode: <m>  (default \| ask \| lockdown \| yolo)` |
 | `/new`, `/reset`, `/clear` | `session.create`, attach it as driver, detach the old | the feed starts over with a new intro |

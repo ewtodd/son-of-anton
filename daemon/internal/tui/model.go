@@ -112,6 +112,9 @@ type model struct {
 	copiedN int
 	copyAt  time.Time
 
+	// the session's todo list, from the latest todo tool result
+	todos []todoRow
+
 	spin       int
 	ticking    bool
 	lastCtrlC  time.Time
@@ -164,6 +167,7 @@ func (m *model) adopt(res attachResult, resumed bool) tea.Cmd {
 	m.feed = newFeed()
 	m.feed.add(&block{kind: bkLogo})
 	m.addIntro()
+	m.todos = nil
 	m.kids, m.taskRows, m.running = nil, map[string]string{}, map[string]bool{}
 	m.sel, m.press = nil, nil
 	var cmds []tea.Cmd
@@ -191,6 +195,30 @@ func queueTexts(items []queueItem) []string {
 }
 
 func (m *model) busy() bool { return m.sess.Status == "running" }
+
+type todoRow struct {
+	ID      string
+	Content string
+	Status  string
+}
+
+// setTodos reads a todo tool result's complete list.
+func (m *model) setTodos(result string) {
+	var r struct {
+		Todos []struct {
+			ID      string `json:"id"`
+			Content string `json:"content"`
+			Status  string `json:"status"`
+		} `json:"todos"`
+	}
+	if json.Unmarshal([]byte(result), &r) != nil {
+		return
+	}
+	m.todos = m.todos[:0]
+	for _, t := range r.Todos {
+		m.todos = append(m.todos, todoRow{t.ID, t.Content, t.Status})
+	}
+}
 
 func (m *model) addIntro() {
 	b := &block{kind: bkIntro}
@@ -269,6 +297,10 @@ func (m *model) drawHistory(res attachResult, resumed bool) (tasks []taskRes) {
 			b := m.feed.calls[msg.ToolCallID]
 			if b == nil {
 				break
+			}
+			b.output = msg.Content
+			if b.name == "todo" && msg.Content != "" {
+				m.setTodos(msg.Content)
 			}
 			if b.name == "task" {
 				if f := taskResultRE.FindStringSubmatch(msg.Content); f != nil {
@@ -476,7 +508,11 @@ func (m *model) onEvent(ev client.Event) tea.Cmd {
 		b.running = false
 		b.isErr, _ = p["is_error"].(bool)
 		b.took = time.Duration(num(p, "duration_ms")) * time.Millisecond
+		b.output = str(p, "result")
 		b.ver++
+		if str(p, "name") == "todo" && b.output != "" {
+			m.setTodos(b.output)
+		}
 	case "compaction":
 		m.flush()
 		m.foldReasoning()
@@ -636,7 +672,18 @@ func (m *model) onReconnected(msg reconnectedMsg) tea.Cmd {
 	return m.startTick()
 }
 
-// setTheme draws everything in th from the next frame on.
+// toggleLastTool expands or folds the most recent tool row, to see its output.
+func (m *model) toggleLastTool() {
+	for i := len(m.feed.blocks) - 1; i >= 0; i-- {
+		b := m.feed.blocks[i]
+		if b.kind == bkTool && !b.running {
+			b.expanded = !b.expanded
+			b.ver++
+			return
+		}
+	}
+}
+
 func (m *model) setTheme(th *theme) {
 	m.th = th
 	for _, st := range []*textarea.Style{&m.ta.FocusedStyle, &m.ta.BlurredStyle} {

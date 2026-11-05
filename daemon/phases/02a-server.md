@@ -210,7 +210,7 @@ typed (never `api_content`).
 | `queue.clear` | `session` | `queue` |
 | `approval.answer` | `session`, `approval_id`, `choice` | `{}` |
 | `question.answer` | `session`, `question_id`, `answers` (strings) | `{}` |
-| `model.list` | `session` (optional) | `models` (`[{name, reasoning_efforts}]`), `current` |
+| `model.list` | `session` (optional) | `models` (`[{name, reasoning_efforts, status, serving}]`), `current`, `statuses` |
 | `command.run` | `session`, `name`, `args` | per command |
 
 Driver-only: `turn.*`, `queue.*`, `approval.answer`, `question.answer`,
@@ -236,10 +236,27 @@ attach.
   open `approval.request` or `question.request`; `session.updated`,
   `queue.updated` and `role` are not replayed. Consecutive deltas of one kind
   may be merged. Then live events follow, with nothing lost or repeated.
-- **model.list**: the provider's configured routes plus its `/models` ids
-  (if that request fails, routes only), deduplicated, sorted by name;
-  `reasoning_efforts` from the route (`[]` without one). `current` is the
-  session's model, or the config default.
+- **model.list**: every model name a session may be set to — the provider's
+  configured routes plus its `/models` ids (if that request fails, routes
+  only), deduplicated, sorted by name; `reasoning_efforts` from the route
+  (`[]` without one). Each row carries the catalog's live `status`
+  (`"serving"`, `"unavailable"`, `""` when the endpoint does not say) and
+  `serving` (true unless the status is `unavailable`); `statuses` says whether
+  the endpoint reported any status at all. The catalog stays complete, so
+  naming an unloaded model is still accepted. Statuses are trusted for 10
+  seconds; the `/models` listing is read again once they are older, so a mode
+  switch shows on the next picker open. A failed or status-less listing
+  filters nothing and makes no extra request. `current` is the session's
+  model, or the config default.
+- **session.attach**: if the session's model is marked `unavailable`, the
+  daemon emits a `notice` (`level: warning`), exactly
+  `<model> is not being served; pick another model`; a serving model is quiet.
+  The lookup fails open and is bounded (2 s), and the response precedes the
+  notice.
+- **A chat whose model is down**: chats have no picker, so the warning
+  `<model> is not being served; pick another model` is sent as a chat message,
+  at most once per outage (it is not repeated every turn; it resets once the
+  model is serving again or when `/model` changes it).
 - **session.set**: `model` must resolve through `config.Endpoint`;
   `reasoning_effort` must be in the model's route list when it has one (empty
   means the configured default); `mode` is one of the four modes. Model and

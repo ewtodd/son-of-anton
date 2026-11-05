@@ -475,7 +475,7 @@ func TestCommandsReachTheDaemon(t *testing.T) {
 	waitScreen(t, a, "unknown command /goal (/help lists them)")
 	a.Resize(100, 40) // room for all of /help
 	send(a, "/help")
-	waitScreen(t, a, "commands:", "/model", "/sendnow", "!cmd runs a shell command here · ctrl+p opens the palette · :q quits")
+	waitScreen(t, a, "commands:", "/model", "/sendnow", "!cmd runs here · ctrl+p opens the palette · ctrl+t expands a tool · :q quits")
 	send(a, "/status")
 	waitScreen(t, a, "session "+a.Session()+" · other-model · mode default")
 	if fake.Count() != 1 {

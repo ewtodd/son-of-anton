@@ -130,6 +130,8 @@ type chatState struct {
 	pending []pendingReq
 	ackAt   time.Time
 	typing  context.CancelFunc
+	// downWarned is the model the chat last warned about (once per outage).
+	downWarned string
 }
 
 // pendingReq is an approval or a question waiting for the chat's answer.
@@ -211,7 +213,28 @@ func (o *outbox) run(ctx context.Context) {
 	}
 }
 
-// ---- sending ----
+// warnDown says once per outage that the chat's model is not being served.
+// After that the chat stays quiet until the model is serving again or the
+// chat's model changes.
+func (h *chatHub) warnDown(cs *chatState, model string) {
+	s := h.srv
+	st := s.modelStatus(model)
+	if st != "unavailable" {
+		cs.mu.Lock()
+		cs.downWarned = ""
+		cs.mu.Unlock()
+		return
+	}
+	cs.mu.Lock()
+	already := cs.downWarned == model
+	if !already {
+		cs.downWarned = model
+	}
+	cs.mu.Unlock()
+	if !already {
+		cs.say(downText(model))
+	}
+}
 
 // say sends plain text to the chat.
 func (cs *chatState) say(text string) { cs.sayStyled(text, nil) }
@@ -567,7 +590,22 @@ func (h *chatHub) message(cs *chatState, in signal.Inbound) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
+	// A chat has no picker: its model being down is told as a chat message,
+	// at most once per outage.
+	h.warnDown(cs, h.chatSessionModel(cs))
 	h.deliver(cs, text, false)
+}
+
+// chatSessionModel is the model the chat follows: the instance's chat model,
+// unless /model pinned one.
+func (h *chatHub) chatSessionModel(cs *chatState) string {
+	model := h.srv.chatModel()
+	if lid, err := h.srv.st.ChatSession(h.srv.base, cs.stamp); err == nil {
+		if rec, err := h.srv.st.Session(h.srv.base, lid); err == nil && rec.Model != "" {
+			model = rec.Model
+		}
+	}
+	return model
 }
 
 // deliver gives text to the chat's session: a turn if it is idle, else queued

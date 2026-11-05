@@ -48,10 +48,17 @@ transcript, a sidebar on wide screens (`ctrl+b`), the prompt below.
 
 - `ctrl+p` opens the command palette, `ctrl+g` your editor, `shift+tab`
   cycles the permission mode (default, ask, lockdown, yolo), `ctrl+x ↓` opens
-  the newest subagent (`←`/`→` between them, `↑` back).
+  the newest subagent (`←`/`→` between them, `↑` back), `ctrl+t` expands or
+  folds the newest tool row.
 - `/model`, `/reasoning`, `/resume` and `/cancel` open pickers; `/new`,
   `/compact`, `/commit`, `/stop`, `/sendnow`, `/sendall`, `/status`, `/skin`.
-  `!cmd` runs a shell command without a model turn.
+  `!cmd` runs a shell command without a model turn. The `/model` picker lists
+  only the models the gateway is serving, and picking one opens its reasoning
+  picker right after (`/reasoning` still works on its own; a session whose
+  model is down is told `<model> is not being served; pick another model`,
+  in a chat as a message, once per outage). Naming an unloaded model with
+  `/model <name>` still works. A tool row folds to one line; click it (or
+  `ctrl+t`) to see its output. The sidebar keeps the session's todo checklist.
 - A message typed during a turn queues in the daemon, survives a restart and
   goes in as soon as the running tools end, or when the model answers with no
   more tool calls. `/sendnow` sends it sooner, cutting off a reply in progress
@@ -74,7 +81,11 @@ over.
 fiona runs on `gateway.model` (here maitred's `fiona` route: whatever eklow
 serves) and falls back to `model.default` when it is down. Each message tells
 her which model answered the last one. In a chat: `/new`, `/stop`, `/status`,
-`/model [name|default]`, `/sendnow`, `/sendall`, `/approve`, `/deny`.
+`/model [name|default]`, `/sendnow`, `/sendall`, `/approve`, `/deny`. When her
+model is not being served, the chat is told once per outage
+(`<model> is not being served; pick another model`). Subagents a session
+delegates work to run on the parent's model, or `[delegation] model` when you
+set one; a `task` call may pin `model` for that call.
 
 ## Memory
 
