@@ -76,7 +76,11 @@ work (code, files, commands) to a **worker**, a terminal session in the
 directory you name, through her `relay` tool. Workers keep
 `[relay] worker_hours`; their approvals and questions come to the chat as
 `/approve <id>` and `/deny <id>`. `/pickup` in the terminal UI takes a worker
-over.
+over. On a single-user instance it works the other way too: fiona can see your
+terminal sessions and continue one from the chat, in place. If a terminal still
+has it open, that terminal closes and prints how to take the session back.
+Quitting the terminal UI during a turn asks whether to stop the turn or leave
+it running.
 
 fiona runs on `gateway.model` (here maitred's `fiona` route: whatever eklow
 serves) and falls back to `model.default` when it is down. Each message tells

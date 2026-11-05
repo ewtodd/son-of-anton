@@ -272,6 +272,7 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 		Default:         s.defaultRoute(""),
 		OnDeadPin:       func(old string, def agent.Fallback) { s.deadPin(l, old, def) },
 		OnReply:         func(served string) { s.served.Store(l.id, served) },
+		SessionState:    s.sessionState,
 		Prompt: func(_ context.Context, ss store.Session) (string, error) {
 			r, err := prompt.Build(prompt.Options{
 				Home: s.opt.Home, Cwd: ss.Cwd, Scope: "common", Memory: true,
@@ -389,7 +390,7 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 		}
 		l.waiting = false
 	}
-	if rec.Kind == "worker" {
+	if rec.Kind == "worker" || (rec.Kind == "interactive" && rec.Owner != "") {
 		if s.chats != nil && rec.Owner != "" {
 			l.chat = &workerLink{cs: s.chats.state(rec.Owner), l: l}
 		}

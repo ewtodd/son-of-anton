@@ -4,6 +4,12 @@ package server
 // sessions of kind worker, common scope, started by the chat that owns them.
 // A terminal that attaches to one as driver has picked it up: chat sends then
 // only queue, and its approvals and questions go to the terminal.
+//
+// It works the other way too. On a single-user instance a chat sees the user's
+// interactive sessions and its first send takes one on (Owner): the session
+// stays what it was, with its prompt, history and directory, and whenever no
+// terminal drives it, it behaves as a worker of that chat. A send also takes a
+// session from a terminal that has it open. relay detach lets it go.
 
 import (
 	"context"
@@ -17,19 +23,21 @@ import (
 	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
+	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
 	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
 )
 
 const (
-	lastReplyMax   = 500
-	titleMax       = 60
-	hoursEvery     = time.Minute
-	whenTerminal   = "when the terminal that picked it up gets to it"
-	whenAfterTurn  = "after the current turn"
-	noWorkerBound  = "no worker is bound to this chat: start one with new_in (a directory), or pick one from list"
-	workerUntitled = "untitled"
+	lastReplyMax    = 500
+	titleMax        = 60
+	hoursEvery      = time.Minute
+	whenTerminal    = "when the terminal that picked it up gets to it"
+	whenAfterTurn   = "after the current turn"
+	noWorkerBound   = "no worker is bound to this chat: start one with new_in (a directory), or pick one from list"
+	workerUntitled  = "untitled"
+	terminalsListed = 10 // the user's sessions in relay list, newest first
 )
 
 // ---- hours ----
@@ -144,6 +152,9 @@ func (k *workerLink) label() string {
 func (k *workerLink) turnStart() {}
 
 func (k *workerLink) turnEnd(status, content, errMsg string) {
+	if k.l.kind == "interactive" && k.l.driver != nil {
+		return // the user is at the terminal and saw it there
+	}
 	head := "[worker " + k.label() + " (" + k.l.id + ")"
 	var text string
 	switch status {
@@ -225,12 +236,57 @@ func (l *live) handBack() {
 	l.next()
 }
 
-// relaySent is how a send to a worker went.
-type relaySent struct{ status, when, title string }
+// relayed says a chat drives this session whenever no terminal does: a worker,
+// or an interactive session a chat has taken on (mu held).
+func (l *live) relayed() bool {
+	_, taken := l.chat.(*workerLink)
+	return l.kind == "worker" || taken
+}
+
+// takeOn links an interactive session to the chat that owns it, and gives the
+// chat whatever was waiting for a terminal that has gone.
+func (l *live) takeOn(cs *chatState) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.chat != nil {
+		return
+	}
+	l.chat = &workerLink{cs: cs, l: l}
+	if l.driver == nil {
+		l.handBack()
+	}
+}
+
+// letGo undoes takeOn: the session waits for a terminal again.
+func (l *live) letGo() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.kind != "interactive" || l.chat == nil {
+		return
+	}
+	for id := range l.approvals {
+		l.chat.closed(id)
+	}
+	for id := range l.questions {
+		l.chat.closed(id)
+	}
+	l.chat = nil
+	l.waiting = true
+}
+
+// relaySent is how a send to a worker went; took says it took the session from
+// a terminal.
+type relaySent struct {
+	status, when, title string
+	took                bool
+}
 
 // relaySend gives a worker the message: queued if a terminal has picked it
 // up or it is outside its hours, steered in with now, else run after the
-// current turn or at once.
+// current turn or at once. On a single-user instance the chat and the terminal
+// are one person, and someone writing from the chat is not at the terminal
+// they left open: within hours the send takes the session from it, turn and
+// waiting approvals included, and the terminal closes and says why.
 func (l *live) relaySend(text string, now bool) (relaySent, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -240,12 +296,18 @@ func (l *live) relaySend(text string, now bool) (relaySent, error) {
 	if l.closing {
 		return relaySent{}, errors.New("the daemon is shutting down")
 	}
+	took := l.driver != nil && l.srv.cfg.Gateway.SingleUser && l.srv.whenHours(time.Now()) == ""
+	if took {
+		l.driver.send(eventLine(map[string]any{"session": l.id, "kind": "role", "as": "viewer", "by": "chat"}))
+		l.driver = nil
+		l.handBack()
+	}
 	queue := func(when string) (relaySent, error) {
 		if _, err := l.srv.st.QueuePush(context.Background(), l.id, "user", text); err != nil {
 			return relaySent{}, err
 		}
 		l.emitQueue()
-		return relaySent{"queued", when, l.title}, nil
+		return relaySent{"queued", when, l.title, took}, nil
 	}
 	busy := l.running || l.compacting
 	switch {
@@ -255,7 +317,7 @@ func (l *live) relaySend(text string, now bool) (relaySent, error) {
 		return queue(l.srv.whenHours(time.Now()))
 	case busy && now && l.running:
 		l.steerWith(text)
-		return relaySent{"steered", "now", l.title}, nil
+		return relaySent{"steered", "now", l.title, took}, nil
 	case busy:
 		return queue(whenAfterTurn)
 	}
@@ -266,7 +328,7 @@ func (l *live) relaySend(text string, now bool) (relaySent, error) {
 	l.waiting = false
 	l.next()
 	l.emitQueue()
-	return relaySent{"started", "now", l.title}, nil
+	return relaySent{"started", "now", l.title, took}, nil
 }
 
 // ---- the relay tool ----
@@ -324,21 +386,36 @@ func (s *Server) relay(ctx context.Context, stamp string, raw json.RawMessage) s
 			}
 			detached = true
 		}
+		if w.Kind == "interactive" && w.Owner == stamp {
+			if err := s.st.SetOwner(ctx, w.ID, ""); err != nil {
+				return relayFail(err.Error())
+			}
+			if l := s.loaded(w.ID); l != nil {
+				l.letGo()
+			}
+		}
 		return relayJSON(map[string]any{"success": true, "detached": detached})
 	}
 	return relayFail("action must be one of list, send, status, stop, detach")
 }
 
-// mayDrive says whether the chat may see and drive the worker: its own, or
-// any when the instance is single-user.
+// mayDrive says whether the chat may see and drive the session: a worker of
+// its own, or, on a single-user instance, any worker and any terminal session.
 func (s *Server) mayDrive(stamp string, w store.Session) bool {
-	return w.Kind == "worker" && (s.cfg.Gateway.SingleUser || w.Owner == stamp)
+	if s.cfg.Gateway.SingleUser {
+		return w.Kind == "worker" || w.Kind == "interactive"
+	}
+	return w.Kind == "worker" && w.Owner == stamp
 }
 
-// chatWorkers are the workers the chat may drive, newest activity first;
+// chatWorkers are the sessions the chat may drive, newest activity first;
 // workspace, when set, keeps those in that directory or below.
 func (s *Server) chatWorkers(ctx context.Context, stamp, workspace string) ([]store.Summary, error) {
-	sums, err := s.st.ListReadableIn(ctx, "common", "", "", []string{"worker"}, 0)
+	kinds := []string{"worker"}
+	if s.cfg.Gateway.SingleUser {
+		kinds = append(kinds, "interactive")
+	}
+	sums, err := s.st.ListReadableIn(ctx, "common", "", "", kinds, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -349,6 +426,31 @@ func (s *Server) chatWorkers(ctx context.Context, stamp, workspace string) ([]st
 		}
 	}
 	return out, nil
+}
+
+// runningIn finds a session the chat may drive with a turn running in dir's
+// workspace.
+func (s *Server) runningIn(ctx context.Context, stamp, dir string) (store.Session, bool, error) {
+	ws, err := s.chatWorkers(ctx, stamp, "")
+	if err != nil {
+		return store.Session{}, false, err
+	}
+	workspace := paths.Workspace(dir)
+	for _, sum := range ws {
+		w := sum.Session
+		if w.Workspace != workspace {
+			continue
+		}
+		if l := s.loaded(w.ID); l != nil {
+			l.mu.Lock()
+			busy := l.running || l.compacting
+			l.mu.Unlock()
+			if busy {
+				return w, true, nil
+			}
+		}
+	}
+	return store.Session{}, false, nil
 }
 
 // within says whether dir is root or below it ("" root matches everything).
@@ -388,11 +490,11 @@ func (s *Server) relayWorker(ctx context.Context, stamp, ref string) (store.Sess
 	return store.Session{}, "no worker " + ref + " for this chat"
 }
 
-// workerState is a worker's state for list and status: picked up (a terminal
-// drives it), running, queued (with when it will run) or idle.
-func (s *Server) workerState(id string, queued int) string {
+// workerState is a session's state for list, status and session_search: picked
+// up (a terminal drives it), running, queued (with when it will run) or idle.
+func (s *Server) workerState(w store.Session, queued int) string {
 	running, picked := false, false
-	if l := s.loaded(id); l != nil {
+	if l := s.loaded(w.ID); l != nil {
 		l.mu.Lock()
 		running, picked = l.running || l.compacting, l.driver != nil
 		l.mu.Unlock()
@@ -402,6 +504,8 @@ func (s *Server) workerState(id string, queued int) string {
 		return "picked up"
 	case running:
 		return "running"
+	case queued > 0 && w.Kind == "interactive" && w.Owner == "":
+		return "queued (waiting for a terminal)" // no chat runs its queue
 	case queued > 0:
 		when := s.whenHours(time.Now())
 		if when == "" {
@@ -412,6 +516,16 @@ func (s *Server) workerState(id string, queued int) string {
 	return "idle"
 }
 
+// sessionState is workerState for a session known only by id.
+func (s *Server) sessionState(ctx context.Context, id string) string {
+	w, err := s.st.Session(ctx, id)
+	if err != nil {
+		return ""
+	}
+	items, _ := s.st.QueueItems(ctx, id)
+	return s.workerState(w, len(items))
+}
+
 func (s *Server) relayList(ctx context.Context, stamp string, a relayArgs) string {
 	ws, err := s.chatWorkers(ctx, stamp, a.Workspace)
 	if err != nil {
@@ -419,10 +533,20 @@ func (s *Server) relayList(ctx context.Context, stamp string, a relayArgs) strin
 	}
 	bound, _ := s.st.RelayBinding(ctx, stamp)
 	out := []map[string]any{}
+	terminals := 0
 	for _, sum := range ws {
 		w := sum.Session
 		items, _ := s.st.QueueItems(ctx, w.ID)
-		entry := map[string]any{"worker": w.ID, "title": w.Title, "cwd": w.Cwd, "state": s.workerState(w.ID, len(items)),
+		state := s.workerState(w, len(items))
+		if w.Kind == "interactive" {
+			// A session in its first turn has no messages stored yet, but it
+			// is the one to find.
+			if (sum.Messages == 0 && state == "idle") || terminals == terminalsListed {
+				continue
+			}
+			terminals++
+		}
+		entry := map[string]any{"worker": w.ID, "kind": w.Kind, "title": w.Title, "cwd": w.Cwd, "state": state,
 			"bound": w.ID == bound, "last_active": sum.Updated.Format(time.RFC3339)}
 		out = append(out, s.withModel(entry, w))
 	}
@@ -456,8 +580,8 @@ func (s *Server) relayStatus(ctx context.Context, w store.Session) string {
 	if r := []rune(reply); len(r) > lastReplyMax {
 		reply = string(r[:lastReplyMax])
 	}
-	res := map[string]any{"success": true, "worker": w.ID, "title": w.Title, "cwd": w.Cwd,
-		"state": s.workerState(w.ID, len(items)), "queued": queued, "approvals_waiting": waiting, "last_reply": reply}
+	res := map[string]any{"success": true, "worker": w.ID, "kind": w.Kind, "title": w.Title, "cwd": w.Cwd,
+		"state": s.workerState(w, len(items)), "queued": queued, "approvals_waiting": waiting, "last_reply": reply}
 	return relayJSON(s.withModel(res, w))
 }
 
@@ -473,10 +597,17 @@ func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) str
 			return relayFail(err.Error())
 		}
 	}
-	var id string
+	var id, owner string // owner: the chat of a terminal session this send takes on
 	if dir := strings.TrimSpace(a.NewIn); dir != "" {
 		if fi, err := os.Stat(dir); !filepath.IsAbs(dir) || err != nil || !fi.IsDir() {
 			return relayFail(fmt.Sprintf("new_in %q must be an absolute path to an existing directory", dir))
+		}
+		// Two agents in one repository undo each other's work.
+		if w, busy, err := s.runningIn(ctx, stamp, dir); err != nil {
+			return relayFail(err.Error())
+		} else if busy {
+			return relayFail(fmt.Sprintf("session %s (%q, in %s) is already running there: send to it with session instead of starting a second one",
+				w.ID, w.Title, w.Cwd))
 		}
 		var err error
 		if id, _, err = s.createAs(ctx, "worker", stamp, dir, "relay"); err != nil {
@@ -488,6 +619,14 @@ func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) str
 			return relayFail(errText)
 		}
 		id = w.ID
+		if w.Kind == "interactive" {
+			if owner = w.Owner; owner == "" {
+				owner = stamp
+				if err := s.st.SetOwner(ctx, id, owner); err != nil {
+					return relayFail(err.Error())
+				}
+			}
+		}
 	}
 	if err := s.st.SetRelayBinding(ctx, stamp, id); err != nil {
 		return relayFail(err.Error())
@@ -496,6 +635,9 @@ func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) str
 		l, err := s.load(ctx, id)
 		if err != nil {
 			return relayFail(err.Error())
+		}
+		if owner != "" && s.chats != nil {
+			l.takeOn(s.chats.state(owner))
 		}
 		if model != "" {
 			params, _ := json.Marshal(map[string]any{"model": model})
@@ -510,7 +652,11 @@ func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) str
 		if err != nil {
 			return relayFail(err.Error())
 		}
-		return relayJSON(map[string]any{"success": true, "worker": id, "title": sent.title, "status": sent.status, "when": sent.when})
+		res := map[string]any{"success": true, "worker": id, "title": sent.title, "status": sent.status, "when": sent.when}
+		if sent.took {
+			res["took_from_terminal"] = true
+		}
+		return relayJSON(res)
 	}
 	return relayFail("the worker kept unloading")
 }

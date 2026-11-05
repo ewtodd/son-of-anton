@@ -291,8 +291,9 @@ type Session struct {
 	Chat  string
 	// Agent is a child session's subagent type ("explore"); "" otherwise.
 	Agent string
-	// Owner is the chat stamp that started a worker session; "" otherwise.
-	// It is not Chat: the wall reads Chat, and a worker is common.
+	// Owner is the chat stamp that started a worker session, or that took on
+	// an interactive one; "" otherwise. It is not Chat: the wall reads Chat,
+	// and a worker is common.
 	Owner string
 	// Usage is the session's token totals over all its turns; ContextTokens is
 	// what its last request held.

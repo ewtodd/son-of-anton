@@ -20,7 +20,9 @@ file wins.
 
 - The relay drives workers only (sessions it started). The Python could also
   bind a terminal session to the chat; with soa-d a terminal user just
-  `/pickup`s the worker instead.
+  `/pickup`s the worker instead. **The owner reversed this on 2026-11-05: see
+  "Terminal sessions" below.** There was never meant to be a difference
+  between a worker and a terminal session.
 - A worker's approvals and questions go to the terminal that has picked it
   up when there is one, else to its chat.
 - When a worker's turn ends, its chat gets a notice turn (the 2a notice path
@@ -104,6 +106,38 @@ like `/resume`. While a terminal drives it, sends from the chat queue on it
 (the terminal sees them in its queue strip) and its approvals and questions
 ask the terminal. `/resume` of a worker works the same way. Leaving it
 (another `/resume`, `/new`, quitting) hands it back to the chat.
+
+## Terminal sessions (2026-11-05)
+
+The other direction of `/pickup`, on single-user instances only; a shared
+instance's chats still see only the workers they started.
+
+- `relay list` also shows the ten most recent interactive sessions (leaving out
+  empty idle ones), and every entry says its `kind`. A terminal with a queue
+  nobody will run shows `queued (waiting for a terminal)`.
+- `relay send` with an interactive session's id or title continues that session
+  in place. It is never converted or copied: kind, prompt, history, model and
+  directory stay what they were.
+- The first send takes it on: `sessions.owner` is set to the chat, and the live
+  session gets the chat link a worker has. From then on, whenever no terminal
+  drives it, it acts as a worker of that chat. Its turns report back, its
+  approvals and questions go to the chat (ones already waiting are asked at
+  once), and its queue runs, within worker hours.
+- A send takes any session, worker or terminal, from an attached terminal, even
+  mid-turn, within worker hours. The chat and the terminal are one person on a
+  single-user instance, so someone writing from the chat is not at the terminal
+  they left open; and if a queued message waited behind a terminal's turn, its
+  report would never reach them. The terminal gets `role` with `as: viewer, by:
+  chat`, waiting approvals and questions move to the chat, and the send's result
+  says `took_from_terminal`. Outside worker hours the terminal keeps it.
+- The TUI closes when it loses the driver role, to the chat or to another
+  terminal, and prints who took the session and `son-of-anton -r <id>`. That
+  command takes it back: a turn that ends while a terminal drives a terminal
+  session is not reported.
+- `relay detach` lets it go: the owner is cleared and it waits for a terminal
+  again.
+- `new_in` is refused while a session the chat may drive has a turn running in
+  that directory's workspace, naming the session to send to instead.
 
 ## README
 

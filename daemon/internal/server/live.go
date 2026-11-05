@@ -301,7 +301,7 @@ func (l *live) finish(res agent.Result, err error) {
 	case "interrupted", "error":
 		l.waiting = true
 	}
-	if l.chat != nil && (l.kind != "worker" || l.driver == nil) {
+	if l.chat != nil && (l.kind == "chat" || l.driver == nil) {
 		l.waiting = false // nobody at a terminal steers a chat; its messages run in order
 	}
 	l.emitSession()
@@ -332,7 +332,7 @@ func (l *live) next() {
 	if l.waiting {
 		return
 	}
-	if l.kind == "worker" && l.driver == nil && !l.srv.inWorkerHours(time.Now()) {
+	if l.relayed() && l.driver == nil && !l.srv.inWorkerHours(time.Now()) {
 		return // a worker nobody has picked up starts its queue only within its hours
 	}
 	items, err := l.srv.st.QueueItems(context.Background(), l.id)
@@ -764,7 +764,7 @@ func (l *live) detach(c *conn) {
 	delete(l.viewers, c)
 	if l.driver == c {
 		l.driver = nil
-		if l.kind == "worker" {
+		if l.relayed() {
 			l.handBack()
 		}
 	}

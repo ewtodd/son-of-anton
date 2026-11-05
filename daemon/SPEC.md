@@ -65,7 +65,7 @@ session the daemon owns. Kinds:
 
 | kind | created by | driver (may send turns) |
 |---|---|---|
-| `interactive` | TUI | the attached TUI |
+| `interactive` | TUI | the attached TUI, or the chat that took it on (section 12, single-user instances) |
 | `chat` | Signal chat | that chat |
 | `worker` | the chat's `relay` tool | the chat, until a TUI `/pickup`s it |
 | `child` | the `task` tool (subagent) | its parent session's loop |
@@ -331,6 +331,24 @@ merge is the one running.
   current turn"), fiona passes that on, and `relay list` and the TUI session
   list show the same status. A TUI `/pickup` makes the TUI the worker's driver
   and overrides the hours.
+- A worker and a terminal session are the same thing (owner, 2026-11-05):
+  on a single-user instance `relay` drives the user's interactive sessions
+  too. `relay list` shows the ten most recent, with kind and cwd, and a send
+  continues the session itself, with its own prompt, history, model and
+  directory. The first send takes it on (`Owner`, so it survives a restart):
+  whenever no terminal drives it, it acts as a worker of that chat, so its
+  turns report back, its approvals and questions go to the chat, and its queue
+  runs. `relay detach` lets it go. The chat and the terminal are one person
+  here, and someone writing from the chat is not at the terminal they left
+  open, so within worker hours a send takes any session from an attached
+  terminal, even mid-turn: waiting approvals move to the chat, and the TUI
+  closes and prints who took it and how to take it back. A turn a terminal runs
+  is not reported. A TUI that loses the driver role to anyone closes the same
+  way. A turn outlives its terminal, so `/quit` asks what becomes of a running
+  one.
+- `new_in` is refused while a session the chat may drive has a turn running in
+  that directory's workspace (the git root): two agents in one repository undo
+  each other's work.
 - Shared instances (house, ricky, markets): a chat sees and drives only the
   workers it started, and `session_search` from a chat sees only that chat's
   sessions plus common ones.
