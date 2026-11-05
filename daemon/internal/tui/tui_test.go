@@ -106,7 +106,7 @@ func open(t *testing.T, d *daemon, o tui.Options) *tui.App {
 	}
 	a.Resize(100, 30)
 	t.Cleanup(func() {
-		a.Press("ctrl+q")
+		a.Press("ctrl+q", "3") // the 3 answers the quit question, if a turn runs
 		waitExit(t, a)
 		c.Close()
 	})
@@ -422,6 +422,8 @@ func TestQuittingLeavesTheTurnRunning(t *testing.T) {
 	waitScreen(t, a, "ctrl+c interrupt")
 	id := a.Session()
 	send(a, ":q")
+	waitScreen(t, a, "A turn is still running")
+	a.Press("3")
 	waitExit(t, a)
 	close(rel)
 	deadline := time.Now().Add(waitFor)
@@ -685,6 +687,8 @@ func TestResumingARunningSessionShowsItsTurn(t *testing.T) {
 	waitScreen(t, a, "streaming")
 	running := a.Session()
 	send(a, ":q")
+	waitScreen(t, a, "A turn is still running")
+	a.Press("3")
 	waitExit(t, a)
 
 	// The live tail follows the attach reply at once, before the switch is

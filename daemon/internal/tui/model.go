@@ -82,6 +82,8 @@ type model struct {
 	modals []*modal
 	picker *picker
 
+	exitNote string // printed to the terminal once the screen is gone
+
 	// completion: the open list, the models fetched for this prompt (gen says
 	// which prompt), and whether a tab waits for them
 	comp          *completion
@@ -560,8 +562,9 @@ func (m *model) onEvent(ev client.Event) tea.Cmd {
 		m.queue, m.qitems = queueTexts(items), items
 	case "role":
 		m.role = str(p, "as")
-		if m.role == "viewer" {
-			m.feed.note("another client is now the driver of this session", true)
+		if m.role == "viewer" && !m.quitting {
+			m.exitNote = lostDriverNote(str(p, "by"), m.sess.ID)
+			return m.quit(false)
 		}
 	case "notice":
 		m.feed.note(str(p, "text"), str(p, "level") == "info")

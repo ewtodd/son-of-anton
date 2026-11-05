@@ -107,6 +107,9 @@ func Start(c *client.Client, o Options, in io.Reader, out io.Writer) (*App, erro
 			styled := strings.Join(fm.render(), "\n")
 			a.lastScreen, a.lastStyled = stripANSI(styled), styled
 			a.lastSession = fm.sess.ID
+			if fm.exitNote != "" {
+				fmt.Fprintln(o.Stderr, fm.exitNote)
+			}
 		}
 		a.mu.Unlock()
 		close(a.done)

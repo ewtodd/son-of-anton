@@ -308,7 +308,7 @@ func (m *model) childKey(k tea.KeyMsg) tea.Cmd {
 	case "ctrl+c":
 		return m.ctrlC()
 	case "ctrl+q":
-		return m.quit(false)
+		return m.leave()
 	case "shift+tab":
 		return m.setMode(nextMode(m.sess.Mode))
 	case "pgup":

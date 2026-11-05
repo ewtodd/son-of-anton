@@ -190,8 +190,9 @@ busy; `reasoning.delta`, `assistant.delta`, `tool.start`, `tool.end`,
 `compaction` as above; `turn.end` with `interrupted` adds the note
 `interrupted`, with `error` the note `error: <error or "the turn failed">`
 (not muted); `session.updated` replaces the session state; `queue.updated`
-the queue; `role` with `as` viewer the note `another client is now the
-driver of this session`; `notice` a note (muted when `info`);
+the queue; `role` with `as` viewer closes the TUI, which then prints to the
+terminal who took the session (`by` chat is fiona, else another terminal) and
+`son-of-anton -r <id>` (owner, 2026-11-05); `notice` a note (muted when `info`);
 `approval.request` and `question.request` open modals and their
 `*.resolved` close them. `child.*` events are ignored until 9c.
 
@@ -231,9 +232,13 @@ soa-d` and no more retries.
 
 ### Sending and commands (T:2014-2050, B:834-945)
 
-- `/quit`, `/exit`, `/q` and `:q` quit at once, even mid-turn. Quitting
-  detaches (`session.detach`, 3s) and closes the connection; it never
-  interrupts the turn, which runs on in the daemon.
+- `/quit`, `/exit`, `/q`, `:q` and `ctrl+q` quit at once when nothing runs.
+  While a turn this TUI drives runs, they ask first (owner, 2026-11-05): `A turn
+  is still running`, with Stay (the highlighted choice, and esc), Stop the turn
+  and quit, and Keep it running and quit. Quitting detaches (`session.detach`,
+  3s) and closes the connection, and the daemon runs a turn that was kept to its
+  end. A viewer is not asked. Closing the terminal cannot ask, so the turn runs
+  on.
 - `!<cmd>` runs `bash -c <cmd>` in the session's cwd, here, without a model
   turn; its output (stdout and stderr) streams in as notes, then `! exited
   <code>` when not zero; 120s timeout. A bare `!`: `Usage: !<command> — run a

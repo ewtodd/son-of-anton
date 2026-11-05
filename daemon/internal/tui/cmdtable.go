@@ -29,7 +29,7 @@ var cmdTable = []cmdDef{
 	{"perm", nil, "[default|ask|lockdown|yolo]", "Change the permission mode", "Configuration"},
 	{"skin", nil, "[name]", "Show or switch the skin", "Configuration"},
 	{"help", nil, "", "List the commands", "Info"},
-	{"quit", []string{"exit", "q"}, "", "Leave the TUI; soa-d keeps the session going", "Exit"},
+	{"quit", []string{"exit", "q"}, "", "Leave the TUI; asks first if a turn is running", "Exit"},
 }
 
 // helpText is /help, from the table.

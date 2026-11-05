@@ -80,7 +80,7 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 			return m.tab()
 		}
 	case "ctrl+q":
-		return m.quit(false)
+		return m.leave()
 	case "esc":
 		if m.busy() {
 			m.feed.note("interrupting…", true)
@@ -215,6 +215,31 @@ func (m *model) ctrlC() tea.Cmd {
 func (m *model) scroll(dir int) {
 	_, rows := m.feedRows()
 	m.scrollBy(dir * max(rows-1, 1))
+}
+
+// lostDriverNote says why the TUI closed: by is "chat" when fiona took the
+// session, "" when another terminal did.
+func lostDriverNote(by, id string) string {
+	who := "Another terminal"
+	if by == "chat" {
+		who = "fiona"
+	}
+	return who + " took over session " + id + ", so this terminal closed. The session carries on in soa-d.\n" +
+		"To take it back: son-of-anton -r " + id
+}
+
+// leave quits, asking first what becomes of a running turn. A viewer is only
+// watching someone else's, so there is nothing to ask.
+func (m *model) leave() tea.Cmd {
+	if m.busy() && m.role != "viewer" {
+		// In front of any open approval: quitting is what was just asked for,
+		// and the next key must not answer something else.
+		if len(m.modals) == 0 || !m.modals[0].quit {
+			m.modals = append([]*modal{quitModal()}, m.modals...)
+		}
+		return nil
+	}
+	return m.quit(false)
 }
 
 // quit detaches and closes the connection, leaving any turn running; with

@@ -81,7 +81,7 @@ func (m *model) submit(mode string) tea.Cmd {
 func (m *model) dispatch(text, mode string) tea.Cmd {
 	switch {
 	case text == ":q":
-		return m.quit(false)
+		return m.leave()
 	case strings.HasPrefix(text, "!"):
 		return m.bang(strings.TrimSpace(text[1:]), text)
 	case strings.HasPrefix(text, "/"):
@@ -159,7 +159,7 @@ func runBang(cwd, line string, send func(tea.Msg)) {
 func (m *model) command(name, args, line string) tea.Cmd {
 	switch name {
 	case "quit", "exit", "q":
-		return m.quit(false)
+		return m.leave()
 	}
 	m.feed.note("⚙ "+line, true)
 	c, sid := m.cl, m.sess.ID

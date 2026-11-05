@@ -82,7 +82,7 @@ func openTerminal(t *testing.T, d *daemon) *fakeTTY {
 	term.App = a
 	a.Resize(100, 30)
 	t.Cleanup(func() {
-		a.Press("ctrl+q")
+		a.Press("ctrl+q", "3") // the 3 answers the quit question, if a turn runs
 		waitExit(t, a)
 		_ = keys.Close()
 		_ = in.Close()

@@ -15,9 +15,10 @@ type choice struct{ value, label, desc string }
 
 type modal struct {
 	question bool
+	quit     bool // asks about a running turn before quitting; no daemon answer
 	id       string
 
-	// approval
+	// approval, and the quit question
 	title, subject string
 	reasons        []string
 	choices        []choice
@@ -93,6 +94,18 @@ func newModal(kind string, p map[string]any) *modal {
 	return md
 }
 
+// quitModal asks what becomes of the running turn. Staying comes first, so a
+// stray enter never decides for the user.
+func quitModal() *modal {
+	return &modal{quit: true, id: "quit", title: "A turn is still running",
+		subject: "Leaving the TUI does not stop it: soa-d runs it to the end.",
+		choices: []choice{
+			{"stay", "Stay", "back to the session"},
+			{"stop", "Stop the turn and quit", "interrupt it, then leave"},
+			{"keep", "Keep it running and quit", "soa-d finishes it without you"},
+		}}
+}
+
 func (m *model) openModal(md *modal) {
 	for _, o := range m.modals {
 		if o.id == md.id && o.question == md.question {
@@ -141,6 +154,15 @@ func (m *model) modalKey(k tea.KeyMsg) tea.Cmd {
 
 func (m *model) answerApproval(md *modal, choice string) tea.Cmd {
 	m.closeModal(md.id)
+	if md.quit {
+		switch choice {
+		case "stop":
+			return m.quit(true)
+		case "keep":
+			return m.quit(false)
+		}
+		return nil
+	}
 	return call(m.cl, 10*time.Second, "approval.answer",
 		map[string]any{"session": m.sess.ID, "approval_id": md.id, "choice": choice}, nil,
 		func(m *model, err error) tea.Cmd {

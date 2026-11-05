@@ -52,4 +52,7 @@ func TestAPhysicsSessionIsResumedAsAViewer(t *testing.T) {
 	if !strings.Contains(a.Screen(), "Begin.") {
 		t.Fatal("the worker's transcript is not shown")
 	}
+	waitScreen(t, a, "ctrl+c interrupt")
+	send(a, ":q") // a viewer leaves without being asked: the turn is not its to decide
+	waitExit(t, a)
 }
