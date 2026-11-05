@@ -95,6 +95,15 @@ session's stored model stays `gateway.model`; `served_model` names what
 answered. No fallback when `gateway.model` is empty or equals
 `model.default`.
 
+## Message send times
+
+Fiona has no terminal. Her chat turns' user messages carry the Signal message's
+own send time in the API copy (`api_content`, section 7) when
+`[agent] message_timestamps` is on (default); the stored content stays clean and
+the bytes are replayed unchanged. The guidance rule says a message starting with
+`[Day YYYY-MM-DD HH:MM ZONE]` was sent at that time; a later time is unknown to
+fiona (she cannot run `date`), so she must not guess it.
+
 ## README
 
 Under "Signal": the chat agent is fiona (her identity, her notes folder,

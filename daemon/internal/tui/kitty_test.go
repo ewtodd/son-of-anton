@@ -110,7 +110,11 @@ func TestCtrlEnterSendsTheDraftNow(t *testing.T) {
 	if fake.Count() != 2 {
 		t.Fatalf("%d requests", fake.Count())
 	}
-	if !bytes.Contains(fake.Bodies()[1], []byte(`"two"`)) {
+	req := fake.Request(1)
+	msgs, _ := req["messages"].([]any)
+	last, _ := msgs[len(msgs)-1].(map[string]any)
+	content, _ := last["content"].(string)
+	if last["role"] != "user" || !strings.Contains(content, "two") {
 		t.Fatalf("the draft is not in the next request: %s", fake.Bodies()[1])
 	}
 }
@@ -134,8 +138,12 @@ func TestCtrlEnterWithNoDraftSendsTheOldestQueued(t *testing.T) {
 	if fake.Count() != 3 {
 		t.Fatalf("%d requests", fake.Count())
 	}
-	if b := fake.Bodies()[1]; !bytes.Contains(b, []byte(`"two"`)) || bytes.Contains(b, []byte(`"three"`)) {
-		t.Fatalf("the oldest alone goes first: %s", b)
+	req := fake.Request(1)
+	msgs, _ := req["messages"].([]any)
+	last, _ := msgs[len(msgs)-1].(map[string]any)
+	content, _ := last["content"].(string)
+	if last["role"] != "user" || !strings.Contains(content, "two") || strings.Contains(content, "three") {
+		t.Fatalf("the oldest alone goes first: %s", fake.Bodies()[1])
 	}
 }
 

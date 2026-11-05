@@ -763,7 +763,7 @@ func TestEnterDuringAToolGoesInOnceItEnds(t *testing.T) {
 	if fake.Count() != 2 {
 		t.Fatalf("%d requests; the tool's result and the message go in one request", fake.Count())
 	}
-	if last := lastMessage(fake, 1); !strings.Contains(last, `"two"`) {
+	if last := lastMessage(fake, 1); !strings.Contains(last, "two") {
 		t.Fatalf("the request after the tool ends %s", last)
 	}
 }

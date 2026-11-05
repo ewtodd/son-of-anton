@@ -282,3 +282,13 @@ func TestTheDefaultIdleTimeoutLeavesRoomToThink(t *testing.T) {
 		t.Fatalf("IdleTimeout default %v: local reasoning models can be silent for minutes", c.IdleTimeout)
 	}
 }
+
+// gufo's 400 body names the code and the limit; the overflow detector must
+// recognize it and read 262144 from "the context is 262144".
+func TestContextOverflowRecognizesGufo(t *testing.T) {
+	body := `{"error":{"message":"prompt has 262009 tokens but the context is 262144; increase --context or shorten the conversation","type":"Bad Request","code":"context_length_exceeded"}}`
+	limit, ok := provider.ContextOverflow(&provider.HTTPError{Status: 400, Body: body})
+	if !ok || limit != 262144 {
+		t.Fatalf("ContextOverflow = %d, %v; want 262144, true", limit, ok)
+	}
+}

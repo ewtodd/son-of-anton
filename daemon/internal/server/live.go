@@ -69,7 +69,8 @@ type live struct {
 	stop                stopReason
 	steer               string
 	hasSteer            bool
-	waiting             bool // the queue waits for a turn that ends done, or queue.steer
+	steerSentAt         time.Time // when the first queued/steered message was sent
+	waiting             bool      // the queue waits for a turn that ends done, or queue.steer
 	closing, unloaded   bool
 	tail                []tailEv
 	announced           int64
@@ -150,7 +151,12 @@ func (l *live) sendTail(c *conn) {
 
 // ---- turns (mu held unless noted) ----
 
-func (l *live) startTurn(text string) {
+func (l *live) startTurn(text string) { l.startTurnAt(text, time.Now()) }
+
+func (l *live) startTurnAt(text string, sentAt time.Time) {
+	if sentAt.IsZero() {
+		sentAt = time.Now()
+	}
 	l.nameSession(text)
 	if l.chat != nil {
 		l.chat.turnStart()
@@ -163,7 +169,7 @@ func (l *live) startTurn(text string) {
 	l.sess.Begin() // a steer or interrupt from here on reaches this Send
 	go func() {
 		defer l.srv.turns.Done()
-		res, err := l.sess.Send(ctx, text, l.onAgent)
+		res, err := l.sess.SendAt(ctx, text, sentAt, l.onAgent)
 		cancel()
 		l.finish(res, err)
 		l.srv.indexAfterTurn(l.id)
@@ -324,9 +330,9 @@ func (l *live) next() {
 		return
 	}
 	if l.hasSteer {
-		text := l.steer
-		l.steer, l.hasSteer = "", false
-		l.startTurn(text)
+		text, sentAt := l.steer, l.steerSentAt
+		l.steer, l.hasSteer, l.steerSentAt = "", false, time.Time{}
+		l.startTurnAt(text, sentAt)
 		return
 	}
 	if l.waiting {
@@ -344,12 +350,22 @@ func (l *live) next() {
 		return
 	}
 	l.emitQueue()
-	l.startTurn(items[0].Text)
+	l.startTurnAt(items[0].Text, queueSentAt(items[0]))
 }
 
-// send is turn.send (and /commit): start at once when idle, else queue or
-// steer. Returns started, the queued item id, steered.
+// send is turn.send (and /commit): start with the current time. Returns
+// started, the queued item id, steered.
 func (l *live) send(text, mode string) (bool, string, bool, error) {
+	return l.sendAt(text, mode, time.Now())
+}
+
+// sendAt is send with the message's own send time: start at once when idle,
+// else queue or steer. The time follows the message through the queue and
+// into its later turn.
+func (l *live) sendAt(text, mode string, sentAt time.Time) (bool, string, bool, error) {
+	if sentAt.IsZero() {
+		sentAt = time.Now()
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.unloaded {
@@ -360,17 +376,17 @@ func (l *live) send(text, mode string) (bool, string, bool, error) {
 	}
 	switch {
 	case !l.running && !l.compacting:
-		l.startTurn(text)
+		l.startTurnAt(text, sentAt)
 		return true, "", false, nil
 	case mode == "now" && l.running:
-		l.steerWith(text)
+		l.steerAt(text, sentAt)
 		return false, "", true, nil
 	default:
 		kind := "user"
 		if mode == "step" {
 			kind = "step"
 		}
-		it, err := l.srv.st.QueuePush(context.Background(), l.id, kind, text)
+		it, err := l.srv.st.QueuePushAt(context.Background(), l.id, kind, text, sentAt)
 		if err != nil {
 			return false, "", false, err
 		}
@@ -396,8 +412,12 @@ func (l *live) stepEnded() {
 		return
 	}
 	var texts, ids []string
+	var sentAt time.Time
 	for _, it := range items {
 		if it.Kind == "step" {
+			if sentAt.IsZero() {
+				sentAt = queueSentAt(it)
+			}
 			texts, ids = append(texts, it.Text), append(ids, it.ID)
 		}
 	}
@@ -409,16 +429,23 @@ func (l *live) stepEnded() {
 		return
 	}
 	l.emitQueue()
-	l.steerWith(strings.Join(texts, "\n\n"))
+	l.steerAt(strings.Join(texts, "\n\n"), sentAt)
 }
 
 // steerWith ends the running turn after its running tools finish and runs
-// text next, ahead of the queue.
-func (l *live) steerWith(text string) {
+// text next, ahead of the queue, stamped with the current time.
+func (l *live) steerWith(text string) { l.steerAt(text, time.Now()) }
+
+// steerAt is steerWith for a message sent at sentAt. The first message's time
+// is the one the joined steer turn uses.
+func (l *live) steerAt(text string, sentAt time.Time) {
+	if sentAt.IsZero() {
+		sentAt = time.Now()
+	}
 	if l.hasSteer {
 		l.steer += "\n\n" + text
 	} else {
-		l.steer, l.hasSteer = text, true
+		l.steer, l.hasSteer, l.steerSentAt = text, true, sentAt
 	}
 	if l.stop == stopNone {
 		l.stop = stopSteer
@@ -452,11 +479,12 @@ func (l *live) steerQueue(all bool) (started, steered bool, err error) {
 	}
 	l.emitQueue()
 	text := strings.Join(texts, "\n\n")
+	sentAt := queueSentAt(items[0])
 	if !l.running {
-		l.startTurn(text)
+		l.startTurnAt(text, sentAt)
 		return true, false, nil
 	}
-	l.steerWith(text)
+	l.steerAt(text, sentAt)
 	return false, true, nil
 }
 
@@ -692,11 +720,26 @@ var errUnloaded = errors.New("session was unloaded")
 
 // attach registers c and replies (through reply, under the lock, so the
 // response precedes every later event) with the history; then the live tail.
+// The model-status lookup runs after the lock is released, so a bounded
+// catalog request never stalls this session's streaming.
 func (l *live) attach(c *conn, driver bool, afterSeq *int64, limit int, reply func(any)) error {
+	model, err := l.attachLocked(c, driver, afterSeq, limit, reply)
+	if err != nil {
+		return err
+	}
+	// Only the attaching client is told: an existing viewer must not learn
+	// its session's model is down again just because another client attached.
+	if st, known := l.srv.modelStatus(model); known && st == "unavailable" {
+		c.send(eventLine(map[string]any{"session": l.id, "kind": "notice", "level": "warning", "text": downText(model)}))
+	}
+	return nil
+}
+
+func (l *live) attachLocked(c *conn, driver bool, afterSeq *int64, limit int, reply func(any)) (string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.unloaded {
-		return errUnloaded
+		return "", errUnloaded
 	}
 	var rows []store.Message
 	var more, gap bool
@@ -704,7 +747,7 @@ func (l *live) attach(c *conn, driver bool, afterSeq *int64, limit int, reply fu
 	ctx := context.Background()
 	if afterSeq != nil {
 		if rows, more, err = l.srv.st.MessagesAfter(ctx, l.id, *afterSeq, limit); err != nil {
-			return err
+			return "", err
 		}
 		if more {
 			gap = true
@@ -713,12 +756,12 @@ func (l *live) attach(c *conn, driver bool, afterSeq *int64, limit int, reply fu
 	}
 	if afterSeq == nil || gap {
 		if rows, more, err = l.srv.st.MessagesBefore(ctx, l.id, 0, limit); err != nil {
-			return err
+			return "", err
 		}
 	}
 	items, err := l.srv.st.QueueItems(ctx, l.id)
 	if err != nil {
-		return err
+		return "", err
 	}
 	l.viewers[c] = true
 	if driver {
@@ -744,18 +787,13 @@ func (l *live) attach(c *conn, driver bool, afterSeq *int64, limit int, reply fu
 	}
 	comps, err := l.srv.st.Compactions(ctx, l.id)
 	if err != nil {
-		return err
+		return "", err
 	}
 	reply(map[string]any{"session": l.sessionObj(), "compactions": compactionObjs(comps), "messages": shown, "more_before": more, "gap": gap, "queue": queueObjs(items), "role": role})
 	if l.running {
 		l.sendTail(c)
 	}
-	// A session whose model is not being served is told so; a serving one is
-	// quiet. The lookup fails open and is bounded, so attaching does not wait.
-	if st := l.srv.modelStatus(l.model); st == "unavailable" {
-		l.emit("notice", map[string]any{"level": "warning", "text": downText(l.model)})
-	}
-	return nil
+	return l.model, nil
 }
 
 func (l *live) detach(c *conn) {
@@ -828,6 +866,11 @@ func messageObj(m store.Message) messageJSON {
 		}
 	}
 	return o
+}
+
+// queueSentAt is a queued message's own send time.
+func queueSentAt(it store.QueueItem) time.Time {
+	return it.Created
 }
 
 func queueObjs(items []store.QueueItem) []map[string]any {

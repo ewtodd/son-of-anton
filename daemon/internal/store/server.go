@@ -26,19 +26,33 @@ func (s *Store) UpdateSessionSettings(ctx context.Context, id, model, effort, mo
 	return nil
 }
 
-// QueueItem is one pending send. Kind is "user" or "notice".
+// QueueItem is one pending send. Kind is "user" or "notice". Created is the
+// message's own send time: a Signal timestamp when there is one, otherwise
+// when it entered the queue.
 type QueueItem struct {
 	ID, Kind, Text string
 	Created        time.Time
 }
 
-// QueuePush appends an item to the session's queue.
+// QueuePush appends an item to the session's queue, stamped with now.
 func (s *Store) QueuePush(ctx context.Context, sessionID, kind, text string) (QueueItem, error) {
+	return s.queuePush(ctx, sessionID, kind, text, time.Now())
+}
+
+// QueuePushAt appends an item with the message's own send time.
+func (s *Store) QueuePushAt(ctx context.Context, sessionID, kind, text string, sentAt time.Time) (QueueItem, error) {
+	if sentAt.IsZero() {
+		sentAt = time.Now()
+	}
+	return s.queuePush(ctx, sessionID, kind, text, sentAt)
+}
+
+func (s *Store) queuePush(ctx context.Context, sessionID, kind, text string, sentAt time.Time) (QueueItem, error) {
 	b := make([]byte, 6)
 	if _, err := rand.Read(b); err != nil {
 		return QueueItem{}, err
 	}
-	it := QueueItem{ID: "q_" + hex.EncodeToString(b), Kind: kind, Text: text, Created: time.Now()}
+	it := QueueItem{ID: "q_" + hex.EncodeToString(b), Kind: kind, Text: text, Created: sentAt}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO queue (id, session_id, kind, text, created) VALUES (?, ?, ?, ?, ?)`,
 		it.ID, sessionID, kind, text, formatTime(it.Created))

@@ -43,10 +43,10 @@ moving parts, keeps the full history for clients, and replays byte for byte.
   status 413, or 400 whose body names a context-length problem ("context
   length", "maximum context", "context size", "context window", "prompt is too
   long", "max_model_len", "maximum model length", "exceed_context_size",
-  "too many tokens"). `limit` is the stated limit when there is one: the number
+  "too many tokens", "context_length_exceeded"). limit is the stated limit when there is one: the number
   after "maximum context length is", "max_model_len (is)", "maximum model
   length (is)", "context length/size/window (is|of|:)", the number after `>`
-  before "max"/"maximum", or a JSON `n_ctx` field; otherwise 0.
+  before "max"/"maximum", or a JSON `n_ctx` field, or "the context is N" (gufo); otherwise 0.
 
 ## package config
 
@@ -101,7 +101,9 @@ and again at each compaction (never at `Resume`).
   `prompt_tokens` (never an estimate; CC:2889). If it is at least `Threshold ×
   ContextLength` and automatic compaction is on, it compacts before the next
   request: the next step of this turn, or the first request of the next turn.
-  At most one automatic compaction per turn.
+  A successful automatic compaction may be followed by another in the same
+  turn when the threshold is crossed again; a failed one does not retry on
+  every step.
 - The first response after an automatic compaction that still reports at
   least the threshold turns automatic compaction off for that session, with a
   warning saying so and suggesting `/compact` with a focus or a new session.
@@ -109,7 +111,11 @@ and again at each compaction (never at `Resume`).
   and the turn goes on; automatic compaction then waits 60 seconds (CC:4608).
 - A request that fails with `provider.ContextOverflow`: learn the limit if one
   is stated, compact (ignoring the cooldown and the off switch), and retry the
-  request once. Nothing to compact, or a second overflow: the turn fails.
+  request once. `ContextOverflow` recognizes HTTP 400 bodies with
+  `context_length_exceeded` and reads the limit from `"the context is N"` (gufo
+  answers this way). Recovery may run again after a request succeeds; a request
+  that keeps failing ends the turn. Nothing to compact, or a persistent
+  overflow: the turn fails.
 
 ### What
 

@@ -245,18 +245,22 @@ attach.
   the endpoint reported any status at all. The catalog stays complete, so
   naming an unloaded model is still accepted. Statuses are trusted for 10
   seconds; the `/models` listing is read again once they are older, so a mode
-  switch shows on the next picker open. A failed or status-less listing
-  filters nothing and makes no extra request. `current` is the session's
-  model, or the config default.
-- **session.attach**: if the session's model is marked `unavailable`, the
-  daemon emits a `notice` (`level: warning`), exactly
-  `<model> is not being served; pick another model`; a serving model is quiet.
-  The lookup fails open and is bounded (2 s), and the response precedes the
-  notice.
+  switch shows on the next picker open. Each `model.list` call does one
+  catalog lookup; a failed or status-less listing filters nothing and does not
+  pay the catalog timeout twice. `current` is the session's model, or the
+  config default.
+- **session.attach**: if the session's model is reported `unavailable`, the
+  attaching client gets a `notice` (`level: warning`), exactly
+  `<model> is not being served; pick another model`; a serving model is quiet
+  and other attached clients are not warned again. The bounded lookup runs
+  after the session lock is released, so attaching does not stall streaming.
+  `modelStatus` distinguishes a failed lookup (`known: false`) from a
+  status-less model.
 - **A chat whose model is down**: chats have no picker, so the warning
   `<model> is not being served; pick another model` is sent as a chat message,
-  at most once per outage (it is not repeated every turn; it resets once the
-  model is serving again or when `/model` changes it).
+  at most once per outage. It is not repeated every turn; it resets only when
+  the model is reported serving again or when `/model` changes it. A failed
+  status lookup does not clear the outage warning.
 - **session.set**: `model` must resolve through `config.Endpoint`;
   `reasoning_effort` must be in the model's route list when it has one (empty
   means the configured default); `mode` is one of the four modes. Model and

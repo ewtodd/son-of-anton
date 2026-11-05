@@ -85,6 +85,7 @@ type Server struct {
 	models        []string
 	meta          map[string]map[string]any
 	modelRequests int
+	modelsStatus  int // when set, /v1/models answers with this status
 
 	embedStatus int        // when set, /v1/embeddings answers with this status
 	embedCalls  [][]string // the inputs of every embeddings request
@@ -348,9 +349,17 @@ func (s *Server) SetModelMeta(id string, meta map[string]any) {
 	s.meta[id] = meta
 }
 
+// SetModelsStatus makes GET /v1/models fail with status (0 restores it).
+func (s *Server) SetModelsStatus(status int) {
+	s.mu.Lock()
+	s.modelsStatus = status
+	s.mu.Unlock()
+}
+
 func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	s.modelRequests++
+	status := s.modelsStatus
 	data := make([]any, 0, len(s.models))
 	for _, id := range s.models {
 		entry := map[string]any{"id": id, "object": "model"}
@@ -360,6 +369,10 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 		data = append(data, entry)
 	}
 	s.mu.Unlock()
+	if status != 0 {
+		http.Error(w, `{"error":"models unavailable"}`, status)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
 }

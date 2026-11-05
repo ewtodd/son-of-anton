@@ -89,6 +89,13 @@ platform hints, model-specific guidance.
 
 The same `Options` always give the same bytes.
 
+The guidance text includes the send-time rule: a user message starting with
+`[Day YYYY-MM-DD HH:MM ZONE]` was sent at that time, and a later time is known
+only if the model can run commands (`date`); otherwise it is not guessed.
+`prompt.FormatSentAt` renders that form in `prompt.LocalZone`. `[agent]
+message_timestamps` (default on) prefixes a turn's user message in the API copy,
+not in the stored content.
+
 ## package tools
 
 ```go

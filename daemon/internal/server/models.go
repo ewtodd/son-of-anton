@@ -40,15 +40,19 @@ const catalogTimeout = 2 * time.Second
 func (s *Server) modelRoutes() map[string][]string {
 	routes := s.cfg.Routes()
 	infos, ok := s.catalog()
-	if !ok {
-		return routes
+	if ok {
+		addCatalogRoutes(routes, infos)
 	}
+	return routes
+}
+
+// addCatalogRoutes adds the provider's /models ids to the configured routes.
+func addCatalogRoutes(routes map[string][]string, infos []provider.ModelInfo) {
 	for _, info := range infos {
 		if _, ok := routes[info.ID]; !ok {
 			routes[info.ID] = nil
 		}
 	}
-	return routes
 }
 
 // catalog is the provider's /models listing for the default endpoint, with
@@ -116,23 +120,26 @@ func downText(model string) string {
 	return model + " is not being served; pick another model"
 }
 
-// modelStatus reports the live status of model from the refreshed catalog:
-// "unavailable" when known down, "" when served, unsaid, or the lookup failed.
-func (s *Server) modelStatus(model string) string {
+// modelStatus reports the live status of model from the refreshed catalog and
+// whether it is known: "unavailable" when known down, "serving" when reported
+// serving, "" when the endpoint lists it without a status. known is false when
+// the lookup failed or the model is not listed, so callers can tell a failed
+// lookup from a status-less model.
+func (s *Server) modelStatus(model string) (string, bool) {
 	ep, err := s.cfg.Endpoint(model)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	cat, ok := s.catalog()
 	if !ok {
-		return ""
+		return "", false
 	}
 	for _, info := range cat {
 		if info.ID == ep.Model {
-			return info.Status
+			return info.Status, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // deadPinText is what a session is told when its model was gone.

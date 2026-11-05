@@ -671,7 +671,7 @@ func ContextOverflow(err error) (limit int, ok bool) {
 var overflowPhrases = []string{
 	"context length", "maximum context", "context size", "context window",
 	"prompt is too long", "max_model_len", "maximum model length",
-	"exceed_context_size", "too many tokens",
+	"exceed_context_size", "too many tokens", "context_length_exceeded",
 }
 
 var limitPatterns = []*regexp.Regexp{
@@ -679,6 +679,7 @@ var limitPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`max_model_len (?:is )?(\d+)`),
 	regexp.MustCompile(`maximum model length (?:is )?(\d+)`),
 	regexp.MustCompile(`context (?:length|size|window)(?: is| of|:) *(\d+)`),
+	regexp.MustCompile(`the context is (\d+)`),
 	regexp.MustCompile(`>\s*(\d+)\s*max`),
 	regexp.MustCompile(`"n_ctx"\s*:\s*(\d+)`),
 }

@@ -30,6 +30,9 @@ type Config struct {
 	Agent struct {
 		ReasoningEffort    any            `toml:"reasoning_effort"`
 		ReasoningOverrides map[string]any `toml:"reasoning_overrides"`
+		// MessageTimestamps prefixes each user message's API copy with its send
+		// time; default true.
+		MessageTimestamps *bool `toml:"message_timestamps"`
 	} `toml:"agent"`
 	Memory struct {
 		RulesCharLimit int  `toml:"rules_char_limit"`
@@ -352,6 +355,12 @@ type AuxiliaryTask struct {
 // CompactionEnabled says whether automatic compaction is on (default true).
 func (c *Config) CompactionEnabled() bool {
 	return c.Compaction.Enabled == nil || *c.Compaction.Enabled
+}
+
+// MessageTimestampsEnabled says whether each user message's API copy carries
+// its send time (default true).
+func (c *Config) MessageTimestampsEnabled() bool {
+	return c.Agent.MessageTimestamps == nil || *c.Agent.MessageTimestamps
 }
 
 // CompactionThreshold is the fraction of the context window at which

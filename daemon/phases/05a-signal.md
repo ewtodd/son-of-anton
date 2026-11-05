@@ -177,6 +177,9 @@ func (c *Client) Attachment(ctx context.Context, id string) ([]byte, error)
   (<content type>), saved at <path>]`. Idle: a turn starts. Running: it is
   queued (its own turn later), and the chat gets "Queued for the next turn.
   I'll respond once the current task finishes." at most once per 30 s.
+- The turn's user message's API copy starts with the Signal message's own send
+  time (section 7, `api_content`); the stored content stays clean, and a queued
+  message keeps that timestamp through the queue.
 - **Replies**: a turn that ends `done` sends its final content through
   `Format`, or "The model returned no response." when empty; `error` sends
   "Sorry, that failed: <error>"; `interrupted` and `steered` send nothing. Each send is

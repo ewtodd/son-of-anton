@@ -293,3 +293,14 @@ func TestCommandHomeIsTheWorkingDirectoryUnderCwdMode(t *testing.T) {
 		}
 	}
 }
+
+func TestMessageTimestampsDefaultOnAndCanBeTurnedOff(t *testing.T) {
+	cfg := load(t, home(t, "[agent]\n", ""))
+	if !cfg.MessageTimestampsEnabled() {
+		t.Fatal("message_timestamps must default on")
+	}
+	cfg = load(t, home(t, "[agent]\nmessage_timestamps = false\n", ""))
+	if cfg.MessageTimestampsEnabled() {
+		t.Fatal("message_timestamps = false must turn it off")
+	}
+}

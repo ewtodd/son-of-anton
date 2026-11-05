@@ -16,6 +16,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/mcp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/memory"
 	"github.com/ewtodd/son-of-anton/daemon/internal/paths"
+	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 	"github.com/ewtodd/son-of-anton/daemon/internal/sandbox"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
@@ -77,6 +78,10 @@ type Runner struct {
 	Ask           tools.Questioner
 	// Compaction configures summarizing a long transcript.
 	Compaction Compaction
+	// MessageTimestamps prefixes each user message's API copy with its send
+	// time, "[Sat 2026-10-24 14:32 CDT]", in the host's zone; the stored
+	// content stays clean. Off by default when a Runner is built by hand.
+	MessageTimestamps bool
 	// Recall returns the block of remembered facts and notes relevant to a
 	// turn's text, "" for none; nil for lean runs.
 	Recall func(ctx context.Context, text string) string
@@ -414,14 +419,24 @@ type Result struct {
 	Last provider.Usage
 }
 
-// Send runs one turn: the request is built from the stored transcript (the
-// system prompt, then every stored message in order), plus the new user
-// message. The model may answer directly, or call tools; each tool step is
-// persisted as it completes and the loop continues from the store, so a
-// failure never loses a step. A reply with no text and no tool calls is not an
-// answer: the request goes out again, and a reply that stays empty ends the
-// turn with ErrEmptyReply, so a nil error always comes with a final answer.
+// Send runs one turn and stamps the user message with the time this call
+// began.
 func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (Result, error) {
+	return s.SendAt(ctx, text, time.Now(), onEvent)
+}
+
+// SendAt runs one turn: the request is built from the stored transcript (the
+// system prompt, then every stored message in order), plus the new user
+// message at its send time sentAt. The model may answer directly, or call
+// tools; each tool step is persisted as it completes and the loop continues
+// from the store, so a failure never loses a step. A reply with no text and
+// no tool calls is not an answer: the request goes out again, and a reply that
+// stays empty ends the turn with ErrEmptyReply, so a nil error always comes
+// with a final answer.
+func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onEvent func(Event)) (Result, error) {
+	if sentAt.IsZero() {
+		sentAt = time.Now()
+	}
 	r := s.runner
 	reqCtx, reqCancel := context.WithCancel(ctx)
 	toolCtx, toolCancel := context.WithCancel(ctx)
@@ -466,11 +481,15 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 	}
 
 	// What recall returns for this turn rides the user message, stored with it
-	// so every later request replays the same bytes.
+	// so every later request replays the same bytes. The send time is rendered
+	// once here, before any injections, and persisted with the same bytes.
 	apiText := text
+	if r.MessageTimestamps {
+		apiText = prompt.FormatSentAt(sentAt) + " " + text
+	}
 	if r.Recall != nil {
 		if block := r.Recall(ctx, text); block != "" {
-			apiText = text + "\n\n" + block
+			apiText += "\n\n" + block
 		}
 	}
 	if r.ListNote != nil {
@@ -487,9 +506,10 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 	if err != nil {
 		return Result{}, err
 	}
-	// began stamps the user message, so a turn's span runs from its start even
-	// though its first step is stored whole when the step ends.
-	began := time.Now()
+	// began stamps the user message with its send time, so the turn's span
+	// starts where the user sent it even though its first step is stored whole
+	// when the step ends.
+	began := sentAt
 	var total Result
 	first := true
 	autoTried, retried := false, false
@@ -526,10 +546,14 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 		return ctx.Err()
 	}
 	for {
-		// A long transcript is compacted before the request, at most once a turn.
+		// A long transcript is compacted before the request. A successful
+		// compaction may be followed by another in the same turn; a failed one
+		// stays marked so it does not retry on every step (and the cooldown
+		// keeps it from running on the next turn).
 		if !autoTried && s.autoDue() {
 			autoTried = true
 			if s.autoCompact(reqCtx, emit) {
+				autoTried = false
 				if msgs, err = s.build(ctx, pending()); err != nil {
 					return closeTurn(store.Message{Role: "assistant", Content: FailedText}, err)
 				}

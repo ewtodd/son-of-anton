@@ -370,3 +370,68 @@ func TestPlanAndNothingToCompact(t *testing.T) {
 		t.Fatal("a plan never calls the summary model")
 	}
 }
+
+// A turn that crosses the threshold after a successful compaction crosses it
+// again: the second compaction must run too.
+func TestAutomaticCompactionRunsAgainAfterASuccessfulOne(t *testing.T) {
+	st := newStore(t)
+	main := fakellm.New(t,
+		fakellm.Turn{Content: bigAsst, PromptTokens: 100,
+			ToolCalls: []fakellm.ToolCall{call("c1", "echo_tool", `{"x":"1"}`)}},
+		fakellm.Turn{Content: bigAsst, PromptTokens: 800,
+			ToolCalls: []fakellm.ToolCall{call("c2", "echo_tool", `{"x":"2"}`)}},
+		fakellm.Turn{Content: bigAsst, PromptTokens: 300,
+			ToolCalls: []fakellm.ToolCall{call("c3", "echo_tool", `{"x":"3"}`)}},
+		fakellm.Turn{Content: bigAsst, PromptTokens: 800,
+			ToolCalls: []fakellm.ToolCall{call("c4", "echo_tool", `{"x":"4"}`)}},
+		fakellm.Turn{Content: "done", PromptTokens: 300},
+	)
+	aux := fakellm.New(t, fakellm.Turn{Content: "SUM-ONE"}, fakellm.Turn{Content: "SUM-TWO"})
+	r := withCompaction(toolRunner(t, st, main, echoTool()), aux)
+	s, _ := r.NewSession(ctx, "interactive", t.TempDir())
+	res, err := s.Send(ctx, bigUser, nil)
+	if err != nil || res.Content != "done" {
+		t.Fatalf("turn = %+v, %v", res, err)
+	}
+	if aux.Count() != 2 {
+		t.Fatalf("summary requests = %d; a successful compaction lets the next threshold cross compact again", aux.Count())
+	}
+	list, _ := st.Compactions(ctx, s.ID())
+	if len(list) != 2 || list[0].Summary != "SUM-ONE" || list[1].Summary != "SUM-TWO" {
+		t.Fatalf("stored compactions = %+v", list)
+	}
+}
+
+// gufo answers a context overflow with HTTP 400 and
+// context_length_exceeded; the turn learns the limit, compacts and carries on.
+func TestGufoOverflowLearnsTheLimitCompactsAndRetries(t *testing.T) {
+	st := newStore(t)
+	bigUser2, bigAsst2 := strings.Repeat("a", 8000), strings.Repeat("A", 8000)
+	body := `{"error":{"message":"prompt has 262009 tokens but the context is 262144; increase --context or shorten the conversation","type":"Bad Request","code":"context_length_exceeded"}}`
+	main := fakellm.New(t,
+		fakellm.Turn{Content: bigAsst2, PromptTokens: 100},
+		fakellm.Turn{Content: bigAsst2, PromptTokens: 100},
+		fakellm.Turn{Status: 400, Body: body},
+		fakellm.Turn{Content: "C", PromptTokens: 300},
+	)
+	aux := fakellm.New(t, fakellm.Turn{Content: "SUM"})
+	r := withCompaction(runner(st, main, "sys", nil), aux)
+	r.Compaction.ContextLength = 0 // 256000 until the error learns the limit
+	r.Compaction.Threshold = 0.1   // enough head to summarize in this test
+	s, _ := r.NewSession(ctx, "interactive", "/w")
+	send(t, s, bigUser2)
+	send(t, s, bigUser2)
+	res, err := s.Send(ctx, "c", nil)
+	if err != nil || res.Content != "C" {
+		t.Fatalf("the turn ended instead of carrying on: %+v, %v", res, err)
+	}
+	if s.ContextLength() != 262144 {
+		t.Fatalf("ContextLength = %d; the gufo body's limit must be learned", s.ContextLength())
+	}
+	if aux.Count() != 1 || main.Count() != 4 {
+		t.Fatalf("summary requests %d, main requests %d", aux.Count(), main.Count())
+	}
+	if list, _ := st.Compactions(ctx, s.ID()); len(list) != 1 {
+		t.Fatalf("stored compactions = %+v", list)
+	}
+}

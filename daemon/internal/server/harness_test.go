@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -422,8 +423,28 @@ func seqList(ms []map[string]any) []float64 {
 	return out
 }
 
-// wire decodes request i's messages into role/content pairs.
+// sentTimePrefix is the form a stamped user message's API copy starts with.
+var sentTimePrefix = regexp.MustCompile(`^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2} [^]]+\] `)
+
+// withoutSentTime drops a leading send-time prefix for tests that compare the
+// clean user text. Callers that need the exact wire bytes use rawWire.
+func withoutSentTime(s string) string { return sentTimePrefix.ReplaceAllString(s, "") }
+
+// wire decodes request i's messages into role/content pairs, with each user
+// message's send-time prefix removed.
 func wire(t *testing.T, fake *fakellm.Server, i int) []map[string]any {
+	t.Helper()
+	out := rawWire(t, fake, i)
+	for _, m := range out {
+		if str(m, "role") == "user" {
+			m["content"] = withoutSentTime(str(m, "content"))
+		}
+	}
+	return out
+}
+
+// rawWire decodes request i's messages without stripping the send time.
+func rawWire(t *testing.T, fake *fakellm.Server, i int) []map[string]any {
 	t.Helper()
 	var out []map[string]any
 	for _, raw := range fake.Messages(i) {

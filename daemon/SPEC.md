@@ -90,7 +90,13 @@ The daemon is the only writer of `state.db`. Clients never open it.
    writes, config changes, `/model` excepted, see section 7) changes them.
 2. **Replay what was sent.** Anything injected into a user turn (recall,
    timestamps, gateway notes) is persisted with the message (`api_content`)
-   and replayed byte for byte on every later request.
+   and replayed byte for byte on every later request. When
+   `[agent] message_timestamps` is on (the default), the turn's user message
+   starts with its send time, `[Sat 2026-10-24 14:32 CDT]`, in
+   `prompt.LocalZone`; the stored content stays clean. It is rendered once at
+   that turn and persisted, so a later zone change does not rewrite history.
+   A Signal message uses its own timestamp; a queued one carries it through
+   the queue.
 3. **Role alternation.** Never two same-role messages in a row; never a
    synthetic user message injected mid-loop.
 4. **Interrupt is not yield.** Interrupt stops the turn and records it;
@@ -130,7 +136,9 @@ The daemon is the only writer of `state.db`. Clients never open it.
   tool rows itself (today they arrive as `ansi`/`rich` events from the Python
   display layer).
 - On attach the daemon replays the transcript from `from_seq` (paged), then
-  streams live events.
+  streams live events. If the session's model is reported unavailable, only
+  the attaching client gets the warning; the bounded catalog lookup runs after
+  the session lock is released so it never stalls streaming.
 
 ## 6. Data
 
@@ -162,13 +170,20 @@ The daemon is the only writer of `state.db`. Clients never open it.
   truncated to a budget before it enters context.
 - Compaction: when the context passes a threshold, summarize the head, keep
   the tail, rebuild the system prompt (the one exception to invariant 1).
+  Automatic compaction may run again in the same turn after a successful
+  compaction; a failed summary does not retry on every step and keeps a
+  cooldown. A request that fails because the context overflowed (including
+  gufo's HTTP 400 `context_length_exceeded` / "the context is N") learns the
+  stated limit, compacts, and retries; recovery can run again after a request
+  succeeds, but a request that keeps failing ends the turn.
 - `/model` and `/reasoning` change the model for the next turn; the prompt
   stays byte-stable and the server's prefix cache simply misses once.
   `model.list` carries each model's live `status`/`serving` as maitred
-  reports it (status-less endpoints report none and filter nothing); the
-  picker lists only what is served, naming an unloaded model stays valid, a
-  503 `model_not_loaded` never changes the session's model (the dead-pin
-  fallback stays on 404).
+  reports it (status-less endpoints report none and filter nothing); each
+  call does one `/models` catalog lookup, and a failed lookup filters nothing
+  without paying the timeout twice. The picker lists only what is served,
+  naming an unloaded model stays valid, a 503 `model_not_loaded` never changes
+  the session's model (the dead-pin fallback stays on 404).
 - Titles from the auxiliary model.
 - References: `agent/conversation_loop.py`, `agent/turn_context.py`,
   `agent/conversation_compaction.py`, `agent/context_compactor.py`,
@@ -189,7 +204,16 @@ the prefix cache):
 3. project context files from the session's cwd (`AGENTS.md` and friends);
 4. memory rules for the session's scope.
 
-Per-turn recall rides the user message, never the system prompt.
+Per-turn recall rides the user message, never the system prompt. The turn's
+user message also carries its send time in the API copy (`api_content`), not
+the stored content: `[Sat 2026-10-24 14:32 CDT]` in `prompt.LocalZone`, rendered
+once per turn and replayed unchanged. `[agent] message_timestamps` turns it off
+(default on). The guidance says a message starting with `[Day YYYY-MM-DD HH:MM
+ZONE]` was sent at that time; a later time is known only if the model can run
+`date`, so fiona (who has no terminal) must not guess it. The Go daemon has no
+multimodal user message: Signal attachments are text lines with saved paths, and
+images are read through `vision_analyze`. If a multimodal user message is used,
+the stamp would be a leading text part.
 
 | session | layers | recall |
 |---|---|---|
@@ -287,9 +311,10 @@ merge is the one running.
 - Signal adapter over signal-cli's HTTP JSON-RPC (`SIGNAL_HTTP_URL`): receive,
   send, typing, receipts, attachments, groups, allowlists, `require_mention`,
   history backfill. Control messages (`/stop`, `/new`, `/sendnow`,
-  `/sendall`, `/status`, `/approve`, `/deny`) bypass the queue. Reference:
-  `gateway/platforms/signal.py`, the control-command path in
-  `gateway/run.py`.
+  `/sendall`, `/status`, `/approve`, `/deny`) bypass the queue. A message's own
+  Signal timestamp stamps its user turn's API copy; a queued message keeps that
+  timestamp in the queue. Reference: `gateway/platforms/signal.py`, the
+  control-command path in `gateway/run.py`.
 - Every instance's chat agent is **fiona**: it runs on fiona's auto route in
   maitred (whatever eklow serves), always on, and falls back to son-of-anton's
   auto route when fiona is down. Its identity block is generated from config

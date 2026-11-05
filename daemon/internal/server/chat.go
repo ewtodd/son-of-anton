@@ -214,15 +214,20 @@ func (o *outbox) run(ctx context.Context) {
 }
 
 // warnDown says once per outage that the chat's model is not being served.
-// After that the chat stays quiet until the model is serving again or the
-// chat's model changes.
+// After that the chat stays quiet until the model is reported serving again or
+// the chat's model changes. A failed lookup is not "serving": it must not
+// clear the outage warning, or a blip repeats the warning during the outage.
 func (h *chatHub) warnDown(cs *chatState, model string) {
 	s := h.srv
-	st := s.modelStatus(model)
-	if st != "unavailable" {
+	st, known := s.modelStatus(model)
+	switch {
+	case known && st == "serving":
 		cs.mu.Lock()
 		cs.downWarned = ""
 		cs.mu.Unlock()
+		return
+	case known && st == "unavailable":
+	default:
 		return
 	}
 	cs.mu.Lock()
@@ -557,7 +562,8 @@ func (h *chatHub) handle(data []byte) {
 	}
 	cs := h.state(in.Chat)
 	if name, args, ok := parseCommand(in.Text); ok {
-		cs.cmds.push(func() { h.command(cs, name, args) })
+		ts := in.Timestamp
+		cs.cmds.push(func() { h.command(cs, name, args, ts) })
 		return
 	}
 	cs.work.push(func() { h.message(cs, in) })
@@ -593,7 +599,11 @@ func (h *chatHub) message(cs *chatState, in signal.Inbound) {
 	// A chat has no picker: its model being down is told as a chat message,
 	// at most once per outage.
 	h.warnDown(cs, h.chatSessionModel(cs))
-	h.deliver(cs, text, false)
+	var sentAt time.Time
+	if in.Timestamp > 0 {
+		sentAt = time.UnixMilli(in.Timestamp).In(prompt.LocalZone())
+	}
+	h.deliver(cs, text, false, sentAt)
 }
 
 // chatSessionModel is the model the chat follows: the instance's chat model,
@@ -610,7 +620,7 @@ func (h *chatHub) chatSessionModel(cs *chatState) string {
 
 // deliver gives text to the chat's session: a turn if it is idle, else queued
 // (or, with now, steered in). The first message of a chat makes its session.
-func (h *chatHub) deliver(cs *chatState, text string, now bool) (ok bool) {
+func (h *chatHub) deliver(cs *chatState, text string, now bool, sentAt time.Time) (ok bool) {
 	s := h.srv
 	cs.sessMu.Lock()
 	defer cs.sessMu.Unlock()
@@ -622,7 +632,7 @@ func (h *chatHub) deliver(cs *chatState, text string, now bool) (ok bool) {
 		l, err := s.chatLive(s.base, cs)
 		if err == nil {
 			var queued string
-			_, queued, _, err = l.send(text, mode)
+			_, queued, _, err = l.sendAt(text, mode, sentAt)
 			if errors.Is(err, errUnloaded) {
 				continue // a finishing turn closed it first
 			}
@@ -871,7 +881,7 @@ func (h *chatHub) current(cs *chatState) (*live, string) {
 	return h.srv.loaded(id), id
 }
 
-func (h *chatHub) command(cs *chatState, name, args string) {
+func (h *chatHub) command(cs *chatState, name, args string, ts int64) {
 	switch name {
 	case "stop":
 		if l, _ := h.current(cs); l != nil && l.stopChat() {
@@ -893,7 +903,7 @@ func (h *chatHub) command(cs *chatState, name, args string) {
 		}
 		cs.say("Fresh session started.")
 	case "sendnow":
-		h.sendnow(cs, args)
+		h.sendnow(cs, args, ts)
 	case "sendall":
 		h.sendall(cs)
 	case "model":
@@ -933,14 +943,18 @@ func (h *chatHub) namesApproval(cs *chatState, tok string) bool {
 	return false
 }
 
-func (h *chatHub) sendnow(cs *chatState, text string) {
+func (h *chatHub) sendnow(cs *chatState, text string, ts int64) {
 	l, _ := h.current(cs)
 	running := l != nil && l.chatRunning()
+	var sentAt time.Time
+	if ts > 0 {
+		sentAt = time.UnixMilli(ts).In(prompt.LocalZone())
+	}
 	switch {
 	case text != "" && !running:
-		h.deliver(cs, text, false)
+		h.deliver(cs, text, false, sentAt)
 	case text != "":
-		if h.deliver(cs, text, true) {
+		if h.deliver(cs, text, true, sentAt) {
 			cs.say("Your queued message was added to the turn in progress.")
 		}
 	case !running:
