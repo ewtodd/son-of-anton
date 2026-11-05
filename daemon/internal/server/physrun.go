@@ -688,14 +688,15 @@ func (r *physRun) finalize(forced string) {
 	if cerr != nil {
 		r.say("scoring: " + cerr.Error())
 	}
-	r.mu.Lock()
-	r.rec.State, r.rec.Phase, r.rec.Ended = state, "", time.Now()
-	r.mu.Unlock()
-	r.save()
+	// The lines come first: whoever sees the run end must find them.
 	r.say(fmt.Sprintf("scored: %s (%d/%d)", eval.Status(), eval.Passed, len(eval.Results)))
 	if forced != "" {
 		r.say("run " + state)
 	}
+	r.mu.Lock()
+	r.rec.State, r.rec.Phase, r.rec.Ended = state, "", time.Now()
+	r.mu.Unlock()
+	r.save()
 	r.release()
 }
 
