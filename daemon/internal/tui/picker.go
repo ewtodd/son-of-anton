@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const maxPickRows = 15
+const maxPickRows = 14
 
 type pickRow struct {
 	key, label, desc string
@@ -336,23 +336,17 @@ func (m *model) modelNamed(name string) tea.Cmd {
 	})
 }
 
-func (m *model) sessionPicker(name string, kinds []string) tea.Cmd {
-	params := map[string]any{"limit": 500}
-	title, empty := "Resume session", "no sessions to resume"
-	if kinds != nil {
-		params = map[string]any{"kinds": kinds}
-		title, empty = "Pick up a worker", "no workers to pick up"
-	}
+func (m *model) sessionPicker(name string) tea.Cmd {
 	var res struct {
 		Sessions []map[string]any `json:"sessions"`
 	}
-	return call(m.cl, 15*time.Second, "session.list", params, &res, func(m *model, err error) tea.Cmd {
+	return call(m.cl, 15*time.Second, "session.list", map[string]any{"limit": 500}, &res, func(m *model, err error) tea.Cmd {
 		if err != nil {
 			m.feed.errNote("/" + name + ": " + err.Error())
 			return nil
 		}
 		if len(res.Sessions) == 0 {
-			m.feed.note(empty, false)
+			m.feed.note("no sessions to resume", false)
 			return nil
 		}
 		var rows []pickRow
@@ -367,7 +361,7 @@ func (m *model) sessionPicker(name string, kinds []string) tea.Cmd {
 			}
 			rows = append(rows, pickRow{key: str(s, "id"), label: ellipsizeRunes(title, 80), desc: desc})
 		}
-		m.openPicker(newPicker(title, rows, true, false, func(m *model, keys []string) tea.Cmd {
+		m.openPicker(newPicker("Resume session", rows, true, false, func(m *model, keys []string) tea.Cmd {
 			return m.command(name, keys[0], "/"+name+" "+keys[0])
 		}))
 		return nil

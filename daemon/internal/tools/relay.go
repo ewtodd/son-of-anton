@@ -19,21 +19,21 @@ func (relayTool) Schema() provider.Tool {
 		Name: "relay",
 		Description: "This chat is a relay to son-of-anton workers. Project work (code, files, commands in a repository) " +
 			"is done by a worker in its own directory, never in this chat: hand it over with this tool and report back.\n\n" +
-			"A worker is any session you can drive: the ones you start and, on a single-user instance, the user's own terminal " +
-			"sessions (kind interactive). A send to a terminal session continues that session itself, with its own history, model " +
-			"and directory. When the user says to pick up, resume or continue a session, send to it; do not start a new worker for it. " +
+			"A worker is any session you can drive: a terminal session is one, whether a terminal has it open or not. So on a " +
+			"single-user instance you can drive the user's own sessions as well as the ones you start. A send continues that session " +
+			"itself, with its own history, model and directory. When the user says to pick up, resume or continue a session, send to " +
+			"it; do not start a new worker for it. " +
 			"On a single-user instance a send takes the session from a terminal that has it open (state picked up), even mid-turn, and " +
 			"that terminal closes, so send to one only when the user asked for that session; the result then says took_from_terminal.\n\n" +
 			"Actions:\n" +
-			"- list: this chat's workers and the user's recent terminal sessions, most recent first (optional `workspace` path filter), " +
-			"each with its kind, its cwd, whether it is bound to this chat, and its state: running, idle, queued (with when it will run) " +
-			"or picked up (a terminal is driving it).\n" +
+			"- list: the sessions you can drive, most recent first (optional `workspace` path filter), each with its cwd, whether it is " +
+			"bound to this chat, and its state: running, idle, queued (with when it will run) or picked up (a terminal is driving it).\n" +
 			"- send: give `message` to a worker. `session` (id or title) defaults to the one bound to this chat; `new_in` " +
 			"(a directory) starts a new worker there instead, and is refused while a session is running in that repository: send to " +
 			"that session. A busy worker runs the message after its current turn; `now` steers the running turn with it instead.\n" +
 			"- status: state, recent activity, queued messages, pending approvals.\n" +
 			"- stop: stop the running turn; the worker stays bound.\n" +
-			"- detach: unbind the worker from this chat. A terminal session then stops reporting here.\n\n" +
+			"- detach: unbind the worker from this chat. On a single-user instance it then stops reporting here.\n\n" +
 			"Relay the user's words faithfully: pass their request as they gave it, without rewriting it or adding " +
 			"instructions of your own. Before choosing between continuing an existing worker and starting a new one, ask " +
 			"the user. A worker's results and its questions (answer one by sending the user's reply) arrive here as " +

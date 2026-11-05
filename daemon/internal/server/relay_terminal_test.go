@@ -1,8 +1,8 @@
 package server_test
 
-// A chat and the user's terminal sessions: on a single-user instance a
-// terminal session is a worker the chat did not start. relay lists it and a
-// send continues it in place, with its own prompt, history and directory.
+// A chat and the user's terminal sessions: a terminal session and a worker are
+// the same thing, so on a single-user instance relay lists it and a send
+// continues it in place, with its own prompt, history and directory.
 
 import (
 	"context"
@@ -73,7 +73,7 @@ func TestAChatContinuesATerminalSession(t *testing.T) {
 			entry = m
 		}
 	}
-	if entry == nil || str(entry, "kind") != "interactive" || str(entry, "cwd") != dir || str(entry, "state") != "idle" {
+	if entry == nil || str(entry, "cwd") != dir || str(entry, "state") != "idle" {
 		t.Fatalf("relay list = %v", ws)
 	}
 	if sent := toolResult(t, fake, "r2"); sent["success"] != true || sent["worker"] != desk || sent["status"] != "started" {
@@ -84,8 +84,8 @@ func TestAChatContinuesATerminalSession(t *testing.T) {
 	if err != nil || s.Kind != "interactive" || s.Cwd != dir {
 		t.Fatalf("the session = %+v, %v", s, err)
 	}
-	if workers, err := st.ListSessions(context.Background(), []string{"worker"}, 0); err != nil || len(workers) != 0 {
-		t.Fatalf("no worker is started: %v, %v", workers, err)
+	if all, err := st.ListSessions(context.Background(), []string{"interactive"}, 0); err != nil || len(all) != 1 {
+		t.Fatalf("no second session is started: %v, %v", all, err)
 	}
 	cont := -1
 	for i := range fake.Count() {

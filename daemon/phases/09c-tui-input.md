@@ -1,7 +1,7 @@
 # Phase 9c: the Go TUI's pickers and prompt helpers
 
 Goal: the parts of the Textual TUI that help you type: pickers for
-`/model`, `/reasoning`, `/resume`, `/pickup` and `/cancel`; completion of
+`/model`, `/reasoning`, `/resume` and `/cancel`; completion of
 command names, their arguments and paths; history suggestions; the command
 palette; and composing in an external editor.
 
@@ -22,8 +22,8 @@ One table drives `/help`, completion and the palette, in this order:
 |---|---|---|---|
 | `new` | `reset` | | Start a new session |
 | `clear` | | | Start a new session and clear the screen |
-| `resume` | `sessions` | `[id]` | Resume a session |
-| `pickup` | | `[id or title]` | Take over a worker that fiona started |
+| `resume` | `sessions` | `[id or title]` | Go back to a session, yours or one fiona started |
+| `handoff` | | | Give this session to fiona and leave the TUI |
 | `commit` | | `[extra instructions]` | Review uncommitted changes, write a message in the repo's style, and commit |
 | `compact` | | `[focus topic \| --preview]` | Summarize older turns to free context (--preview shows what it would do) |
 | `stop` | | | Kill all running background processes |
@@ -69,7 +69,6 @@ row, the rows, a muted hint.
 | `/model` | `Switch model  ·  now <current>` | `model.list`: (name, `name  ●` for the current one else name, `reasoning: <efforts joined by ", ">` or empty) | the current one; filterable | |
 | `/reasoning` | `Reasoning  ·  now <effort or default>` | (`""`, `default`, `the configured default`), then each of the model's efforts | the first; not filterable | `<model> has no configured reasoning levels` |
 | `/resume`, `/sessions` | `Resume session` | `session.list {limit: 500}`: (id, title cut to 80 or `untitled`, `<~cwd> · <updated as YYYY-MM-DD HH:MM>`) | filterable | `no sessions to resume` |
-| `/pickup` | `Pick up a worker` | as `/resume`, from `session.list {kinds: ["worker"]}` | filterable | `no workers to pick up` |
 | `/cancel` | `Drop queued messages` | (id, the text cut to 100 with `…`) | several | `nothing queued` |
 
 Picking acts as the command with that argument would. `/cancel` drops the
@@ -90,7 +89,7 @@ is in the accent colour, bold, with no background.
 - **Arguments**: after `/<command> ` on one line: `/model` the
   `model.list` names (fetched once per prompt); `/reasoning` `default` and
   the model's efforts; `/perm` the four modes; `/skin` the skin names;
-  `/resume` and `/pickup` nothing. Opens while typing only once the word is
+  `/resume` nothing. Opens while typing only once the word is
   not empty; `tab` opens it on an empty word.
 - **Paths**, `tab` only: a word starting `./`, `../`, `~/` or `/`, or
   containing a `/`, completes against the session's cwd: entries whose name

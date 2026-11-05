@@ -75,8 +75,9 @@ things up, reads images and keeps her own notes and memory, and hands real
 work (code, files, commands) to a **worker**, a terminal session in the
 directory you name, through her `relay` tool. Workers keep
 `[relay] worker_hours`; their approvals and questions come to the chat as
-`/approve <id>` and `/deny <id>`. `/pickup` in the terminal UI takes a worker
-over. On a single-user instance it works the other way too: fiona can see your
+`/approve <id>` and `/deny <id>`. A worker is just a session with no terminal
+attached: `/resume` in the terminal UI, or `son-of-anton -r`, takes one over.
+On a single-user instance it works the other way too: fiona can see your
 terminal sessions and continue one from the chat, in place. If a terminal still
 has it open, that terminal closes and prints how to take the session back.
 `/handoff` does the same from the terminal: it gives fiona the session, so its

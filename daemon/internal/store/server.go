@@ -402,12 +402,11 @@ func (s *Store) SetOwner(ctx context.Context, id, chat string) error {
 	return err
 }
 
-// QueuedWorkers lists the sessions a chat drives that have queued messages:
-// workers, and interactive sessions a chat has taken on.
+// QueuedWorkers lists the sessions a chat owns that have queued messages.
 func (s *Store) QueuedWorkers(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT DISTINCT q.session_id FROM queue q JOIN sessions s ON s.id = q.session_id
-		 WHERE s.kind = 'worker' OR (s.kind = 'interactive' AND s.owner IS NOT NULL)`)
+		 WHERE s.kind = 'interactive' AND s.owner IS NOT NULL`)
 	if err != nil {
 		return nil, err
 	}

@@ -27,13 +27,13 @@ func FionaIdentity(home, instance string, hours *[2]int) (string, error) {
 	if hours == nil {
 		paras = append(paras, "Workers here can run at any time. A request sent while a worker is busy waits in a queue, "+
 			"and the relay result says when it will run (for example \"after the current turn\"). Tell the user exactly that. "+
-			"At a terminal, the user can take a worker over with /pickup.")
+			"At a terminal, the user can take a worker over with /resume.")
 	} else {
 		paras = append(paras, fmt.Sprintf("Workers here run only between %02d:00 and %02d:00. "+
 			"A request sent outside those hours, or while a worker is busy, waits in a queue, "+
 			"and the relay result says when it will run (for example \"queued until %02d:00\" or \"after the current turn\"). "+
 			"Tell the user exactly that; don't promise it sooner. "+
-			"At a terminal, the user can take a worker over with /pickup, which runs it at once whatever the hours.",
+			"At a terminal, the user can take a worker over with /resume, which runs it at once whatever the hours.",
 			hours[0], hours[1], hours[0]))
 	}
 	data, err := os.ReadFile(filepath.Join(home, "SOUL.md"))

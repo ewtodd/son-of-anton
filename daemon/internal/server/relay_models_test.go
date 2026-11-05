@@ -110,7 +110,7 @@ func TestRelaySendWithAnUnknownModelSendsNothing(t *testing.T) {
 	if requestWith(t, fake, asWorker) >= 0 {
 		t.Fatal("a worker ran")
 	}
-	sums, err := openStore(t, r.h.home).ListReadableIn(context.Background(), "common", "", "", []string{"worker"}, 0)
+	sums, err := openStore(t, r.h.home).ListReadableIn(context.Background(), "common", "", "", []string{"interactive"}, 0)
 	if err != nil || len(sums) != 0 {
 		t.Fatalf("workers after a failed send = %v, %v", sums, err)
 	}

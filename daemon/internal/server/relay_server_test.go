@@ -76,7 +76,7 @@ func TestARelayedTaskReportsBack(t *testing.T) {
 	}
 	st := openStore(t, r.h.home)
 	w, err := st.Session(context.Background(), worker)
-	if err != nil || w.Kind != "worker" || w.Source != "relay" || w.Scope != "common" || w.Chat != "" || w.Cwd != dir {
+	if err != nil || w.Kind != "interactive" || w.Owner == "" || w.Source != "relay" || w.Scope != "common" || w.Chat != "" || w.Cwd != dir {
 		t.Fatalf("the worker = %+v, %v", w, err)
 	}
 	wi := requestWith(t, fake, asWorker)
@@ -239,7 +239,7 @@ func TestAPickedUpWorkerAsksTheTerminal(t *testing.T) {
 
 	c := r.h.dial()
 	var listed bool
-	for _, s := range objs(c.ok("session.list", map[string]any{"kinds": []string{"worker"}}), "sessions") {
+	for _, s := range objs(c.ok("session.list", map[string]any{}), "sessions") {
 		listed = listed || str(s, "id") == worker
 	}
 	if !listed {

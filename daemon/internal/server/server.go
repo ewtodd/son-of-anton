@@ -294,12 +294,11 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 // create makes a new interactive session and returns its ID. It is not left
 // loaded: attaching loads it.
 func (s *Server) create(ctx context.Context, cwd, source string) (string, []string, error) {
-	return s.createAs(ctx, "interactive", "", cwd, source)
+	return s.createFor(ctx, "", cwd, source)
 }
 
-// createAs is create for a session of another kind; owner is the chat that
-// starts a worker.
-func (s *Server) createAs(ctx context.Context, kind, owner, cwd, source string) (string, []string, error) {
+// createFor is create for the chat that starts the session ("": none).
+func (s *Server) createFor(ctx context.Context, owner, cwd, source string) (string, []string, error) {
 	ep, err := s.cfg.Endpoint("")
 	if err != nil {
 		return "", nil, err
@@ -308,7 +307,7 @@ func (s *Server) createAs(ctx context.Context, kind, owner, cwd, source string) 
 	var warnings []string
 	r := s.runner(&live{}, ep, mode, source, &warnings)
 	r.Owner = owner
-	sess, err := r.NewSession(ctx, kind, cwd)
+	sess, err := r.NewSession(ctx, "interactive", cwd)
 	if err != nil {
 		return "", nil, err
 	}
@@ -390,8 +389,8 @@ func (s *Server) load(ctx context.Context, id string) (*live, error) {
 		}
 		l.waiting = false
 	}
-	if rec.Kind == "worker" || (rec.Kind == "interactive" && rec.Owner != "") {
-		if s.chats != nil && rec.Owner != "" {
+	if rec.Kind == "interactive" && rec.Owner != "" {
+		if s.chats != nil {
 			l.chat = &workerLink{cs: s.chats.state(rec.Owner), l: l}
 		}
 		l.waiting = false

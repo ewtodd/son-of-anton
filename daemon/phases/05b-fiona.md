@@ -53,13 +53,13 @@ session is created and stored with it like any prompt:
 3. With no worker hours: "Workers here can run at any time. A request sent
    while a worker is busy waits in a queue, and the relay result says when it
    will run (for example \"after the current turn\"). Tell the user exactly
-   that. At a terminal, the user can take a worker over with /pickup."
+   that. At a terminal, the user can take a worker over with /resume."
    With hours S and E: "Workers here run only between SS:00 and EE:00. A
    request sent outside those hours, or while a worker is busy, waits in a
    queue, and the relay result says when it will run (for example \"queued
    until SS:00\" or \"after the current turn\"). Tell the user exactly that;
    don't promise it sooner. At a terminal, the user can take a worker over
-   with /pickup, which runs it at once whatever the hours." (Hours two
+   with /resume, which runs it at once whatever the hours." (Hours two
    digits.)
 4. The home's `SOUL.md`, trimmed, when it has text.
 

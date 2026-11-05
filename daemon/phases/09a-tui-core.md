@@ -258,9 +258,8 @@ soa-d` and no more retries.
 | `/perm X` | `session.set {mode}` | `permission mode: X` |
 | `/perm` | | `permission mode: <m>  (default \| ask \| lockdown \| yolo)` |
 | `/new`, `/reset`, `/clear` | `session.create`, attach it as driver, detach the old | the feed starts over with a new intro |
-| `/resume ID`, `/sessions ID` | attach that session as driver, detach the old | the feed is redrawn; -32011: `session ID is not in soa-d` |
+| `/resume ID`, `/sessions ID` | attach that session (by id, or a title in any case from `session.list`) as driver, detach the old | the feed is redrawn; -32011: `session ID is not in soa-d` |
 | `/resume`, `/sessions` | `session.list` (limit 10) | `  <id>  <title or untitled>  ·  <cwd>` per session, or `no sessions to resume` |
-| `/pickup ID` | the worker with that id or title (case-insensitive) from `session.list {kinds: ["worker"]}`, then as `/resume` | `no worker ID` |
 | `/commit [args]` | `command.run {name: "commit", args}` | |
 | `/stop` | `command.run stop` | `killed <N> background process(es)` |
 | `/compact --preview` (or `--dry-run`) | `command.run compact` with that arg | `would summarize <rows> rows (through seq <s>, about <t> tokens) and keep the rest verbatim` |

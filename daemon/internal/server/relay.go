@@ -1,15 +1,15 @@
 package server
 
-// The relay (phase 5c). A chat hands work to workers: ordinary daemon
-// sessions of kind worker, common scope, started by the chat that owns them.
-// A terminal that attaches to one as driver has picked it up: chat sends then
-// only queue, and its approvals and questions go to the terminal.
+// The relay (phase 5c). A chat hands work to workers. A worker is not a kind
+// of session: it is an interactive session with no terminal attached, whose
+// Owner is the chat that drives it. A chat gets one by starting it or, on a
+// single-user instance, by sending to any terminal session, which stays what
+// it was, with its prompt, history and directory.
 //
-// It works the other way too. On a single-user instance a chat sees the user's
-// interactive sessions and its first send takes one on (Owner): the session
-// stays what it was, with its prompt, history and directory, and whenever no
-// terminal drives it, it behaves as a worker of that chat. A send also takes a
-// session from a terminal that has it open. relay detach lets it go.
+// A terminal that attaches to one as driver has picked it up: its approvals
+// and questions go to the terminal, and chat sends queue. Except that on a
+// single-user instance the chat and the terminal are one person, so there a
+// send takes the session back from the terminal, and relay detach lets it go.
 
 import (
 	"context"
@@ -30,14 +30,14 @@ import (
 )
 
 const (
-	lastReplyMax    = 500
-	titleMax        = 60
-	hoursEvery      = time.Minute
-	whenTerminal    = "when the terminal that picked it up gets to it"
-	whenAfterTurn   = "after the current turn"
-	noWorkerBound   = "no worker is bound to this chat: start one with new_in (a directory), or pick one from list"
-	workerUntitled  = "untitled"
-	terminalsListed = 10 // the user's sessions in relay list, newest first
+	lastReplyMax   = 500
+	titleMax       = 60
+	hoursEvery     = time.Minute
+	whenTerminal   = "when the terminal that picked it up gets to it"
+	whenAfterTurn  = "after the current turn"
+	noWorkerBound  = "no worker is bound to this chat: start one with new_in (a directory), or pick one from list"
+	workerUntitled = "untitled"
+	idleListed     = 10 // idle sessions in relay list, newest first; busy ones always show
 )
 
 // ---- hours ----
@@ -152,8 +152,8 @@ func (k *workerLink) label() string {
 func (k *workerLink) turnStart() {}
 
 func (k *workerLink) turnEnd(status, content, errMsg string) {
-	if k.l.kind == "interactive" && k.l.driver != nil {
-		return // the user is at the terminal and saw it there
+	if k.l.driver != nil && k.l.srv.cfg.Gateway.SingleUser {
+		return // one person: they are at the terminal and saw it there
 	}
 	head := "[worker " + k.label() + " (" + k.l.id + ")"
 	var text string
@@ -236,15 +236,14 @@ func (l *live) handBack() {
 	l.next()
 }
 
-// relayed says a chat drives this session whenever no terminal does: a worker,
-// or an interactive session a chat has taken on (mu held).
+// relayed says a chat drives this session whenever no terminal does (mu held).
 func (l *live) relayed() bool {
-	_, taken := l.chat.(*workerLink)
-	return l.kind == "worker" || taken
+	_, ok := l.chat.(*workerLink)
+	return ok
 }
 
-// takeOn links an interactive session to the chat that owns it, and gives the
-// chat whatever was waiting for a terminal that has gone.
+// takeOn links a session to the chat that owns it, and gives the chat whatever
+// was waiting for a terminal that has gone.
 func (l *live) takeOn(cs *chatState) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -261,7 +260,7 @@ func (l *live) takeOn(cs *chatState) {
 func (l *live) letGo() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.kind != "interactive" || l.chat == nil {
+	if !l.relayed() {
 		return
 	}
 	for id := range l.approvals {
@@ -386,7 +385,8 @@ func (s *Server) relay(ctx context.Context, stamp string, raw json.RawMessage) s
 			}
 			detached = true
 		}
-		if w.Kind == "interactive" {
+		// On a shared instance the owner is who may see it at all, so it stays.
+		if s.cfg.Gateway.SingleUser {
 			if err := s.st.SetOwner(ctx, w.ID, ""); err != nil {
 				return relayFail(err.Error())
 			}
@@ -399,23 +399,16 @@ func (s *Server) relay(ctx context.Context, stamp string, raw json.RawMessage) s
 	return relayFail("action must be one of list, send, status, stop, detach")
 }
 
-// mayDrive says whether the chat may see and drive the session: a worker of
-// its own, or, on a single-user instance, any worker and any terminal session.
+// mayDrive says whether the chat may see and drive the session: any, on a
+// single-user instance; on a shared one, only those it owns.
 func (s *Server) mayDrive(stamp string, w store.Session) bool {
-	if s.cfg.Gateway.SingleUser {
-		return w.Kind == "worker" || w.Kind == "interactive"
-	}
-	return w.Kind == "worker" && w.Owner == stamp
+	return w.Kind == "interactive" && (s.cfg.Gateway.SingleUser || w.Owner == stamp)
 }
 
 // chatWorkers are the sessions the chat may drive, newest activity first;
 // workspace, when set, keeps those in that directory or below.
 func (s *Server) chatWorkers(ctx context.Context, stamp, workspace string) ([]store.Summary, error) {
-	kinds := []string{"worker"}
-	if s.cfg.Gateway.SingleUser {
-		kinds = append(kinds, "interactive")
-	}
-	sums, err := s.st.ListReadableIn(ctx, "common", "", "", kinds, 0)
+	sums, err := s.st.ListReadableIn(ctx, "common", "", "", []string{"interactive"}, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -443,6 +436,9 @@ func (s *Server) claim(ctx context.Context, stamp string, w store.Session) (stri
 func (s *Server) handoff(ctx context.Context, l *live) (any, *rpcError) {
 	if s.chats == nil || !s.cfg.Gateway.SingleUser {
 		return nil, errf(codeBadParams, "handing off needs Signal on a single-user instance")
+	}
+	if l.kind != "interactive" {
+		return nil, errf(codeBadParams, "a %s session cannot be handed off", l.kind)
 	}
 	chats, err := s.st.ListSessions(ctx, []string{"chat"}, 1)
 	if err != nil {
@@ -584,20 +580,20 @@ func (s *Server) relayList(ctx context.Context, stamp string, a relayArgs) strin
 	}
 	bound, _ := s.st.RelayBinding(ctx, stamp)
 	out := []map[string]any{}
-	terminals := 0
+	idle := 0
 	for _, sum := range ws {
 		w := sum.Session
 		items, _ := s.st.QueueItems(ctx, w.ID)
 		state := s.workerState(w, len(items))
-		if w.Kind == "interactive" {
-			// A session in its first turn has no messages stored yet, but it
-			// is the one to find.
-			if (sum.Messages == 0 && state == "idle") || terminals == terminalsListed {
+		if state == "idle" {
+			// A session in its first turn has no messages stored yet, so only
+			// an idle one counts as empty.
+			if sum.Messages == 0 || idle == idleListed {
 				continue
 			}
-			terminals++
+			idle++
 		}
-		entry := map[string]any{"worker": w.ID, "kind": w.Kind, "title": w.Title, "cwd": w.Cwd, "state": state,
+		entry := map[string]any{"worker": w.ID, "title": w.Title, "cwd": w.Cwd, "state": state,
 			"bound": w.ID == bound, "last_active": sum.Updated.Format(time.RFC3339)}
 		out = append(out, s.withModel(entry, w))
 	}
@@ -631,7 +627,7 @@ func (s *Server) relayStatus(ctx context.Context, w store.Session) string {
 	if r := []rune(reply); len(r) > lastReplyMax {
 		reply = string(r[:lastReplyMax])
 	}
-	res := map[string]any{"success": true, "worker": w.ID, "kind": w.Kind, "title": w.Title, "cwd": w.Cwd,
+	res := map[string]any{"success": true, "worker": w.ID, "title": w.Title, "cwd": w.Cwd,
 		"state": s.workerState(w, len(items)), "queued": queued, "approvals_waiting": waiting, "last_reply": reply}
 	return relayJSON(s.withModel(res, w))
 }
@@ -648,7 +644,7 @@ func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) str
 			return relayFail(err.Error())
 		}
 	}
-	var id, owner string // owner: the chat of a terminal session this send takes on
+	var id, owner string
 	if dir := strings.TrimSpace(a.NewIn); dir != "" {
 		if fi, err := os.Stat(dir); !filepath.IsAbs(dir) || err != nil || !fi.IsDir() {
 			return relayFail(fmt.Sprintf("new_in %q must be an absolute path to an existing directory", dir))
@@ -661,20 +657,19 @@ func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) str
 				w.ID, w.Title, w.Cwd))
 		}
 		var err error
-		if id, _, err = s.createAs(ctx, "worker", stamp, dir, "relay"); err != nil {
+		if id, _, err = s.createFor(ctx, stamp, dir, "relay"); err != nil {
 			return relayFail("starting the worker: " + err.Error())
 		}
+		owner = stamp
 	} else {
 		w, errText := s.relayWorker(ctx, stamp, a.Session)
 		if errText != "" {
 			return relayFail(errText)
 		}
 		id = w.ID
-		if w.Kind == "interactive" {
-			var err error
-			if owner, err = s.claim(ctx, stamp, w); err != nil {
-				return relayFail(err.Error())
-			}
+		var err error
+		if owner, err = s.claim(ctx, stamp, w); err != nil {
+			return relayFail(err.Error())
 		}
 	}
 	if err := s.st.SetRelayBinding(ctx, stamp, id); err != nil {
@@ -685,7 +680,7 @@ func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) str
 		if err != nil {
 			return relayFail(err.Error())
 		}
-		if owner != "" && s.chats != nil {
+		if s.chats != nil {
 			l.takeOn(s.chats.state(owner))
 		}
 		if model != "" {

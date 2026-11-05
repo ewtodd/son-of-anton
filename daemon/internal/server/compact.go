@@ -141,7 +141,7 @@ func (l *live) compacted(res agent.CompactResult) {
 // nameSession titles a session that has none (mu held): at once from the
 // opening message, then, in the background, from the title model.
 func (l *live) nameSession(text string) {
-	if (l.kind != "interactive" && l.kind != "worker") || l.title != "" {
+	if l.kind != "interactive" || l.title != "" {
 		return
 	}
 	d := title.Derive(text)

@@ -88,8 +88,15 @@ func TestTheResumePicker(t *testing.T) {
 	if a.Session() != alpha {
 		t.Fatalf("resumed %s, want %s", a.Session(), alpha)
 	}
-	send(a, "/pickup")
-	waitScreen(t, a, "no workers to pick up")
+	send(a, "/new")
+	waitGone(t, a, "the alpha answer")
+	send(a, "/resume ALPHA planning SESSION") // a title, in any case
+	waitScreen(t, a, "resumed session "+alpha, "the alpha answer")
+	send(a, "/resume no such session")
+	waitScreen(t, a, "no such session")
+	if a.Session() != alpha {
+		t.Fatalf("a bad name left the session %s, want %s", a.Session(), alpha)
+	}
 }
 
 func TestTheCancelPicker(t *testing.T) {

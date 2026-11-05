@@ -332,7 +332,7 @@ type listed struct {
 }
 
 // kinds the terminal can see, in the order status counts them.
-var kinds = []string{"interactive", "worker", "oneshot", "cron"}
+var kinds = []string{"interactive", "oneshot", "cron"}
 
 func onOff(b bool) string {
 	if b {
@@ -520,9 +520,9 @@ func runSessions(f flags, stdin io.Reader, stdout, stderr io.Writer) int {
 		want := kindsWanted
 		switch {
 		case all:
-			want = []string{"interactive", "worker", "oneshot", "cron", "chat", "child"}
+			want = []string{"interactive", "oneshot", "cron", "chat", "child"}
 		case len(want) == 0:
-			want = []string{"interactive", "worker"}
+			want = []string{"interactive"}
 		}
 		var res listed
 		if !rpc("session.list", map[string]any{"kinds": want, "limit": limit}, &res) {
@@ -576,7 +576,7 @@ func runSessions(f flags, stdin io.Reader, stdout, stderr io.Writer) int {
 // the daemon does not know it.
 func titleOf(ctx context.Context, c *client.Client, id string) (string, bool) {
 	var res listed
-	all := []string{"interactive", "worker", "oneshot", "cron", "chat", "child"}
+	all := []string{"interactive", "oneshot", "cron", "chat", "child"}
 	if err := c.Call(ctx, "session.list", map[string]any{"kinds": all, "limit": 1 << 30}, &res); err != nil {
 		return "", false
 	}

@@ -201,27 +201,22 @@ func (m *model) command(name, args, line string) tea.Cmd {
 		}, false, name)
 	case "resume", "sessions":
 		if args != "" {
-			return m.switchSession(func(context.Context, *client.Client) (string, error) { return args, nil }, true, name)
-		}
-		return m.sessionPicker(name, nil)
-	case "pickup":
-		if args == "" {
-			return m.sessionPicker(name, []string{"worker"})
-		}
-		return m.switchSession(func(ctx context.Context, c *client.Client) (string, error) {
-			var res struct {
-				Sessions []map[string]any `json:"sessions"`
-			}
-			if err := c.Call(ctx, "session.list", map[string]any{"kinds": []string{"worker"}}, &res); err != nil {
-				return "", err
-			}
-			for _, s := range res.Sessions {
-				if strings.EqualFold(str(s, "id"), args) || strings.EqualFold(str(s, "title"), args) {
-					return str(s, "id"), nil
+			return m.switchSession(func(ctx context.Context, c *client.Client) (string, error) {
+				var res struct {
+					Sessions []map[string]any `json:"sessions"`
 				}
-			}
-			return "", errNote("no worker " + args)
-		}, true, name)
+				if err := c.Call(ctx, "session.list", map[string]any{"limit": 500}, &res); err != nil {
+					return "", err
+				}
+				for _, s := range res.Sessions {
+					if strings.EqualFold(str(s, "title"), args) {
+						return str(s, "id"), nil
+					}
+				}
+				return args, nil // an id, of any kind of session
+			}, true, name)
+		}
+		return m.sessionPicker(name)
 	case "handoff":
 		return call(c, 15*time.Second, "session.handoff", map[string]any{"session": sid}, nil,
 			func(m *model, err error) tea.Cmd {

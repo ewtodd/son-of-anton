@@ -1,9 +1,9 @@
 # Phase 5c: the relay
 
 Goal: fiona hands real work to son-of-anton **workers** with one tool,
-`relay` (SPEC section 12). A worker is a daemon session like any other
-(kind `worker`), so a terminal can take it over with `/pickup`, and none of
-the Python's host/worker/yield machinery exists.
+`relay` (SPEC section 12). A worker is a daemon session like any other, so a
+terminal can take it over with `/resume`, and none of the Python's
+host/worker/yield machinery exists.
 
 Read first: `SPEC.md` sections 3 and 12, `phases/05a-signal.md` and
 `05b-fiona.md`, AGENTS.md "The relay" (the Python's design, for its
@@ -30,7 +30,9 @@ file wins.
 
 ## The worker
 
-Kind `worker`, source `relay`, scope `common` (the terminal may see it),
+Kind `interactive` (a kind `worker` until the owner removed it on 2026-11-05;
+schema v17 turned the old rows into this), source `relay`, scope `common` (the
+terminal may see it),
 `owner` the chat stamp that started it (schema v10: `sessions.owner`, never
 the `chat` column, which is the wall's), cwd the `new_in` directory (it must
 exist), model `model.default`, the full prompt of an interactive session
@@ -97,33 +99,30 @@ steer turn follows). Approvals and questions of a worker
 nobody has picked up go to its chat as a chat session's do (5a), each
 prefixed "Worker <title>: ".
 
-## /pickup
+## Taking a worker at the terminal
 
-The TUI's `/pickup [id or title]` (`son_of_anton_cli/commands.py` gains it;
-handled in `son_of_anton_tui/backend.py`): with no argument, a picker of
-`session.list {kinds: ["worker"]}`; then the worker is attached as driver,
-like `/resume`. While a terminal drives it, sends from the chat queue on it
-(the terminal sees them in its queue strip) and its approvals and questions
-ask the terminal. `/resume` of a worker works the same way. Leaving it
-(another `/resume`, `/new`, quitting) hands it back to the chat.
+`/resume [id or title]` is how a terminal takes any session, a worker or not
+(`/pickup` was a second name for it until 2026-11-05). While a terminal drives
+it, its approvals and questions ask the terminal. Leaving it (another `/resume`,
+`/new`, quitting) hands it back to the chat. On a shared instance sends from
+the chat queue on it (the terminal sees them in its queue strip).
 
 ## Terminal sessions (2026-11-05)
 
-The other direction of `/pickup`, on single-user instances only; a shared
-instance's chats still see only the workers they started.
+The other direction, on single-user instances only; a shared instance's chats
+still see only the sessions they started.
 
-- `relay list` also shows the ten most recent interactive sessions (leaving out
-  empty idle ones), and every entry says its `kind`. A terminal with a queue
-  nobody will run shows `queued (waiting for a terminal)`.
-- `relay send` with an interactive session's id or title continues that session
-  in place. It is never converted or copied: kind, prompt, history, model and
-  directory stay what they were.
+- `relay list` shows the ten most recent idle sessions (leaving out empty ones)
+  and every busy one. A terminal with a queue nobody will run shows `queued
+  (waiting for a terminal)`.
+- `relay send` with a session's id or title continues that session in place. It
+  is never converted or copied: prompt, history, model and directory stay what
+  they were.
 - The first send takes it on: `sessions.owner` is set to the chat, and the live
-  session gets the chat link a worker has. From then on, whenever no terminal
-  drives it, it acts as a worker of that chat. Its turns report back, its
-  approvals and questions go to the chat (ones already waiting are asked at
-  once), and its queue runs, within worker hours.
-- A send takes any session, worker or terminal, from an attached terminal, even
+  session gets the chat link. From then on, whenever no terminal drives it, its
+  turns report back, its approvals and questions go to the chat (ones already
+  waiting are asked at once), and its queue runs, within worker hours.
+- A send takes any session from an attached terminal, even
   mid-turn, within worker hours. The chat and the terminal are one person on a
   single-user instance, so someone writing from the chat is not at the terminal
   they left open; and if a queued message waited behind a terminal's turn, its
@@ -132,8 +131,8 @@ instance's chats still see only the workers they started.
   says `took_from_terminal`. Outside worker hours the terminal keeps it.
 - The TUI closes when it loses the driver role, to the chat or to another
   terminal, and prints who took the session and `son-of-anton -r <id>`. That
-  command takes it back: a turn that ends while a terminal drives a terminal
-  session is not reported.
+  command takes it back: a turn that ends while a terminal drives a session is
+  not reported.
 - `relay detach` lets it go: the owner is cleared and it waits for a terminal
   again.
 - `new_in` is refused while a session the chat may drive has a turn running in
@@ -142,15 +141,15 @@ instance's chats still see only the workers they started.
   end: it gives the session to the chat used last, sends fiona a notice saying
   whether it is running, and the TUI closes and prints how to take it back. The
   terminal leaving gives the chat the session's approvals, questions and queue.
-  An instance has one Signal group, so there is no chat to choose, but one
-  group can have several stamps, one per sender: any chat may let a terminal
-  session go, not only the stamp that took it on.
+  An instance has one Signal group, so there is no chat to choose. One group
+  can still have several stamps, one per sender, so on a single-user instance
+  any chat may let a session go, not only the stamp that took it on.
 
 ## README
 
 Under "Signal": fiona relays work to workers (`relay`), which run in their
 own directories, respect worker hours, and report back; a terminal takes
-one over with `/pickup`.
+one over with `/resume`.
 
 ## Done when
 

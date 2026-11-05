@@ -21,10 +21,10 @@ const (
 		"pass the user's request on as they gave it, then tell them what the worker reports. " +
 		"A worker cannot see your memory, so add anything from it the worker needs, marked as context from you."
 	fionaAnyTime = "Workers here can run at any time. A request sent while a worker is busy waits in a queue, and the relay result says when it will run " +
-		"(for example \"after the current turn\"). Tell the user exactly that. At a terminal, the user can take a worker over with /pickup."
+		"(for example \"after the current turn\"). Tell the user exactly that. At a terminal, the user can take a worker over with /resume."
 	fionaHours = "Workers here run only between 20:00 and 07:00. A request sent outside those hours, or while a worker is busy, waits in a queue, " +
 		"and the relay result says when it will run (for example \"queued until 20:00\" or \"after the current turn\"). Tell the user exactly that; " +
-		"don't promise it sooner. At a terminal, the user can take a worker over with /pickup, which runs it at once whatever the hours."
+		"don't promise it sooner. At a terminal, the user can take a worker over with /resume, which runs it at once whatever the hours."
 )
 
 func systemPrompt(t *testing.T, fake *fakellm.Server, i int) string {

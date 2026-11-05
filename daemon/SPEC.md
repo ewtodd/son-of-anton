@@ -36,8 +36,8 @@ copy.
 - **Implementer:** the local `radiance/qwen3.8-27b` via the delegate-local
   workflow; Sonnet when the 27B is stuck. Claude writes each phase spec and
   its contract tests first and reviews every merge.
-- **Subagents work like opencode v1.19.5** (section 9). `/pickup` is only for
-  relay sessions, never for viewing subagents.
+- **Subagents work like opencode v1.19.5** (section 9). `/resume` is for
+  sessions, never for viewing subagents.
 - **fiona / relay-only Signal** is built here, not in the Python fork
   (section 12). The Python fork gets fixes only until it is retired.
 - **Scope from measured usage** (section 18): kept foreign session import and
@@ -65,17 +65,21 @@ session the daemon owns. Kinds:
 
 | kind | created by | driver (may send turns) |
 |---|---|---|
-| `interactive` | TUI | the attached TUI, or the chat that took it on (section 12, single-user instances) |
+| `interactive` | TUI, or the chat's `relay` tool | the attached TUI; with none, the chat that owns it |
 | `chat` | Signal chat | that chat |
-| `worker` | the chat's `relay` tool | the chat, until a TUI `/pickup`s it |
 | `child` | the `task` tool (subagent) | its parent session's loop |
 | `cron` | the scheduler | nobody (runs its prompt) |
 | `oneshot` | `son-of-anton -q` / `-z` | the invoking client |
 
+A **worker** is not a kind (owner, 2026-11-05). It is an `interactive` session
+with no terminal attached and a chat as its `Owner`, headless until a terminal
+attaches and no different from one that started in a terminal.
+
 A session has at most one driver and any number of viewers. Attaching a TUI to
-a worker as driver is `/pickup`; it replaces the whole relay host/worker,
-yield, takeover and heartbeat machinery of the Python fork (AGENTS.md "The
-relay"), because no session is ever owned by a separate process.
+a session as driver is `/resume` or `son-of-anton -r`; it replaces the whole
+relay host/worker, yield, takeover and heartbeat machinery of the Python fork
+(AGENTS.md "The relay"), because no session is ever owned by a separate
+process.
 
 The daemon is the only writer of `state.db`. Clients never open it.
 
@@ -185,7 +189,7 @@ Per-turn recall rides the user message, never the system prompt.
 
 | session | layers | recall |
 |---|---|---|
-| `interactive`, `chat`, `worker`, `cron`, `-q` | 1-4 | yes |
+| `interactive`, `chat`, `cron`, `-q` | 1-4 | yes |
 | `-z` | task prompt instead of 1, then 2-3, then delegated rules | no |
 | `child` (subagent) | its agent type's prompt instead of 1, then 2-3, then delegated rules | no |
 
@@ -309,7 +313,7 @@ merge is the one running.
   > Workers here can run at any time. A request sent while a worker is busy
   > waits in a queue, and the relay result says when it will run (for
   > example "after the current turn"). Tell the user exactly that. At a
-  > terminal, the user can take a worker over with /pickup.
+  > terminal, the user can take a worker over with /resume.
 
   or, with hours (ricky and markets: 20:00 to 07:00):
 
@@ -317,42 +321,42 @@ merge is the one running.
   > those hours, or while a worker is busy, waits in a queue, and the relay
   > result says when it will run (for example "queued until 20:00" or "after
   > the current turn"). Tell the user exactly that; don't promise it sooner.
-  > At a terminal, the user can take a worker over with /pickup, which runs
+  > At a terminal, the user can take a worker over with /resume, which runs
   > it at once whatever the hours.
 - The chat is relay-only on every instance: `relay`, `memory`,
   `session_search`, `clarify`, `cronjob`, `todo`, `web_search`, `web_extract`,
   `vision_analyze`, and read/patch/write confined to
   `notes/gateway/`. No terminal, no execute_code, no MCP, no `task`.
   Signal-bound cron gets the same set.
-- `relay send` creates or feeds a `worker` session (top-level, terminal
+- `relay send` creates or feeds a worker (section 3: top-level, terminal
   scope, `model.default`). Worker hours per instance (ricky and markets 20-7);
   outside them, or while the worker is busy, the send queues. The `relay`
   result states exactly when it will run ("queued until 20:00", "after the
   current turn"), fiona passes that on, and `relay list` and the TUI session
-  list show the same status. A TUI `/pickup` makes the TUI the worker's driver
+  list show the same status. A TUI `/resume` makes the TUI the session's driver
   and overrides the hours.
-- A worker and a terminal session are the same thing (owner, 2026-11-05):
-  on a single-user instance `relay` drives the user's interactive sessions
-  too. `relay list` shows the ten most recent, with kind and cwd, and a send
-  continues the session itself, with its own prompt, history, model and
-  directory. The first send takes it on (`Owner`, so it survives a restart):
-  whenever no terminal drives it, it acts as a worker of that chat, so its
-  turns report back, its approvals and questions go to the chat, and its queue
-  runs. `relay detach` lets it go. The chat and the terminal are one person
-  here, and someone writing from the chat is not at the terminal they left
-  open, so within worker hours a send takes any session from an attached
-  terminal, even mid-turn: waiting approvals move to the chat, and the TUI
-  closes and prints who took it and how to take it back. A turn a terminal runs
-  is not reported. A TUI that loses the driver role to anyone closes the same
-  way. A turn outlives its terminal, so `/quit` asks what becomes of a running
-  one. `/handoff` is the same thing from the terminal's end: it gives the session
-  to the chat used last, tells fiona, and closes the TUI.
+- On a single-user instance `relay` drives any session, not just the ones it
+  started. `relay list` shows the ten most recent idle ones and every busy one,
+  with its cwd, and a send continues the session itself, with its own prompt,
+  history, model and directory. The first send takes it on (`Owner`, so it
+  survives a restart): whenever no terminal drives it, its turns report back,
+  its approvals and questions go to the chat, and its queue runs. `relay detach`
+  lets it go. The chat and the terminal are one person here, and someone
+  writing from the chat is not at the terminal they left open, so within worker
+  hours a send takes any session from an attached terminal, even mid-turn:
+  waiting approvals move to the chat, and the TUI closes and prints who took it
+  and how to take it back. A turn a terminal runs is not reported. A TUI that
+  loses the driver role to anyone closes the same way. A turn outlives its
+  terminal, so `/quit` asks what becomes of a running one. `/handoff` is the
+  same thing from the terminal's end: it gives the session to the chat used
+  last, tells fiona, and closes the TUI.
 - `new_in` is refused while a session the chat may drive has a turn running in
   that directory's workspace (the git root): two agents in one repository undo
   each other's work.
 - Shared instances (house, ricky, markets): a chat sees and drives only the
-  workers it started, and `session_search` from a chat sees only that chat's
-  sessions plus common ones.
+  sessions it started, it keeps hearing of them while a terminal drives them,
+  and `session_search` from a chat sees only that chat's sessions plus common
+  ones.
 
 ## 13. Cron
 
@@ -405,7 +409,7 @@ serving every instance until the last one migrates.
    `/cancel`, `/sendnow`, `/sendall`, `/perm`, `/compact`).
 3. **Memory, recall, `session_search`, compaction, titles.**
 4. **Subagents** (section 9), daemon and TUI.
-5. **Signal, fiona, relay workers, `/pickup`, worker hours.**
+5. **Signal, fiona, relay workers, worker hours.**
 6. **Cron.**
 7. **MCP, LSP, web, vision, execute_code, foreign import.**
 8. **Nix modules, importer, migration** one instance at a time: markets,

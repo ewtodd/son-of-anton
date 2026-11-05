@@ -226,6 +226,9 @@ UPDATE schema_version SET version = 15;`,
 	ended           TEXT
 );
 UPDATE schema_version SET version = 16;`,
+	// v17: a worker is an interactive session a chat owns.
+	`UPDATE sessions SET kind = 'interactive' WHERE kind = 'worker';
+UPDATE schema_version SET version = 17;`,
 }
 
 func migrate(db *sql.DB) error {
@@ -291,9 +294,9 @@ type Session struct {
 	Chat  string
 	// Agent is a child session's subagent type ("explore"); "" otherwise.
 	Agent string
-	// Owner is the chat stamp that started a worker session, or that took on
-	// an interactive one; "" otherwise. It is not Chat: the wall reads Chat,
-	// and a worker is common.
+	// Owner is the chat stamp that started an interactive session or took it
+	// on: a chat drives it whenever no terminal does. "" otherwise. It is not
+	// Chat: the wall reads Chat, and such a session is common.
 	Owner string
 	// Usage is the session's token totals over all its turns; ContextTokens is
 	// what its last request held.

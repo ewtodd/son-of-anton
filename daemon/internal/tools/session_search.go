@@ -36,7 +36,7 @@ const (
 	maxLimit     = 10
 )
 
-var browseKinds = []string{"interactive", "worker", "chat", "oneshot"}
+var browseKinds = []string{"interactive", "chat", "oneshot"}
 
 // sessionSearchTool searches past sessions, behind the wall.
 type sessionSearchTool struct{}

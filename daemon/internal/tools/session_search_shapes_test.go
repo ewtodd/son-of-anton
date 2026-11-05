@@ -60,20 +60,6 @@ func TestResultsSayWhereASessionRanAndWhetherItIsRunning(t *testing.T) {
 	}
 }
 
-func TestBrowseListsWorkersToo(t *testing.T) {
-	sf := sessionSetup(t)
-	w, err := sf.st.CreateSession(ctx, store.Session{Kind: "worker", Title: "A worker"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sf.st.AppendMessages(ctx, w.ID, store.Message{Role: "user", Content: "work"}); err != nil {
-		t.Fatal(err)
-	}
-	if str(browsedFirst(t, sf), "session_id") != w.ID {
-		t.Fatal("a worker is a session like any other")
-	}
-}
-
 // A silent cut read as a reply that had stopped mid-sentence, and it took the
 // end of a task with it.
 func TestACutMessageSaysSoAndCanBeReadToTheEnd(t *testing.T) {
