@@ -175,19 +175,25 @@ The daemon is the only writer of `state.db`. Clients never open it.
 - Compaction: when the context passes a threshold, summarize the head, keep
   the tail, rebuild the system prompt (the one exception to invariant 1).
   Automatic compaction may run again in the same turn after a successful
-  compaction; a failed summary does not retry on every step and keeps a
-  cooldown. A request that fails because the context overflowed (including
-  gufo's HTTP 400 `context_length_exceeded` / "the context is N") learns the
-  stated limit, compacts, and retries; recovery can run again after a request
+  compaction; a failed summary does not retry on every step — it keeps a
+  cooldown and counts against a per-turn cap of failed attempts (a slow step
+  outlasts the cooldown), and nothing to compact counts against neither. A
+  request that fails because the context overflowed (including gufo's HTTP
+  400 `context_length_exceeded` / "the context is N") learns the stated
+  limit, compacts, and retries; recovery can run again after a request
   succeeds, but a request that keeps failing ends the turn.
 - `/model` and `/reasoning` change the model for the next turn; the prompt
   stays byte-stable and the server's prefix cache simply misses once.
   `model.list` carries each model's live `status`/`serving` as maitred
   reports it (status-less endpoints report none and filter nothing); each
   call does one `/models` catalog lookup, and a failed lookup filters nothing
-  without paying the timeout twice. The picker lists only what is served,
-  naming an unloaded model stays valid, a 503 `model_not_loaded` never changes
-  the session's model (the dead-pin fallback stays on 404).
+  without paying the timeout twice — it is remembered briefly, so attach, the
+  chat's outage warning and the models note do not each pay it again. A
+  failed listing is never stored as a status-less one: the provider is
+  re-read once the window expires, and statuses work again without a
+  restart. The picker lists only what is served, naming an unloaded model
+  stays valid, a 503 `model_not_loaded` never changes the session's model
+  (the dead-pin fallback stays on 404).
 - Titles from the auxiliary model.
 - References: `agent/conversation_loop.py`, `agent/turn_context.py`,
   `agent/conversation_compaction.py`, `agent/context_compactor.py`,

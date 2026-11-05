@@ -123,13 +123,76 @@ func TestACatalogFailureIsRememberedBriefly(t *testing.T) {
 	}
 }
 
-// A model that recovers (known again, no longer "unavailable") resets the
-// outage latch, so a later outage warns again.
+// The provider is down when the first session loads: the failed fetch must
+// not be stored as a status-less listing. Once the failure's window expires
+// and the provider is back, statuses and the down warning work — without a
+// restart.
+func TestAFailedMetaFetchDoesNotBlindTheCatalog(t *testing.T) {
+	fake := fakellm.New(t)
+	fake.SetModelsStatus(503)
+	h := newHarness(t, fake, "")
+	c := h.dial()
+	id := c.create(t.TempDir())
+	c.attach(id, "viewer") // load: fetchMeta fails
+
+	// During the outage: no statuses, and the failure is remembered — no
+	// more /models requests.
+	before := fake.ModelRequests()
+	rows := modelRows(t, c, id)
+	for _, row := range rows {
+		if str(row, "status") != "" {
+			t.Fatalf("a failed fetch stores no statuses: %v", row)
+		}
+	}
+	if got := fake.ModelRequests(); got != before {
+		t.Fatalf("/models requests = %d, want %d: the failure is remembered", got, before)
+	}
+
+	// The provider recovers; once the window expires, the catalog refetches.
+	fake.SetModelsStatus(0)
+	modelStatuses(fake, []string{"other-model"}, []string{"test-model"})
+	time.Sleep(5*time.Second + 200*time.Millisecond)
+	rows = modelRows(t, c, id)
+	if str(rowBy(t, rows, "test-model"), "status") != "unavailable" {
+		t.Fatalf("after the recovery, the statuses are back: %v", rows)
+	}
+	c2 := h.dial()
+	c2.attach(id, "viewer")
+	if n := c2.await("notice"); str(n, "text") != "test-model is not being served; pick another model" {
+		t.Fatalf("the down warning works after the recovery: %v", n)
+	}
+}
+
+// A hung /models must not make every chat turn wait: the first turn pays the
+// timeout, and the failure is remembered for the next.
+func TestAChatTurnDoesNotWaitOnAHungModelsListing(t *testing.T) {
+	fake := fakellm.New(t,
+		fakellm.Turn{Content: "one"},
+		fakellm.Turn{Content: "two"},
+	)
+	fake.SetModels("test-model", "other-model")
+	fake.SetModelsDelay(6 * time.Second) // past workerModels' 5 s timeout
+	r := newChatRig(t, fake, "")
+
+	r.say("hi")
+	r.reply(sigGroup, "one")
+
+	start := time.Now()
+	r.say("again")
+	r.reply(sigGroup, "two")
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("the second turn waited %v; the failed listing is remembered", elapsed)
+	}
+}
+
+// A model that recovers — reported serving again, or a listing that reports
+// no statuses — resets the outage latch, so a later outage warns again.
 func TestARecoveredModelWarnsAgainWhenItFallsBackDown(t *testing.T) {
 	fake := fakellm.New(t,
 		fakellm.Turn{Content: "one"},
 		fakellm.Turn{Content: "two"},
 		fakellm.Turn{Content: "three"},
+		fakellm.Turn{Content: "four"},
 	)
 	modelStatuses(fake, []string{"other-model"}, []string{"test-model"})
 	r := newChatRig(t, fake, "")
@@ -149,6 +212,12 @@ func TestARecoveredModelWarnsAgainWhenItFallsBackDown(t *testing.T) {
 	r.say("third")
 	r.reply(sigGroup, "three")
 
+	// A listing with no statuses clears the latch too, without warning.
+	time.Sleep(10*time.Second + 200*time.Millisecond)
+	fake.SetModels("test-model", "other-model")
+	r.say("fourth")
+	r.reply(sigGroup, "four")
+
 	warnings := 0
 	for _, m := range r.sig.Sends() {
 		if m.Text == "test-model is not being served; pick another model" {
@@ -157,6 +226,43 @@ func TestARecoveredModelWarnsAgainWhenItFallsBackDown(t *testing.T) {
 	}
 	if warnings != 2 {
 		t.Fatalf("chat warnings = %d; one per outage, and a recovery clears the latch", warnings)
+	}
+}
+
+// An outage that changes state — the model reported "loading" — is the same
+// outage: the latch stays, and the warning does not repeat.
+func TestALoadingStatusKeepsTheOutageLatch(t *testing.T) {
+	fake := fakellm.New(t,
+		fakellm.Turn{Content: "one"},
+		fakellm.Turn{Content: "two"},
+		fakellm.Turn{Content: "three"},
+	)
+	modelStatuses(fake, []string{"other-model"}, []string{"test-model"})
+	r := newChatRig(t, fake, "")
+	r.say("hi") // test-model is unavailable: warns.
+	r.replyLike(sigGroup, "test-model is not being served; pick another model")
+	r.reply(sigGroup, "one")
+
+	// It goes "loading": the outage is ongoing, the latch stays.
+	time.Sleep(10*time.Second + 200*time.Millisecond)
+	fake.SetModelMeta("test-model", map[string]any{"status": "loading"})
+	r.say("again")
+	r.reply(sigGroup, "two")
+
+	// Unavailable again, in the same outage: no second warning.
+	time.Sleep(10*time.Second + 200*time.Millisecond)
+	modelStatuses(fake, []string{"other-model"}, []string{"test-model"})
+	r.say("third")
+	r.reply(sigGroup, "three")
+
+	warnings := 0
+	for _, m := range r.sig.Sends() {
+		if m.Text == "test-model is not being served; pick another model" {
+			warnings++
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("chat warnings = %d; a loading model is the same outage", warnings)
 	}
 }
 

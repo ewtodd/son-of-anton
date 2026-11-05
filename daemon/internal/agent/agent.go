@@ -518,6 +518,7 @@ func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onE
 	// future (a fast phone clock) and never goes back over an earlier row's
 	// (a queued message stored late).
 	began := time.Now()
+	s.turnStarted()
 	var total Result
 	first := true
 	retried := false
@@ -555,11 +556,12 @@ func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onE
 	}
 	for {
 		// A long transcript is compacted before the request. A failed summary
-		// sets the cooldown, so it does not retry on every step; nothing to
-		// compact sets no cooldown, so a later step that has stored rows
-		// enough to compact can still run it. A successful compaction may be
-		// followed by another in the same turn when the threshold is crossed
-		// again.
+		// sets the cooldown and counts against the turn's cap of failed
+		// attempts, so a slow step that outlasts the cooldown does not retry
+		// on every step; nothing to compact sets neither, so a later step
+		// that has stored rows enough to compact can still run it. A
+		// successful compaction may be followed by another in the same turn
+		// when the threshold is crossed again.
 		if s.autoDue() {
 			if s.autoCompact(reqCtx, emit) {
 				if msgs, err = s.build(ctx, pending()); err != nil {

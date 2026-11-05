@@ -305,16 +305,26 @@ func windowText(n int) string {
 // counts as live), less relay.hidden_models, sorted. nil when the list cannot
 // be fetched. It reads /models directly — not through the catalog — because
 // the catalog stops refreshing an endpoint that reports no statuses, and the
-// models note must keep following the listing.
+// models note must keep following the listing. A failed fetch is remembered
+// in metaFail, so a chat turn during an outage does not each pay the timeout.
 func (s *Server) workerModels() []string {
 	ep, err := s.cfg.Endpoint("")
 	if err != nil {
+		return nil
+	}
+	s.metaMu.Lock()
+	failed := time.Since(s.metaFail[ep.BaseURL]) < catalogFailTTL
+	s.metaMu.Unlock()
+	if failed {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(s.base, 5*time.Second)
 	infos, err := provider.New(ep.BaseURL, ep.APIKey).ModelInfo(ctx)
 	cancel()
 	if err != nil {
+		s.metaMu.Lock()
+		s.metaFail[ep.BaseURL] = time.Now()
+		s.metaMu.Unlock()
 		return nil
 	}
 	for i := range infos {

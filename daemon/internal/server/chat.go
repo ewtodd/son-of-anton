@@ -214,20 +214,23 @@ func (o *outbox) run(ctx context.Context) {
 }
 
 // warnDown says once per outage that the chat's model is not being served.
-// After that the chat stays quiet until the model is reported not down again
-// — serving, or an endpoint that no longer says — or the chat's model
-// changes. A failed lookup says nothing: it must not clear the outage
-// warning, or a blip repeats the warning during the outage.
+// After that the chat stays quiet until the model is reported serving again,
+// or a listing arrives that reports no statuses — or the chat's model
+// changes. A failed lookup, and any other status ("loading", ...), says
+// nothing: the outage is ongoing, and the warning must not repeat.
 func (h *chatHub) warnDown(cs *chatState, model string) {
 	s := h.srv
 	st, known := s.modelStatus(model)
 	switch {
 	case !known:
 		return
-	case st != "unavailable":
+	case st == "serving" || st == "":
 		cs.mu.Lock()
 		cs.downWarned = ""
 		cs.mu.Unlock()
+		return
+	case st != "unavailable":
+		// an ongoing outage in another state: the latch stays
 		return
 	}
 	cs.mu.Lock()

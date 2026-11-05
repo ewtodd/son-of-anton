@@ -88,6 +88,7 @@ type Server struct {
 	modelRequests int
 	modelsStatus  int           // when set, /v1/models answers with this status
 	modelsDelay   time.Duration // when set, /v1/models sleeps this long first
+	mux           *http.ServeMux
 
 	embedStatus int        // when set, /v1/embeddings answers with this status
 	embedCalls  [][]string // the inputs of every embeddings request
@@ -97,15 +98,19 @@ type Server struct {
 func New(t testing.TB, turns ...Turn) *Server {
 	t.Helper()
 	s := &Server{t: t, turns: turns}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", s.handle)
-	mux.HandleFunc("/v1/models", s.handleModels)
-	mux.HandleFunc("/v1/embeddings", s.handleEmbeddings)
-	srv := httptest.NewServer(mux)
+	s.mux = http.NewServeMux()
+	s.mux.HandleFunc("/v1/chat/completions", s.handle)
+	s.mux.HandleFunc("/v1/models", s.handleModels)
+	s.mux.HandleFunc("/v1/embeddings", s.handleEmbeddings)
+	srv := httptest.NewServer(s.mux)
 	t.Cleanup(srv.Close)
 	s.URL = srv.URL + "/v1"
 	return s
 }
+
+// Handler is the fake's http.Handler, for a test that serves it behind its
+// own middleware.
+func (s *Server) Handler() http.Handler { return s.mux }
 
 // Count is the number of requests received so far.
 func (s *Server) Count() int {
@@ -369,6 +374,7 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	s.modelRequests++
 	status := s.modelsStatus
+	delay := s.modelsDelay
 	data := make([]any, 0, len(s.models))
 	for _, id := range s.models {
 		entry := map[string]any{"id": id, "object": "model"}
@@ -377,10 +383,10 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 		}
 		data = append(data, entry)
 	}
-	if d := s.modelsDelay; d > 0 {
-		time.Sleep(d)
-	}
 	s.mu.Unlock()
+	if delay > 0 { // after the unlock: a slow listing must not block the rest
+		time.Sleep(delay)
+	}
 	if status != 0 {
 		http.Error(w, `{"error":"models unavailable"}`, status)
 		return

@@ -260,8 +260,10 @@ attach.
 - **A chat whose model is down**: chats have no picker, so the warning
   `<model> is not being served; pick another model` is sent as a chat message,
   at most once per outage. It is not repeated every turn; it resets only when
-  the model is reported serving again or when `/model` changes it. A failed
-  status lookup does not clear the outage warning.
+  the model is reported serving again, when a listing arrives that reports no
+  statuses, or when `/model` changes it. A failed status lookup, and any other
+  status ("loading", ...), does not clear the outage warning — the outage is
+  ongoing.
 - **session.set**: `model` must resolve through `config.Endpoint`;
   `reasoning_effort` must be in the model's route list when it has one (empty
   means the configured default); `mode` is one of the four modes. Model and

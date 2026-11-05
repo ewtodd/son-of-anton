@@ -21,6 +21,9 @@ type Compaction struct {
 	ContextLength int              // the model's window; 0 means 256000
 	Client        *provider.Client // the summary model; nil means the session's
 	Model         string           // "" means the session's model
+	// Now is the clock behind the summary cooldown; nil means time.Now.
+	// Tests inject it to move past the cooldown without sleeping.
+	Now func() time.Time
 }
 
 // CompactResult is a finished compaction.
@@ -45,6 +48,10 @@ const (
 	defaultThreshold     = 0.75
 	minTailRows          = 2
 	summaryCooldown      = 60 * time.Second
+	// maxAutoFails bounds the failed automatic summary attempts in one turn:
+	// a slow step outlasts the cooldown, and a failing summarizer must not
+	// stall every step of a long turn.
+	maxAutoFails = 2
 )
 
 var thinkRE = regexp.MustCompile(`(?is)<think>.*?</think>|<thinking>.*?</thinking>|<reasoning>.*?</reasoning>`)
@@ -55,6 +62,7 @@ type compState struct {
 	lastPrompt int // the latest response's prompt_tokens
 	autoOff    bool
 	cooldown   time.Time
+	autoFails  int  // this turn's failed automatic summary attempts
 	afterAuto  bool // the next response judges the last automatic compaction
 	compacting bool
 	client     *provider.Client
@@ -276,13 +284,32 @@ func (s *Session) promptHasSentTimeRule() bool {
 	return strings.Contains(s.prompt, prompt.SentTimeRule)
 }
 
+// now is the clock behind the summary cooldown (Compaction.Now, or
+// time.Now).
+func (s *Session) now() time.Time {
+	if s.runner.Compaction.Now != nil {
+		return s.runner.Compaction.Now()
+	}
+	return time.Now()
+}
+
+// turnStarted resets the per-turn failed-summary count.
+func (s *Session) turnStarted() {
+	s.mu.Lock()
+	s.comp.autoFails = 0
+	s.mu.Unlock()
+}
+
 // autoDue says whether the last response's prompt size calls for automatic
-// compaction before the next request.
+// compaction before the next request. Failed attempts count against the
+// turn's cap, so a slow step that outlasts the cooldown does not retry on
+// every step.
 func (s *Session) autoDue() bool {
 	c := s.runner.Compaction
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !c.Enabled || s.comp.autoOff || time.Now().Before(s.comp.cooldown) || s.comp.lastPrompt <= 0 {
+	if !c.Enabled || s.comp.autoOff || s.comp.autoFails >= maxAutoFails ||
+		s.now().Before(s.comp.cooldown) || s.comp.lastPrompt <= 0 {
 		return false
 	}
 	return float64(s.comp.lastPrompt) >= s.threshold()*float64(s.contextLengthLocked())
@@ -307,8 +334,8 @@ func (s *Session) noteResponse(promptTokens int, emit func(Event)) {
 }
 
 // autoCompact is the compaction before a request. Failing to summarize
-// leaves the transcript alone, warns, and backs automatic compaction off for
-// a minute.
+// leaves the transcript alone, warns, backs automatic compaction off for a
+// minute, and counts against the turn's cap of failed attempts.
 func (s *Session) autoCompact(ctx context.Context, emit func(Event)) bool {
 	_, err := s.compact(ctx, "", true, emit)
 	switch {
@@ -320,7 +347,8 @@ func (s *Session) autoCompact(ctx context.Context, emit func(Event)) bool {
 	case errors.Is(err, ErrNothingToCompact), ctx.Err() != nil:
 	default:
 		s.mu.Lock()
-		s.comp.cooldown = time.Now().Add(summaryCooldown)
+		s.comp.cooldown = s.now().Add(summaryCooldown)
+		s.comp.autoFails++
 		s.mu.Unlock()
 		emit(Event{Kind: "warning", Text: "Compaction failed, continuing without it: " + err.Error()})
 	}

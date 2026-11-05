@@ -16,18 +16,27 @@ import (
 const metaTimeout = 3 * time.Second
 
 // fetchMeta reads the provider's /models once per base URL (force: again),
-// remembering each model's context length. An unreachable provider is
-// remembered as having none until the next refresh.
+// remembering each model's context length. A failed fetch stores nothing —
+// an empty listing is not a valid status-less one — and is remembered in
+// metaFail, so the catalog's negative cache works and later loads do not
+// each pay the timeout.
 func (s *Server) fetchMeta(ctx context.Context, ep config.Endpoint, force bool) {
 	s.metaMu.Lock()
 	_, have := s.meta[ep.BaseURL]
+	failed := time.Since(s.metaFail[ep.BaseURL]) < catalogFailTTL
 	s.metaMu.Unlock()
-	if have && !force {
+	if (have || failed) && !force {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, metaTimeout)
-	infos, _ := provider.New(ep.BaseURL, ep.APIKey).ModelInfo(ctx)
+	infos, err := provider.New(ep.BaseURL, ep.APIKey).ModelInfo(ctx)
 	cancel()
+	if err != nil {
+		s.metaMu.Lock()
+		s.metaFail[ep.BaseURL] = time.Now()
+		s.metaMu.Unlock()
+		return
+	}
 	s.refreshMeta(ep, infos)
 }
 
@@ -203,7 +212,9 @@ func compactionObjs(cs []store.Compaction) []map[string]any {
 
 // refreshMeta replaces what is known about a provider's models (model.list):
 // each model's context length and its live status ("serving"/"unavailable"/>
-// "" from a server that does not say).
+// "" from a server that does not say). It stores only successful listings
+// and clears the endpoint's remembered failure, since the endpoint just
+// answered.
 func (s *Server) refreshMeta(ep config.Endpoint, infos []provider.ModelInfo) {
 	got := map[string]metaEntry{}
 	for _, m := range infos {
@@ -212,6 +223,7 @@ func (s *Server) refreshMeta(ep config.Endpoint, infos []provider.ModelInfo) {
 	s.metaMu.Lock()
 	s.meta[ep.BaseURL] = got
 	s.metaAt[ep.BaseURL] = time.Now()
+	delete(s.metaFail, ep.BaseURL)
 	s.metaMu.Unlock()
 }
 

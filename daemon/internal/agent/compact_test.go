@@ -9,8 +9,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -468,6 +471,70 @@ func TestAFailedSummaryDoesNotRetryOnEveryStep(t *testing.T) {
 	}
 	if list, _ := st.Compactions(ctx, s.ID()); len(list) != 0 {
 		t.Fatalf("compactions = %+v", list)
+	}
+}
+
+// A slow step can outlast the summary cooldown: the turn's cap on failed
+// attempts bounds the retries, and a new turn starts the count again. Every
+// model request moves the injected clock 121 s (over the 60 s cooldown), so
+// the cooldown expires between steps without a real sleep.
+func TestAFailedSummaryIsBoundedPerTurn(t *testing.T) {
+	st := newStore(t)
+	main := fakellm.New(t,
+		fakellm.Turn{Content: bigAsst, PromptTokens: 100},
+		fakellm.Turn{Content: "B", PromptTokens: 800},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "echo_tool", `{}`)}, PromptTokens: 800},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c2", "echo_tool", `{}`)}, PromptTokens: 800},
+		fakellm.Turn{Content: "done", PromptTokens: 800},
+		fakellm.Turn{Content: "next-done", PromptTokens: 300},
+	)
+	now := time.Now()
+	slow := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			now = now.Add(121 * time.Second)
+			next.ServeHTTP(w, r)
+		})
+	}
+	mainSrv := httptest.NewServer(slow(main.Handler()))
+	t.Cleanup(mainSrv.Close)
+	var auxTries atomic.Int32
+	auxSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		now = now.Add(121 * time.Second)
+		auxTries.Add(1)
+		w.WriteHeader(500)
+		_, _ = w.Write([]byte(`{"error":"down"}`))
+	}))
+	t.Cleanup(auxSrv.Close)
+
+	r := toolRunner(t, st, main, echoTool())
+	r.Client = provider.New(mainSrv.URL+"/v1", "k")
+	r.Client.Retry = provider.RetryPolicy{MaxAttempts: 2, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
+	auxc := provider.New(auxSrv.URL, "k")
+	auxc.Retry = provider.RetryPolicy{MaxAttempts: 1, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
+	r.Compaction = agent.Compaction{Enabled: true, Threshold: 0.75, ContextLength: 1000, Client: auxc, Model: "summarizer",
+		Now: func() time.Time { return now }}
+	s, err := r.NewSession(ctx, "interactive", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	send(t, s, bigUser)
+	send(t, s, "b")
+	res, err := s.Send(ctx, "go", nil)
+	if err != nil || res.Content != "done" {
+		t.Fatalf("a capped summarizer must not fail the turn: %+v, %v", res, err)
+	}
+	// Two failed attempts: the cap. Without it, the third loop top — the
+	// cooldown long expired — would have tried a third.
+	if n := auxTries.Load(); n != 2 {
+		t.Fatalf("summary attempts in the turn = %d, want the cap of 2", n)
+	}
+	// The next turn starts the count again.
+	res, err = s.Send(ctx, "next", nil)
+	if err != nil || res.Content != "next-done" {
+		t.Fatalf("second turn = %+v, %v", res, err)
+	}
+	if n := auxTries.Load(); n != 3 {
+		t.Fatalf("summary attempts after the next turn = %d, want 3: a new turn resets the cap", n)
 	}
 }
 

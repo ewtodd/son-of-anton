@@ -103,12 +103,17 @@ and again at each compaction (never at `Resume`).
   request: the next step of this turn, or the first request of the next turn.
   A successful automatic compaction may be followed by another in the same
   turn when the threshold is crossed again; a failed one does not retry on
-  every step.
+  every step (see below).
 - The first response after an automatic compaction that still reports at
   least the threshold turns automatic compaction off for that session, with a
   warning saying so and suggesting `/compact` with a focus or a new session.
 - A failed summary request leaves the transcript as it is, emits a warning,
   and the turn goes on; automatic compaction then waits 60 seconds (CC:4608).
+  Failed attempts in one turn are capped at two (a new turn starts the count
+  again): a slow step outlasts the cooldown, and a failing summarizer must
+  not stall every step of a long turn. Nothing to compact sets neither the
+  cooldown nor the cap, so a later step in the same turn that has stored rows
+  enough to compact still compacts.
 - A request that fails with `provider.ContextOverflow`: learn the limit if one
   is stated, compact (ignoring the cooldown and the off switch), and retry the
   request once. `ContextOverflow` recognizes HTTP 400 bodies with
