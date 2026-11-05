@@ -143,6 +143,24 @@ wall and leaving out the caller's own session:
 - A walled or missing session: `{"success": false, "error": "session_id not
   found: <id>"}`, identical in every shape.
 
+### What a result owes its reader (2026-11-05)
+
+A chat session has only these results to go on, and it guessed a repo path,
+called a live session interrupted, read a tool's cut as a reply that stopped
+mid-sentence, and repeated one read six times. So:
+
+- Every shape gives `cwd`, `kind` and `state`; browse and discover on each
+  result, read and window in `session_meta`. `state` is what `relay list`
+  reports (running, idle, queued, picked up) and comes from
+  `Env.SessionState`; with none, it is left out. Browse lists workers too.
+- A cut message says so: its text ends `[cut: showing N of M characters; for the
+  rest pass around_message_id S, content_offset K]`. `content_offset` with
+  `around_message_id` reads that message alone from character K.
+- `session_id` + `query` (mode `session_query`) searches that session and gives
+  `matches`, `anchor_seq` and the window around the best one.
+- `session_id` alone refuses `window` and `detail: full` instead of ignoring
+  them, and a read that leaves messages out says which, in `omitted`.
+
 ## server
 
 - Sessions run with `Env.Store`, `Env.SessionID` and, when recall is on,

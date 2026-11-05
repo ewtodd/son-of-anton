@@ -87,6 +87,8 @@ type Runner struct {
 	MemoryApproval bool
 	// SearchMessages adds meaning-based matches to session_search (nil: off).
 	SearchMessages tools.MessageSearch
+	// SessionState gives session_search each session's state (tools.Env.SessionState).
+	SessionState func(ctx context.Context, id string) string
 	// WallChat walls session_search to one chat (tools.Env.WallChat).
 	WallChat string
 	// Web configures web_search and web_extract (tools.Env.Web).
@@ -671,7 +673,7 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emitEvent func(Event), maxChars int) []store.Message {
 	base := tools.Env{Policy: s.policy, Sandbox: s.sandbox, CommandHome: s.runner.CommandHome, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
 		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval,
-		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, WallChat: s.runner.WallChat, Web: s.runner.Web, MCP: s.runner.MCP,
+		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, SessionState: s.runner.SessionState, WallChat: s.runner.WallChat, Web: s.runner.Web, MCP: s.runner.MCP,
 		Vision: s.runner.Vision, LSP: s.runner.LSP, NoScripts: s.runner.NoScripts, Cron: s.runner.Cron, Relay: s.runner.Relay}
 	var emitMu sync.Mutex
 	emit := func(e Event) {

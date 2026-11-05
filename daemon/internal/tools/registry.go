@@ -50,6 +50,9 @@ type Env struct {
 	Store          *store.Store
 	SessionID      string
 	SearchMessages MessageSearch
+	// SessionState says what a session is doing now, as relay list reports
+	// it (nil: no daemon to ask, and results leave it out).
+	SessionState func(ctx context.Context, id string) string
 	// WallChat walls a gateway caller to one chat's sessions and the common
 	// ones; "" lets it read every session.
 	WallChat string

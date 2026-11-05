@@ -36,7 +36,7 @@ const (
 	maxLimit     = 10
 )
 
-var browseKinds = []string{"interactive", "chat", "oneshot"}
+var browseKinds = []string{"interactive", "worker", "chat", "oneshot"}
 
 // sessionSearchTool searches past sessions, behind the wall.
 type sessionSearchTool struct{}
@@ -50,10 +50,13 @@ func (sessionSearchTool) Schema() provider.Tool {
 			"something doesn't exist from this search alone.\n\n" +
 			"Shapes:\n" +
 			"- query: find sessions. The best match comes with its opening and closing messages and the messages around the hit; the others with just the matching message.\n" +
-			"- session_id + around_message_id: read a window around one message. To scroll, pass the window's last (forward) or first (backward) message id.\n" +
-			"- session_id alone: read a whole session (the first 20 and last 10 messages if long).\n" +
-			"- no arguments: list recent sessions.\n\n" +
-			"Query words are ANDed; use OR, \"quoted phrases\", NOT and prefix* as needed.",
+			"- session_id + query: find messages inside that session and read around the best one.\n" +
+			"- session_id + around_message_id: read a window around one message. To scroll, pass the window's last (forward) or first (backward) message id. A message that ends in a [cut: ...] note continues with content_offset.\n" +
+			"- session_id alone: read a whole session (the first 20 and last 10 messages if long). window and detail do not apply here.\n" +
+			"- no arguments: list recent sessions, newest first. Use this, not a query, to find the most recent one.\n\n" +
+			"Query words are ANDed; use OR, \"quoted phrases\", NOT and prefix* as needed.\n\n" +
+			"Results give a session's cwd (the directory it ran in) and its state: running, idle, queued, or picked up (a terminal is driving it). " +
+			"A running session is still working, however long ago its last message was.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -64,6 +67,7 @@ func (sessionSearchTool) Schema() provider.Tool {
     "session_id": {"type": "string", "description": "Session to read, from a search result."},
     "around_message_id": {"type": "integer", "description": "Message id to center the window on, e.g. a result's match seq."},
     "window": {"type": "integer", "description": "Messages on each side of the anchor (1-20, default 5)."},
+    "content_offset": {"type": "integer", "description": "With around_message_id: read only that message, from this character on. A [cut: ...] note gives the number."},
     "role_filter": {"type": "string", "description": "Comma-separated roles to search; default 'user,assistant'. Add 'tool' to include tool output."}
   }
 }`),
@@ -128,25 +132,36 @@ func (sessionSearchTool) Run(ctx context.Context, env *Env, raw json.RawMessage)
 		sr.roleSet[r] = true
 	}
 
-	sid := argStr(in, "session_id")
+	sid, query := argStr(in, "session_id"), argStr(in, "query")
 	anchor, hasAnchor := argInt(in, "around_message_id")
+	offset, _ := argInt(in, "content_offset")
+	w, hasWindow := argInt(in, "window")
+	if !hasWindow {
+		w = 5
+	}
+	window := int(min(max(w, 1), 20))
+	limit, ok := argInt(in, "limit")
+	if !ok {
+		limit = defaultLimit
+	}
+	limit = min(max(limit, 1), maxLimit)
 	switch {
 	case sid != "" && hasAnchor:
-		w, ok := argInt(in, "window")
-		if !ok {
-			w = 5
-		}
-		return sr.window(ctx, sid, anchor, int(min(max(w, 1), 20)))
+		return sr.window(ctx, sid, anchor, window, int(max(offset, 0)))
+	case offset > 0:
+		return searchFail("content_offset needs a session_id and around_message_id.")
+	case sid != "" && query != "":
+		return sr.inSession(ctx, sid, query, window, int(limit), argStr(in, "sort"))
 	case sid != "":
+		if hasWindow || argStr(in, "detail") == "full" {
+			return searchFail("session_id alone reads the first 20 and last 10 messages of a long session; window and detail do not change that. " +
+				"To read the rest, pass around_message_id (any seq), or query to find a message inside the session.")
+		}
 		return sr.read(ctx, sid)
 	case hasAnchor:
 		return searchFail("around_message_id needs a session_id.")
-	case argStr(in, "query") != "":
-		limit, ok := argInt(in, "limit")
-		if !ok {
-			limit = defaultLimit
-		}
-		return sr.discover(ctx, argStr(in, "query"), int(min(max(limit, 1), maxLimit)), argStr(in, "sort"), argStr(in, "detail") == "full")
+	case query != "":
+		return sr.discover(ctx, query, int(limit), argStr(in, "sort"), argStr(in, "detail") == "full")
 	}
 	return sr.browse(ctx)
 }
@@ -171,17 +186,24 @@ func notFound(id string) (string, error) { return searchFail("session_id not fou
 
 func stamp(t time.Time) string { return t.Format(time.RFC3339) }
 
-func cut(s string, max int) string {
-	if r := []rune(s); len(r) > max {
-		return string(r[:max])
+// cut is at most max characters of a message's text, from character from. A
+// cut says so and how to go on: a text that just stops reads as one its author
+// never finished.
+func cut(m store.Message, from, max int) string {
+	r := []rune(m.Content)
+	total := len(r)
+	r = r[min(from, total):]
+	if len(r) <= max {
+		return string(r)
 	}
-	return s
+	return fmt.Sprintf("%s\n[cut: showing %d of %d characters; for the rest pass around_message_id %d, content_offset %d]",
+		string(r[:max]), max, total, m.Seq, from+max)
 }
 
 // msgObj is {seq, role, content, ts}; an assistant row with tool calls ends
 // with "[called <name>, <name>]".
-func msgObj(m store.Message, max int) map[string]any {
-	content := cut(m.Content, max)
+func msgObj(m store.Message, from, max int) map[string]any {
+	content := cut(m, from, max)
 	if m.Role == "assistant" && len(m.ToolCalls) > 0 {
 		var calls []struct {
 			Function struct {
@@ -208,9 +230,24 @@ func (sr *searcher) objs(ms []store.Message, max int, skip map[int64]bool) []map
 		if !sr.roleSet[m.Role] || skip[m.Seq] {
 			continue
 		}
-		out = append(out, msgObj(m, max))
+		out = append(out, msgObj(m, 0, max))
 	}
 	return out
+}
+
+// addState adds what the daemon says the session is doing now.
+func (sr *searcher) addState(ctx context.Context, m map[string]any, id string) {
+	if sr.env.SessionState != nil {
+		m["state"] = sr.env.SessionState(ctx, id)
+	}
+}
+
+// meta is what a reader needs to act on a session: where it ran and whether
+// it still runs.
+func (sr *searcher) meta(ctx context.Context, s store.Session) map[string]any {
+	m := map[string]any{"title": s.Title, "kind": s.Kind, "model": s.Model, "cwd": s.Cwd, "started_at": stamp(s.Created)}
+	sr.addState(ctx, m, s.ID)
+	return m
 }
 
 func (sr *searcher) browse(ctx context.Context) (string, error) {
@@ -223,8 +260,10 @@ func (sr *searcher) browse(ctx context.Context) (string, error) {
 		if s.Session.ID == sr.env.SessionID || len(results) == browseMax {
 			continue
 		}
-		results = append(results, map[string]any{"session_id": s.Session.ID, "title": s.Session.Title, "kind": s.Session.Kind,
-			"started_at": stamp(s.Session.Created), "last_active": stamp(s.Updated), "message_count": s.Messages, "preview": s.Preview})
+		entry := map[string]any{"session_id": s.Session.ID, "title": s.Session.Title, "kind": s.Session.Kind, "cwd": s.Session.Cwd,
+			"started_at": stamp(s.Session.Created), "last_active": stamp(s.Updated), "message_count": s.Messages, "preview": s.Preview}
+		sr.addState(ctx, entry, s.Session.ID)
+		results = append(results, entry)
 	}
 	return jsonResult(map[string]any{"success": true, "mode": "browse", "results": results, "count": len(results)})
 }
@@ -242,14 +281,16 @@ func (sr *searcher) read(ctx context.Context, id string) (string, error) {
 		return searchFail("reading the session failed: " + err.Error())
 	}
 	shown := sr.objs(all, contentMax, nil)
-	total, truncated := len(shown), false
+	total := len(shown)
+	res := map[string]any{"success": true, "mode": "read", "session_id": id, "session_meta": sr.meta(ctx, s),
+		"message_count": total, "truncated": total > readAll}
 	if total > readAll {
+		res["omitted"] = fmt.Sprintf("%d messages between seq %v and seq %v are not shown: read them with around_message_id, or find one with query.",
+			total-readAll, shown[readHead-1]["seq"], shown[total-readTail]["seq"])
 		shown = append(shown[:readHead:readHead], shown[total-readTail:]...)
-		truncated = true
 	}
-	return jsonResult(map[string]any{"success": true, "mode": "read", "session_id": id,
-		"session_meta":  map[string]any{"title": s.Title, "kind": s.Kind, "model": s.Model, "started_at": stamp(s.Created)},
-		"message_count": total, "truncated": truncated, "messages": shown})
+	res["messages"] = shown
+	return jsonResult(res)
 }
 
 // around returns the rows from anchor-w to anchor+w and whether the anchor
@@ -269,10 +310,14 @@ func (sr *searcher) around(ctx context.Context, id string, anchor int64, w int) 
 	return append(before, after...), true, nil
 }
 
-func (sr *searcher) window(ctx context.Context, id string, anchor int64, w int) (string, error) {
-	if _, ok, err := sr.readable(ctx, id); err != nil {
+// window reads around one message; a content offset reads on in that message
+// alone.
+func (sr *searcher) window(ctx context.Context, id string, anchor int64, w, offset int) (string, error) {
+	s, ok, err := sr.readable(ctx, id)
+	if err != nil {
 		return searchFail("reading the session failed: " + err.Error())
-	} else if !ok {
+	}
+	if !ok {
 		return notFound(id)
 	}
 	rows, ok, err := sr.around(ctx, id, anchor, w)
@@ -282,8 +327,51 @@ func (sr *searcher) window(ctx context.Context, id string, anchor int64, w int) 
 	if !ok {
 		return searchFail(fmt.Sprintf("around_message_id %d is not a message of session %s", anchor, id))
 	}
+	msgs := sr.objs(rows, contentMax, nil)
+	if offset > 0 {
+		msgs = []map[string]any{}
+		for _, m := range rows {
+			if m.Seq != anchor || !sr.roleSet[m.Role] {
+				continue
+			}
+			if n := len([]rune(m.Content)); offset >= n {
+				return searchFail(fmt.Sprintf("content_offset %d is past the end of message %d, which has %d characters", offset, anchor, n))
+			}
+			msgs = append(msgs, msgObj(m, offset, contentMax))
+		}
+	}
 	return jsonResult(map[string]any{"success": true, "mode": "window", "session_id": id, "anchor_seq": anchor,
-		"messages": sr.objs(rows, contentMax, nil)})
+		"session_meta": sr.meta(ctx, s), "messages": msgs})
+}
+
+// inSession finds query inside one session and reads around the best match.
+func (sr *searcher) inSession(ctx context.Context, id, query string, w, limit int, sortBy string) (string, error) {
+	s, ok, err := sr.readable(ctx, id)
+	if err != nil {
+		return searchFail("reading the session failed: " + err.Error())
+	}
+	if !ok {
+		return notFound(id)
+	}
+	hits, err := sr.env.Store.SearchMessages(ctx, store.MessageQuery{Query: query, Caller: sr.caller, Chat: sr.chat, Roles: sr.roles,
+		Sort: sortBy, Session: id, Limit: limit})
+	if err != nil {
+		return searchFail("search failed: " + err.Error())
+	}
+	matches := []map[string]any{}
+	for _, h := range hits {
+		matches = append(matches, map[string]any{"seq": h.Seq, "role": h.Role, "snippet": h.Snippet})
+	}
+	res := map[string]any{"success": true, "mode": "session_query", "query": query, "session_id": id, "session_meta": sr.meta(ctx, s),
+		"count": len(hits), "matches": matches, "messages": []map[string]any{}}
+	if len(hits) > 0 {
+		rows, ok, err := sr.around(ctx, id, hits[0].Seq, w)
+		if err != nil || !ok {
+			return searchFail(fmt.Sprintf("reading around message %d failed: %v", hits[0].Seq, err))
+		}
+		res["anchor_seq"], res["messages"] = hits[0].Seq, sr.objs(rows, contentMax, nil)
+	}
+	return jsonResult(res)
 }
 
 // found is one session in a discover result.
@@ -345,8 +433,9 @@ func (sr *searcher) discover(ctx context.Context, query string, limit int, sortB
 		if sum, err := sr.env.Store.SessionSummary(ctx, f.id); err == nil {
 			last = sum.Updated
 		}
-		res := map[string]any{"session_id": f.id, "title": sess.Title, "started_at": stamp(sess.Created), "last_active": stamp(last),
-			"match": map[string]any{"seq": match.Seq, "role": match.Role, "content": cut(match.Content, contentMax)}}
+		res := map[string]any{"session_id": f.id, "title": sess.Title, "kind": sess.Kind, "cwd": sess.Cwd, "started_at": stamp(sess.Created), "last_active": stamp(last),
+			"match": map[string]any{"seq": match.Seq, "role": match.Role, "content": cut(match, 0, contentMax)}}
+		sr.addState(ctx, res, f.id)
 		if full || len(results) == 0 {
 			head, _, _ := sr.env.Store.MessagesAfter(ctx, f.id, 0, 3)
 			tail, _, _ := sr.env.Store.MessagesBefore(ctx, f.id, 0, 3)

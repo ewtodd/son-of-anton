@@ -45,6 +45,7 @@ type MessageQuery struct {
 	Roles   []string // e.g. user, assistant (and tool when asked)
 	Sort    string   // "" (relevance), "newest", "oldest"
 	Exclude string   // a session id to leave out (the caller's own)
+	Session string   // only this session ("": every session the wall allows)
 	Limit   int
 	// PerSession returns only each session's best hit, so Limit counts sessions
 	// and one session's many matches cannot crowd out the others.
@@ -95,6 +96,10 @@ func (s *Store) searchMessages(ctx context.Context, q MessageQuery, match string
 	if q.Exclude != "" {
 		where += ` AND m.session_id <> ?`
 		args = append(args, q.Exclude)
+	}
+	if q.Session != "" {
+		where += ` AND m.session_id = ?`
+		args = append(args, q.Session)
 	}
 	// key orders best first: the FTS rank, or the row id for a time sort.
 	key := `rank`
