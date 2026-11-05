@@ -79,8 +79,9 @@ directory you name, through her `relay` tool. Workers keep
 over. On a single-user instance it works the other way too: fiona can see your
 terminal sessions and continue one from the chat, in place. If a terminal still
 has it open, that terminal closes and prints how to take the session back.
-Quitting the terminal UI during a turn asks whether to stop the turn or leave
-it running.
+`/handoff` does the same from the terminal: it gives fiona the session, so its
+reports and approvals reach you in Signal. Quitting the terminal UI during a
+turn asks whether to stop the turn or leave it running.
 
 fiona runs on `gateway.model` (here maitred's `fiona` route: whatever eklow
 serves) and falls back to `model.default` when it is down. Each message tells

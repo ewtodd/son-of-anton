@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const maxPickRows = 14
+const maxPickRows = 15
 
 type pickRow struct {
 	key, label, desc string

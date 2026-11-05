@@ -386,7 +386,7 @@ func (s *Server) relay(ctx context.Context, stamp string, raw json.RawMessage) s
 			}
 			detached = true
 		}
-		if w.Kind == "interactive" && w.Owner == stamp {
+		if w.Kind == "interactive" {
 			if err := s.st.SetOwner(ctx, w.ID, ""); err != nil {
 				return relayFail(err.Error())
 			}
@@ -426,6 +426,57 @@ func (s *Server) chatWorkers(ctx context.Context, stamp, workspace string) ([]st
 		}
 	}
 	return out, nil
+}
+
+// claim gives a session nobody has taken on to the chat, and says which chat
+// has it.
+func (s *Server) claim(ctx context.Context, stamp string, w store.Session) (string, error) {
+	if w.Owner != "" {
+		return w.Owner, nil
+	}
+	return stamp, s.st.SetOwner(ctx, w.ID, stamp)
+}
+
+// handoff gives a terminal's session to the chat used last: relay send from
+// the other end. The terminal leaves next, and its leaving gives the chat the
+// session's approvals, questions and queue, as with any picked-up worker.
+func (s *Server) handoff(ctx context.Context, l *live) (any, *rpcError) {
+	if s.chats == nil || !s.cfg.Gateway.SingleUser {
+		return nil, errf(codeBadParams, "handing off needs Signal on a single-user instance")
+	}
+	chats, err := s.st.ListSessions(ctx, []string{"chat"}, 1)
+	if err != nil {
+		return nil, errf(codeInternal, "%v", err)
+	}
+	if len(chats) == 0 {
+		return nil, errf(codeBadParams, "there is no Signal chat to hand off to yet: message fiona first")
+	}
+	stamp := chats[0].Session.Chat
+	w, err := s.st.Session(ctx, l.id)
+	if err != nil {
+		return nil, errf(codeInternal, "%v", err)
+	}
+	owner, err := s.claim(ctx, stamp, w)
+	if err == nil {
+		err = s.st.SetRelayBinding(ctx, stamp, l.id)
+	}
+	if err != nil {
+		return nil, errf(codeInternal, "%v", err)
+	}
+	cs := s.chats.state(owner)
+	l.takeOn(cs)
+	l.mu.Lock()
+	state, title := "idle", l.title
+	if l.running || l.compacting {
+		state = "running"
+	}
+	l.mu.Unlock()
+	if title == "" {
+		title = workerUntitled
+	}
+	text := fmt.Sprintf("[worker %s (%s) handed to this chat from the terminal; it is %s]", title, l.id, state)
+	cs.work.push(func() { cs.hub.notify(cs, text) })
+	return map[string]any{"session": l.id}, nil
 }
 
 // runningIn finds a session the chat may drive with a turn running in dir's
@@ -620,11 +671,9 @@ func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) str
 		}
 		id = w.ID
 		if w.Kind == "interactive" {
-			if owner = w.Owner; owner == "" {
-				owner = stamp
-				if err := s.st.SetOwner(ctx, id, owner); err != nil {
-					return relayFail(err.Error())
-				}
+			var err error
+			if owner, err = s.claim(ctx, stamp, w); err != nil {
+				return relayFail(err.Error())
 			}
 		}
 	}

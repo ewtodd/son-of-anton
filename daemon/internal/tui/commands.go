@@ -222,6 +222,16 @@ func (m *model) command(name, args, line string) tea.Cmd {
 			}
 			return "", errNote("no worker " + args)
 		}, true, name)
+	case "handoff":
+		return call(c, 15*time.Second, "session.handoff", map[string]any{"session": sid}, nil,
+			func(m *model, err error) tea.Cmd {
+				if err != nil {
+					fail(m, err)
+					return nil
+				}
+				m.exitNote = handoffNote(sid)
+				return m.quit(false)
+			})
 	case "commit":
 		return call(c, 30*time.Second, "command.run", map[string]any{"session": sid, "name": "commit", "args": args}, nil,
 			func(m *model, err error) tea.Cmd {

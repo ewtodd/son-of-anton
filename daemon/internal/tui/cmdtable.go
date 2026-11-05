@@ -17,6 +17,7 @@ var cmdTable = []cmdDef{
 	{"clear", nil, "", "Open a new session and wipe the screen", "Session"},
 	{"resume", []string{"sessions"}, "[id]", "Go back to an earlier session", "Session"},
 	{"pickup", nil, "[id or title]", "Attach to a worker session fiona launched", "Session"},
+	{"handoff", nil, "", "Give this session to fiona and leave the TUI", "Session"},
 	{"commit", nil, "[extra instructions]", "Look over the uncommitted changes, write a commit message that fits the repo, and commit", "Session"},
 	{"compact", nil, "[focus topic | --preview]", "Condense older turns into a summary to make room (--preview only reports what would happen)", "Session"},
 	{"stop", nil, "", "Stop every background process", "Session"},

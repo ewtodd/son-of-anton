@@ -138,6 +138,13 @@ instance's chats still see only the workers they started.
   again.
 - `new_in` is refused while a session the chat may drive has a turn running in
   that directory's workspace, naming the session to send to instead.
+- `/handoff` (`session.handoff`, driver only) is the same from the terminal's
+  end: it gives the session to the chat used last, sends fiona a notice saying
+  whether it is running, and the TUI closes and prints how to take it back. The
+  terminal leaving gives the chat the session's approvals, questions and queue.
+  An instance has one Signal group, so there is no chat to choose, but one
+  group can have several stamps, one per sender: any chat may let a terminal
+  session go, not only the stamp that took it on.
 
 ## README
 

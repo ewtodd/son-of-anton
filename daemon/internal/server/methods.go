@@ -41,7 +41,7 @@ func (s *Server) dispatch(c *conn, req *request) (any, *rpcError) {
 	case "physics.run", "physics.list", "physics.watch", "physics.stop", "physics.resume":
 		return s.physicsMethod(c, req, bad)
 	case "turn.send", "turn.interrupt", "queue.steer", "queue.remove", "queue.clear",
-		"approval.answer", "question.answer", "session.set", "command.run":
+		"approval.answer", "question.answer", "session.set", "command.run", "session.handoff":
 	default:
 		return nil, errf(codeNoMethod, "unknown method %q", req.Method)
 	}
@@ -187,6 +187,8 @@ func (s *Server) driverMethod(c *conn, l *live, req *request, bad func(error) (a
 		return sendResult(l.send(p.Text, p.Mode))
 	case "turn.interrupt":
 		return map[string]any{"interrupted": l.interrupt()}, nil
+	case "session.handoff":
+		return s.handoff(s.base, l)
 	case "queue.steer":
 		var p struct {
 			All bool `json:"all"`

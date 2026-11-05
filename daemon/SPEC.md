@@ -345,7 +345,8 @@ merge is the one running.
   closes and prints who took it and how to take it back. A turn a terminal runs
   is not reported. A TUI that loses the driver role to anyone closes the same
   way. A turn outlives its terminal, so `/quit` asks what becomes of a running
-  one.
+  one. `/handoff` is the same thing from the terminal's end: it gives the session
+  to the chat used last, tells fiona, and closes the TUI.
 - `new_in` is refused while a session the chat may drive has a turn running in
   that directory's workspace (the git root): two agents in one repository undo
   each other's work.

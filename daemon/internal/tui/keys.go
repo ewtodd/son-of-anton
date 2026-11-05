@@ -228,6 +228,12 @@ func lostDriverNote(by, id string) string {
 		"To take it back: son-of-anton -r " + id
 }
 
+// handoffNote is what the terminal shows after /handoff.
+func handoffNote(id string) string {
+	return "Handed session " + id + " to fiona, who will report in Signal.\n" +
+		"To take it back: son-of-anton -r " + id
+}
+
 // leave quits, asking first what becomes of a running turn. A viewer is only
 // watching someone else's, so there is nothing to ask.
 func (m *model) leave() tea.Cmd {
