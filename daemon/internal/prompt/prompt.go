@@ -26,6 +26,13 @@ var guidanceFile string
 // Guidance is the tool and behavior guidance layer.
 var Guidance = strings.TrimSpace(guidanceFile)
 
+// SentTimeRule marks the guidance's send-time rule: a prompt carries the rule
+// that explains a stamped user message when it contains this. A session
+// stamps its user messages only while its prompt carries the rule (a resumed
+// session keeps its stored prompt until compaction rebuilds it, and a
+// --system one-shot's prompt is whatever the file says).
+const SentTimeRule = "[Day YYYY-MM-DD HH:MM ZONE]"
+
 const (
 	defaultRulesLimit = 6000
 	contextMax        = 40_000

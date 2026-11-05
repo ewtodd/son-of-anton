@@ -170,6 +170,29 @@ func TestSystemFileIsTheWholePrompt(t *testing.T) {
 	}
 }
 
+// A --system prompt is the whole prompt: without the send-time rule, the
+// switch is on but no prefix goes out, so scripted input stays plain.
+func TestSystemPromptWithoutTheRuleGetsNoSendTimePrefix(t *testing.T) {
+	for _, cmd := range []string{"oneshot", "query"} {
+		fake := fakellm.New(t, fakellm.Turn{Content: "ok"})
+		home := testHome(t, fake, "You are fiona-test.")
+		withRules(t, home)
+		sys := filepath.Join(t.TempDir(), "sys.md")
+		if err := os.WriteFile(sys, []byte("Only this.\nNothing else.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code, _, errOut := runIn(t, cmd, "--home", home, "--system", sys, "go"); code != 0 {
+			t.Fatalf("%s: exit %d: %s", cmd, code, errOut)
+		}
+		var m struct {
+			Role, Content string
+		}
+		if err := json.Unmarshal(fake.Messages(0)[1], &m); err != nil || m.Role != "user" || m.Content != "go" {
+			t.Fatalf("%s --system: user message = %s, want the plain text (the prompt lacks the rule)", cmd, fake.Messages(0)[1])
+		}
+	}
+}
+
 func TestOneshotSessionAndClarify(t *testing.T) {
 	fake := fakellm.New(t,
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "clarify", Arguments: `{"question":"Which one?","choices":["a","b"]}`}}},

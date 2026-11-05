@@ -91,12 +91,15 @@ The daemon is the only writer of `state.db`. Clients never open it.
 2. **Replay what was sent.** Anything injected into a user turn (recall,
    timestamps, gateway notes) is persisted with the message (`api_content`)
    and replayed byte for byte on every later request. When
-   `[agent] message_timestamps` is on (the default), the turn's user message
-   starts with its send time, `[Sat 2026-10-24 14:32 CDT]`, in
-   `prompt.LocalZone`; the stored content stays clean. It is rendered once at
-   that turn and persisted, so a later zone change does not rewrite history.
-   A Signal message uses its own timestamp; a queued one carries it through
-   the queue.
+   `[agent] message_timestamps` is on (the default) *and* the session's system
+   prompt carries the guidance's send-time rule, the turn's user message starts
+   with its send time, `[Sat 2026-10-24 14:32 CDT]`, in `prompt.LocalZone`;
+   the stored content stays clean. The rule is in the stock prompt, so a
+   resumed session that predates it stays unstamped until compaction rebuilds
+   the prompt, and a `--system` one-shot whose prompt lacks the rule gets no
+   prefix. It is rendered once at that turn and persisted, so a later zone
+   change does not rewrite history. A Signal message uses its own timestamp; a
+   queued one carries it through the queue.
 3. **Role alternation.** Never two same-role messages in a row; never a
    synthetic user message injected mid-loop.
 4. **Interrupt is not yield.** Interrupt stops the turn and records it;
@@ -137,8 +140,9 @@ The daemon is the only writer of `state.db`. Clients never open it.
   display layer).
 - On attach the daemon replays the transcript from `from_seq` (paged), then
   streams live events. If the session's model is reported unavailable, only
-  the attaching client gets the warning; the bounded catalog lookup runs after
-  the session lock is released so it never stalls streaming.
+  the attaching client gets the warning; the bounded catalog lookup runs on a
+  short-lived goroutine after the session lock is released, so it never stalls
+  streaming nor the connection's read loop.
 
 ## 6. Data
 
@@ -208,9 +212,13 @@ Per-turn recall rides the user message, never the system prompt. The turn's
 user message also carries its send time in the API copy (`api_content`), not
 the stored content: `[Sat 2026-10-24 14:32 CDT]` in `prompt.LocalZone`, rendered
 once per turn and replayed unchanged. `[agent] message_timestamps` turns it off
-(default on). The guidance says a message starting with `[Day YYYY-MM-DD HH:MM
-ZONE]` was sent at that time; a later time is known only if the model can run
-`date`, so fiona (who has no terminal) must not guess it. The Go daemon has no
+(default on), and it goes out only while the session's prompt carries the rule
+that explains the stamp, so a prompt that lacks it (`--system`, a pre-rule
+session before its next compaction) gets no prefix. The guidance says a
+message starting with `[Day YYYY-MM-DD HH:MM ZONE]` — or carrying one right
+after a compaction summary — was sent at that time; a later time is known only
+if the model can run `date`, so fiona (who has no terminal) must not guess it.
+The Go daemon has no
 multimodal user message: Signal attachments are text lines with saved paths, and
 images are read through `vision_analyze`. If a multimodal user message is used,
 the stamp would be a leading text part.

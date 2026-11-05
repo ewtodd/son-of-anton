@@ -110,13 +110,7 @@ func TestCtrlEnterSendsTheDraftNow(t *testing.T) {
 	if fake.Count() != 2 {
 		t.Fatalf("%d requests", fake.Count())
 	}
-	req := fake.Request(1)
-	msgs, _ := req["messages"].([]any)
-	last, _ := msgs[len(msgs)-1].(map[string]any)
-	content, _ := last["content"].(string)
-	if last["role"] != "user" || !strings.Contains(content, "two") {
-		t.Fatalf("the draft is not in the next request: %s", fake.Bodies()[1])
-	}
+	exactUser(t, fake, 1, "two")
 }
 
 func TestCtrlEnterWithNoDraftSendsTheOldestQueued(t *testing.T) {
@@ -138,13 +132,7 @@ func TestCtrlEnterWithNoDraftSendsTheOldestQueued(t *testing.T) {
 	if fake.Count() != 3 {
 		t.Fatalf("%d requests", fake.Count())
 	}
-	req := fake.Request(1)
-	msgs, _ := req["messages"].([]any)
-	last, _ := msgs[len(msgs)-1].(map[string]any)
-	content, _ := last["content"].(string)
-	if last["role"] != "user" || !strings.Contains(content, "two") || strings.Contains(content, "three") {
-		t.Fatalf("the oldest alone goes first: %s", fake.Bodies()[1])
-	}
+	exactUser(t, fake, 1, "two") // the oldest alone goes first
 }
 
 func TestCtrlEnterOverACompletionListIsEnter(t *testing.T) {

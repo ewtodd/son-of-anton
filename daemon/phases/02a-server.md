@@ -252,10 +252,11 @@ attach.
 - **session.attach**: if the session's model is reported `unavailable`, the
   attaching client gets a `notice` (`level: warning`), exactly
   `<model> is not being served; pick another model`; a serving model is quiet
-  and other attached clients are not warned again. The bounded lookup runs
-  after the session lock is released, so attaching does not stall streaming.
-  `modelStatus` distinguishes a failed lookup (`known: false`) from a
-  status-less model.
+  and other attached clients are not warned again. The bounded lookup runs on
+  a short-lived goroutine after the session lock is released, so attaching
+  does not stall streaming nor the connection's read loop (the next request on
+  the connection does not wait for the catalog). `modelStatus` distinguishes a
+  failed lookup (`known: false`) from a status-less model.
 - **A chat whose model is down**: chats have no picker, so the warning
   `<model> is not being served; pick another model` is sent as a chat message,
   at most once per outage. It is not repeated every turn; it resets only when

@@ -33,6 +33,11 @@ const statusTTL = 10 * time.Second
 // opening the picker or attaching for more than a short timeout.
 const catalogTimeout = 2 * time.Second
 
+// catalogFailTTL is how long a failed catalog fetch is remembered, so the
+// callers (attach, the chat's outage warning, model.list, the models note)
+// do not each pay the catalog timeout again during an outage.
+const catalogFailTTL = 5 * time.Second
+
 // modelRoutes is every model name a session may be set to, with its
 // reasoning efforts (nil for none known); the configured routes plus what the
 // provider's /models lists. It carries no filtering: naming an unloaded model
@@ -56,8 +61,10 @@ func addCatalogRoutes(routes map[string][]string, infos []provider.ModelInfo) {
 }
 
 // catalog is the provider's /models listing for the default endpoint, with
-// its reported statuses, refreshed when they are older than statusTTL. It
-// fails open: a failed or status-less request gives no filtering at all.
+// its reported statuses (normalized, as lowerStatus gives them), refreshed
+// when they are older than statusTTL. It fails open: a failed or status-less
+// request gives no filtering at all, and a failed fetch is remembered for
+// catalogFailTTL so the callers do not each pay the timeout again.
 func (s *Server) catalog() ([]provider.ModelInfo, bool) {
 	ep, err := s.cfg.Endpoint("")
 	if err != nil {
@@ -73,6 +80,7 @@ func (s *Server) catalog() ([]provider.ModelInfo, bool) {
 		}
 	}
 	stale := reports && time.Since(s.metaAt[ep.BaseURL]) > statusTTL
+	failed := time.Since(s.metaFail[ep.BaseURL]) < catalogFailTTL
 	s.metaMu.Unlock()
 	if have && !stale {
 		out := make([]provider.ModelInfo, 0, len(entries))
@@ -80,6 +88,9 @@ func (s *Server) catalog() ([]provider.ModelInfo, bool) {
 			out = append(out, provider.ModelInfo{ID: id, ContextLength: e.context, Status: e.status})
 		}
 		return out, true
+	}
+	if failed {
+		return nil, false
 	}
 	return s.fetchCatalog(ep)
 }
@@ -89,7 +100,16 @@ func (s *Server) fetchCatalog(ep config.Endpoint) ([]provider.ModelInfo, bool) {
 	defer cancel()
 	infos, err := provider.New(ep.BaseURL, ep.APIKey).ModelInfo(ctx)
 	if err != nil {
+		s.metaMu.Lock()
+		s.metaFail[ep.BaseURL] = time.Now()
+		s.metaMu.Unlock()
 		return nil, false
+	}
+	s.metaMu.Lock()
+	delete(s.metaFail, ep.BaseURL)
+	s.metaMu.Unlock()
+	for i := range infos {
+		infos[i].Status = lowerStatus(infos[i].Status)
 	}
 	s.refreshMeta(ep, infos)
 	return infos, true
@@ -283,7 +303,9 @@ func windowText(n int) string {
 // workerModels are the models a chat may hand a worker: what the provider
 // lists as live now (maitred's status "serving"; an entry without a status
 // counts as live), less relay.hidden_models, sorted. nil when the list cannot
-// be fetched.
+// be fetched. It reads /models directly — not through the catalog — because
+// the catalog stops refreshing an endpoint that reports no statuses, and the
+// models note must keep following the listing.
 func (s *Server) workerModels() []string {
 	ep, err := s.cfg.Endpoint("")
 	if err != nil {
@@ -294,6 +316,9 @@ func (s *Server) workerModels() []string {
 	cancel()
 	if err != nil {
 		return nil
+	}
+	for i := range infos {
+		infos[i].Status = lowerStatus(infos[i].Status)
 	}
 	s.refreshMeta(ep, infos)
 	var names []string

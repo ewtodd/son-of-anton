@@ -407,13 +407,10 @@ func (s *Server) models(params json.RawMessage, bad func(error) (any, *rpcError)
 			current = rec.Model
 		}
 	}
-	// One catalog lookup supplies both the extra route names and the statuses:
-	// a failed lookup must not pay the catalog timeout twice.
-	routes := s.cfg.Routes()
+	// modelRoutes does the catalog lookup once; the call for the statuses is
+	// then a cache hit, so a failed lookup must not pay the timeout twice.
+	routes := s.modelRoutes()
 	cat, ok := s.catalog()
-	if ok {
-		addCatalogRoutes(routes, cat)
-	}
 	names := sortedKeys(routes)
 	// The status comes from the refreshed catalog; a route it does not report,
 	// or an endpoint with no statuses, stays "" (unfiltered).

@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -238,6 +239,29 @@ func terminal(id, cmd string) fakellm.ToolCall {
 func lastMessage(fake *fakellm.Server, i int) string {
 	m := fake.Messages(i)
 	return string(m[len(m)-1])
+}
+
+// sentTimePrefixRE is the form a stamped user message's API copy starts with.
+var sentTimePrefixRE = regexp.MustCompile(`^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2} [^]]+\] `)
+
+// exactUser checks the real wire bytes: the last message of request i is a
+// user message whose content is exactly the send-time prefix followed by
+// text. A doubled or mangled stamp fails.
+func exactUser(t *testing.T, fake *fakellm.Server, i int, text string) {
+	t.Helper()
+	m := fake.Messages(i)
+	var last map[string]any
+	if err := json.Unmarshal(m[len(m)-1], &last); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := last["content"].(string)
+	if last["role"] != "user" {
+		t.Fatalf("the last message of request %d is not a user: %s", i, m[len(m)-1])
+	}
+	prefix := sentTimePrefixRE.FindString(content)
+	if prefix == "" || content != prefix+text {
+		t.Fatalf("the last user message of request %d is %q, want the send-time prefix followed exactly by %q", i, content, text)
+	}
 }
 
 func TestATurnStreamsIntoTheFeed(t *testing.T) {
@@ -763,7 +787,5 @@ func TestEnterDuringAToolGoesInOnceItEnds(t *testing.T) {
 	if fake.Count() != 2 {
 		t.Fatalf("%d requests; the tool's result and the message go in one request", fake.Count())
 	}
-	if last := lastMessage(fake, 1); !strings.Contains(last, "two") {
-		t.Fatalf("the request after the tool ends %s", last)
-	}
+	exactUser(t, fake, 1, "two")
 }

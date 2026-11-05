@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 // ToolCall is a tool call the scripted assistant makes.
@@ -85,7 +86,8 @@ type Server struct {
 	models        []string
 	meta          map[string]map[string]any
 	modelRequests int
-	modelsStatus  int // when set, /v1/models answers with this status
+	modelsStatus  int           // when set, /v1/models answers with this status
+	modelsDelay   time.Duration // when set, /v1/models sleeps this long first
 
 	embedStatus int        // when set, /v1/embeddings answers with this status
 	embedCalls  [][]string // the inputs of every embeddings request
@@ -356,6 +358,13 @@ func (s *Server) SetModelsStatus(status int) {
 	s.mu.Unlock()
 }
 
+// SetModelsDelay makes GET /v1/models sleep d before answering (0 restores it).
+func (s *Server) SetModelsDelay(d time.Duration) {
+	s.mu.Lock()
+	s.modelsDelay = d
+	s.mu.Unlock()
+}
+
 func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
 	s.modelRequests++
@@ -367,6 +376,9 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 			entry[k] = v
 		}
 		data = append(data, entry)
+	}
+	if d := s.modelsDelay; d > 0 {
+		time.Sleep(d)
 	}
 	s.mu.Unlock()
 	if status != 0 {

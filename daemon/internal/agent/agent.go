@@ -81,6 +81,10 @@ type Runner struct {
 	// MessageTimestamps prefixes each user message's API copy with its send
 	// time, "[Sat 2026-10-24 14:32 CDT]", in the host's zone; the stored
 	// content stays clean. Off by default when a Runner is built by hand.
+	// A stamp goes out only while the session's prompt carries the rule that
+	// explains it (prompt.SentTimeRule): a resumed session's stored prompt
+	// keeps the stamp out until compaction rebuilds the prompt, and a
+	// --system prompt may lack the rule altogether.
 	MessageTimestamps bool
 	// Recall returns the block of remembered facts and notes relevant to a
 	// turn's text, "" for none; nil for lean runs.
@@ -482,9 +486,12 @@ func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onE
 
 	// What recall returns for this turn rides the user message, stored with it
 	// so every later request replays the same bytes. The send time is rendered
-	// once here, before any injections, and persisted with the same bytes.
+	// once here, before any injections, and persisted with the same bytes —
+	// only while the session's prompt carries the rule that explains the
+	// stamp (a resumed session's stored prompt may predate the rule, and a
+	// --system prompt may lack it).
 	apiText := text
-	if r.MessageTimestamps {
+	if r.MessageTimestamps && s.promptHasSentTimeRule() {
 		apiText = prompt.FormatSentAt(sentAt) + " " + text
 	}
 	if r.Recall != nil {
@@ -506,13 +513,14 @@ func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onE
 	if err != nil {
 		return Result{}, err
 	}
-	// began stamps the user message with its send time, so the turn's span
-	// starts where the user sent it even though its first step is stored whole
-	// when the step ends.
-	began := sentAt
+	// began is the turn's start: the user row's ts. The send time itself is
+	// the stamp in api_content; the row keeps a time that is never in the
+	// future (a fast phone clock) and never goes back over an earlier row's
+	// (a queued message stored late).
+	began := time.Now()
 	var total Result
 	first := true
-	autoTried, retried := false, false
+	retried := false
 	// pending is the user message not yet stored.
 	pending := func() string {
 		if first {
@@ -546,14 +554,14 @@ func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onE
 		return ctx.Err()
 	}
 	for {
-		// A long transcript is compacted before the request. A successful
-		// compaction may be followed by another in the same turn; a failed one
-		// stays marked so it does not retry on every step (and the cooldown
-		// keeps it from running on the next turn).
-		if !autoTried && s.autoDue() {
-			autoTried = true
+		// A long transcript is compacted before the request. A failed summary
+		// sets the cooldown, so it does not retry on every step; nothing to
+		// compact sets no cooldown, so a later step that has stored rows
+		// enough to compact can still run it. A successful compaction may be
+		// followed by another in the same turn when the threshold is crossed
+		// again.
+		if s.autoDue() {
 			if s.autoCompact(reqCtx, emit) {
-				autoTried = false
 				if msgs, err = s.build(ctx, pending()); err != nil {
 					return closeTurn(store.Message{Role: "assistant", Content: FailedText}, err)
 				}

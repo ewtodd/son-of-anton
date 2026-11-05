@@ -340,10 +340,25 @@ func unifiedDiff(path, old, new string) string {
 		if ops[i] == ' ' {
 			continue
 		}
-		// Extent of this change run.
+		// Extent of this change run, extended over every later run that is
+		// less than 2*ctx of unchanged lines away: those share one hunk, and
+		// emitting them separately would duplicate the context in between.
 		j := i
 		for j < len(ops) && ops[j] != ' ' {
 			j++
+		}
+		for {
+			k := j
+			for k < len(ops) && ops[k] == ' ' {
+				k++
+			}
+			if k >= len(ops) || k-j >= 2*ctx {
+				break
+			}
+			for k < len(ops) && ops[k] != ' ' {
+				k++
+			}
+			j = k
 		}
 		lo, hi := i-ctx, j+ctx
 		if lo < 0 {
@@ -385,26 +400,11 @@ func unifiedDiff(path, old, new string) string {
 		}
 		hunks = append(hunks, hunk{oldStart + 1, oldCount, newStart + 1, newCount, body})
 		i = j - 1
-		// Merge overlapping context of adjacent hunks.
-	}
-	// Merge hunks whose context overlaps.
-	var merged []hunk
-	for _, h := range hunks {
-		if len(merged) > 0 {
-			p := &merged[len(merged)-1]
-			if h.oldStart <= p.oldStart+p.oldCount+ctx*2 {
-				p.body = append(p.body, h.body...)
-				p.oldCount += h.oldCount
-				p.newCount += h.newCount
-				continue
-			}
-		}
-		merged = append(merged, h)
 	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "--- a/%s\n+++ b/%s\n", path, path)
-	for _, h := range merged {
+	for _, h := range hunks {
 		fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@\n", h.oldStart, h.oldCount, h.newStart, h.newCount)
 		for _, l := range h.body {
 			b.WriteString(l)

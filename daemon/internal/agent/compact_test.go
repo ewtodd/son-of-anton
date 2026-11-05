@@ -6,6 +6,8 @@ package agent_test
 // the kept rows, byte-stable from then on.
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -399,6 +401,73 @@ func TestAutomaticCompactionRunsAgainAfterASuccessfulOne(t *testing.T) {
 	list, _ := st.Compactions(ctx, s.ID())
 	if len(list) != 2 || list[0].Summary != "SUM-ONE" || list[1].Summary != "SUM-TWO" {
 		t.Fatalf("stored compactions = %+v", list)
+	}
+}
+
+// A turn can start over the threshold with nothing to compact (every row
+// fits the kept tail): the first attempt sets no cooldown, because there was
+// no failure, so when the tool steps have stored rows enough to compact, a
+// later step runs it.
+func TestNothingToCompactAtTurnStartCompactsOnALaterStep(t *testing.T) {
+	st := newStore(t)
+	main := fakellm.New(t,
+		fakellm.Turn{Content: "B", PromptTokens: 800},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "big_tool", `{}`)}, PromptTokens: 800},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c2", "big_tool", `{}`)}, PromptTokens: 800},
+		fakellm.Turn{Content: "done", PromptTokens: 300},
+	)
+	aux := fakellm.New(t, fakellm.Turn{Content: "SUM"})
+	big := &fakeTool{name: "big_tool", run: func(context.Context, json.RawMessage) string {
+		return `{"x":"` + strings.Repeat("x", 300) + `"}`
+	}}
+	r := withCompaction(toolRunner(t, st, main, big), aux)
+	s, _ := r.NewSession(ctx, "interactive", t.TempDir())
+	send(t, s, "hi")
+	res, err := s.Send(ctx, "go", nil)
+	if err != nil || res.Content != "done" {
+		t.Fatalf("turn = %+v, %v", res, err)
+	}
+	if aux.Count() != 1 {
+		t.Fatalf("summary requests = %d; the later step compacts, even though the turn started with nothing to compact", aux.Count())
+	}
+	got := full(t, main.Messages(3))
+	if roles(got) != "system,user,assistant,tool" {
+		t.Fatalf("after the mid-turn compaction: %s", roles(got))
+	}
+	if !strings.HasPrefix(got[1].Content, summaryPrefix) || !strings.Contains(got[1].Content, "SUM") || !strings.Contains(got[1].Content, summaryEnd) {
+		t.Fatalf("the summary block leads the kept tail: %q", got[1].Content)
+	}
+	if list, _ := st.Compactions(ctx, s.ID()); len(list) != 1 || list[0].Summary != "SUM" {
+		t.Fatalf("stored compactions = %+v", list)
+	}
+}
+
+// A summary that keeps failing sets the cooldown, so the turn's later steps
+// do not retry it on every step.
+func TestAFailedSummaryDoesNotRetryOnEveryStep(t *testing.T) {
+	st := newStore(t)
+	main := fakellm.New(t,
+		fakellm.Turn{Content: bigAsst, PromptTokens: 100},
+		fakellm.Turn{Content: "B", PromptTokens: 800},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "echo_tool", `{}`)}, PromptTokens: 800},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c2", "echo_tool", `{}`)}, PromptTokens: 800},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c3", "echo_tool", `{}`)}, PromptTokens: 800},
+		fakellm.Turn{Content: "done", PromptTokens: 300},
+	)
+	aux := fakellm.New(t, fakellm.Turn{Status: 500, Body: "down"})
+	r := withCompaction(toolRunner(t, st, main, echoTool()), aux)
+	s, _ := r.NewSession(ctx, "interactive", t.TempDir())
+	send(t, s, bigUser)
+	send(t, s, "b")
+	res, err := s.Send(ctx, "go", nil)
+	if err != nil || res.Content != "done" {
+		t.Fatalf("a failed summary must not fail the turn: %+v, %v", res, err)
+	}
+	if aux.Count() != 1 {
+		t.Fatalf("summary requests = %d; a failed summary waits out the cooldown, it does not retry on every step", aux.Count())
+	}
+	if list, _ := st.Compactions(ctx, s.ID()); len(list) != 0 {
+		t.Fatalf("compactions = %+v", list)
 	}
 }
 

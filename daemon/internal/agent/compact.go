@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 )
@@ -262,6 +263,17 @@ func (s *Session) promptText() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.prompt
+}
+
+// promptHasSentTimeRule says whether the session's system prompt carries the
+// guidance's send-time rule: a user message is stamped with its send time
+// only while the rule that explains the stamp is in the prompt. A resumed
+// session keeps its stored prompt until compaction rebuilds it, and a
+// --system one-shot's prompt is whatever the file says.
+func (s *Session) promptHasSentTimeRule() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.Contains(s.prompt, prompt.SentTimeRule)
 }
 
 // autoDue says whether the last response's prompt size calls for automatic

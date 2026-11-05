@@ -720,8 +720,9 @@ var errUnloaded = errors.New("session was unloaded")
 
 // attach registers c and replies (through reply, under the lock, so the
 // response precedes every later event) with the history; then the live tail.
-// The model-status lookup runs after the lock is released, so a bounded
-// catalog request never stalls this session's streaming.
+// The model-status lookup runs after the lock is released and on a
+// short-lived goroutine, so a bounded catalog request never stalls this
+// session's streaming nor this connection's read loop.
 func (l *live) attach(c *conn, driver bool, afterSeq *int64, limit int, reply func(any)) error {
 	model, err := l.attachLocked(c, driver, afterSeq, limit, reply)
 	if err != nil {
@@ -729,9 +730,12 @@ func (l *live) attach(c *conn, driver bool, afterSeq *int64, limit int, reply fu
 	}
 	// Only the attaching client is told: an existing viewer must not learn
 	// its session's model is down again just because another client attached.
-	if st, known := l.srv.modelStatus(model); known && st == "unavailable" {
-		c.send(eventLine(map[string]any{"session": l.id, "kind": "notice", "level": "warning", "text": downText(model)}))
-	}
+	// The notice is queued behind the attach reply, which was sent first.
+	go func() {
+		if st, known := l.srv.modelStatus(model); known && st == "unavailable" {
+			c.send(eventLine(map[string]any{"session": l.id, "kind": "notice", "level": "warning", "text": downText(model)}))
+		}
+	}()
 	return nil
 }
 

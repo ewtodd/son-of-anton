@@ -14,6 +14,33 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/fakellm"
 )
 
+// A fresh /models fetch normalizes statuses the same way a cache hit does:
+// maitred's "Unavailable" and "Serving " read as "unavailable" and "serving".
+func TestAFreshFetchNormalizesMaitredStatuses(t *testing.T) {
+	fake := fakellm.New(t)
+	fake.SetModels("test-model", "other-model")
+	fake.SetModelMeta("test-model", map[string]any{"status": "Unavailable"})
+	fake.SetModelMeta("other-model", map[string]any{"status": "Serving "})
+	h := newHarness(t, fake, "")
+	c := h.dial()
+	id := c.create(t.TempDir())
+
+	rows := modelRows(t, c, id)
+	down := rowBy(t, rows, "test-model")
+	if str(down, "status") != "unavailable" || boolField(down, "serving") {
+		t.Fatalf("a fresh fetch normalizes \"Unavailable\": %v", down)
+	}
+	up := rowBy(t, rows, "other-model")
+	if str(up, "status") != "serving" || !boolField(up, "serving") {
+		t.Fatalf("a fresh fetch normalizes \"Serving \": %v", up)
+	}
+	// A cache hit within the TTL answers the same.
+	rows = modelRows(t, c, id)
+	if str(rowBy(t, rows, "test-model"), "status") != "unavailable" || str(rowBy(t, rows, "other-model"), "status") != "serving" {
+		t.Fatalf("the cache hit disagrees with the fresh fetch: %v", rows)
+	}
+}
+
 func modelStatuses(fake *fakellm.Server, serving, unavailable []string) {
 	ids := append(append([]string(nil), serving...), unavailable...)
 	fake.SetModels(ids...)
