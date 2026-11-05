@@ -863,7 +863,8 @@ func errorJSON(msg string) string {
 
 // toWireMessage converts a stored transcript row into the wire form it was
 // sent in: user messages replay api_content when present, assistant
-// messages keep their tool calls, reasoning is never sent.
+// messages keep their tool calls and their reasoning. All of it goes back,
+// every request, so the prefix stays byte-stable for the prompt cache.
 func toWireMessage(m store.Message) provider.Message {
 	out := provider.Message{Role: m.Role, Content: m.Content}
 	switch m.Role {
@@ -872,6 +873,7 @@ func toWireMessage(m store.Message) provider.Message {
 			out.Content = m.APIContent
 		}
 	case "assistant":
+		out.ReasoningContent = m.Reasoning
 		if len(m.ToolCalls) > 0 {
 			var calls []provider.ToolCall
 			if err := json.Unmarshal(m.ToolCalls, &calls); err == nil {

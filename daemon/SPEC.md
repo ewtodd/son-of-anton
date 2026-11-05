@@ -153,6 +153,10 @@ The daemon is the only writer of `state.db`. Clients never open it.
   streaming, tool calls, `reasoning_content`, `reasoning_effort` per model,
   timeouts, cancellation through `context.Context`, and retry with backoff on
   429/5xx/503 (temple's lesson: an idle-model swap answers 503).
+- A model's reasoning goes back to it (owner, 2026-11-05): every assistant
+  message is replayed with its `reasoning_content`, every request, so the
+  prefix stays byte-stable. Without it each step of a tool loop loses the plan
+  the last one made and works it out again. Compaction counts it.
 - Loop: request → stream → run tool calls → append results → repeat, under an
   iteration budget, with interrupt checks between steps. Tool output is
   truncated to a budget before it enters context.

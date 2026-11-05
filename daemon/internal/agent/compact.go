@@ -97,7 +97,8 @@ func (s *Session) SetSummarizer(c *provider.Client, model string) {
 	s.comp.client, s.comp.model = c, model
 }
 
-// estimateTokens is the characters / 4 estimate, content plus tool calls.
+// estimateTokens is the characters / 4 estimate of what the rows put in a
+// request: content, reasoning and tool calls.
 func estimateTokens(rows []store.Message) int {
 	n := 0
 	for _, m := range rows {
@@ -107,7 +108,7 @@ func estimateTokens(rows []store.Message) int {
 }
 
 func rowChars(m store.Message) int {
-	return utf8.RuneCountInString(m.Content) + len(m.ToolCalls)
+	return utf8.RuneCountInString(m.Content) + utf8.RuneCountInString(m.Reasoning) + len(m.ToolCalls)
 }
 
 // tailStart is the index in rows where the kept tail begins. budgetChars < 0

@@ -211,7 +211,9 @@ func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (R
 - Every request is built from the stored transcript: the system message with
   the stored prompt, then each stored message in order. A user message is
   sent as its `APIContent` when non-empty, else its `Content`. Reasoning is
-  stored but never sent. Model and effort come from the runner.
+  stored and sent back as `reasoning_content` (never sent until the owner
+  changed that on 2026-11-05: SPEC section 7). Model and effort come from the
+  runner.
 - `Send` persists nothing until the model has answered: on success it
   appends the user message (with `APIContent` set to exactly the bytes sent)
   and the assistant message (content and reasoning) in one `AppendMessages`

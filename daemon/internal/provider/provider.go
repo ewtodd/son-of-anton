@@ -24,11 +24,14 @@ import (
 // Message is one conversation message. Its serialization is byte-stable
 // across requests, which keeps the provider's prompt cache valid.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Name       string     `json:"name,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// ReasoningContent is an assistant message's reasoning, sent back to the
+	// model: without it each step of a tool loop loses the plan the last made.
+	ReasoningContent string     `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	Name             string     `json:"name,omitempty"`
 	// Parts, when set, are sent as the content in place of Content (a user
 	// message with an image, for vision_analyze); nothing else uses them.
 	Parts []ContentPart `json:"-"`

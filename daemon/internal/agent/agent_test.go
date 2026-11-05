@@ -243,7 +243,7 @@ func TestTheStoredAPIContentIsWhatGetsReplayed(t *testing.T) {
 	}
 }
 
-func TestDeltasStreamAndReasoningIsStoredButNotReplayed(t *testing.T) {
+func TestDeltasStreamAndReasoningIsStoredAndReplayed(t *testing.T) {
 	st := newStore(t)
 	fake := fakellm.New(t,
 		fakellm.Turn{Content: "abcdef", Reasoning: "hmm", ChunkRunes: 2, PromptTokens: 9, CompletionTokens: 3},
@@ -273,8 +273,8 @@ func TestDeltasStreamAndReasoningIsStoredButNotReplayed(t *testing.T) {
 		t.Fatalf("stored assistant = %+v", msgs[1])
 	}
 	send(t, s, "again")
-	if bytes.Contains(fake.Messages(1)[2], []byte("hmm")) {
-		t.Fatalf("past reasoning went back on the wire: %s", fake.Messages(1)[2])
+	if !bytes.Contains(fake.Messages(1)[2], []byte(`"reasoning_content":"hmm"`)) {
+		t.Fatalf("past reasoning did not go back on the wire: %s", fake.Messages(1)[2])
 	}
 }
 
