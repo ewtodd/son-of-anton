@@ -250,7 +250,7 @@ func TestSurfacesFollowTheTerminal(t *testing.T) {
 
 func TestAModalDimCoversTheWholeFeed(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
+		fakellm.Turn{Content: "the earlier answer stays in the transcript above the dialog", ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
 		fakellm.Turn{Content: "changed it"},
 	)
 	d := newDaemon(t, fake)
@@ -258,35 +258,87 @@ func TestAModalDimCoversTheWholeFeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := open(t, d, tui.Options{Background: "#1e1e2e"})
+	a.Resize(100, 60)
 	send(a, "make it writable")
-	s := waitScreen(t, a, "The agent asks to run a command", "Allow once")
-	checkFrame(t, s, 100, 30)
-	// Textual's modal screen is `$background 60%`: the feed is dimmed, and the
-	// dialog is a card on `$panel`. The card runs from the feed's left edge to
-	// its right edge, so the dim does not reach past it.
-	const dim, card = "48;2;37;37;56", "48;2;44;44;67" // #252538 backdrop, #2c2c43 panel
+	s := waitScreen(t, a, "The agent asks to run a command", "Allow once", "the earlier answer stays")
+	checkFrame(t, s, 100, 60)
+	// Textual's modal screen is `$background 60%`: everything behind the dialog
+	// is dimmed, and the dialog is a card on `$panel`. The card is the dialog's
+	// own width, with dim columns on either side.
+	const dimSeq = "\x1b[48;2;37;37;56m"      // #252538 backdrop
+	const cardSeq = "\x1b[48;2;44;44;67m"     // #2c2c43 panel
+	const mutedSeq = "\x1b[38;2;169;169;169m" // #a9a9a9 text-muted
 	st := a.Styled()
-	if !strings.Contains(st, dim) {
-		t.Fatal("the feed behind the dialog is not on the backdrop colour")
+	if !strings.Contains(st, dimSeq) || !strings.Contains(st, cardSeq) {
+		t.Fatal("no backdrop or dialog card in the styled frame")
 	}
-	if !strings.Contains(st, card) {
-		t.Fatal("the dialog is not on the panel card")
+	// The earlier reply is dimmed but still readable, muted on the backdrop.
+	row := lineWith(st, "the earlier answer stays")
+	if row == "" || !strings.HasPrefix(row, dimSeq+mutedSeq) {
+		t.Fatalf("the earlier reply is not muted on the backdrop: %q", row)
 	}
-	for i, l := range strings.Split(st, "\n") {
-		if strings.Contains(l, "The agent asks") && !strings.Contains(l, "48;2;44;44;67") {
-			t.Fatalf("row %d is not the dialog card: %q", i, l)
-		}
+	if !strings.Contains(s, "the earlier answer stays") {
+		t.Fatal("dimming removed the earlier reply from the screen")
 	}
-	// The card is the dialog box's own width, with the dim on either side:
-	// 100 columns, a 76-wide box, so 12 dim columns at each edge.
-	if got := strings.Split(st, "\n"); !strings.HasPrefix(got[0], "\x1b[48;2;37;37;56") {
-		t.Fatalf("top row is not dimmed: %q", got[0])
+	// On a dialog row: 12 dim columns, then the 76-column card, then 12 dim
+	// columns (100-column screen, 76-wide box).
+	box := lineWith(st, "The agent asks to run a command")
+	if box == "" {
+		t.Fatal("no dialog row")
 	}
-	if strings.Contains(s, "$ chmod 777 f.txt") {
-		t.Fatalf("the feed row is still legible under the dialog:\n%s", s)
+	edge := dimSeq + strings.Repeat(" ", 12) + "\x1b[0m"
+	if !strings.HasPrefix(box, edge+cardSeq) {
+		t.Fatalf("the dialog row's left edge is not 12 dim columns: %q", box)
+	}
+	if !strings.HasSuffix(box, edge) {
+		t.Fatalf("the dialog row's right edge is not 12 dim columns: %q", box)
 	}
 	a.Press("1")
 	waitScreen(t, a, "changed it")
+}
+
+func TestNarrowScreensKeepTheDialog(t *testing.T) {
+	fake := fakellm.New(t,
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
+		fakellm.Turn{Content: "changed it"},
+	)
+	d := newDaemon(t, fake)
+	if err := os.WriteFile(filepath.Join(d.cwd, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := open(t, d, tui.Options{})
+	send(a, "make it writable")
+	waitScreen(t, a, "The agent asks to run a command")
+	for w := 1; w <= 6; w++ {
+		a.Resize(w, 30)
+		scr := a.Screen()
+		if strings.TrimSpace(scr) == "" || len(strings.Split(scr, "\n")) != 30 {
+			t.Fatalf("at %d columns the screen is empty or not 30 rows:\n%q", w, scr)
+		}
+		sty := a.Styled()
+		if strings.TrimSpace(ansiSeq.ReplaceAllString(sty, "")) == "" {
+			t.Fatalf("at %d columns the styled frame is empty", w)
+		}
+	}
+	a.Resize(100, 30)
+	waitScreen(t, a, "The agent asks to run a command", "Allow once")
+	a.Press("1")
+	waitScreen(t, a, "changed it")
+
+	b := open(t, d, tui.Options{})
+	send(b, "/model")
+	waitScreen(t, b, "Switch model  ·  now test-model")
+	for w := 1; w <= 6; w++ {
+		b.Resize(w, 30)
+		scr := b.Screen()
+		if strings.TrimSpace(scr) == "" || len(strings.Split(scr, "\n")) != 30 {
+			t.Fatalf("picker at %d columns: the screen is empty or not 30 rows:\n%q", w, scr)
+		}
+		sty := b.Styled()
+		if strings.TrimSpace(ansiSeq.ReplaceAllString(sty, "")) == "" {
+			t.Fatalf("picker at %d columns: the styled frame is empty", w)
+		}
+	}
 }
 
 func TestARoutedModelReportsTheModelThatAnswered(t *testing.T) {

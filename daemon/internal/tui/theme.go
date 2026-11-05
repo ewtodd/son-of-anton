@@ -193,7 +193,7 @@ func newTheme(r *lipgloss.Renderer, sk skinDef, pal map[string]string) *theme {
 		th.mut = fg(lipgloss.Color(pal["text-muted"]))
 		th.backdrop, th.card = lipgloss.Color(pal["backdrop"]), lipgloss.Color(pal["panel"])
 	} else {
-		th.backdrop = lipgloss.AdaptiveColor{Light: "242", Dark: "233"}
+		th.backdrop = lipgloss.AdaptiveColor{Light: "255", Dark: "233"}
 		th.card = th.panel
 	}
 	var hexes []string
@@ -230,7 +230,6 @@ func (th *theme) paint(line string, c lipgloss.TerminalColor, w int) string {
 	if seq == "" {
 		return line + gap
 	}
-	// A padding column inside a border box is on the card too.
 	return seq + strings.ReplaceAll(line, "\x1b[0m", "\x1b[0m"+seq) + gap + "\x1b[0m"
 }
 

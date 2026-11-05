@@ -452,13 +452,15 @@ func (m *model) overlay(lines []string, cw int) {
 	for i := range lines {
 		lines[i] = m.th.paint(m.th.mut.Render(stripANSI(lines[i])), m.th.backdrop, screen)
 	}
-	start := min(max((len(lines)-len(box))/2, 0), max(len(lines)-len(box), 0))
-	x := max((screen-bw)/2, 0)
+	start := max((len(lines)-len(box))/2, 0)
+	cardW := min(bw, screen)
+	x := max((screen-cardW)/2, 0)
+	right := max(screen-x-cardW, 0)
 	for i, l := range box {
 		if start+i < len(lines) {
 			lines[start+i] = m.th.paint(strings.Repeat(" ", x), m.th.backdrop, x) +
-				m.th.paint(l, m.th.card, bw) +
-				m.th.paint(strings.Repeat(" ", screen-x-bw), m.th.backdrop, screen-x-bw)
+				m.th.paint(ansi.Truncate(l, cardW, ""), m.th.card, cardW) +
+				m.th.paint(strings.Repeat(" ", right), m.th.backdrop, right)
 		}
 	}
 }
