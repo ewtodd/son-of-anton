@@ -6,6 +6,7 @@ package server_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,14 +99,22 @@ func TestATaskRunsAChildAndReturnsItsAnswer(t *testing.T) {
 	}
 }
 
+// rendezvous is a command that says it met other only if other's command is
+// running at the same time; run one after the other, the first gives up. The
+// printf keeps the words it prints out of the command's own text, which the
+// next request also carries.
+func rendezvous(self, other string) string {
+	return fmt.Sprintf(`touch %s.here; for i in $(seq 1 500); do if test -e %s.here; then printf 'met-%%s' %s; break; fi; sleep 0.02; done`, self, other, other)
+}
+
 func TestTasksInOneMessageRunConcurrently(t *testing.T) {
 	fake := fakellm.New(t,
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{
 			task("t1", `{"description":"A","prompt":"do job alpha","subagent_type":"general"}`),
 			task("t2", `{"description":"B","prompt":"do job beta","subagent_type":"general"}`),
 		}},
-		fakellm.Turn{When: "do job alpha", ToolCalls: []fakellm.ToolCall{terminal("a1", "sleep 0.8; echo alpha")}},
-		fakellm.Turn{When: "do job beta", ToolCalls: []fakellm.ToolCall{terminal("b1", "sleep 0.8; echo beta")}},
+		fakellm.Turn{When: "do job alpha", ToolCalls: []fakellm.ToolCall{terminal("a1", rendezvous("alpha", "beta"))}},
+		fakellm.Turn{When: "do job beta", ToolCalls: []fakellm.ToolCall{terminal("b1", rendezvous("beta", "alpha"))}},
 		fakellm.Turn{When: "do job alpha", Content: "alpha done"},
 		fakellm.Turn{When: "do job beta", Content: "beta done"},
 		fakellm.Turn{Content: "both done"},
@@ -114,11 +123,16 @@ func TestTasksInOneMessageRunConcurrently(t *testing.T) {
 	c := h.dial()
 	parent := c.create(t.TempDir())
 	c.attach(parent, "driver")
-	start := time.Now()
 	c.send(parent, "do both")
 	evs := c.turn()
-	if took := time.Since(start); took > 1400*time.Millisecond {
-		t.Fatalf("two children with 0.8s of work each took %v; they run together", took)
+	var sent strings.Builder
+	for _, b := range fake.Bodies() {
+		sent.Write(b)
+	}
+	for _, met := range []string{"met-alpha", "met-beta"} {
+		if !strings.Contains(sent.String(), met) {
+			t.Fatalf("no %s: two children in one message run together", met)
+		}
 	}
 	rows := toolRows(evs)
 	if len(rows) != 2 || !strings.Contains(rows[0], "alpha done") || !strings.Contains(rows[1], "beta done") {
