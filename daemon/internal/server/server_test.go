@@ -733,12 +733,44 @@ func TestABackgroundNoticeStartsATurn(t *testing.T) {
 	c.send(id, "run it")
 	evs := c.turns(2)
 	starts := of(evs, "turn.start")
-	if len(starts) != 2 || !strings.Contains(str(starts[1], "text"), "[Process ") || !strings.Contains(str(starts[1], "text"), "bgdone") {
-		t.Fatalf("a completion notice starts a turn: %v", starts)
+	if len(starts) != 2 || !strings.Contains(str(starts[1], "text"), "[background receipt]") ||
+		!strings.Contains(str(starts[1], "text"), "exited with code 0") || !strings.Contains(str(starts[1], "text"), "bgdone") {
+		t.Fatalf("a completion notice starts a turn as a tagged receipt: %v", starts)
 	}
 	last := wire(t, fake, 2)
 	if !strings.Contains(str(last[len(last)-1], "content"), "bgdone") {
 		t.Fatalf("the notice is the turn's user message: %v", last[len(last)-1])
+	}
+}
+
+func TestBackgroundReceiptsArriveAsOneTurn(t *testing.T) {
+	// Two background jobs end while the session is mid-turn: one receipt
+	// turn carries both, not a turn each.
+	rel := make(chan struct{})
+	fake := fakellm.New(t,
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{
+			call("c1", "terminal", `{"command":"sleep 1; echo alpha done","background":true,"notify_on_complete":true}`),
+			call("c2", "terminal", `{"command":"sleep 1; echo beta done","background":true,"notify_on_complete":true}`),
+		}},
+		fakellm.Turn{Content: "started both", Release: rel},
+		fakellm.Turn{Content: "collected both"},
+	)
+	h := newHarness(t, fake, "")
+	c := h.dial()
+	id := c.create(t.TempDir())
+	c.attach(id, "driver")
+	c.send(id, "run both")
+	c.await("turn.start")
+	time.Sleep(1500 * time.Millisecond) // both jobs end while the turn still runs
+	close(rel)
+	c.turn() // the held reply ends; the receipts queue behind it
+	evs := c.turns(1)
+	if n := len(of(evs, "turn.start")); n != 1 {
+		t.Fatalf("two receipts made %d turns, want one: %v", n, evs)
+	}
+	text := str(of(evs, "turn.start")[0], "text")
+	if strings.Count(text, "[background receipt]") != 2 || !strings.Contains(text, "alpha done") || !strings.Contains(text, "beta done") {
+		t.Fatalf("the receipt turn = %q", text)
 	}
 }
 

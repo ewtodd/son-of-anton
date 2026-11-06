@@ -348,12 +348,27 @@ func (l *live) next() {
 	if err != nil || len(items) == 0 {
 		return
 	}
-	if err := l.srv.st.QueueRemove(context.Background(), l.id, items[0].ID); err != nil {
+	// Leading receipts run as one turn: queued background notices ride
+	// together instead of one turn each. A user or step item still runs
+	// alone, at its own front.
+	take := items[:1]
+	for len(take) < len(items) && items[len(take)].Kind == "notice" && items[0].Kind == "notice" {
+		take = items[:len(take)+1]
+	}
+	ids := make([]string, len(take))
+	for i, it := range take {
+		ids[i] = it.ID
+	}
+	text := take[0].Text
+	for _, it := range take[1:] {
+		text += "\n\n" + it.Text
+	}
+	if err := l.srv.st.QueueRemove(context.Background(), l.id, ids...); err != nil {
 		l.emit("notice", map[string]any{"level": "error", "text": "taking the next queued message: " + err.Error()})
 		return
 	}
 	l.emitQueue()
-	l.startTurnAt(items[0].Text, queueSentAt(items[0]), items[0].Images)
+	l.startTurnAt(text, queueSentAt(take[0]), take[0].Images)
 }
 
 // send is turn.send (and /commit): start with the current time. Returns
@@ -535,17 +550,16 @@ func (l *live) shutdown() {
 	l.mu.Unlock()
 }
 
-// drainNotices turns background completion notices into turns or queue items.
+// drainNotices turns background completion notices into one turn or queue
+// item: receipts that arrive together ride together, not a turn each.
 func (l *live) drainNotices() {
 	texts := l.sess.TakeNotifications()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.closing || l.unloaded {
+	if l.closing || l.unloaded || len(texts) == 0 {
 		return
 	}
-	for _, t := range texts {
-		l.noticeLocked(t)
-	}
+	l.noticeLocked(strings.Join(texts, "\n\n"))
 }
 
 // noticeLocked runs text as a turn if the session is idle, else queues it.

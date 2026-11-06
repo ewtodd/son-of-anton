@@ -143,6 +143,15 @@ The daemon is the only writer of `state.db`. Clients never open it.
   the attaching client gets the warning; the bounded catalog lookup runs on a
   short-lived goroutine after the session lock is released, so it never stalls
   streaming nor the connection's read loop.
+- **Background receipts** (owner, 2026-11-06). A `notify_on_complete`
+  background process ends in a receipt the daemon composes and tags:
+  `[background receipt] process <id> exited with code <N>`, then the command
+  and the output tail. The stock prompt carries the rule that a message
+  starting with it is a daemon report, not the user's voice, answered
+  tersely. Receipts that arrive together run as one turn, whether drained at
+  once or queued while the session was busy: the batch drives at most one
+  turn. Reading a finished process's output through `process` withdraws its
+  queued receipt, so a wait or poll is never paid for twice.
 
 ## 6. Data
 

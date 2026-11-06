@@ -150,7 +150,7 @@ func startBackground(env *Env, cwd, command string, notify bool) (string, error)
 		queued := p.notify && !p.consumed
 		if queued {
 			st.notes = append(st.notes, note{p.id, fmt.Sprintf(
-				"[Process %s has finished, exit code %d. It ran: %s. Last %d characters of its output:\n%s]",
+				"[background receipt] process %s exited with code %d\ncommand: %s\noutput (last %d characters):\n%s]",
 				p.id, code, p.command, procExitedChars, cleanOutput(p.buf.String(), procExitedChars))})
 		}
 		cb, exit := st.onNote, st.onExit
