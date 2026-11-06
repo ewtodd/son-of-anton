@@ -167,6 +167,13 @@ takes images when config says so: the model's route `supports_vision`, else
 `[model].supports_vision`, else true — a text-only model (or a transcript
 carrying images for one) fails the read or the turn with that as the error,
 and nothing is quietly dropped.
+
+**Empty sessions (owner, 2026-11-06).** A session that never got a turn is
+not a session yet: the listings (`session.list`, the TUI's `/resume` and
+`/sessions`, the relay list, `-r latest` and `-c`) leave it out, and `/resume`
+never offers the session it runs in. A session with its first turn in flight
+still counts — the user row lands with the first step's end, so the daemon
+adds what is loaded and running to what the store lists.
 - Files that stay as they are: `config.toml`, `.env`, `SOUL.md`,
   `memories/*.toml`, `notes/`, `cron/jobs.json` (same format), `scripts/`.
 - Importer: `soa-d import --from <home>` reads the Python fork's `state.db`
@@ -316,6 +323,12 @@ and never called once; do not port it.
   `tools/approval.py`; keep the approval UX (TUI modal, Signal `/approve <id>`
   / `/deny <id>`).
 - Approvals are durable rows: the first answer from any driver wins.
+- **The nudge** (owner, 2026-11-06; the Python fork's `prompt_notify_after`):
+  an approval or clarify question that waits unanswered longer than
+  `agent.prompt_notify_after` seconds (default 120, 0 or less off) fires
+  `notify-send --app-name="Son of Anton"` with the subject or question (best
+  effort: without notify-send or a notification daemon nothing happens).
+  Resolving the request cancels the nudge.
 - **Nobody to ask means deny** (owner, 2026-11-01): `-q` and `-z` have no one
   to answer an approval, so a dangerous command is denied with a reason the
   model sees, unless the run was started with `--yolo`. The Python fork's `-z`

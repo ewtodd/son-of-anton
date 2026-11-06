@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -359,15 +360,34 @@ func (s *Server) list(params json.RawMessage, bad func(error) (any, *rpcError)) 
 	if err != nil {
 		return nil, errf(codeInternal, "%v", err)
 	}
-	out := make([]map[string]any, len(sums))
-	for i, sum := range sums {
+	rows := make([]map[string]any, 0, len(sums))
+	seen := make(map[string]bool, len(sums))
+	for _, sum := range sums {
+		seen[sum.Session.ID] = true
 		if l := s.loaded(sum.Session.ID); l != nil {
-			out[i] = l.snapshot()
+			rows = append(rows, l.snapshot())
 		} else {
-			out[i] = summaryObj(sum)
+			rows = append(rows, summaryObj(sum))
 		}
 	}
-	return map[string]any{"sessions": out}, nil
+	// The store leaves out the sessions that never got a turn. One with its
+	// first turn in flight counts anyway: the user row lands with the first
+	// step's end, so a turning session can hold no rows yet.
+	s.mu.Lock()
+	for id, l := range s.live {
+		if seen[id] {
+			continue
+		}
+		l.mu.Lock()
+		kind, parent, running := l.kind, l.parent, l.running
+		l.mu.Unlock()
+		if parent != "" || !running || !slices.Contains(p.Kinds, kind) {
+			continue
+		}
+		rows = append(rows, l.snapshot())
+	}
+	s.mu.Unlock()
+	return map[string]any{"sessions": rows}, nil
 }
 
 // summaryObj is the session object for a session that is not loaded.

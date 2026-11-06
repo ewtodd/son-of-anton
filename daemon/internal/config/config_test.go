@@ -274,6 +274,23 @@ func TestWorkerHours(t *testing.T) {
 	}
 }
 
+// An approval or clarify question waiting longer than prompt_notify_after
+// seconds nudges the user with notify-send; 0 or less never does.
+func TestPromptNotifyAfter(t *testing.T) {
+	for _, c := range []struct {
+		name, toml string
+		want       int
+	}{
+		{"default 120", "[agent]\n", 120},
+		{"the config wins", "[agent]\nprompt_notify_after = 30\n", 30},
+		{"zero disables", "[agent]\nprompt_notify_after = 0\n", 0},
+	} {
+		if got := load(t, home(t, sample+c.toml, "")).PromptNotifyAfter(); got != c.want {
+			t.Errorf("%s: PromptNotifyAfter = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
 func TestCommandHomeIsTheWorkingDirectoryUnderCwdMode(t *testing.T) {
 	for _, c := range []struct{ toml, want string }{
 		{"[terminal]\ncwd = \"/srv/shop\"\nhome_mode = \"cwd\"\n", "/srv/shop"},

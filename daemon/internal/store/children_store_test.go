@@ -11,6 +11,9 @@ import (
 func TestChildSessions(t *testing.T) {
 	st := newStore(t)
 	parent, _ := st.CreateSession(ctx, store.Session{Kind: "interactive"})
+	if _, err := st.AppendMessages(ctx, parent.ID, store.Message{Role: "user", Content: "go"}); err != nil {
+		t.Fatal(err)
+	}
 	a, _ := st.CreateSession(ctx, store.Session{Kind: "child", ParentID: parent.ID, Agent: "explore", Title: "Find it (@explore subagent)"})
 	b, _ := st.CreateSession(ctx, store.Session{Kind: "child", ParentID: parent.ID, Agent: "general"})
 	if got, _ := st.Session(ctx, a.ID); got.Agent != "explore" || got.ParentID != parent.ID {

@@ -104,8 +104,13 @@ func TestSearchFiltersRolesSortsExcludesAndSurvivesBadSyntax(t *testing.T) {
 
 func TestListingByCallerAndScope(t *testing.T) {
 	st := newStore(t)
-	_, _ = st.CreateSession(ctx, store.Session{Kind: "interactive"})
-	_, _ = st.CreateSession(ctx, store.Session{Kind: "chat", Scope: "gateway", Chat: "signal:g"})
+	inter, _ := st.CreateSession(ctx, store.Session{Kind: "interactive"})
+	chat, _ := st.CreateSession(ctx, store.Session{Kind: "chat", Scope: "gateway", Chat: "signal:g"})
+	for _, id := range []string{inter.ID, chat.ID} {
+		if _, err := st.AppendMessages(ctx, id, store.Message{Role: "user", Content: "started"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if list, _ := st.ListReadable(ctx, "common", []string{"interactive", "chat"}, 10); len(list) != 1 {
 		t.Fatalf("common caller lists %d sessions, want 1", len(list))
 	}

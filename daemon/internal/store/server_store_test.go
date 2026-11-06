@@ -84,10 +84,15 @@ func TestListSessionsNewestActivityFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	newer, _ := st.CreateSession(ctx, store.Session{Kind: "interactive", Cwd: "/b"})
+	if _, err := st.AppendMessages(ctx, newer.ID, store.Message{Role: "user", Content: "the newer turn"}); err != nil {
+		t.Fatal(err)
+	}
 	child, _ := st.CreateSession(ctx, store.Session{Kind: "child", ParentID: newer.ID})
 	shot, _ := st.CreateSession(ctx, store.Session{Kind: "oneshot"})
-	_ = child
-	_ = shot
+	if _, err := st.AppendMessages(ctx, shot.ID, store.Message{Role: "user", Content: "the shot"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = child // a zero-turn child is nobody's listing
 
 	list, err := st.ListSessions(ctx, []string{"interactive"}, 10)
 	if err != nil || len(list) != 2 || list[0].Session.ID != newer.ID || list[1].Session.ID != older.ID {
@@ -95,9 +100,6 @@ func TestListSessionsNewestActivityFirst(t *testing.T) {
 	}
 	if list[1].Preview != "first question about the build" || list[1].Messages != 2 || list[1].Updated.Before(list[1].Session.Created) {
 		t.Fatalf("summary = %+v; preview is the first user message, Messages the row count", list[1])
-	}
-	if list[0].Preview != "" || list[0].Messages != 0 || !list[0].Updated.Equal(list[0].Session.Created) {
-		t.Fatalf("an empty session's summary = %+v; Updated falls back to Created", list[0])
 	}
 
 	// New activity moves a session to the front.
@@ -224,9 +226,11 @@ func TestSessionsListByWorkspace(t *testing.T) {
 	st := newStore(t)
 	a, _ := st.CreateSession(ctx, store.Session{Kind: "interactive", Cwd: "/repo/pkg", Workspace: "/repo"})
 	b, _ := st.CreateSession(ctx, store.Session{Kind: "interactive", Cwd: "/repo", Workspace: "/repo"})
-	_, _ = st.CreateSession(ctx, store.Session{Kind: "interactive", Cwd: "/elsewhere", Workspace: "/elsewhere"})
-	if got, _ := st.Session(ctx, a.ID); got.Workspace != "/repo" {
-		t.Fatalf("Workspace not stored: %+v", got)
+	away, _ := st.CreateSession(ctx, store.Session{Kind: "interactive", Cwd: "/elsewhere", Workspace: "/elsewhere"})
+	for _, s := range []string{a.ID, b.ID, away.ID} {
+		if _, err := st.AppendMessages(ctx, s, store.Message{Role: "user", Content: "started"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	list, err := st.ListSessionsIn(ctx, []string{"interactive"}, "/repo", 10)
 	if err != nil || len(list) != 2 || list[0].Session.ID != b.ID || list[1].Session.ID != a.ID {

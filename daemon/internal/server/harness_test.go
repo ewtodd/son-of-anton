@@ -28,6 +28,16 @@ type harness struct {
 	fake   *fakellm.Server
 	cancel context.CancelFunc
 	done   chan error
+
+	nmu    sync.Mutex
+	nudges []string // the desktop nudges, "title|body"
+}
+
+// nudged returns the desktop nudges so far ("title|body").
+func (h *harness) nudged() []string {
+	h.nmu.Lock()
+	defer h.nmu.Unlock()
+	return append([]string(nil), h.nudges...)
 }
 
 // writeHome writes a config.toml pointing at url, with two configured model
@@ -70,7 +80,11 @@ func (h *harness) start() {
 	if err != nil {
 		h.t.Fatalf("Listen: %v", err)
 	}
-	srv, err := server.New(server.Options{Home: h.home, Version: "test"})
+	srv, err := server.New(server.Options{Home: h.home, Version: "test", NotifySend: func(title, body string) {
+		h.nmu.Lock()
+		h.nudges = append(h.nudges, title+"|"+body)
+		h.nmu.Unlock()
+	}})
 	if err != nil {
 		_ = ln.Close()
 		h.t.Fatalf("New: %v", err)

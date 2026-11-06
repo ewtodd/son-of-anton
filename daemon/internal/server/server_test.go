@@ -674,11 +674,13 @@ func TestSessionListModelsAndSettings(t *testing.T) {
 	c.attach(s1, "driver")
 	c.send(s1, "first question")
 	c.turn()
-	s2 := c.create(t.TempDir())
+	c.create(t.TempDir()) // s2: fresh, zero turns, so not a session yet
 
+	// s2 has not a single turn, so it does not count as a session
+	// (owner, 2026-11-06): the listing is s1 alone.
 	list := objs(c.ok("session.list", map[string]any{}), "sessions")
-	if len(list) != 2 || str(list[0], "id") != s2 || str(list[1], "id") != s1 ||
-		str(list[1], "preview") != "first question" || str(list[1], "kind") != "interactive" || str(list[1], "status") != "idle" {
+	if len(list) != 1 || str(list[0], "id") != s1 ||
+		str(list[0], "preview") != "first question" || str(list[0], "kind") != "interactive" || str(list[0], "status") != "idle" {
 		t.Fatalf("session.list = %v", list)
 	}
 
@@ -844,7 +846,7 @@ func TestShutdownRecordsTheTurnAndCleansUp(t *testing.T) {
 // root when it is in a repository, else the directory itself (son-of-anton
 // -c never continues another directory's conversation).
 func TestSessionListFiltersByWorkspace(t *testing.T) {
-	h := newHarness(t, fakellm.New(t), "")
+	h := newHarness(t, fakellm.New(t, fakellm.Turn{Content: "x"}, fakellm.Turn{Content: "y"}, fakellm.Turn{Content: "z"}), "")
 	root := t.TempDir()
 	repo, sub, other := filepath.Join(root, "repo"), filepath.Join(root, "repo", "sub"), filepath.Join(root, "other")
 	for _, d := range []string{filepath.Join(repo, ".git"), sub, other} {
@@ -853,8 +855,15 @@ func TestSessionListFiltersByWorkspace(t *testing.T) {
 		}
 	}
 	c := h.dial()
-	inRepo, inSub := c.create(repo), c.create(sub)
-	c.create(other)
+	inRepo := c.create(repo)
+	inSub := c.create(sub)
+	elsewhere := c.create(other)
+	for _, id := range []string{inRepo, inSub, elsewhere} {
+		c.attach(id, "driver")
+		c.send(id, "hi")
+		c.turn()
+		c.ok("session.detach", map[string]any{"session": id})
+	}
 	got := objs(c.ok("session.list", map[string]any{"cwd": sub}), "sessions")
 	if len(got) != 2 || str(got[0], "id") != inSub || str(got[1], "id") != inRepo {
 		t.Fatalf("session.list cwd=%s = %v; want the repo's two sessions, newest first", sub, got)

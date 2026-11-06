@@ -19,6 +19,7 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/buildinfo"
 	"github.com/ewtodd/son-of-anton/daemon/internal/client"
 	"github.com/ewtodd/son-of-anton/daemon/internal/server"
+	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 )
 
 func TestMain(m *testing.M) {
@@ -189,6 +190,22 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+// giveTurn writes a user row to the named sessions through the store: only
+// sessions with a turn list.
+func giveTurn(t *testing.T, h string, ids ...string) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(h, "soa-d.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, id := range ids {
+		if _, err := st.AppendMessages(context.Background(), id, store.Message{Role: "user", Content: "hello"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // serve runs a daemon on h in this process until the test ends.
 func serve(t *testing.T, h string) {
 	t.Helper()
@@ -233,11 +250,20 @@ func TestStatus(t *testing.T) {
 	}
 	defer c.Close()
 	ctx := context.Background()
-	for range 2 {
-		if err := c.Call(ctx, "session.create", map[string]any{"cwd": t.TempDir()}, nil); err != nil {
+	ids := [2]string{}
+	for i := range ids {
+		var cr struct {
+			Session struct {
+				ID string `json:"id"`
+			} `json:"session"`
+		}
+		if err := c.Call(ctx, "session.create", map[string]any{"cwd": t.TempDir()}, &cr); err != nil {
 			t.Fatal(err)
 		}
+		ids[i] = cr.Session.ID
 	}
+	// A session that never got a turn does not count: both get one.
+	giveTurn(t, h2, ids[0], ids[1])
 	r = cli(t, t.TempDir(), "", nil, "--home", h2, "status")
 	for _, want := range []string{"daemon: running (pid ", "soa-d test)", "served by: started on demand by the terminal UI", "sessions: 2 interactive"} {
 		if r.code != 0 || !strings.Contains(r.out, want) {
@@ -264,6 +290,8 @@ func TestSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := cr.Session.ID
+	// A session that never got a turn does not count as a session.
+	giveTurn(t, h, id)
 
 	if r := cli(t, t.TempDir(), "", nil, "--home", h, "sessions"); r.code != 0 || !strings.Contains(r.out, id+"  interactive  ") || !strings.Contains(r.out, "(untitled)") {
 		t.Fatalf("sessions list: %d %q %q", r.code, r.out, r.errOut)

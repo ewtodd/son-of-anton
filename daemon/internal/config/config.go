@@ -38,6 +38,10 @@ type Config struct {
 		// MessageTimestamps prefixes each user message's API copy with its send
 		// time; default true.
 		MessageTimestamps *bool `toml:"message_timestamps"`
+		// PromptNotifyAfter is how many seconds an unanswered approval or
+		// clarify question waits before notify-send nudges the user (0 or
+		// less: never); default 120.
+		PromptNotifyAfter *int `toml:"prompt_notify_after"`
 	} `toml:"agent"`
 	Memory struct {
 		RulesCharLimit int  `toml:"rules_char_limit"`
@@ -350,6 +354,16 @@ func (c *Config) Routes() map[string][]string {
 		out[name] = route.ReasoningEfforts
 	}
 	return out
+}
+
+// PromptNotifyAfter is how many seconds an unanswered approval or clarify
+// question waits before the daemon nudges the user with notify-send. The
+// default is 120; 0 or less turns the nudge off.
+func (c *Config) PromptNotifyAfter() int {
+	if t := c.Agent.PromptNotifyAfter; t != nil {
+		return *t
+	}
+	return 120
 }
 
 // SupportsVision says whether model takes image parts. The resolution, first

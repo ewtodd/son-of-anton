@@ -351,6 +351,9 @@ func (m *model) sessionPicker(name string) tea.Cmd {
 		}
 		var rows []pickRow
 		for _, s := range res.Sessions {
+			if id := str(s, "id"); id == m.sess.ID {
+				continue // the session the picker runs in is not a resume target
+			}
 			title := str(s, "title")
 			if title == "" {
 				title = "untitled"

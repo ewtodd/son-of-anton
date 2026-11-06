@@ -418,7 +418,37 @@ func (s *Server) chatWorkers(ctx context.Context, stamp, workspace string) ([]st
 			out = append(out, sum)
 		}
 	}
+	// A session with its first turn in flight holds no stored rows yet, so
+	// the store misses it; the run still counts — the list shows it and a
+	// send reaches it.
+	s.mu.Lock()
+	for id, l := range s.live {
+		if seen(id, out) {
+			continue
+		}
+		l.mu.Lock()
+		kind, parent, running := l.kind, l.parent, l.running
+		l.mu.Unlock()
+		if kind != "interactive" || parent != "" || !running {
+			continue
+		}
+		w, err := s.st.Session(ctx, id)
+		if err == nil && s.mayDrive(stamp, w) && within(w.Cwd, workspace) {
+			out = append(out, store.Summary{Session: w, Updated: time.Now()})
+		}
+	}
+	s.mu.Unlock()
 	return out, nil
+}
+
+// seen says whether the workers list already holds the session.
+func seen(id string, out []store.Summary) bool {
+	for _, sum := range out {
+		if sum.Session.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // claim gives a session nobody has taken on to the chat, and says which chat

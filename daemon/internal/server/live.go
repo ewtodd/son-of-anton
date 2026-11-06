@@ -69,9 +69,10 @@ type live struct {
 	stop                stopReason
 	steer               string
 	hasSteer            bool
-	steerSentAt         time.Time     // when the first queued/steered message was sent
-	steerImages         []store.Image // the images the steered messages attach
-	waiting             bool          // the queue waits for a turn that ends done, or queue.steer
+	steerSentAt         time.Time              // when the first queued/steered message was sent
+	steerImages         []store.Image          // the images the steered messages attach
+	nudges              map[string]*time.Timer // request id -> the pending desktop nudge
+	waiting             bool                   // the queue waits for a turn that ends done, or queue.steer
 	closing, unloaded   bool
 	tail                []tailEv
 	announced           int64
@@ -98,6 +99,7 @@ func newLive(s *Server, rec store.Session, sum store.Summary) *live {
 		created: rec.Created, updated: sum.Updated, preview: sum.Preview,
 		usage: usageTotals{rec.Usage.Input, rec.Usage.Output, rec.Usage.Cached, rec.Usage.Reasoning, rec.Usage.Calls}, ctxTokens: rec.ContextTokens,
 		viewers: map[*conn]bool{}, waiting: true,
+		nudges:    map[string]*time.Timer{},
 		approvals: map[string]*pendingApproval{}, questions: map[string]*pendingQuestion{}, resolved: map[string]bool{},
 	}
 }
@@ -563,6 +565,10 @@ func (l *live) noticeLocked(text string) {
 
 // closeRequest announces a request's end and drops it from the live tail.
 func (l *live) closeRequest(id, kind string, f map[string]any) {
+	if t := l.nudges[id]; t != nil {
+		t.Stop()
+		delete(l.nudges, id)
+	}
 	if f == nil {
 		f = map[string]any{}
 	}
@@ -626,6 +632,7 @@ func (l *live) approveAs(ctx context.Context, req approval.Request, child string
 	if l.chat != nil {
 		l.chat.approval(id, req, choices)
 	}
+	l.armNudge(id, req.Subject)
 	l.mu.Unlock()
 	select {
 	case c := <-p.ch:
@@ -657,6 +664,7 @@ func (l *live) ask(ctx context.Context, q tools.Question) ([]string, error) {
 	if l.chat != nil {
 		l.chat.question(id, q)
 	}
+	l.armNudge(id, q.Text)
 	l.mu.Unlock()
 	var a answer
 	select {

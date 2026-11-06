@@ -40,7 +40,12 @@ var ErrRunning = errors.New("server: another daemon is serving this home")
 const shutdownWait = 10 * time.Second
 
 // Options configure New.
-type Options struct{ Home, Version string }
+type Options struct {
+	Home, Version string
+	// NotifySend, when set, replaces notify-send for the desktop nudges
+	// (tests); nil runs notify-send.
+	NotifySend func(title, body string)
+}
 
 // Listen creates <home>/run (0700) and listens on <home>/run/soa-d.sock
 // (0600). A live daemon behind an existing socket is ErrRunning; a stale file
@@ -114,6 +119,9 @@ type Server struct {
 
 	turns  sync.WaitGroup // running turn goroutines
 	connWG sync.WaitGroup // connection goroutines
+
+	// notify is the desktop nudge runner (notify-send; tests replace it).
+	notify func(title, body string)
 }
 
 // New loads the config and opens <home>/soa-d.db.
@@ -136,7 +144,10 @@ func New(o Options) (*Server, error) {
 	s := &Server{opt: o, cfg: cfg, st: st, reg: tools.NewRegistry(base...), mcp: mcpm, lsp: lspS, mem: mem, idx: idx,
 		live: map[string]*live{}, indexed: map[string]int64{}, conns: map[*conn]struct{}{},
 		meta: map[string]map[string]metaEntry{}, metaAt: map[string]time.Time{}, metaFail: map[string]time.Time{},
-		learned: map[string]int{}}
+		learned: map[string]int{}, notify: runNotify}
+	if o.NotifySend != nil {
+		s.notify = o.NotifySend
+	}
 	s.cron = s.newCron()
 	cronTool := tools.CronJob(o.Home)
 	s.regTask = tools.NewRegistry(append(base, subagent.Tool(subagent.Builtin(), true, s.spawnTask), cronTool)...)

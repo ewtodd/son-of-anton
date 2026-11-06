@@ -80,7 +80,9 @@ func TestTheResumePicker(t *testing.T) {
 	waitGone(t, a, "the beta answer")
 
 	send(a, "/resume")
-	waitScreen(t, a, "Resume session", "alpha planning session", "beta planning session", "untitled")
+	// The session /new just made has no turns and is the one the picker
+	// runs in: neither count.
+	waitScreen(t, a, "Resume session", "alpha planning session", "beta planning session")
 	a.Type("ALPHA")
 	waitGone(t, a, "beta planning session")
 	a.Press("enter")

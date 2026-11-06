@@ -140,7 +140,10 @@ func (s *Store) ListReadableIn(ctx context.Context, caller, chat, workspace stri
 func (s *Store) listSessions(ctx context.Context, kinds []string, workspace, wall string, wallArgs []any, limit int) ([]Summary, error) {
 	var out []Summary
 	for _, kind := range kinds {
-		where, args := `s.parent_id IS NULL AND s.kind = ?`, []any{kind}
+		// A session that never got a turn is not a session yet: a create
+		// makes the row, but nothing lists it until a turn lands.
+		where, args := `s.parent_id IS NULL AND s.kind = ?
+			AND EXISTS (SELECT 1 FROM messages mt WHERE mt.session_id = s.id)`, []any{kind}
 		if wall != "" {
 			where += ` AND ` + wall
 			args = append(args, wallArgs...)
