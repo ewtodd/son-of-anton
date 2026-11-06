@@ -110,6 +110,8 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 		return nil
 	case "enter":
 		return m.submit("step")
+	// alt+enter and ctrl+j are the newline keys; under the kitty protocol
+	// shift+enter arrives as alt+enter too (kitty.go).
 	case "alt+enter", "ctrl+j":
 		return m.edit(tea.KeyMsg{Type: tea.KeyEnter})
 	case "up":

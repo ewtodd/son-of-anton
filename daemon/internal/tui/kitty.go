@@ -123,6 +123,12 @@ func kittyMsg(seq string) tea.Msg {
 		if ctrl && !alt && !shift {
 			return ctrlEnterMsg{}
 		}
+		// shift+enter is a newline in the draft, the same KeyMsg alt+enter
+		// says without the protocol. Without the protocol the terminal
+		// sends a bare enter for it and it cannot be told apart.
+		if shift {
+			return tea.KeyMsg{Type: tea.KeyEnter, Alt: true}
+		}
 		return key(tea.KeyEnter)
 	case '\t':
 		if shift {

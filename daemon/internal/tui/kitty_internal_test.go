@@ -18,8 +18,8 @@ var kittySends = []struct{ seq, want string }{
 	{"\x1b[13;133u", "ctrl+enter"}, // num lock on
 	{"\x1b[13;69u", "ctrl+enter"},  // caps lock on
 	{"\x1b[57414;5u", "ctrl+enter"},
-	{"\x1b[13;2u", "enter"},
-	{"\x1b[13;6u", "enter"},
+	{"\x1b[13;2u", "alt+enter"}, // shift+enter breaks the draft, not sends
+	{"\x1b[13;6u", "alt+enter"},
 	{"\x1b[13;3u", "alt+enter"},
 	{"\x1b[57414u", "enter"},
 	{"\x1b[9;2u", "shift+tab"},

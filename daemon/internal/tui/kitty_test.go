@@ -22,6 +22,7 @@ import (
 )
 
 const (
+	shiftEnter   = "\x1b[13;2u"
 	ctrlEnter    = "\x1b[13;5u"
 	protocolOn   = "\x1b[?1049h\x1b[>1u\x1b[?u"
 	protocolOff  = "\x1b[<u\x1b[?1049l"
@@ -92,6 +93,26 @@ func openTerminal(t *testing.T, d *daemon) *fakeTTY {
 		c.Close()
 	})
 	return term
+}
+
+func TestShiftEnterBreaksTheDraftInsteadOfSending(t *testing.T) {
+	fake := fakellm.New(t, fakellm.Turn{Content: "one answer"})
+	term := openTerminal(t, newDaemon(t, fake))
+	term.Type("alpha")
+	term.press(shiftEnter)
+	time.Sleep(250 * time.Millisecond) // the pipe's newline lands ahead of the typed b
+	term.Type("beta")
+	// The draft still holds both lines and nothing has been sent: the fake's
+	// single turn is unconsumed, so no answer can be on the screen yet. The
+	// rendered lines are padded, so "alphab" is the tell of a lost newline.
+	if s := term.Screen(); strings.Contains(s, "alphab") || !strings.Contains(s, "alpha") || !strings.Contains(s, "beta") || strings.Contains(s, "one answer") {
+		t.Fatalf("after shift+enter the draft is not both lines, screen:\n%s", s)
+	}
+	term.press("\r")
+	waitScreen(t, term.App, "one answer")
+	if s := term.Screen(); strings.Contains(s, "alphab") || !strings.Contains(s, "alpha") || !strings.Contains(s, "beta") {
+		t.Fatalf("the two-line draft did not go as one message:\n%s", s)
+	}
 }
 
 func TestCtrlEnterSendsTheDraftNow(t *testing.T) {
