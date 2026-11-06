@@ -454,6 +454,11 @@ names (`instances.*`, `settings`, `memoryRules`, `memoryRulesFile`,
 `environment`, `environmentFiles`, `workingDirectory`, ...) so `/etc/nixos`
 changes as little as possible. The gateway unit becomes the `soa-d` unit.
 
+Every enabled NixOS instance gets tools on the agent's PATH by default
+(owner, 2026-11-06): `libnotify` (the prompt nudge, section 10), `nixfmt`,
+`deadnix` and the host's `nix` (the agents maintain Nix and the NixOS
+configuration with them). `extraPackages` adds on top per instance.
+
 ## 16. Testing
 
 - Go tests per package, written as behavior contracts (no snapshots of data

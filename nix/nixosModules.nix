@@ -32,7 +32,22 @@
       state = import ./state.nix { inherit lib; };
 
       package = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      # The tools every instance's agent gets by default (owner, 2026-11-06):
+      # the desktop nudge (notify-send), and Nix maintenance — the build path,
+      # its formatter, dead-option sweeping — the things that lived in
+      # extraPackages on every deployed instance anyway. extraPackages adds
+      # on top of these, per instance.
+      defaultExtras = [
+        pkgs.libnotify
+        pkgs.nixfmt
+        pkgs.deadnix
+        config.nix.package
+      ];
       instances = lib.filterAttrs (_: i: i.enable) config.services.son-of-anton.instances;
+      # The instance view for the daemon's PATH and the wrapped commands:
+      # users.users keeps the owner's own extraPackages only, so an instance
+      # on an existing account still defines no user of its own.
+      withExtras = i: i // { extraPackages = i.extraPackages ++ defaultExtras; };
       each = f: lib.mapAttrsToList f instances;
 
       instanceModule =
@@ -160,7 +175,7 @@
           };
 
           restartTriggers = state.restartOn pkgs i;
-          path = state.servicePath pkgs i;
+          path = state.servicePath pkgs (withExtras i);
         };
 
       # Activation runs before tmpfiles and as root: create what the instance
@@ -306,7 +321,7 @@
           )
         );
 
-        environment.systemPackages = map state.packageFor (lib.attrValues exporters);
+        environment.systemPackages = map (i: state.packageFor (withExtras i)) (lib.attrValues exporters);
         environment.variables = lib.mapAttrs' (
           _: i: lib.nameValuePair "SON_OF_ANTON_HOME" i.son-of-antonHome
         ) exporters;
