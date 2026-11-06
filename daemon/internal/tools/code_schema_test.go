@@ -1,11 +1,11 @@
 package tools_test
 
-// Phase 7c: the schemas follow the registry, and vision_analyze refuses a
-// private address (daemon/phases/07c-code-vision.md).
+// Phase 7c: the execute_code schema follows the registry (phases/07c). The
+// vision_analyze tool that once lived here is gone: images reach the model's
+// own vision encoder as message parts (images.go, readfile.go) or the model
+// gets an error.
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -38,14 +38,10 @@ func TestExecuteCodeDocumentsOnlyTheToolsTheRegistryHolds(t *testing.T) {
 	}
 }
 
-func TestVisionAnalyzeRefusesPrivateAddresses(t *testing.T) {
-	hit := false
-	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hit = true }))
-	defer srv.Close()
-	f := setup(t, nil)
-	f.env.Vision = &tools.Vision{BaseURL: "http://127.0.0.1:1", Model: "m"}
-	res := f.call(t, "vision_analyze", map[string]any{"image_url": srv.URL + "/x.png", "question": "q"})
-	if res["success"] != false || !strings.Contains(res["error"].(string), "private") || hit {
-		t.Fatalf("result = %v, server hit = %v", res, hit)
+func TestVisionAnalyzeIsGone(t *testing.T) {
+	for _, name := range tools.NewRegistry(tools.Builtin()...).Names() {
+		if name == "vision_analyze" {
+			t.Fatal("vision_analyze is still registered")
+		}
 	}
 }

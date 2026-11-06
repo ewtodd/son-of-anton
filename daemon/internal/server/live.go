@@ -69,8 +69,9 @@ type live struct {
 	stop                stopReason
 	steer               string
 	hasSteer            bool
-	steerSentAt         time.Time // when the first queued/steered message was sent
-	waiting             bool      // the queue waits for a turn that ends done, or queue.steer
+	steerSentAt         time.Time     // when the first queued/steered message was sent
+	steerImages         []store.Image // the images the steered messages attach
+	waiting             bool          // the queue waits for a turn that ends done, or queue.steer
 	closing, unloaded   bool
 	tail                []tailEv
 	announced           int64
@@ -151,9 +152,9 @@ func (l *live) sendTail(c *conn) {
 
 // ---- turns (mu held unless noted) ----
 
-func (l *live) startTurn(text string) { l.startTurnAt(text, time.Now()) }
+func (l *live) startTurn(text string) { l.startTurnAt(text, time.Now(), nil) }
 
-func (l *live) startTurnAt(text string, sentAt time.Time) {
+func (l *live) startTurnAt(text string, sentAt time.Time, images []store.Image) {
 	if sentAt.IsZero() {
 		sentAt = time.Now()
 	}
@@ -169,7 +170,7 @@ func (l *live) startTurnAt(text string, sentAt time.Time) {
 	l.sess.Begin() // a steer or interrupt from here on reaches this Send
 	go func() {
 		defer l.srv.turns.Done()
-		res, err := l.sess.SendAt(ctx, text, sentAt, l.onAgent)
+		res, err := l.sess.SendMediaAt(ctx, text, images, sentAt, l.onAgent)
 		cancel()
 		l.finish(res, err)
 		l.srv.indexAfterTurn(l.id)
@@ -330,9 +331,9 @@ func (l *live) next() {
 		return
 	}
 	if l.hasSteer {
-		text, sentAt := l.steer, l.steerSentAt
-		l.steer, l.hasSteer, l.steerSentAt = "", false, time.Time{}
-		l.startTurnAt(text, sentAt)
+		text, sentAt, images := l.steer, l.steerSentAt, l.steerImages
+		l.steer, l.hasSteer, l.steerSentAt, l.steerImages = "", false, time.Time{}, nil
+		l.startTurnAt(text, sentAt, images)
 		return
 	}
 	if l.waiting {
@@ -350,19 +351,19 @@ func (l *live) next() {
 		return
 	}
 	l.emitQueue()
-	l.startTurnAt(items[0].Text, queueSentAt(items[0]))
+	l.startTurnAt(items[0].Text, queueSentAt(items[0]), items[0].Images)
 }
 
 // send is turn.send (and /commit): start with the current time. Returns
 // started, the queued item id, steered.
 func (l *live) send(text, mode string) (bool, string, bool, error) {
-	return l.sendAt(text, mode, time.Now())
+	return l.sendAt(text, mode, time.Now(), nil)
 }
 
 // sendAt is send with the message's own send time: start at once when idle,
 // else queue or steer. The time follows the message through the queue and
-// into its later turn.
-func (l *live) sendAt(text, mode string, sentAt time.Time) (bool, string, bool, error) {
+// into its later turn, with its images.
+func (l *live) sendAt(text, mode string, sentAt time.Time, images []store.Image) (bool, string, bool, error) {
 	if sentAt.IsZero() {
 		sentAt = time.Now()
 	}
@@ -376,17 +377,17 @@ func (l *live) sendAt(text, mode string, sentAt time.Time) (bool, string, bool, 
 	}
 	switch {
 	case !l.running && !l.compacting:
-		l.startTurnAt(text, sentAt)
+		l.startTurnAt(text, sentAt, images)
 		return true, "", false, nil
 	case mode == "now" && l.running:
-		l.steerAt(text, sentAt)
+		l.steerAt(text, sentAt, images)
 		return false, "", true, nil
 	default:
 		kind := "user"
 		if mode == "step" {
 			kind = "step"
 		}
-		it, err := l.srv.st.QueuePushAt(context.Background(), l.id, kind, text, sentAt)
+		it, err := l.srv.st.QueuePushAt(context.Background(), l.id, kind, text, sentAt, images)
 		if err != nil {
 			return false, "", false, err
 		}
@@ -412,6 +413,7 @@ func (l *live) stepEnded() {
 		return
 	}
 	var texts, ids []string
+	var images []store.Image
 	var sentAt time.Time
 	for _, it := range items {
 		if it.Kind == "step" {
@@ -419,6 +421,7 @@ func (l *live) stepEnded() {
 				sentAt = queueSentAt(it)
 			}
 			texts, ids = append(texts, it.Text), append(ids, it.ID)
+			images = append(images, it.Images...)
 		}
 	}
 	if len(ids) == 0 {
@@ -429,23 +432,25 @@ func (l *live) stepEnded() {
 		return
 	}
 	l.emitQueue()
-	l.steerAt(strings.Join(texts, "\n\n"), sentAt)
+	l.steerAt(strings.Join(texts, "\n\n"), sentAt, images)
 }
 
 // steerWith ends the running turn after its running tools finish and runs
 // text next, ahead of the queue, stamped with the current time.
-func (l *live) steerWith(text string) { l.steerAt(text, time.Now()) }
+func (l *live) steerWith(text string) { l.steerAt(text, time.Now(), nil) }
 
-// steerAt is steerWith for a message sent at sentAt. The first message's time
-// is the one the joined steer turn uses.
-func (l *live) steerAt(text string, sentAt time.Time) {
+// steerAt is steerWith for a message sent at sentAt with its images. The
+// first message's time is the one the joined steer turn uses, and its images
+// are the turn's.
+func (l *live) steerAt(text string, sentAt time.Time, images []store.Image) {
 	if sentAt.IsZero() {
 		sentAt = time.Now()
 	}
 	if l.hasSteer {
 		l.steer += "\n\n" + text
+		l.steerImages = append(l.steerImages, images...)
 	} else {
-		l.steer, l.hasSteer, l.steerSentAt = text, true, sentAt
+		l.steer, l.hasSteer, l.steerSentAt, l.steerImages = text, true, sentAt, images
 	}
 	if l.stop == stopNone {
 		l.stop = stopSteer
@@ -471,8 +476,10 @@ func (l *live) steerQueue(all bool) (started, steered bool, err error) {
 		items = items[:1]
 	}
 	texts, ids := make([]string, len(items)), make([]string, len(items))
+	var images []store.Image
 	for i, it := range items {
 		texts[i], ids[i] = it.Text, it.ID
+		images = append(images, it.Images...)
 	}
 	if err := l.srv.st.QueueRemove(context.Background(), l.id, ids...); err != nil {
 		return false, false, err
@@ -481,10 +488,10 @@ func (l *live) steerQueue(all bool) (started, steered bool, err error) {
 	text := strings.Join(texts, "\n\n")
 	sentAt := queueSentAt(items[0])
 	if !l.running {
-		l.startTurnAt(text, sentAt)
+		l.startTurnAt(text, sentAt, images)
 		return true, false, nil
 	}
-	l.steerAt(text, sentAt)
+	l.steerAt(text, sentAt, images)
 	return false, true, nil
 }
 
@@ -853,6 +860,13 @@ type messageJSON = map[string]any
 func messageObj(m store.Message) messageJSON {
 	o := messageJSON{"seq": m.Seq, "role": m.Role, "content": m.Content, "reasoning": m.Reasoning,
 		"tool_call_id": m.ToolCallID, "tool_name": m.ToolName, "ts": m.TS.Format(time.RFC3339Nano)}
+	if len(m.Images) > 0 {
+		imgs := make([]map[string]any, len(m.Images))
+		for i, img := range m.Images {
+			imgs[i] = map[string]any{"id": img.ID, "mime": img.Mime, "name": img.Name}
+		}
+		o["images"] = imgs
+	}
 	if len(m.ToolCalls) > 0 {
 		var calls []struct {
 			ID       string `json:"id"`

@@ -15,6 +15,7 @@
   ripgrep,
   openssh,
   poppler-utils,
+  librsvg, # PrepareImage turns SVG into PNG (rsvg-convert)
   bubblewrap,
   ffmpeg,
   # Both commands, unwrapped (packages.nix).
@@ -32,6 +33,7 @@ let
     ripgrep
     openssh # git over ssh
     poppler-utils # web_extract reads PDFs with pdftotext
+    librsvg # read_file and chat images: rsvg-convert makes SVG readable
     bubblewrap # sandboxes model-authored code
     ffmpeg # agents convert audio and video in the terminal
   ]

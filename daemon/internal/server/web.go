@@ -33,10 +33,3 @@ func WebConfig(cfg *config.Config, home string) *tools.Web {
 	}
 	return out
 }
-
-// VisionConfig is where vision_analyze sends images: [auxiliary.vision], the
-// session's own endpoint and model for what it leaves unset.
-func VisionConfig(cfg *config.Config, ep config.Endpoint) *tools.Vision {
-	aux := cfg.Auxiliary("vision", ep)
-	return &tools.Vision{BaseURL: aux.BaseURL, APIKey: aux.APIKey, Model: aux.Model, Timeout: cfg.AuxiliaryTimeout("vision")}
-}

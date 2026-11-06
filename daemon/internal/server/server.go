@@ -140,7 +140,7 @@ func New(o Options) (*Server, error) {
 	s.cron = s.newCron()
 	cronTool := tools.CronJob(o.Home)
 	s.regTask = tools.NewRegistry(append(base, subagent.Tool(subagent.Builtin(), true, s.spawnTask), cronTool)...)
-	s.regChat = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "clarify", "memory", "session_search", "web_search", "web_extract", "vision_analyze").With(cronTool, tools.RelayTool())
+	s.regChat = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "clarify", "memory", "session_search", "web_search", "web_extract").With(cronTool, tools.RelayTool())
 	var cronTools []string
 	for _, n := range s.reg.Names() {
 		if n != "clarify" {
@@ -270,7 +270,7 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 		Web:               s.web,
 		MCP:               s.mcp,
 		LSP:               s.lsp,
-		Vision:            VisionConfig(s.cfg, ep),
+		Vision:            s.cfg.SupportsVision,
 		Cron:              s.cronHost(""),
 		Default:           s.defaultRoute(""),
 		OnDeadPin:         func(old string, def agent.Fallback) { s.deadPin(l, old, def) },

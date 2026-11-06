@@ -1,8 +1,11 @@
 package server_test
 
-// Phase 7c through the daemon: execute_code and vision_analyze
-// (daemon/phases/07c-code-vision.md). execute_code needs a Python 3; the
-// tests that run scripts skip without one.
+// Phase 7c through the daemon: execute_code
+// (daemon/phases/07c-code-vision.md); execute_code needs a Python 3, so the
+// tests that run scripts skip without one. The phase's other tool changed:
+// vision_analyze is gone entirely, and images reach the model's own vision
+// encoder as message parts (a read_file result, a chat attachment) — a
+// text-only model gets an error instead.
 
 import (
 	"bytes"
@@ -156,71 +159,53 @@ func pngOf(t *testing.T, w, h int) []byte {
 	return buf.Bytes()
 }
 
-// visionImage finds the vision request among the fake's and returns its
-// image's size, its prompt text and its temperature.
-func visionImages(t *testing.T, fake *fakellm.Server) []image.Config {
+// toolRowParts decodes a tool message's content from the wire: an array of
+// parts when the row carries images, a plain string otherwise.
+func toolRowParts(t *testing.T, fake *fakellm.Server, i int) (string, []map[string]any) {
 	t.Helper()
-	var out []image.Config
-	for i := 0; i < fake.Count(); i++ {
-		var body struct {
-			Temperature float64 `json:"temperature"`
-			Messages    []struct {
-				Content json.RawMessage `json:"content"`
-			} `json:"messages"`
-		}
-		if json.Unmarshal(fake.Bodies()[i], &body) != nil || len(body.Messages) != 1 {
+	for _, m := range rawWire(t, fake, i) {
+		if str(m, "role") != "tool" {
 			continue
 		}
-		var parts []struct {
-			Type     string `json:"type"`
-			Text     string `json:"text"`
-			ImageURL struct {
-				URL string `json:"url"`
-			} `json:"image_url"`
+		if parts, ok := m["content"].([]any); ok {
+			text := ""
+			var out []map[string]any
+			for _, p := range parts {
+				pm, _ := p.(map[string]any)
+				if str(pm, "type") == "text" {
+					text = str(pm, "text")
+				}
+				out = append(out, pm)
+			}
+			return text, out
 		}
-		if json.Unmarshal(body.Messages[0].Content, &parts) != nil || len(parts) != 2 {
-			continue
-		}
-		if !strings.HasPrefix(parts[0].Text, "Describe this image in full, then answer the question that follows it.\n\nQuestion:\n") ||
-			body.Temperature != 0.1 {
-			t.Fatalf("the vision request: %+v (temperature %v)", parts[0], body.Temperature)
-		}
-		data, ok := strings.CutPrefix(parts[1].ImageURL.URL, "data:image/png;base64,")
-		if !ok {
-			t.Fatalf("the image part: %.80s", parts[1].ImageURL.URL)
-		}
-		raw, err := base64.StdEncoding.DecodeString(data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cfg, err := png.DecodeConfig(bytes.NewReader(raw))
-		if err != nil {
-			t.Fatal(err)
-		}
-		out = append(out, cfg)
+		return str(m, "content"), nil
 	}
-	return out
+	t.Fatalf("request %d has no tool message", i)
+	return "", nil
 }
 
-func TestVisionAnalyzeSendsTheImage(t *testing.T) {
+// decodeDataURL reads a data: image part's bytes.
+func decodeDataURL(t *testing.T, url string) []byte {
+	t.Helper()
+	head, data, ok := strings.Cut(url, ";base64,")
+	if !ok || !strings.HasPrefix(head, "data:image/") {
+		t.Fatalf("not an image data URL: %.80s", url)
+	}
+	raw, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func TestReadFileAttachesTheImage(t *testing.T) {
 	cwd := t.TempDir()
 	if err := os.WriteFile(filepath.Join(cwd, "pic.png"), pngOf(t, 100, 50), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("not an image"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	asks := "Describe this image in full, then answer the question"
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("v1", "vision_analyze", `{"image_url":"pic.png","question":"what is it?"}`)}},
-		fakellm.Turn{When: asks, Content: "<think>hmm</think>a red rectangle"},
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("v2", "vision_analyze", `{"image_url":"pic.png","question":"zoom in","region":[10,10,30,20]}`)}},
-		fakellm.Turn{When: asks, Content: "a red corner"},
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{
-			call("v3", "vision_analyze", `{"image_url":"notes.txt","question":"q"}`),
-			call("v4", "vision_analyze", `{"image_url":"pic.png","question":"q","region":[50,40,40,30]}`),
-			call("v5", "vision_analyze", `{"image_url":"gopher://x/y","question":"q"}`),
-		}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("r1", "read_file", `{"path":"pic.png"}`)}},
 		fakellm.Turn{Content: "done"},
 	)
 	h := newHarness(t, fake, "")
@@ -228,50 +213,92 @@ func TestVisionAnalyzeSendsTheImage(t *testing.T) {
 	id := c.create(cwd)
 	c.attach(id, "driver")
 	c.send(id, "look at the picture")
-	rows := toolRows(c.turn())
-	if len(rows) != 5 {
+	evs := c.turn()
+	rows := toolRows(evs)
+	if len(rows) != 1 {
 		t.Fatalf("rows = %v", rows)
 	}
-	first := decodeRow(t, rows[0])
-	if first["success"] != true || first["analysis"] != "a red rectangle" || first["scale_note"] != nil {
-		t.Fatalf("vision = %v", first)
+	res := decodeRow(t, rows[0])
+	img := obj(res, "image")
+	if res["error"] != nil || !strings.Contains(str(res, "content"), "attached to this result") ||
+		img == nil || str(img, "mime") != "image/png" || str(img, "name") != "pic.png" || str(img, "id") == "" {
+		t.Fatalf("the read = %v", res)
 	}
-	crop := decodeRow(t, rows[1])
-	if crop["success"] != true || !strings.HasSuffix(str(crop, "analysis"), "a red corner") ||
-		!strings.Contains(str(crop, "scale_note"), "offset (10, 10)") {
-		t.Fatalf("a crop = %v", crop)
+	text, parts := toolRowParts(t, fake, 1)
+	if len(parts) != 2 || !strings.Contains(text, "attached to this result") {
+		t.Fatalf("the tool message = %q, %d parts", text, len(parts))
 	}
-	sizes := visionImages(t, fake)
-	if len(sizes) != 2 || sizes[0].Width != 100 || sizes[0].Height != 50 || sizes[1].Width != 20 || sizes[1].Height != 10 {
-		t.Fatalf("images sent = %+v; the whole picture, then the 20x10 crop", sizes)
+	for _, p := range parts {
+		if str(p, "type") != "image_url" {
+			continue
+		}
+		raw := decodeDataURL(t, str(obj(p, "image_url"), "url"))
+		cfg, err := png.DecodeConfig(bytes.NewReader(raw))
+		if err != nil || cfg.Width != 100 || cfg.Height != 50 {
+			t.Fatalf("the attached image = %+v, %v", cfg, err)
+		}
 	}
-	for i, want := range map[int]string{2: "not a recognized image", 3: "crops to zero area", 4: "Unrecognized image source scheme"} {
-		r := decodeRow(t, rows[i])
-		if r["success"] != false || !strings.Contains(str(r, "error")+str(r, "analysis"), want) {
-			t.Errorf("row %d = %v; want %q", i, r, want)
+	// The stored row carries the image, as the message events told the viewer.
+	for _, m := range committed(evs) {
+		if str(m, "role") != "tool" {
+			continue
+		}
+		list := objs(m, "images")
+		if len(list) != 1 || str(list[0], "id") != str(img, "id") || str(list[0], "mime") != "image/png" {
+			t.Fatalf("the row's images = %v", m["images"])
 		}
 	}
 }
 
-func TestVisionAnalyzeRefusesSecretFiles(t *testing.T) {
-	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("v1", "vision_analyze", `{"image_url":".env","question":"q"}`)}},
-		fakellm.Turn{Content: "done"},
-	)
-	h := newHarness(t, fake, "")
-	c := h.dial()
-	cwd := t.TempDir()
-	if err := os.WriteFile(filepath.Join(cwd, ".env"), pngOf(t, 4, 4), 0o600); err != nil {
+// writeHomeVision writes a config whose test-model declares supports_vision.
+func writeHomeVision(t *testing.T, home, url, vision string) *harness {
+	t.Helper()
+	cfg := "[model]\ndefault = \"test-model\"\nprovider = \"custom\"\n\n" +
+		"[custom_providers.custom]\nbase_url = \"" + url + "\"\nkey_env = \"SOA_D_TEST_KEY\"\n\n" +
+		"[custom_providers.custom.models.\"test-model\"]\nsupports_vision = " + vision + "\nreasoning_efforts = [\"low\", \"high\"]\n\n" +
+		"[custom_providers.custom.models.\"other-model\"]\n"
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(home, ".env"), []byte("SOA_D_TEST_KEY=s3cret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := &harness{t: t, home: home}
+	h.start()
+	t.Cleanup(func() { _ = h.stop() })
+	return h
+}
+
+func TestReadImageErrorsOnATextOnlyModel(t *testing.T) {
+	home, err := os.MkdirTemp("", "soad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("SOA_D_TEST_KEY", "")
+	t.Setenv("SON_OF_ANTON_HOME", "")
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "pic.png"), pngOf(t, 8, 8), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fake := fakellm.New(t,
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("r1", "read_file", `{"path":"pic.png"}`)}},
+		fakellm.Turn{Content: "done"},
+	)
+	h := writeHomeVision(t, home, fake.URL, "false")
+	c := h.dial()
 	id := c.create(cwd)
 	c.attach(id, "driver")
 	c.send(id, "look")
 	rows := toolRows(c.turn())
-	if r := decodeRow(t, rows[0]); r["success"] != false || !strings.Contains(str(r, "error"), "secret") {
-		t.Fatalf("a secret file = %v", r)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %v", rows)
 	}
-	if fake.Count() != 2 {
-		t.Fatal("nothing was sent to a vision model")
+	res := decodeRow(t, rows[0])
+	if res["error"] == nil || !strings.Contains(str(res, "error"), "no vision") {
+		t.Fatalf("a text-only model read = %v", res)
+	}
+	if content, parts := toolRowParts(t, fake, 1); parts != nil || !strings.Contains(content, "no vision") {
+		t.Fatalf("something reached the model as parts: %q", content)
 	}
 }

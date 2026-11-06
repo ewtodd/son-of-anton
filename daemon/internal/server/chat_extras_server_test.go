@@ -5,7 +5,9 @@ package server_test
 // (daemon/phases/05d-chat-tools.md).
 
 import (
+	"bytes"
 	"encoding/json"
+	"image/png"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,15 +37,11 @@ func TestFionaSeesWhatTheChatSends(t *testing.T) {
 	}
 	fake := fakellm.New(t,
 		fakellm.Turn{When: asFiona, ToolCalls: []fakellm.ToolCall{
-			{ID: "v1", Name: "vision_analyze", ArgumentsFunc: args(func(h string) map[string]any {
-				return map[string]any{"image_url": sent(t, h, "_shot.png"), "question": "what is it?"}
-			})},
 			{ID: "f1", Name: "read_file", ArgumentsFunc: args(func(h string) map[string]any { return map[string]any{"path": sent(t, h, "_notes.txt")} })},
 			{ID: "w1", Name: "write_file", ArgumentsFunc: args(func(h string) map[string]any {
 				return map[string]any{"path": filepath.Join(h, "cache", "signal", "planted.txt"), "content": "x"}
 			})},
 		}},
-		fakellm.Turn{When: "Describe this image in full, then answer the question", Content: "a red square"},
 		fakellm.Turn{When: asFiona, Content: "A red square, and your notes."},
 	)
 	r = newChatRig(t, fake, "")
@@ -58,15 +56,41 @@ func TestFionaSeesWhatTheChatSends(t *testing.T) {
 	}
 	r.sig.Push(env)
 	r.reply(sigGroup, "A red square, and your notes.")
-
-	if v := toolResult(t, fake, "v1"); v["success"] != true || v["analysis"] != "a red square" {
-		t.Fatalf("vision_analyze on an attachment = %v", v)
-	}
 	if f := toolResult(t, fake, "f1"); !strings.Contains(str(f, "content"), "feed the cat") {
 		t.Fatalf("read_file on an attachment = %v", f)
 	}
 	if w := toolResult(t, fake, "w1"); !strings.Contains(str(w, "error"), "outside the notes folder") {
 		t.Fatalf("a write next to the attachments = %v", w)
+	}
+	// The image went to the encoder with the turn: the user message carries
+	// a text part with the attachment lines, then the image part itself.
+	ms := rawWire(t, fake, 0)
+	var parts []map[string]any
+	var usertext string
+	for _, mm := range ms {
+		if str(mm, "role") != "user" {
+			continue
+		}
+		if raw, ok := mm["content"].([]any); ok {
+			for _, p := range raw {
+				pm, _ := p.(map[string]any)
+				parts = append(parts, pm)
+				if str(pm, "type") == "text" {
+					usertext = str(pm, "text")
+				}
+			}
+		}
+	}
+	if len(parts) != 2 || str(parts[0], "type") != "text" || str(parts[1], "type") != "image_url" {
+		t.Fatalf("the user message = %d parts: %v", len(parts), parts)
+	}
+	if !strings.Contains(usertext, "[Attachment from the user: shot.png (image/png), attached to this message and stored at ") ||
+		!strings.Contains(usertext, "[Attachment from the user: notes.txt (text/plain), stored at ") {
+		t.Fatalf("the attachment lines = %q", usertext)
+	}
+	raw := decodeDataURL(t, str(obj(parts[1], "image_url"), "url"))
+	if cfg, err := png.DecodeConfig(bytes.NewReader(raw)); err != nil || cfg.Width != 8 || cfg.Height != 8 {
+		t.Fatalf("the attached image = %+v, %v", cfg, err)
 	}
 }
 

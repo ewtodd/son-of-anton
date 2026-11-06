@@ -151,8 +151,22 @@ The daemon is the only writer of `state.db`. Clients never open it.
   least: `sessions` (id, kind, parent_id, source, origin chat, title, cwd,
   model, prompt hash, created/ended, status), `system_prompts` (hash, text),
   `messages` (session, seq, role, content, api_content, reasoning, tool calls,
-  tool call id, tool name, ts, active), `messages_fts`, `approvals`,
-  `queue` (pending sends per session), `cron_runs`, `rag_*` (section 11).
+  tool call id, tool name, ts, images), `messages_fts`, `approvals`,
+  `queue` (pending sends per session, images), `media` (id: the sha256 of the
+  bytes, mime, name, data), `cron_runs`, `rag_*` (section 11).
+
+**Images (owner, 2026-11-06).** Images reach the model's own vision encoder,
+or the turn errors; there is no side model and no text summary. A user
+message's images and a tool result's images ride the wire as `image_url`
+parts after the text part (invariant 2 covers them: the reference and its
+bytes are persisted — `media` is content-addressed, so hydration is
+byte-stable). `read_file` on an image attaches it; chat attachments attach
+natively and still land in `cache/signal` for the model to reach with tools;
+queued and steered messages carry their images through the queue. A model
+takes images when config says so: the model's route `supports_vision`, else
+`[model].supports_vision`, else true — a text-only model (or a transcript
+carrying images for one) fails the read or the turn with that as the error,
+and nothing is quietly dropped.
 - Files that stay as they are: `config.toml`, `.env`, `SOUL.md`,
   `memories/*.toml`, `notes/`, `cron/jobs.json` (same format), `scripts/`.
 - Importer: `soa-d import --from <home>` reads the Python fork's `state.db`
@@ -224,10 +238,10 @@ session before its next compaction) gets no prefix. The guidance says a
 message starting with `[Day YYYY-MM-DD HH:MM ZONE]` — or carrying one right
 after a compaction summary — was sent at that time; a later time is known only
 if the model can run `date`, so fiona (who has no terminal) must not guess it.
-The Go daemon has no
-multimodal user message: Signal attachments are text lines with saved paths, and
-images are read through `vision_analyze`. If a multimodal user message is used,
-the stamp would be a leading text part.
+A multimodal user
+message is one text part (the stamped `api_content`) followed by one
+`image_url` part per image: chat attachments and `read_file` results carry
+images explicitly (section 6), on `supports_vision` models.
 
 | session | layers | recall |
 |---|---|---|
@@ -260,8 +274,11 @@ wording). Measured use over play's history is in parentheses.
   (`agent/lsp/`).
 - `execute_code` (213), `todo` (145), `clarify` (11).
 - `memory` (rules and facts, section 11) and `session_search` (section 11).
-- `vision_analyze` (123), `web_search` (SearXNG) and `web_extract`
-  (`WEB_EXTRACT_URL`) (41, 5), `cronjob` (5).
+- `web_search` (SearXNG) and `web_extract` (`WEB_EXTRACT_URL`) (41, 5),
+  `cronjob` (5). `vision_analyze` (123 calls in the old history) is not
+  ported: the owner ruled it out (2026-11-06) — images go to the model's own
+  vision encoder as message parts, or the model gets an error
+  (section 6's Images).
 - MCP tools behind deferred search (`tool_search` / `tool_describe` /
   `tool_call`), so MCP schemas never ride every request.
 - `task` (subagents, section 9) and `relay` (chat sessions only, section 12).
@@ -368,7 +385,7 @@ merge is the one running.
   > it at once whatever the hours.
 - The chat is relay-only on every instance: `relay`, `memory`,
   `session_search`, `clarify`, `cronjob`, `todo`, `web_search`, `web_extract`,
-  `vision_analyze`, and read/patch/write confined to
+  and read/patch/write confined to
   `notes/gateway/`. No terminal, no execute_code, no MCP, no `task`.
   Signal-bound cron gets the same set.
 - `relay send` creates or feeds a worker (section 3: top-level, terminal

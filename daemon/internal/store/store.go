@@ -229,6 +229,18 @@ UPDATE schema_version SET version = 16;`,
 	// v17: a worker is an interactive session a chat owns.
 	`UPDATE sessions SET kind = 'interactive' WHERE kind = 'worker';
 UPDATE schema_version SET version = 17;`,
+	// v18: images. media holds the bytes, content-addressed; messages and
+	// queue rows reference them in an images JSON column, and the wire form
+	// hydrates them as image parts at request time.
+	`CREATE TABLE media (
+	id   TEXT PRIMARY KEY,
+	mime TEXT NOT NULL,
+	name TEXT,
+	data BLOB NOT NULL
+);
+ALTER TABLE messages ADD COLUMN images TEXT;
+ALTER TABLE queue ADD COLUMN images TEXT;
+UPDATE schema_version SET version = 18;`,
 }
 
 func migrate(db *sql.DB) error {
@@ -461,6 +473,43 @@ type Message struct {
 	ToolCallID string
 	ToolName   string
 	TS         time.Time
+	// Images are the image references attached to the row: the wire form
+	// hydrates them to image parts after the text. nil: none.
+	Images []Image `json:"images,omitempty"`
+}
+
+// Image is one image attached to a message or a queued message: the bytes
+// live once in media, under their id (the hex sha256 of the data).
+type Image struct {
+	ID   string `json:"id"`
+	Mime string `json:"mime"`
+	// Name is the image's original file name ("" when it has none); it is
+	// display-only, the id carries the bytes.
+	Name string `json:"name,omitempty"`
+}
+
+// marshalImages is the images column's JSON; nil stays NULL.
+func marshalImages(imgs []Image) any {
+	if len(imgs) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(imgs)
+	if err != nil {
+		return nil
+	}
+	return string(b)
+}
+
+// unmarshalImages reads an images column ("" or NULL for none).
+func unmarshalImages(s string) []Image {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var out []Image
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // AppendMessages appends messages to a session's transcript in one
@@ -511,10 +560,11 @@ func insertMessages(ctx context.Context, tx *sql.Tx, sessionID string, nextSeq i
 			ts = m.TS
 		}
 		res, err := tx.ExecContext(ctx,
-			`INSERT INTO messages (session_id, seq, role, content, api_content, reasoning, tool_calls, tool_call_id, tool_name, ts)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO messages (session_id, seq, role, content, api_content, reasoning, tool_calls, tool_call_id, tool_name, ts, images)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			sessionID, nextSeq, m.Role, m.Content, nullStr(m.APIContent), nullStr(m.Reasoning),
-			nullStr(string(m.ToolCalls)), nullStr(m.ToolCallID), nullStr(m.ToolName), formatTime(ts))
+			nullStr(string(m.ToolCalls)), nullStr(m.ToolCallID), nullStr(m.ToolName), formatTime(ts),
+			marshalImages(m.Images))
 		if err != nil {
 			return nil, err
 		}
@@ -540,7 +590,7 @@ func (s *Store) Messages(ctx context.Context, sessionID string) ([]Message, erro
 
 func (s *Store) queryMessages(ctx context.Context, tail string, args ...any) ([]Message, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT seq, role, content, api_content, reasoning, tool_calls, tool_call_id, tool_name, ts FROM messages `+tail, args...)
+		`SELECT seq, role, content, api_content, reasoning, tool_calls, tool_call_id, tool_name, ts, images FROM messages `+tail, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -555,10 +605,11 @@ func (s *Store) queryMessages(ctx context.Context, tail string, args ...any) ([]
 			toolCalls  sql.NullString
 			toolCallID sql.NullString
 			toolName   sql.NullString
+			images     sql.NullString
 			ts         string
 		)
 		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &apiContent, &reasoning,
-			&toolCalls, &toolCallID, &toolName, &ts); err != nil {
+			&toolCalls, &toolCallID, &toolName, &ts, &images); err != nil {
 			return nil, err
 		}
 		m.APIContent = apiContent.String
@@ -568,6 +619,7 @@ func (s *Store) queryMessages(ctx context.Context, tail string, args ...any) ([]
 		}
 		m.ToolCallID = toolCallID.String
 		m.ToolName = toolName.String
+		m.Images = unmarshalImages(images.String)
 		if m.TS, err = parseTime(ts); err != nil {
 			return nil, err
 		}

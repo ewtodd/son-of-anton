@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,9 +103,11 @@ type Runner struct {
 	WallChat string
 	// Web configures web_search and web_extract (tools.Env.Web).
 	Web *tools.Web
-	// Vision is where vision_analyze sends images (tools.Env.Vision); NoScripts
-	// is why execute_code refuses to run (tools.Env.NoScripts), "" to allow it.
-	Vision    *tools.Vision
+	// Vision reports whether a model takes image parts: a read image is
+	// attached to its tool result and a user message's images are sent as
+	// image parts. nil: no model does. A turn whose transcript carries
+	// images the active model cannot take fails with that as its error.
+	Vision    func(model string) bool
 	NoScripts string
 	// Fallback, when set, takes a request that fails on Model after the
 	// client's own retries (before any output); the next request tries Model
@@ -426,18 +429,27 @@ type Result struct {
 // Send runs one turn and stamps the user message with the time this call
 // began.
 func (s *Session) Send(ctx context.Context, text string, onEvent func(Event)) (Result, error) {
-	return s.SendAt(ctx, text, time.Now(), onEvent)
+	return s.SendMediaAt(ctx, text, nil, time.Now(), onEvent)
 }
 
-// SendAt runs one turn: the request is built from the stored transcript (the
-// system prompt, then every stored message in order), plus the new user
-// message at its send time sentAt. The model may answer directly, or call
-// tools; each tool step is persisted as it completes and the loop continues
-// from the store, so a failure never loses a step. A reply with no text and
-// no tool calls is not an answer: the request goes out again, and a reply that
-// stays empty ends the turn with ErrEmptyReply, so a nil error always comes
-// with a final answer.
+// SendAt is Send with the message's own send time.
 func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onEvent func(Event)) (Result, error) {
+	return s.SendMediaAt(ctx, text, nil, sentAt, onEvent)
+}
+
+// SendMediaAt is Send with the images the turn's user message attaches. Each
+// becomes an image part after the text on the wire and is stored with the
+// user row. A transcript carrying images the active model cannot take fails
+// the turn with that as its error.
+func (s *Session) SendMediaAt(ctx context.Context, text string, images []store.Image, sentAt time.Time, onEvent func(Event)) (Result, error) {
+	// SendAt runs one turn: the request is built from the stored transcript
+	// (the system prompt, then every stored message in order), plus the new
+	// user message at its send time sentAt. The model may answer directly,
+	// or call tools; each tool step is persisted as it completes and the
+	// loop continues from the store, so a failure never loses a step. A
+	// reply with no text and no tool calls is not an answer: the request
+	// goes out again, and a reply that stays empty ends the turn with
+	// ErrEmptyReply, so a nil error always comes with a final answer.
 	if sentAt.IsZero() {
 		sentAt = time.Now()
 	}
@@ -509,7 +521,7 @@ func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onE
 			apiText += "\n\n[Model: your last reply came from " + served + ".]"
 		}
 	}
-	msgs, err := s.build(ctx, apiText)
+	msgs, err := s.build(ctx, apiText, images)
 	if err != nil {
 		return Result{}, err
 	}
@@ -543,7 +555,7 @@ func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onE
 	// closeTurn records a turn that did not end with a final answer: the
 	// user message if it is not stored yet, then a closing assistant row.
 	closeTurn := func(row store.Message, cause error) (Result, error) {
-		if err := s.persistStep(ctx, text, apiText, first, began, row, nil, emit); err != nil {
+		if err := s.persistStep(ctx, text, apiText, first, began, images, row, nil, emit); err != nil {
 			return total, err
 		}
 		return total, cause
@@ -564,7 +576,7 @@ func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onE
 		// when the threshold is crossed again.
 		if s.autoDue() {
 			if s.autoCompact(reqCtx, emit) {
-				if msgs, err = s.build(ctx, pending()); err != nil {
+				if msgs, err = s.build(ctx, pending(), images); err != nil {
 					return closeTurn(store.Message{Role: "assistant", Content: FailedText}, err)
 				}
 			}
@@ -616,7 +628,7 @@ func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onE
 		if err != nil {
 			if !stopped() && !retried && s.overflowCompact(reqCtx, err, emit) {
 				retried = true
-				if msgs, err = s.build(ctx, pending()); err == nil {
+				if msgs, err = s.build(ctx, pending(), images); err == nil {
 					continue
 				}
 				return closeTurn(store.Message{Role: "assistant", Content: FailedText}, err)
@@ -666,7 +678,7 @@ func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onE
 				Content:   resp.Message.Content,
 				Reasoning: resp.Reasoning,
 			}
-			if err := s.persistStep(ctx, text, apiText, first, began, assistant, nil, emit); err != nil {
+			if err := s.persistStep(ctx, text, apiText, first, began, images, assistant, nil, emit); err != nil {
 				return total, err
 			}
 			total.Content, total.Reasoning = resp.Message.Content, resp.Reasoning
@@ -679,7 +691,7 @@ func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onE
 			Reasoning: resp.Reasoning,
 			ToolCalls: marshalToolCalls(resp.Message.ToolCalls),
 		}
-		if err := s.persistStep(ctx, text, apiText, first, began, assistant, rows, emit); err != nil {
+		if err := s.persistStep(ctx, text, apiText, first, began, images, assistant, rows, emit); err != nil {
 			return total, err
 		}
 		first = false
@@ -693,7 +705,7 @@ func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onE
 		}
 		// Rebuild from the store: the next request replays exactly what
 		// was persisted, byte for byte.
-		if msgs, err = s.build(ctx, ""); err != nil {
+		if msgs, err = s.build(ctx, "", nil); err != nil {
 			return closeTurn(store.Message{Role: "assistant", Content: FailedText}, err)
 		}
 	}
@@ -705,10 +717,12 @@ func (s *Session) SendAt(ctx context.Context, text string, sentAt time.Time, onE
 // calls not yet started are not run (each gets a cancellation result); a
 // running call keeps whatever its tool returned.
 func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls []provider.ToolCall, emitEvent func(Event), maxChars int) []store.Message {
+	vision := s.hasVision()
 	base := tools.Env{Policy: s.policy, Sandbox: s.sandbox, CommandHome: s.runner.CommandHome, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
+		Vision: vision,
 		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval,
 		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, SessionState: s.runner.SessionState, WallChat: s.runner.WallChat, Web: s.runner.Web, MCP: s.runner.MCP,
-		Vision: s.runner.Vision, LSP: s.runner.LSP, NoScripts: s.runner.NoScripts, Cron: s.runner.Cron, Relay: s.runner.Relay}
+		LSP: s.runner.LSP, NoScripts: s.runner.NoScripts, Cron: s.runner.Cron, Relay: s.runner.Relay}
 	var emitMu sync.Mutex
 	emit := func(e Event) {
 		emitMu.Lock()
@@ -720,9 +734,15 @@ func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls [
 		call := calls[i]
 		env := base
 		env.CallID = call.ID
-		// A script run by execute_code calls the session's tools through here.
+		// A script run by execute_code calls the session's tools through
+		// here; its images collect into this call's sink.
+		var sink *tools.ImageSink
+		if vision && s.runner.Store != nil {
+			sink = tools.NewImageSink(s.runner.Store)
+			env.Attach = sink
+		}
 		env.Call = func(ctx context.Context, name string, args json.RawMessage) string {
-			inner := base
+			inner := env
 			inner.CallID = call.ID
 			return s.runOneCall(ctx, &inner, provider.ToolCall{ID: call.ID, Function: provider.FunctionCall{Name: name, Arguments: string(args)}}, maxChars)
 		}
@@ -743,6 +763,7 @@ func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls [
 			ToolName:   call.Function.Name,
 			Content:    stored,
 			APIContent: stored,
+			Images:     sink.Images(),
 		}
 	}
 	for i := 0; i < len(calls); {
@@ -808,10 +829,10 @@ func (s *Session) runOneCall(ctx context.Context, env *tools.Env, call provider.
 // persistStep stores one completed step and announces each stored row. It
 // uses a context that is not cancelled: an interrupted turn must still keep
 // its steps.
-func (s *Session) persistStep(ctx context.Context, text, apiText string, first bool, began time.Time, assistant store.Message, toolRows []store.Message, emit func(Event)) error {
+func (s *Session) persistStep(ctx context.Context, text, apiText string, first bool, began time.Time, userImages []store.Image, assistant store.Message, toolRows []store.Message, emit func(Event)) error {
 	msgs := make([]store.Message, 0, 2+len(toolRows))
 	if first {
-		msgs = append(msgs, store.Message{Role: "user", Content: text, APIContent: apiText, TS: began})
+		msgs = append(msgs, store.Message{Role: "user", Content: text, APIContent: apiText, Images: userImages, TS: began})
 	}
 	msgs = append(msgs, assistant)
 	msgs = append(msgs, toolRows...)
@@ -826,9 +847,9 @@ func (s *Session) persistStep(ctx context.Context, text, apiText string, first b
 }
 
 // build loads the transcript and its latest compaction and returns the wire
-// form of the next request. userText is the new user message of the turn's
-// first request, "" after.
-func (s *Session) build(ctx context.Context, userText string) ([]provider.Message, error) {
+// form of the next request. userText is the new user message and userImages
+// its images (both "", nil after), for the turn's first request.
+func (s *Session) build(ctx context.Context, userText string, userImages []store.Image) ([]provider.Message, error) {
 	stored, err := s.runner.Store.Messages(ctx, s.id)
 	if err != nil {
 		return nil, err
@@ -841,14 +862,49 @@ func (s *Session) build(ctx context.Context, userText string) ([]provider.Messag
 	if n := len(comps); n > 0 {
 		last = &comps[n-1]
 	}
-	return buildStepMessages(s.promptText(), stored, last, userText), nil
+	vision := s.hasVision()
+	media := viper{store: s.runner.Store}
+	load := media.loader(ctx)
+	msgs, err := buildStepMessages(s.promptText(), stored, last, userText, userImages, vision, load)
+	if err != nil {
+		return nil, err
+	}
+	return msgs, nil
+}
+
+// viper hydrates media ids to their bytes, once each per request build.
+type viper struct {
+	store *store.Store
+	seen  map[string][]byte
+}
+
+// loader binds hydration to one context and returns it as the small function
+// the wire builders take.
+func (v *viper) loader(ctx context.Context) func(string) ([]byte, error) {
+	return func(id string) ([]byte, error) {
+		if v.seen == nil {
+			v.seen = map[string][]byte{}
+		}
+		if b, ok := v.seen[id]; ok {
+			return b, nil
+		}
+		b, err := v.store.Media(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		v.seen[id] = b
+		return b, nil
+	}
 }
 
 // buildStepMessages is the wire form of one request: the system prompt, the
 // summary of the latest compaction (joined to the first kept user row, which
 // keeps roles alternating), the rows after it in order, and (for the first
-// request of a turn) the new user message. No other synthetic messages.
-func buildStepMessages(prompt string, stored []store.Message, comp *store.Compaction, userText string) []provider.Message {
+// request of a turn) the new user message. No other synthetic messages. Rows
+// whose images the model cannot take fail the build: sending image parts to a
+// text-only model is an error, and the transcript cannot quietly lose them.
+func buildStepMessages(prompt string, stored []store.Message, comp *store.Compaction,
+	userText string, userImages []store.Image, vision bool, load func(string) ([]byte, error)) ([]provider.Message, error) {
 	msgs := make([]provider.Message, 0, len(stored)+3)
 	msgs = append(msgs, provider.Message{Role: "system", Content: prompt})
 	if comp != nil {
@@ -856,8 +912,11 @@ func buildStepMessages(prompt string, stored []store.Message, comp *store.Compac
 		stored = rowsAfter(stored, comp.ThroughSeq)
 		switch {
 		case len(stored) > 0 && stored[0].Role == "user":
-			first := toWireMessage(stored[0])
-			first.Content = block + "\n\n" + first.Content
+			first, err := toWireMessage(stored[0], vision, load)
+			if err != nil {
+				return nil, err
+			}
+			prependBlock(&first, block)
 			msgs = append(msgs, first)
 			stored = stored[1:]
 		case len(stored) == 0 && userText != "":
@@ -867,12 +926,60 @@ func buildStepMessages(prompt string, stored []store.Message, comp *store.Compac
 		}
 	}
 	for _, m := range stored {
-		msgs = append(msgs, toWireMessage(m))
+		w, err := toWireMessage(m, vision, load)
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, w)
 	}
 	if userText != "" {
-		msgs = append(msgs, provider.Message{Role: "user", Content: userText})
+		w, err := imagesMessage("user", userText, userImages, vision, load)
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, w)
 	}
-	return msgs
+	return msgs, nil
+}
+
+// prependBlock joins a compaction summary ahead of a message's text, inside
+// a content part when it carries images and in Content when it does not.
+func prependBlock(m *provider.Message, block string) {
+	if len(m.Parts) > 0 {
+		m.Parts[0].Text = block + "\n\n" + m.Parts[0].Text
+		return
+	}
+	m.Content = block + "\n\n" + m.Content
+}
+
+// imagesMessage is a message whose images follow its text as image parts,
+// hydrated from media; without vision, any image is an error.
+func imagesMessage(role, text string, images []store.Image, vision bool, load func(string) ([]byte, error)) (provider.Message, error) {
+	if len(images) == 0 {
+		return provider.Message{Role: role, Content: text}, nil
+	}
+	if !vision {
+		return provider.Message{}, fmt.Errorf(
+			"the transcript carries %d images and this session's model takes none; images need a vision-capable model",
+			len(images))
+	}
+	parts := make([]provider.ContentPart, 0, len(images)+1)
+	if text != "" {
+		parts = append(parts, provider.ContentPart{Type: "text", Text: text})
+	}
+	for _, img := range images {
+		b, err := load(img.ID)
+		if err != nil {
+			return provider.Message{}, fmt.Errorf("the attached image %s could not be loaded: %v", img.Name, err)
+		}
+		parts = append(parts, provider.ContentPart{Type: "image_url", ImageURL: &provider.ImageURL{URL: dataURL(img.Mime, b)}})
+	}
+	return provider.Message{Role: role, Parts: parts}, nil
+}
+
+// dataURL is an image part's URL: the bytes inline as a base64 data URL.
+func dataURL(mime string, data []byte) string {
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
 }
 
 // truncateToolResult caps a tool result at maxChars, keeping the head and
@@ -897,9 +1004,18 @@ func errorJSON(msg string) string {
 
 // toWireMessage converts a stored transcript row into the wire form it was
 // sent in: user messages replay api_content when present, assistant
-// messages keep their tool calls and their reasoning. All of it goes back,
-// every request, so the prefix stays byte-stable for the prompt cache.
-func toWireMessage(m store.Message) provider.Message {
+// messages keep their tool calls and their reasoning, and a row with images
+// carries them as image parts after its text (an image for a model without
+// vision is an error here, never a quiet drop). All of it goes back, every
+// request, so the prefix stays byte-stable for the prompt cache.
+func toWireMessage(m store.Message, vision bool, load func(string) ([]byte, error)) (provider.Message, error) {
+	if len(m.Images) > 0 {
+		text := m.Content
+		if m.Role == "user" && m.APIContent != "" {
+			text = m.APIContent
+		}
+		return imagesMessage(m.Role, text, m.Images, vision, load)
+	}
 	out := provider.Message{Role: m.Role, Content: m.Content}
 	switch m.Role {
 	case "user":
@@ -918,7 +1034,17 @@ func toWireMessage(m store.Message) provider.Message {
 		out.ToolCallID = m.ToolCallID
 		out.Name = m.ToolName
 	}
-	return out
+	return out, nil
+}
+
+// hasVision says whether the model a request goes to takes image parts: the
+// model that answered last when the endpoint named one, else the session's
+// model. No capability reporter at all: false.
+func (s *Session) hasVision() bool {
+	if s.runner.Vision == nil {
+		return false
+	}
+	return s.runner.Vision(s.ServedModel())
 }
 
 func marshalToolCalls(calls []provider.ToolCall) json.RawMessage {

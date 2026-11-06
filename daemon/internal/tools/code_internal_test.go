@@ -123,17 +123,17 @@ func noisePNG(t *testing.T, w, h int) []byte {
 func TestShrinkImageHalvesUntilItFits(t *testing.T) {
 	data := noisePNG(t, 400, 300)
 	limit := len(dataURL("image/png", data)) / 3
-	url, scale := shrinkImage(data, "image/png", limit)
-	if len(url) > limit || !strings.HasPrefix(url, "data:image/png;base64,") {
-		t.Fatalf("shrunk to %d bytes (limit %d): %.40s", len(url), limit, url)
+	out, outMime, scale := shrinkImage(data, "image/png", limit)
+	if got := len(dataURL(outMime, out)); got > limit || outMime != "image/png" {
+		t.Fatalf("shrunk to %d bytes (limit %d): %.40s", got, limit, dataURL(outMime, out))
 	}
 	if scale == nil || scale.ow != 400 || scale.oh != 300 || scale.nw >= 400 || scale.nw < 64 {
 		t.Fatalf("scale = %+v", scale)
 	}
-	if note := scaleNote(scale, nil); !strings.Contains(note, "Image downscaled from 400x300") {
+	if note := shrinkNote(scale); !strings.Contains(note, "Image downscaled from 400x300") {
 		t.Fatalf("note = %q", note)
 	}
-	if _, scale := shrinkImage(data, "image/png", len(dataURL("image/png", data))); scale != nil {
+	if _, _, scale := shrinkImage(data, "image/png", len(dataURL("image/png", data))); scale != nil {
 		t.Fatalf("an image that fits was scaled: %+v", scale)
 	}
 }
@@ -144,13 +144,13 @@ func TestShrinkImageMakesJPEGOfOthers(t *testing.T) {
 	if err := png.Encode(&gifish, img); err != nil {
 		t.Fatal(err)
 	}
-	url, _ := shrinkImage(gifish.Bytes(), "image/gif", 1<<20)
-	if !strings.HasPrefix(url, "data:image/jpeg;base64,") {
-		t.Fatalf("url = %.40s", url)
+	out, outMime, _ := shrinkImage(gifish.Bytes(), "image/gif", 1<<20)
+	if !strings.HasPrefix(dataURL(outMime, out), "data:image/jpeg;base64,") {
+		t.Fatalf("url = %.40s", dataURL(outMime, out))
 	}
 }
 
-func TestNormalizeImageConvertsBMPAndICOToPNG(t *testing.T) {
+func TestPrepareImageConvertsBMPAndICOToPNG(t *testing.T) {
 	// An icon whose one image is a PNG.
 	pngData := noisePNG(t, 16, 16)
 	ico := make([]byte, 22)
@@ -160,31 +160,23 @@ func TestNormalizeImageConvertsBMPAndICOToPNG(t *testing.T) {
 	binary.LittleEndian.PutUint32(ico[14:], uint32(len(pngData)))
 	binary.LittleEndian.PutUint32(ico[18:], 22)
 	ico = append(ico, pngData...)
-	if mime := sniffImage(ico); mime != "image/x-icon" {
+	if mime := SniffImage(ico); mime != "image/x-icon" {
 		t.Fatalf("sniff = %q", mime)
 	}
-	out, mime, err := normalizeImage(ico, "image/x-icon")
-	if err != nil || mime != "image/png" || sniffImage(out) != "image/png" {
+	out, mime, _, err := PrepareImage(ico, "image/x-icon")
+	if err != nil || mime != "image/png" || SniffImage(out) != "image/png" {
 		t.Fatalf("ico: %q %v", mime, err)
 	}
-	if _, _, err := normalizeImage([]byte("BMxx"), "image/bmp"); err == nil {
+	if _, _, _, err := PrepareImage([]byte("BMxx"), "image/bmp"); err == nil {
 		t.Fatal("a broken BMP converted")
 	}
 }
 
-func TestCropClampsAndReportsTheOffset(t *testing.T) {
-	data := noisePNG(t, 100, 50)
-	out, off, err := cropImage(data, "image/png", []any{float64(-5), float64(10), float64(500), float64(30)})
-	if err != nil || off.x != 0 || off.y != 10 || off.w != 100 || off.h != 20 {
-		t.Fatalf("crop = %+v %v", off, err)
-	}
-	if cfg, err := png.DecodeConfig(bytes.NewReader(out)); err != nil || cfg.Width != 100 || cfg.Height != 20 {
-		t.Fatalf("cropped image = %+v %v", cfg, err)
-	}
-	for _, bad := range [][]any{{1.0, 2.0}, {"a", 1.0, 2.0, 3.0}, {true, 1.0, 2.0, 3.0}} {
-		if _, _, err := cropImage(data, "image/png", bad); err == nil || !strings.Contains(err.Error(), "Invalid region: need four") {
-			t.Errorf("region %v: %v", bad, err)
-		}
+func TestPrepareImageLeavesWhatFitsUnchanged(t *testing.T) {
+	data := noisePNG(t, 40, 40)
+	out, mime, note, err := PrepareImage(data, "image/png")
+	if err != nil || mime != "image/png" || note != "" || !bytes.Equal(out, data) {
+		t.Fatalf("prepare = (%d bytes, %s, %q, %v)", len(out), mime, note, err)
 	}
 }
 

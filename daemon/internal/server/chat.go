@@ -595,7 +595,7 @@ func (h *chatHub) message(cs *chatState, in signal.Inbound) {
 	if len(in.Attachments) == 0 && h.answerWaiting(cs, in.Text) {
 		return
 	}
-	text := h.userText(in)
+	text, images := h.userText(in)
 	if strings.TrimSpace(text) == "" {
 		return
 	}
@@ -606,7 +606,7 @@ func (h *chatHub) message(cs *chatState, in signal.Inbound) {
 	if in.Timestamp > 0 {
 		sentAt = time.UnixMilli(in.Timestamp).In(prompt.LocalZone())
 	}
-	h.deliver(cs, text, false, sentAt)
+	h.deliver(cs, text, images, false, sentAt)
 }
 
 // chatSessionModel is the model the chat follows: the instance's chat model,
@@ -623,7 +623,8 @@ func (h *chatHub) chatSessionModel(cs *chatState) string {
 
 // deliver gives text to the chat's session: a turn if it is idle, else queued
 // (or, with now, steered in). The first message of a chat makes its session.
-func (h *chatHub) deliver(cs *chatState, text string, now bool, sentAt time.Time) (ok bool) {
+// images ride the message: image parts on its turn.
+func (h *chatHub) deliver(cs *chatState, text string, images []store.Image, now bool, sentAt time.Time) (ok bool) {
 	s := h.srv
 	cs.sessMu.Lock()
 	defer cs.sessMu.Unlock()
@@ -635,7 +636,7 @@ func (h *chatHub) deliver(cs *chatState, text string, now bool, sentAt time.Time
 		l, err := s.chatLive(s.base, cs)
 		if err == nil {
 			var queued string
-			_, queued, _, err = l.sendAt(text, mode, sentAt)
+			_, queued, _, err = l.sendAt(text, mode, sentAt, images)
 			if errors.Is(err, errUnloaded) {
 				continue // a finishing turn closed it first
 			}
@@ -669,8 +670,9 @@ func (h *chatHub) ack(cs *chatState) {
 }
 
 // userText is the text the model sees: the quote the message replies to, the
-// message, and a line for each attachment saved to disk.
-func (h *chatHub) userText(in signal.Inbound) string {
+// message, and a line for each attachment saved to disk. Image attachments
+// also come back as image references, to attach to the turn natively.
+func (h *chatHub) userText(in signal.Inbound) (string, []store.Image) {
 	text := strings.TrimSpace(in.Text)
 	if q := in.Quote; q != nil && strings.TrimSpace(q.Text) != "" {
 		quoted := q.Text
@@ -687,6 +689,7 @@ func (h *chatHub) userText(in signal.Inbound) string {
 	if text != "" {
 		lines = append(lines, text)
 	}
+	var images []store.Image
 	for _, a := range in.Attachments {
 		path, name, err := h.saveAttachment(in.Timestamp, a)
 		if err != nil {
@@ -700,9 +703,46 @@ func (h *chatHub) userText(in signal.Inbound) string {
 		if kind == "" {
 			kind = "unknown type"
 		}
+		// An image is attached to the turn itself, straight to the
+		// model's vision encoder; the file stays on disk with it.
+		if img, ok := h.imageAttachment(path, name); ok {
+			images = append(images, img)
+			lines = append(lines, fmt.Sprintf("[Attachment from the user: %s (%s), attached to this message and stored at %s]", name, kind, path))
+			continue
+		}
 		lines = append(lines, fmt.Sprintf("[Attachment from the user: %s (%s), stored at %s]", name, kind, path))
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n"), images
+}
+
+// imageAttachment turns an image attachment into a media reference, reading
+// the copy saved to disk: the bytes by their magic bytes, made into a form
+// message parts take. The second return is false for anything that is not an
+// image the model can take.
+func (h *chatHub) imageAttachment(path, name string) (store.Image, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("signal: image attachment: %v", err)
+		return store.Image{}, false
+	}
+	mime := tools.SniffImage(data)
+	if mime == "" {
+		return store.Image{}, false
+	}
+	out, outMime, note, err := tools.PrepareImage(data, mime)
+	if err != nil {
+		log.Printf("signal: image attachment %s: %v", name, err)
+		return store.Image{}, false
+	}
+	if note != "" {
+		log.Printf("signal: image attachment %s: %s", name, note)
+	}
+	img, err := h.srv.st.PutMedia(h.srv.base, outMime, name, out)
+	if err != nil {
+		log.Printf("signal: image attachment %s: %v", name, err)
+		return store.Image{}, false
+	}
+	return img, true
 }
 
 var extByType = map[string]string{
@@ -955,9 +995,9 @@ func (h *chatHub) sendnow(cs *chatState, text string, ts int64) {
 	}
 	switch {
 	case text != "" && !running:
-		h.deliver(cs, text, false, sentAt)
+		h.deliver(cs, text, nil, false, sentAt)
 	case text != "":
-		if h.deliver(cs, text, true, sentAt) {
+		if h.deliver(cs, text, nil, true, sentAt) {
 			cs.say("Your queued message was added to the turn in progress.")
 		}
 	case !running:

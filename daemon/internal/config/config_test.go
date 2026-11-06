@@ -304,3 +304,38 @@ func TestMessageTimestampsDefaultOnAndCanBeTurnedOff(t *testing.T) {
 		t.Fatal("message_timestamps = false must turn it off")
 	}
 }
+
+// Images ride the turns of a vision-capable model and come back as an error
+// on one declared text-only: [model].supports_vision is the instance-wide
+// declaration, a per-model route overrides it, unset defaults to true.
+func TestSupportsVisionResolution(t *testing.T) {
+	base := `[model]
+default = "m"
+provider = "custom"
+`
+	custom := `
+[custom_providers.custom]
+base_url = "http://maitred.test/v1"
+`
+	for _, c := range []struct {
+		name  string
+		toml  string
+		model string
+		want  bool
+	}{
+		{"unset is true", base + custom, "any-model", true},
+		{"the instance-wide declaration", base + "supports_vision = false\n" + custom, "any-model", false},
+		{"a per-model route wins over it", base + "supports_vision = false\n" + custom +
+			"\n[custom_providers.custom.models.\"m\"]\nsupports_vision = true\n", "m", true},
+		{"another model keeps the declaration", base + "supports_vision = false\n" + custom +
+			"\n[custom_providers.custom.models.\"m\"]\nsupports_vision = true\n", "other", false},
+		{"a renamed model resolves", base + "supports_vision = false\n" + custom +
+			"\n[models]\nrenamed.\"old\" = \"m\"\n\n" +
+			"[custom_providers.custom.models.\"m\"]\nsupports_vision = false\n", "old", false},
+	} {
+		cfg := load(t, home(t, c.toml, ""))
+		if got := cfg.SupportsVision(c.model); got != c.want {
+			t.Errorf("%s: SupportsVision(%q) = %v, want %v", c.name, c.model, got, c.want)
+		}
+	}
+}

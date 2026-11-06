@@ -28,41 +28,43 @@ func (s *Store) UpdateSessionSettings(ctx context.Context, id, model, effort, mo
 
 // QueueItem is one pending send. Kind is "user" or "notice". Created is the
 // message's own send time: a Signal timestamp when there is one, otherwise
-// when it entered the queue.
+// when it entered the queue. Images are the image references the turn is to
+// attach (nil: none).
 type QueueItem struct {
 	ID, Kind, Text string
 	Created        time.Time
+	Images         []Image
 }
 
 // QueuePush appends an item to the session's queue, stamped with now.
 func (s *Store) QueuePush(ctx context.Context, sessionID, kind, text string) (QueueItem, error) {
-	return s.queuePush(ctx, sessionID, kind, text, time.Now())
+	return s.queuePush(ctx, sessionID, kind, text, time.Now(), nil)
 }
 
 // QueuePushAt appends an item with the message's own send time.
-func (s *Store) QueuePushAt(ctx context.Context, sessionID, kind, text string, sentAt time.Time) (QueueItem, error) {
+func (s *Store) QueuePushAt(ctx context.Context, sessionID, kind, text string, sentAt time.Time, images []Image) (QueueItem, error) {
 	if sentAt.IsZero() {
 		sentAt = time.Now()
 	}
-	return s.queuePush(ctx, sessionID, kind, text, sentAt)
+	return s.queuePush(ctx, sessionID, kind, text, sentAt, images)
 }
 
-func (s *Store) queuePush(ctx context.Context, sessionID, kind, text string, sentAt time.Time) (QueueItem, error) {
+func (s *Store) queuePush(ctx context.Context, sessionID, kind, text string, sentAt time.Time, images []Image) (QueueItem, error) {
 	b := make([]byte, 6)
 	if _, err := rand.Read(b); err != nil {
 		return QueueItem{}, err
 	}
-	it := QueueItem{ID: "q_" + hex.EncodeToString(b), Kind: kind, Text: text, Created: sentAt}
+	it := QueueItem{ID: "q_" + hex.EncodeToString(b), Kind: kind, Text: text, Created: sentAt, Images: images}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO queue (id, session_id, kind, text, created) VALUES (?, ?, ?, ?, ?)`,
-		it.ID, sessionID, kind, text, formatTime(it.Created))
+		`INSERT INTO queue (id, session_id, kind, text, created, images) VALUES (?, ?, ?, ?, ?, ?)`,
+		it.ID, sessionID, kind, text, formatTime(it.Created), marshalImages(images))
 	return it, err
 }
 
 // QueueItems returns the session's queue, oldest first.
 func (s *Store) QueueItems(ctx context.Context, sessionID string) ([]QueueItem, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, kind, text, created FROM queue WHERE session_id = ? ORDER BY n`, sessionID)
+		`SELECT id, kind, text, created, images FROM queue WHERE session_id = ? ORDER BY n`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -70,13 +72,14 @@ func (s *Store) QueueItems(ctx context.Context, sessionID string) ([]QueueItem, 
 	var out []QueueItem
 	for rows.Next() {
 		var it QueueItem
-		var created string
-		if err := rows.Scan(&it.ID, &it.Kind, &it.Text, &created); err != nil {
+		var created, images sql.NullString
+		if err := rows.Scan(&it.ID, &it.Kind, &it.Text, &created, &images); err != nil {
 			return nil, err
 		}
-		if it.Created, err = parseTime(created); err != nil {
+		if it.Created, err = parseTime(created.String); err != nil {
 			return nil, err
 		}
+		it.Images = unmarshalImages(images.String)
 		out = append(out, it)
 	}
 	return out, rows.Err()
@@ -499,5 +502,8 @@ func (s *Store) DeleteSessions(ctx context.Context, ids []string) error {
 			}
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.PruneMedia(ctx)
 }

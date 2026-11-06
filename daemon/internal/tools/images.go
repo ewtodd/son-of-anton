@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -13,25 +14,28 @@ import (
 	"image/jpeg"
 	"image/png"
 	"os/exec"
-	"strings"
 	"time"
 
 	"golang.org/x/image/bmp"
 	xdraw "golang.org/x/image/draw"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
+
+	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 )
 
 const (
-	visionMaxSource    = 50 << 20 // any image source
-	visionMaxPayload   = 20 << 20 // base64 bytes no provider accepts above
-	visionShrinkTarget = 5 << 20  // base64 bytes a shrunk image aims under
+	// imgMaxSource is the most any image source may weigh in bytes.
+	imgMaxSource = 50 << 20
+	// imgPayloadLimit is the data-URL size above which an image is scaled
+	// down before it enters a conversation (a modest request body).
+	imgPayloadLimit = 7 << 20
+	// imgShrinkTarget is the data-URL size a shrunk image aims under.
+	imgShrinkTarget = 5 << 20
 )
 
-var errNotImage = errors.New("source is not a recognized image")
-
-// sniffImage names an image's type by its magic bytes ("" for none).
-func sniffImage(data []byte) string {
+// SniffImage names an image's type by its magic bytes ("" for none).
+func SniffImage(data []byte) string {
 	h := data[:min(len(data), 64)]
 	switch {
 	case bytes.HasPrefix(h, []byte("\x89PNG\r\n\x1a\n")):
@@ -55,13 +59,15 @@ func sniffImage(data []byte) string {
 	return ""
 }
 
-// normalizeImage returns the image in a type every vision API accepts: PNG,
-// JPEG, GIF and WebP pass through; BMP, TIFF and ICO become PNG; SVG goes
-// through rsvg-convert.
-func normalizeImage(data []byte, mime string) ([]byte, string, error) {
+// PrepareImage returns an image in a form a chat-completions endpoint takes
+// in a message part: PNG, JPEG, GIF and WebP pass through; BMP, TIFF and ICO
+// become PNG; SVG goes through rsvg-convert when it is on PATH. An image
+// whose data URL would be over the payload limit is scaled down. The note,
+// when set, says how what the model will see differs from the original.
+func PrepareImage(data []byte, mime string) ([]byte, string, string, error) {
 	switch mime {
 	case "image/png", "image/jpeg", "image/gif", "image/webp":
-		return data, mime, nil
+		// pass through
 	case "image/svg+xml":
 		path, err := exec.LookPath("rsvg-convert")
 		if err == nil {
@@ -77,25 +83,56 @@ func normalizeImage(data []byte, mime string) ([]byte, string, error) {
 			err = cmd.Run()
 			timer.Stop()
 			if err == nil && out.Len() > 0 {
-				return out.Bytes(), "image/png", nil
+				return out.Bytes(), "image/png", "", nil
 			}
 		}
-		return nil, "", errors.New("Vision models cannot read SVG, and no SVG converter is installed " +
-			"(rsvg-convert and inkscape were tried). Turn the file into a PNG yourself, " +
-			"for instance by screenshotting it in a browser, and run vision_analyze on that.")
-	}
-	img, err := decodeImage(data, mime)
-	if err == nil {
-		var out []byte
-		if out, err = encodePNG(img); err == nil {
-			return out, "image/png", nil
+		return nil, "", "", errors.New("models cannot read SVG, and no SVG converter is installed " +
+			"(rsvg-convert was not found). Turn the file into a PNG first, for instance by " +
+			"screenshotting it in a browser or with a converter.")
+	default:
+		img, err := decodeImage(data, mime)
+		if err == nil {
+			var out []byte
+			if out, err = encodePNG(img); err == nil {
+				data, mime = out, "image/png"
+			}
+		}
+		if err != nil {
+			return nil, "", "", fmt.Errorf("'%s' cannot be attached to a message and could not be "+
+				"turned into PNG. Save it as PNG or JPEG and try again.", mime)
 		}
 	}
-	return nil, "", fmt.Errorf("The vision model does not take '%s' images and this one could not be turned "+
-		"into PNG. Save it as PNG or JPEG and try again.", mime)
+	if len(dataURL(mime, data)) <= imgPayloadLimit {
+		return data, mime, "", nil
+	}
+	out, outMime, info := shrinkImage(data, mime, imgShrinkTarget)
+	return out, outMime, shrinkNote(info), nil
 }
 
-// decodeImage decodes any type the tool takes (the first frame of a GIF).
+// shrinkNote tells the model how coordinates map back to the original image
+// when the picture it will see was scaled down; "" when it was not.
+func shrinkNote(s *scaleInfo) string {
+	if s == nil {
+		return ""
+	}
+	fx, fy := 1.0, 1.0
+	if s.nw != 0 {
+		fx = float64(s.ow) / float64(s.nw)
+	}
+	if s.nh != 0 {
+		fy = float64(s.oh) / float64(s.nh)
+	}
+	var clause string
+	if fmt.Sprintf("%.2f", fx) == fmt.Sprintf("%.2f", fy) {
+		clause = fmt.Sprintf("scale any coordinates you give by %.2f to get original-image positions.", fx)
+	} else {
+		clause = fmt.Sprintf("scale x coordinates by %.2f and y coordinates by %.2f to get original-image positions.", fx, fy)
+	}
+	return fmt.Sprintf("Image downscaled from %dx%d to %dx%d before it was attached; %s", s.ow, s.oh, s.nw, s.nh, clause)
+}
+
+// decodeImage decodes any type an image source may hold (the first frame of
+// a GIF).
 func decodeImage(data []byte, mime string) (image.Image, error) {
 	if mime == "image/x-icon" {
 		return decodeICO(data)
@@ -165,75 +202,8 @@ func decodeICO(data []byte) (image.Image, error) {
 	return bmp.Decode(bytes.NewReader(append(file, fixed...)))
 }
 
-// regionOffset is where a crop started in the original image.
-type regionOffset struct{ x, y, w, h int }
-
-// cropImage crops data to region = [x1, y1, x2, y2] in pixels of the original
-// (clamped, x2 and y2 exclusive) and returns it as PNG.
-func cropImage(data []byte, mime string, region []any) ([]byte, *regionOffset, error) {
-	var v [4]int
-	ok := len(region) == 4
-	for i := 0; ok && i < 4; i++ {
-		f, isNum := region[i].(float64)
-		ok = isNum
-		v[i] = int(f)
-	}
-	if !ok {
-		return nil, nil, errors.New("Invalid region: need four numbers [x1, y1, x2, y2], " +
-			"in pixels of the original image.")
-	}
-	img, err := decodeImage(data, mime)
-	if err != nil {
-		return nil, nil, fmt.Errorf("Could not crop the region: %v", err)
-	}
-	b := img.Bounds()
-	width, height := b.Dx(), b.Dy()
-	clamp := func(n, hi int) int { return max(0, min(n, hi)) }
-	cx1, cy1, cx2, cy2 := clamp(v[0], width), clamp(v[1], height), clamp(v[2], width), clamp(v[3], height)
-	if cx2 <= cx1 || cy2 <= cy1 {
-		return nil, nil, fmt.Errorf("Invalid region [%d, %d, %d, %d]: after being pulled inside the image it crops to zero "+
-			"area. The image is %dx%d pixels, so choose x1<x2 and y1<y2 within "+
-			"[0, 0, %d, %d].", v[0], v[1], v[2], v[3], width, height, width, height)
-	}
-	dst := image.NewNRGBA(image.Rect(0, 0, cx2-cx1, cy2-cy1))
-	draw.Draw(dst, dst.Bounds(), img, image.Pt(b.Min.X+cx1, b.Min.Y+cy1), draw.Src)
-	out, err := encodePNG(dst)
-	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to crop region: %v", err)
-	}
-	return out, &regionOffset{cx1, cy1, cx2 - cx1, cy2 - cy1}, nil
-}
-
 // scaleInfo is a downscale: the original and the new size.
 type scaleInfo struct{ ow, oh, nw, nh int }
-
-// scaleNote tells the model how coordinates map back to the original image
-// when the picture it saw was cropped or scaled down; "" for neither.
-func scaleNote(s *scaleInfo, c *regionOffset) string {
-	var parts []string
-	if s != nil {
-		fx, fy := 1.0, 1.0
-		if s.nw != 0 {
-			fx = float64(s.ow) / float64(s.nw)
-		}
-		if s.nh != 0 {
-			fy = float64(s.oh) / float64(s.nh)
-		}
-		var clause string
-		if fmt.Sprintf("%.2f", fx) == fmt.Sprintf("%.2f", fy) {
-			clause = fmt.Sprintf("scale any coordinates you give by %.2f to get original-image positions.", fx)
-		} else {
-			clause = fmt.Sprintf("scale x coordinates by %.2f and y coordinates by %.2f to get original-image positions.", fx, fy)
-		}
-		parts = append(parts, fmt.Sprintf("Image downscaled from %dx%d to %dx%d before analysis; %s", s.ow, s.oh, s.nw, s.nh, clause))
-	}
-	if c != nil {
-		parts = append(parts, fmt.Sprintf("Only a cropped part of the original image was analyzed. The crop starts at "+
-			"offset (%d, %d) in the original, and coordinates are measured from that corner, "+
-			"so add the offset to get positions in the full image.", c.x, c.y))
-	}
-	return strings.Join(parts, " ")
-}
 
 func dataURL(mime string, data []byte) string {
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
@@ -243,10 +213,10 @@ func dataURL(mime string, data []byte) string {
 // its data URL fits under limit: PNG stays PNG, others become JPEG at quality
 // 85, 70, 50. It returns the best attempt (which may still be over) and, when
 // the size changed, how.
-func shrinkImage(data []byte, mime string, limit int) (string, *scaleInfo) {
+func shrinkImage(data []byte, mime string, limit int) ([]byte, string, *scaleInfo) {
 	img, err := decodeImage(data, mime)
 	if err != nil {
-		return dataURL(mime, data), nil
+		return data, mime, nil
 	}
 	isPNG := mime == "image/png"
 	outMime, qualities := "image/jpeg", []int{85, 70, 50}
@@ -256,7 +226,8 @@ func shrinkImage(data []byte, mime string, limit int) (string, *scaleInfo) {
 	b := img.Bounds()
 	ow, oh := b.Dx(), b.Dy()
 	w, h := ow, oh
-	var best string
+	var best []byte
+	bestMime := mime
 	info := func() *scaleInfo {
 		if w == ow && h == oh {
 			return nil
@@ -286,15 +257,18 @@ func shrinkImage(data []byte, mime string, limit int) (string, *scaleInfo) {
 				err = jpeg.Encode(&buf, opaque(img), &jpeg.Options{Quality: q})
 			}
 			if err != nil {
-				return dataURL(mime, data), nil
+				return data, mime, nil
 			}
-			best = dataURL(outMime, buf.Bytes())
-			if len(best) <= limit {
-				return best, info()
+			best, bestMime = bytes.Clone(buf.Bytes()), outMime
+			if len(dataURL(outMime, buf.Bytes())) <= limit {
+				return best, outMime, info()
 			}
 		}
 	}
-	return best, info()
+	if best == nil {
+		return data, mime, nil
+	}
+	return best, bestMime, info()
 }
 
 // opaque draws img over white, for a format without transparency.
@@ -303,4 +277,50 @@ func opaque(img image.Image) image.Image {
 	draw.Draw(dst, dst.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 	draw.Draw(dst, dst.Bounds(), img, img.Bounds().Min, draw.Over)
 	return dst
+}
+
+// ImageSink stores the images a tool result attaches to the model: each Add
+// puts the bytes in the session's media (content-addressed, so the same image
+// is stored once) and collects the reference that rides the result's row.
+type ImageSink struct {
+	store  *store.Store
+	images []store.Image
+	cap    int
+}
+
+// maxImagesPerResult bounds one tool result's attachments, so a single call
+// cannot flood the next request.
+const maxImagesPerResult = 8
+
+// NewImageSink returns a sink storing images in the session's media.
+func NewImageSink(st *store.Store) *ImageSink {
+	return &ImageSink{store: st, cap: maxImagesPerResult}
+}
+
+// Add stores an image (at most imgMaxSource bytes) and collects its
+// reference. It returns the id, which the tool's text result may name.
+func (s *ImageSink) Add(ctx context.Context, mime, name string, data []byte) (string, error) {
+	if s == nil || s.store == nil {
+		return "", errors.New("images cannot be attached here")
+	}
+	if len(s.images) >= s.cap {
+		return "", fmt.Errorf("at most %d images can be attached to one result", s.cap)
+	}
+	if len(data) > imgMaxSource {
+		return "", fmt.Errorf("the image is %d bytes; the most allowed is %d", len(data), imgMaxSource)
+	}
+	img, err := s.store.PutMedia(ctx, mime, name, data)
+	if err != nil {
+		return "", err
+	}
+	s.images = append(s.images, img)
+	return img.ID, nil
+}
+
+// Images returns the references collected so far.
+func (s *ImageSink) Images() []store.Image {
+	if s == nil {
+		return nil
+	}
+	return s.images
 }

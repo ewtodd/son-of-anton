@@ -21,6 +21,11 @@ type Config struct {
 		Default         string `toml:"default"`
 		Provider        string `toml:"provider"`
 		ReasoningEffort any    `toml:"reasoning_effort"`
+		// SupportsVision declares that every model here takes image parts:
+		// user images ride their turns and read_file attaches read images.
+		// A per-model route under the provider overrides it; unset is true
+		// (every model is vision-capable unless the config says otherwise).
+		SupportsVision *bool `toml:"supports_vision"`
 	} `toml:"model"`
 	Models struct {
 		// Renamed maps a model name that was renamed to its new name; a pin on
@@ -184,6 +189,11 @@ type ModelRoute struct {
 	// Description is what the model is good for, in a few words; the models
 	// note a chat gets lists it.
 	Description string `toml:"description"`
+	// SupportsVision declares that a model that takes text only: set it
+	// false to keep image parts away from one text-only model on an
+	// otherwise vision-capable endpoint. Unset follows [model]
+	// .supports_vision (see SupportsVision).
+	SupportsVision *bool `toml:"supports_vision"`
 }
 
 // Endpoint is a resolved, ready-to-use model endpoint.
@@ -340,6 +350,23 @@ func (c *Config) Routes() map[string][]string {
 		out[name] = route.ReasoningEfforts
 	}
 	return out
+}
+
+// SupportsVision says whether model takes image parts. The resolution, first
+// hit wins: the model's route under the model provider,
+// [model].supports_vision, then the default (true: the harness serves
+// vision-capable models, and a text-only one is declared as false).
+func (c *Config) SupportsVision(model string) bool {
+	if to, ok := c.Models.Renamed[model]; ok && to != "" {
+		model = to
+	}
+	if route, ok := c.CustomProviders[c.Model.Provider].Models[model]; ok && route.SupportsVision != nil {
+		return *route.SupportsVision
+	}
+	if c.Model.SupportsVision != nil {
+		return *c.Model.SupportsVision
+	}
+	return true
 }
 
 // AuxiliaryTask is one [auxiliary.<task>] table. provider is accepted and

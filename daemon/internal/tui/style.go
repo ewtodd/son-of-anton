@@ -15,10 +15,9 @@ var toolIcons = map[string]string{
 	"web_search":   "◈",
 	"search_files": "✱", "session_search": "✱",
 	"write_file": "←", "patch": "←", "memory": "←",
-	"delegate_task":  "✓",
-	"todo":           "☰",
-	"cronjob":        "◔",
-	"vision_analyze": "◉",
+	"delegate_task": "✓",
+	"todo":          "☰",
+	"cronjob":       "◔",
 }
 
 func toolIcon(name string) string {

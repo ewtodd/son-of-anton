@@ -57,11 +57,20 @@ func TestWorkersBecomeSessionsWithAnOwner(t *testing.T) {
 	chat, _ := st.CreateSession(ctx, store.Session{Kind: "chat", Scope: "gateway", Chat: "signal:g"})
 	st.Close()
 
+	// Become the database of a day before v17: the version goes back and
+	// the schema loses what later migrations added.
 	db, err := sql.Open("sqlite", "file:"+path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, q := range []string{`UPDATE sessions SET kind = 'worker' WHERE id = '` + worker.ID + `'`, `UPDATE schema_version SET version = 16`} {
+	downgrades := []string{
+		`UPDATE sessions SET kind = 'worker' WHERE id = '` + worker.ID + `'`,
+		`UPDATE schema_version SET version = 16`,
+		`DROP TABLE IF EXISTS media`,
+		`ALTER TABLE messages DROP COLUMN images`,
+		`ALTER TABLE queue DROP COLUMN images`,
+	}
+	for _, q := range downgrades {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
 		}
@@ -69,7 +78,7 @@ func TestWorkersBecomeSessionsWithAnOwner(t *testing.T) {
 	db.Close()
 
 	st = open(t, path)
-	if v, err := st.SchemaVersion(); err != nil || v != 17 {
+	if v, err := st.SchemaVersion(); err != nil || v != 18 {
 		t.Fatalf("schema version %d, %v", v, err)
 	}
 	got, err := st.Session(ctx, worker.ID)

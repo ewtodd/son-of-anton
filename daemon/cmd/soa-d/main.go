@@ -202,7 +202,7 @@ func newSetup(o options, source string, stderr io.Writer) (*setup, error) {
 		Web:               server.WebConfig(cfg, home),
 		MCP:               mcpm,
 		LSP:               lspS,
-		Vision:            server.VisionConfig(cfg, ep),
+		Vision:            cfg.SupportsVision,
 		Prompt: func(_ context.Context, s store.Session) (string, error) {
 			if o.system != "" {
 				return string(system), nil

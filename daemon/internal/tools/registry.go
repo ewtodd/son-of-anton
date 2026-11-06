@@ -71,8 +71,14 @@ type Env struct {
 	// NoScripts, when set, is why execute_code refuses to run (a run with
 	// nobody to ask).
 	NoScripts string
-	// Vision is the endpoint vision_analyze sends images to (nil: none).
-	Vision *Vision
+	// Vision says whether the session's model takes image parts, so a read
+	// image is attached to the result; false, a tool that would attach one
+	// returns an error instead.
+	Vision bool
+	// Attach, when Vision allows it, stores the images a tool result
+	// attaches; the agent moves its collected references onto the row. nil:
+	// images cannot be attached.
+	Attach *ImageSink
 	// LSP reports the errors an edit introduced (nil: no language servers).
 	LSP *lsp.Service
 	// Relay answers the relay tool's actions for this chat (nil: unavailable).
@@ -173,7 +179,6 @@ func Builtin() []Tool {
 		webSearchTool{},
 		webExtractTool{},
 		executeCodeTool{},
-		visionTool{},
 	}
 }
 

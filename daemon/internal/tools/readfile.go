@@ -77,6 +77,9 @@ func (readFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	if mime := SniffImage(data); mime != "" {
+		return readImage(ctx, env, a.Path, abs, data, mime), nil
+	}
 	if isBinary(data) {
 		return errorResult(abs + " holds binary data, not text"), nil
 	}
@@ -134,6 +137,39 @@ func (readFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 		partial: offset > 1 || truncated,
 	})
 	return jsonResult(result)
+}
+
+// readImage returns an image as a multimodal result: the text names the file
+// and the image itself rides the result as an image part, straight to the
+// model's vision encoder. A model without vision gets an error instead.
+func readImage(ctx context.Context, env *Env, path, abs string, data []byte, mime string) string {
+	if !env.Vision || env.Attach == nil {
+		return errorResult(fmt.Sprintf(
+			"'%s' is an image, and this session's model (%s) has no vision, so it cannot be attached. "+
+				"Turn it into text yourself (an OCR or a converter) and read that, or come back on a vision-capable model.",
+			path, env.Model))
+	}
+	out, outMime, note, err := PrepareImage(data, mime)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	id, err := env.Attach.Add(ctx, outMime, filepath.Base(abs), out)
+	if err != nil {
+		return errorResult("the image could not be attached: " + err.Error())
+	}
+	res := map[string]any{
+		"content":   fmt.Sprintf("Read image '%s' (%s, %d bytes). The image is attached to this result.", path, outMime, len(data)),
+		"file_size": len(data),
+		"image":     map[string]any{"id": id, "mime": outMime, "name": filepath.Base(abs)},
+	}
+	if note != "" {
+		res["note"] = note
+	}
+	b, err := jsonResult(res)
+	if err != nil {
+		return errorResult(err.Error())
+	}
+	return b
 }
 
 // isBinary reports whether data looks binary: a NUL byte in the first 8 KiB
