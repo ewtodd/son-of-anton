@@ -5,8 +5,11 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -15,17 +18,32 @@ const (
 	nudgeMax   = 200 // characters of body, as the Python's nudge kept
 )
 
-// notifySendCommand is the desktop nudge: notify-send, best effort. A host
-// without the binary or without a notification daemon stays quiet.
+// runNotify is the desktop nudge: notify-send, best effort. A host without
+// the binary or without a notification daemon stays quiet.
 func runNotify(title, body string) {
 	if _, err := exec.LookPath("notify-send"); err != nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := exec.CommandContext(ctx, "notify-send", "--app-name=Son of Anton", title, body).Run(); err != nil {
-		log.Printf("notify-send: %v", err)
+	cmd := exec.CommandContext(ctx, "notify-send", "--app-name=Son of Anton", title, body)
+	cmd.Env = dbusEnv(os.Environ(), os.Getuid())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("notify-send: %v: %s", err, out)
 	}
+}
+
+// dbusEnv fills in the user's session bus: a systemd system unit runs with
+// no DBUS_SESSION_BUS_ADDRESS, and desktop notifications only exist there.
+// A bus the instance cannot reach stays a quiet no-op — the nudge is best
+// effort.
+func dbusEnv(env []string, uid int) []string {
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "DBUS_SESSION_BUS_ADDRESS=") {
+			return env
+		}
+	}
+	return append(env, fmt.Sprintf("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%d/bus", uid))
 }
 
 // armNudge starts the desktop nudge for a pending approval or question: if
