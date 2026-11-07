@@ -179,6 +179,29 @@ func (s *Server) body(i int) []byte {
 	return s.bodies[i]
 }
 
+// streamCheck reads a chat request's body for the stream the daemon always
+// asks for (owner, 2026-11-07). A body that would not parse is a body that
+// never arrived as a request, so its refusal says that instead of posing as a
+// plain non-streaming one — the refusal names the request number, the path,
+// the body length and the JSON error. refused is "" for a request the fake
+// answers, with model taken from the body ("" when the body names none).
+func streamCheck(idx int, path string, body []byte) (model, refused string) {
+	var req struct {
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
+	}
+	jerr := json.Unmarshal(body, &req)
+	if jerr != nil {
+		return "", fmt.Sprintf("fakellm: request %d to %s (%d bytes) did not parse as a chat-completions request (%v); body: %.200q",
+			idx, path, len(body), jerr, body)
+	}
+	if !req.Stream {
+		return req.Model, fmt.Sprintf("fakellm: request %d to %s (%d bytes) did not ask for a stream; body: %.200q",
+			idx, path, len(body), body)
+	}
+	return req.Model, ""
+}
+
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	s.mu.Lock()
@@ -218,13 +241,15 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
-	}
-	_ = json.Unmarshal(body, &req)
-	if !req.Stream {
-		s.t.Errorf("fakellm: request %d did not ask for a stream", idx+1)
+	// streamCheck reads what arrived (owner, 2026-11-07): a body that would
+	// not parse is named as that, not as a plain non-streaming request —
+	// the daemon asks for a stream on every request — with the path and the
+	// length beside it. The fake accepts and refuses exactly what it did
+	// before: an unparsed or stream-less request still fails with the same
+	// status and body.
+	model, refused := streamCheck(idx+1, r.URL.Path, body)
+	if refused != "" {
+		s.t.Error(refused)
 		http.Error(w, `{"error":"stream required"}`, http.StatusBadRequest)
 		return
 	}
@@ -246,7 +271,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return map[string]any{
 			"id":     id,
 			"object": "chat.completion.chunk",
-			"model":  req.Model,
+			"model":  model,
 			"choices": []any{map[string]any{
 				"index": 0, "delta": delta, "finish_reason": finish,
 			}},
@@ -301,7 +326,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	send(chunk(map[string]any{}, finish))
 	send(map[string]any{
-		"id": id, "object": "chat.completion.chunk", "model": req.Model,
+		"id": id, "object": "chat.completion.chunk", "model": model,
 		"choices": []any{},
 		"usage": map[string]any{
 			"prompt_tokens":     turn.PromptTokens,
