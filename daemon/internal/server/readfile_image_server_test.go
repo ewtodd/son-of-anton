@@ -161,6 +161,19 @@ func pngOf(t *testing.T, w, h int) []byte {
 	return buf.Bytes()
 }
 
+// toolWire returns a request's tool message as the wire holds it, fields and
+// all (the role's own ones included).
+func toolWire(t *testing.T, fake *fakellm.Server, i int) map[string]any {
+	t.Helper()
+	for _, m := range rawWire(t, fake, i) {
+		if str(m, "role") == "tool" {
+			return m
+		}
+	}
+	t.Fatalf("request %d has no tool message", i)
+	return nil
+}
+
 // toolRowParts decodes a tool message's content from the wire: an array of
 // parts when the row carries images, a plain string otherwise.
 func toolRowParts(t *testing.T, fake *fakellm.Server, i int) (string, []map[string]any) {
@@ -229,6 +242,11 @@ func TestReadFileAttachesTheImage(t *testing.T) {
 	text, parts := toolRowParts(t, fake, 1)
 	if len(parts) != 2 || !strings.Contains(text, "attached to this result") {
 		t.Fatalf("the tool message = %q, %d parts", text, len(parts))
+	}
+	// The row's own fields ride the image path too: a tool message without
+	// its call id and tool name is not the message that was sent.
+	if wire := toolWire(t, fake, 1); str(wire, "tool_call_id") != "r1" || str(wire, "name") != "read_file" {
+		t.Fatalf("the wire tool message lost its fields: %v", wire)
 	}
 	for _, p := range parts {
 		if str(p, "type") != "image_url" {

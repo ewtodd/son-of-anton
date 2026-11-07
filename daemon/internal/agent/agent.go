@@ -1006,22 +1006,32 @@ func errorJSON(msg string) string {
 // sent in: user messages replay api_content when present, assistant
 // messages keep their tool calls and their reasoning, and a row with images
 // carries them as image parts after its text (an image for a model without
-// vision is an error here, never a quiet drop). All of it goes back, every
-// request, so the prefix stays byte-stable for the prompt cache.
+// vision is an error here, never a quiet drop). The role's own fields — a
+// tool row's call id and name, an assistant row's reasoning and calls — ride
+// the image path too, whatever the content's shape. All of it goes back,
+// every request, so the prefix stays byte-stable for the prompt cache.
 func toWireMessage(m store.Message, vision bool, load func(string) ([]byte, error)) (provider.Message, error) {
+	out := provider.Message{Role: m.Role}
 	if len(m.Images) > 0 {
 		text := m.Content
 		if m.Role == "user" && m.APIContent != "" {
 			text = m.APIContent
 		}
-		return imagesMessage(m.Role, text, m.Images, vision, load)
-	}
-	out := provider.Message{Role: m.Role, Content: m.Content}
-	switch m.Role {
-	case "user":
-		if m.APIContent != "" {
-			out.Content = m.APIContent
+		w, err := imagesMessage(m.Role, text, m.Images, vision, load)
+		if err != nil {
+			return provider.Message{}, err
 		}
+		out.Content, out.Parts = w.Content, w.Parts
+	} else {
+		out.Content = m.Content
+		switch m.Role {
+		case "user":
+			if m.APIContent != "" {
+				out.Content = m.APIContent
+			}
+		}
+	}
+	switch m.Role {
 	case "assistant":
 		out.ReasoningContent = m.Reasoning
 		if len(m.ToolCalls) > 0 {
