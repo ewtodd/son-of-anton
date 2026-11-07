@@ -26,7 +26,7 @@ func TestQuitAsksWhileATurnRuns(t *testing.T) {
 	waitScreen(t, a, quitAsk, "1. Stay", "2. Stop the turn and quit", "3. Keep it running and quit")
 	a.Press("esc")
 	waitGone(t, a, quitAsk)
-	send(a, "/q")
+	send(a, "/quit")
 	waitScreen(t, a, quitAsk)
 	a.Press("enter") // the choice already highlighted stays
 	waitGone(t, a, quitAsk)
