@@ -230,7 +230,10 @@ adds what is loaded and running to what the store lists.
   now, not how it began. The ask is plain words (the model writes the exact
   title text; no JSON scaffold, which is what starved a reasoning model to
   an empty answer) with a real token budget; the reply is cleaned and capped
-  at 48 characters, trimmed rather than refused. The ask runs in the
+  at 48 characters, trimmed rather than refused. The ask carries
+  `reasoning_effort: "off"`: with thinking on, a session model spends the
+  whole token budget inside the reasoning field and answers empty content
+  (maitred keeps think text out of content entirely). The ask runs in the
   background (one at a time) and session.updated carries the name; failures
   reach the feed with the model's reply excerpt. The retitle source beats
   the automatic paths and an older user rename; a rename given afterwards

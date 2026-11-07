@@ -89,8 +89,8 @@ func TestRetitleAsksTheSessionModelToWriteIt(t *testing.T) {
 	if _, has := req["response_format"]; has {
 		t.Fatal("the retitle ask is plain words, not a JSON schema")
 	}
-	if req["max_tokens"] != 512.0 {
-		t.Fatalf("a reasoning session model needs room: max_tokens %v", req["max_tokens"])
+	if req["max_tokens"] != 2048.0 || req["reasoning_effort"] != "off" {
+		t.Fatalf("thinking off with headroom: max_tokens %v effort %v", req["max_tokens"], req["reasoning_effort"])
 	}
 	msgs := fake.Messages(0)
 	if len(msgs) != 2 || !strings.Contains(string(msgs[0]), "stands now") || !strings.Contains(string(msgs[0]), "exact text") {

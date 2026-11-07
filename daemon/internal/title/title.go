@@ -104,14 +104,19 @@ const retitlePrompt = "You are writing the title of the conversation whose diges
 	"a noun phrase or a short imperative of about five words, in the conversation's own language. " +
 	"Keep identifiers, file names, numbers and error codes character for character, and drop any trailing period."
 
-const maxRetitleTokens = 512 // a reasoning session model thinks before it names
+const maxRetitleTokens = 2048 // headroom over the think tokens
 
 // Retitle asks the session model itself to name a running conversation from
 // its digest, the way you would ask a colleague: write the title, the exact
 // text, nothing else. The digest keeps its tail — the latest work is what
 // the title names. The reply is not JSON and is not a fixed schema: a big
-// conversational model takes a plain instruction, and its thought tokens
-// need room, hence the budget.
+// conversational model takes a plain instruction.
+//
+// The ask turns reasoning OFF (maitred's effort vocabulary): with thinking
+// on, the model spends the whole token budget inside its reasoning field and
+// answers with an empty content — maitred keeps the think text out of
+// content entirely. Even "off", the back end reserves a little think room,
+// so the budget stays generous.
 func Retitle(ctx context.Context, c *provider.Client, model, digest string) (string, error) {
 	digest = strings.ReplaceAll(digest, "\r\n", "\n")
 	if r := []rune(digest); len(r) > maxDigest {
@@ -130,8 +135,9 @@ func Retitle(ctx context.Context, c *provider.Client, model, digest string) (str
 			{Role: "system", Content: retitlePrompt},
 			{Role: "user", Content: digest},
 		},
-		MaxTokens:   maxRetitleTokens,
-		Temperature: &temp,
+		MaxTokens:       maxRetitleTokens,
+		Temperature:     &temp,
+		ReasoningEffort: "off",
 	}, nil)
 	if err != nil {
 		return "", err
