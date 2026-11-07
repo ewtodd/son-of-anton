@@ -78,7 +78,7 @@ func TestWorkersBecomeSessionsWithAnOwner(t *testing.T) {
 	db.Close()
 
 	st = open(t, path)
-	if v, err := st.SchemaVersion(); err != nil || v != 18 {
+	if v, err := st.SchemaVersion(); err != nil || v != 19 {
 		t.Fatalf("schema version %d, %v", v, err)
 	}
 	got, err := st.Session(ctx, worker.ID)

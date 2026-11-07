@@ -59,16 +59,18 @@ func TestATitleNeverLosesToALowerSource(t *testing.T) {
 		{"Login work", "user", true, "Login work"},
 		{"An llm title", "llm", false, "Login work"},
 		{"Renamed", "user", true, "Renamed"},
-		{"Receipts and rerolling", "retitle", true, "Receipts and rerolling"},
-		{"An llm title again", "llm", false, "Receipts and rerolling"},
 		{"User had the last word", "user", true, "User had the last word"},
-		{"Retitled", "retitle", true, "Retitled"}, // an explicit ask beats a prior user rename
 	} {
 		changed, err := st.SetTitle(ctx, s.ID, step.title, step.source)
 		got, _ := st.Session(ctx, s.ID)
 		if err != nil || changed != step.changed || got.Title != step.want || (changed && got.TitleSource != step.source) {
 			t.Fatalf("SetTitle(%q, %s) = %v, %v; session %q (%s)", step.title, step.source, changed, err, got.Title, got.TitleSource)
 		}
+	}
+	// A title the retired model-driven retitle set lives on as a user rename
+	// (title_store_test.go); the store takes only these three sources now.
+	if _, err := st.SetTitle(ctx, s.ID, "x", "retitle"); err == nil {
+		t.Fatal("retitle is gone: the source is derived, llm or user")
 	}
 	if _, err := st.SetTitle(ctx, s.ID, "x", "guess"); err == nil {
 		t.Fatal("the source is derived, llm or user")

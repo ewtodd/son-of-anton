@@ -224,20 +224,21 @@ adds what is loaded and running to what the store lists.
   restart. The picker lists only what is served, naming an unloaded model
   stays valid, a 503 `model_not_loaded` never changes the session's model
   (the dead-pin fallback stays on 404).
-- Titles from the auxiliary model. `/retitle` (`session.retitle`, the TUI's
-  `/retitle`, owner 2026-11-06) asks the **session's own model** to name the
-  conversation from a digest of its recent messages instead — where it stands
-  now, not how it began. The ask is plain words (the model writes the exact
-  title text; no JSON scaffold, which is what starved a reasoning model to
-  an empty answer) with a real token budget; the reply is cleaned and capped
-  at 48 characters, trimmed rather than refused. The ask carries
-  `reasoning_effort: "off"`: with thinking on, a session model spends the
-  whole token budget inside the reasoning field and answers empty content
-  (maitred keeps think text out of content entirely). The ask runs in the
-  background (one at a time) and session.updated carries the name; failures
-  reach the feed with the model's reply excerpt. The retitle source beats
-  the automatic paths and an older user rename; a rename given afterwards
-  still wins.
+- Titles. A session is named the moment its first turn is sent: `title.Derive`
+  takes the opening line ("derived"), and, when a `title_generation`
+  auxiliary model is configured, that model names the conversation from the
+  opening message ("llm") — the reply is cleaned and capped, and the ask runs
+  in the background (one at a time) with `session.updated` carrying the name.
+  `/retitle <title>` (the TUI's, `session.rename`; owner 2026-11-06) is a
+  plain rename, a user act that beats every automatic title and that nothing
+  overwrites: the model does not name the conversation again. The
+  model-driven retitle of the day (`session.retitle`, which asked the
+  session's own model to name the conversation by where it stands) is gone —
+  it titled the last half hour instead of the conversation. What reminds the
+  owner to rename is deterministic, no model involved: after every compaction
+  of an interactive session whose title is not the user's, the session says
+  "tip: this conversation outgrew its title (…) — /retitle <what it does now>
+  names it". One rename silences the tip for good.
 - References: `agent/conversation_loop.py`, `agent/turn_context.py`,
   `agent/conversation_compaction.py`, `agent/context_compactor.py`,
   `agent/retry_utils.py`.

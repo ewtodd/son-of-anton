@@ -241,6 +241,12 @@ UPDATE schema_version SET version = 17;`,
 ALTER TABLE messages ADD COLUMN images TEXT;
 ALTER TABLE queue ADD COLUMN images TEXT;
 UPDATE schema_version SET version = 18;`,
+	// v19: the model-driven retitle is gone (06f55b97): /retitle is the
+	// TUI's plain rename, stored as source "user". Sessions the retired ask
+	// named keep their title and become user renames, so the compaction tip
+	// is silent on them and an llm title cannot take the name back.
+	`UPDATE sessions SET title_source = 'user' WHERE title_source = 'retitle';
+UPDATE schema_version SET version = 19;`,
 }
 
 func migrate(db *sql.DB) error {
