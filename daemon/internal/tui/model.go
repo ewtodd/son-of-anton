@@ -68,7 +68,8 @@ type model struct {
 	lastSeq    int64
 	lastDraw   time.Time
 	drawQueued bool
-	ctrlEnter  bool // the terminal reports ctrl+enter apart from enter
+	p          *tea.Program // set at Start: the filter sends undecoded tails on
+	ctrlEnter  bool         // the terminal reports ctrl+enter apart from enter
 
 	ta       textarea.Model
 	hist     []string

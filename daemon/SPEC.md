@@ -224,7 +224,12 @@ adds what is loaded and running to what the store lists.
   restart. The picker lists only what is served, naming an unloaded model
   stays valid, a 503 `model_not_loaded` never changes the session's model
   (the dead-pin fallback stays on 404).
-- Titles from the auxiliary model.
+- Titles from the auxiliary model. `/retitle` (`session.retitle`, the TUI's
+  `/retitle`, owner 2026-11-06) asks the **session's own model** to name the
+  conversation from a digest of its recent messages instead — where it stands
+  now, not how it began. The ask runs in the background (one at a time) and
+  session.updated carries the name. Its source beats the automatic paths and
+  an older user rename; a rename given afterwards still wins.
 - References: `agent/conversation_loop.py`, `agent/turn_context.py`,
   `agent/conversation_compaction.py`, `agent/context_compactor.py`,
   `agent/retry_utils.py`.

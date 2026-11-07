@@ -99,6 +99,7 @@ func Start(c *client.Client, o Options, in io.Reader, out io.Writer) (*App, erro
 		opts = append(opts, tea.WithInput(in), tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithFilter(kittyFilter))
 	}
 	a.p = tea.NewProgram(m, opts...)
+	m.p = a.p
 	go func() {
 		final, err := a.p.Run()
 		a.mu.Lock()

@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -71,14 +72,33 @@ func (o kittyOutput) WriteString(s string) (int, error) {
 	return len(s), nil
 }
 
+// kittySeqRE is one CSI sequence, as far as the keyboard protocol's go: the
+// parameters, the intermediates, the final byte.
+var kittySeqRE = regexp.MustCompile(`^\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]`)
+
 // kittyFilter is the program's filter. bubbletea hands over a sequence it does
-// not know as an unexported []byte type.
-func kittyFilter(_ tea.Model, msg tea.Msg) tea.Msg {
+// not know as an unexported []byte type. A read chunk can hold more than the
+// sequence — a key typed microseconds after it — so the filter decodes the
+// prefix and sends the rest on, or the tail would vanish inside the unknown
+// message.
+func kittyFilter(m tea.Model, msg tea.Msg) tea.Msg {
 	v := reflect.ValueOf(msg)
 	if v.Kind() != reflect.Slice || v.Type().Name() != "unknownCSISequenceMsg" {
 		return msg
 	}
-	if decoded := kittyMsg(string(v.Bytes())); decoded != nil {
+	seq := string(v.Bytes())
+	loc := kittySeqRE.FindStringIndex(seq)
+	if loc == nil {
+		return msg
+	}
+	if decoded := kittyMsg(seq[:loc[1]]); decoded != nil {
+		if rest := seq[loc[1]:]; rest != "" {
+			if mm, ok := m.(*model); ok && mm.p != nil {
+				r := reflect.MakeSlice(v.Type(), len(rest), len(rest))
+				reflect.Copy(r, reflect.ValueOf([]byte(rest)))
+				mm.p.Send(r.Interface())
+			}
+		}
 		return decoded
 	}
 	return msg

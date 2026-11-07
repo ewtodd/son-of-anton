@@ -3,9 +3,11 @@ package tui
 import (
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -79,6 +81,28 @@ func (p keyProbe) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // The bytes go through bubbletea's own reader, so a bubbletea that stops
 // handing over sequences it does not know fails here.
+
+func TestTheDecodedShiftEnterInsertsANewline(t *testing.T) {
+	km, ok := kittyMsg("\x1b[13;2u").(tea.KeyMsg)
+	if !ok || km.Type != tea.KeyEnter || !km.Alt {
+		t.Fatalf("the decoded shift+enter = %#v", km)
+	}
+	// the textarea swallows a bare enter (bubbles v0.21), so the model puts
+	// the newline in itself — pinned here, it is why keys.go does it by hand
+	ta := textarea.New()
+	ta.InsertString("alpha")
+	ta.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if strings.Contains(ta.Value(), "\n") {
+		t.Fatal("the textarea started inserting on a bare enter; keys.go can go through it again")
+	}
+	m := &model{ta: textarea.New()}
+	m.ta.InsertString("alpha")
+	m.key(km) // the route keys.go gives alt+enter
+	if !strings.Contains(m.ta.Value(), "\n") {
+		t.Fatalf("alt-enter in the draft = %q", m.ta.Value())
+	}
+}
+
 func TestWhatKittySendsArrivesAsTheKeyItIs(t *testing.T) {
 	in, keys := io.Pipe()
 	defer keys.Close()

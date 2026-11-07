@@ -277,6 +277,16 @@ func (m *model) command(name, args, line string) tea.Cmd {
 				}
 				return nil
 			})
+	case "retitle":
+		return call(c, 10*time.Second, "session.retitle", map[string]any{"session": sid}, nil,
+			func(m *model, err error) tea.Cmd {
+				if err != nil {
+					fail(m, err)
+				} else {
+					m.feed.note("retitling — the session model is naming this conversation where it stands", false)
+				}
+				return nil
+			})
 	case "sendnow":
 		if args != "" {
 			return call(c, 30*time.Second, "turn.send", map[string]any{"session": sid, "text": args, "mode": "now"}, nil,

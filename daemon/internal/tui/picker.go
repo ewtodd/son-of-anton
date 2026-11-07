@@ -407,10 +407,15 @@ func cutRunes(s string, n int) string {
 	return s
 }
 
-// palettePicker is ctrl+p: every command and alias; picking puts it in the prompt.
+// palettePicker is ctrl+p: every command, aliases skipped — the picker fits
+// about fourteen rows and the aliases duplicate what picking finds; they stay
+// in the typed /completion. Picking puts it in the prompt.
 func (m *model) palettePicker() {
 	var rows []pickRow
 	for _, e := range cmdEntries() {
+		if e.of != "" {
+			continue
+		}
 		rows = append(rows, pickRow{key: e.name, label: "/" + e.name, desc: e.cat + " · " + e.desc})
 	}
 	p := newPicker("Commands", rows, true, false, func(m *model, keys []string) tea.Cmd {

@@ -1,5 +1,6 @@
 // Package title names sessions: an instant title derived from the opening
-// message, then one from the title model.
+// message, one from the title model, and a retitle of a running
+// conversation by the session's own model.
 package title
 
 import (
@@ -15,6 +16,7 @@ import (
 const (
 	maxDerived    = 48   // characters in the instant title
 	maxInput      = 1000 // the opening message sent to the title model
+	maxDigest     = 4000 // of a running conversation, for the retitle ask
 	maxTitleWords = 12
 )
 
@@ -58,8 +60,44 @@ func Derive(text string) string {
 // A reply that is empty, answer-shaped (over 12 words) or degenerate is an
 // error.
 func Generate(ctx context.Context, c *provider.Client, model, text string) (string, error) {
-	if r := []rune(text); len(r) > maxInput {
-		text = string(r[:maxInput])
+	return complete(ctx, c, model, systemPrompt, text, maxInput)
+}
+
+// retitlePrompt names a conversation where it stands today, not by how it
+// began: the digest arrives oldest first, latest work at the bottom.
+const retitlePrompt = "The text you receive is a digest of an ongoing conversation between a user and an assistant, oldest at the top and its latest activity at the bottom. " +
+	"Reply with a JSON object holding a title for that conversation as it stands now: name its current center of gravity, not only how it began. " +
+	"When the conversation has moved on from an early topic, it is the later work the title names.\n\n" +
+	titleStyle +
+	"Digest: \"user: the vision tool is broken\nassistant: the auxiliary vision tool is gone; images reach the model's own encoder now\nuser: so check the vision flow works end to end\"\n" +
+	"Reply: {\"title\": \"Verify native vision image flow\"}\n\n" +
+	"Output the JSON object and nothing else."
+
+// Retitle asks model for a title of a running conversation, from its
+// digest, with the same reply rules as Generate. A digest longer than
+// maxDigest keeps its tail: the latest work is what the title names.
+func Retitle(ctx context.Context, c *provider.Client, model, digest string) (string, error) {
+	digest = strings.ReplaceAll(digest, "\r\n", "\n")
+	if r := []rune(digest); len(r) > maxDigest {
+		digest = string(r[len(r)-maxDigest:])
+		if i := strings.Index(digest, "\n"); i >= 0 {
+			digest = digest[i+1:]
+		}
+	}
+	return complete(ctx, c, model, retitlePrompt, digest, maxDigest)
+}
+
+// titleStyle is the style every title keeps.
+const titleStyle = "A good title is a noun phrase or a short imperative of about five words, never more than seven, " +
+	"that states the job the user wants done. Keep identifiers, file names, numbers and error codes character for character. " +
+	"Write it in the message's own language, with no trailing period, no quotes, no \"Title:\" label and no mention of tools. " +
+	"Do not respond to the message itself, and do not leave the title empty even if the message is just a greeting.\n\n"
+
+// complete is the shared title ask: systemPrompt asks for the name, text is
+// the input cut at max, and the reply must be the title alone.
+func complete(ctx context.Context, c *provider.Client, model, systemPrompt, text string, max int) (string, error) {
+	if r := []rune(text); len(r) > max {
+		text = string(r[:max])
 	}
 	if strings.TrimSpace(text) == "" {
 		return "", errors.New("title: no text to name")

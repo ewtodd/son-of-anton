@@ -339,19 +339,34 @@ func (s *Store) Compactions(ctx context.Context, sessionID string) ([]Compaction
 	return out, rows.Err()
 }
 
-var titleRank = map[string]int{"derived": 1, "llm": 2, "user": 3}
+var titleRank = map[string]int{"derived": 1, "llm": 2, "user": 3, "retitle": 4}
 
-// SetTitle sets a session's title unless the current one came from a higher
-// source (derived < llm < user). changed says whether it was set.
+// SetTitle sets a session's title. For the automatic sources (derived, llm)
+// the run wins by rank (derived < llm < user < retitle): a retitle request
+// clears what llm set, an llm title cannot override a user's. "user" and
+// "retitle" are explicit human acts and always set. changed says whether it
+// was set.
 func (s *Store) SetTitle(ctx context.Context, id, title, source string) (changed bool, err error) {
 	rank, ok := titleRank[source]
 	if !ok {
 		return false, fmt.Errorf("store: unknown title source %q", source)
 	}
+	if source == "user" || source == "retitle" {
+		res, err := s.db.ExecContext(ctx,
+			`UPDATE sessions SET title = ?, title_source = ? WHERE id = ?`,
+			nullStr(title), source, id)
+		if err != nil {
+			return false, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return true, nil
+		}
+		return false, ErrNotFound
+	}
 	// One statement, so a concurrent writer cannot make it fail with SQLITE_BUSY.
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET title = ?, title_source = ? WHERE id = ?
-		 AND (CASE COALESCE(title_source, '') WHEN 'derived' THEN 1 WHEN 'llm' THEN 2 WHEN 'user' THEN 3 ELSE 0 END) <= ?`,
+		AND (CASE COALESCE(title_source, '') WHEN 'derived' THEN 1 WHEN 'llm' THEN 2 WHEN 'user' THEN 3 WHEN 'retitle' THEN 4 ELSE 0 END) <= ?`,
 		nullStr(title), source, id, rank)
 	if err != nil {
 		return false, err

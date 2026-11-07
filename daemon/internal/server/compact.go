@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -187,6 +188,94 @@ func (l *live) nameSession(text string) {
 		l.title = t
 		l.emitSession()
 	}()
+}
+
+// retitle asks the session's own model to name the conversation from a
+// digest of its recent messages, wherever the conversation began. Returns
+// whether the ask started (one runs at a time). mu released.
+func (l *live) retitle() bool {
+	l.mu.Lock()
+	if l.retitling || l.closing || l.unloaded {
+		l.mu.Unlock()
+		return false
+	}
+	l.retitling = true
+	id, model := l.id, l.model
+	l.mu.Unlock()
+
+	ep, err := l.srv.cfg.Endpoint(model)
+	if err != nil {
+		l.retitleDone(false, id, "", err)
+		return true
+	}
+	client := provider.New(ep.BaseURL, ep.APIKey)
+	l.srv.turns.Add(1)
+	go func() {
+		defer l.srv.turns.Done()
+		defer func() { l.retitleDone(false, id, "", nil) }()
+		ctx, cancel := context.WithTimeout(l.srv.base, 2*time.Minute)
+		defer cancel()
+		ms, _, err := l.srv.st.MessagesBefore(ctx, id, 0, 40)
+		if err != nil {
+			l.retitleDone(false, id, "", err)
+			return
+		}
+		t, err := title.Retitle(ctx, client, ep.Model, digestOf(ms))
+		if err != nil {
+			l.retitleDone(false, id, "", err)
+			return
+		}
+		l.retitleDone(true, id, t, nil)
+	}()
+	return true
+}
+
+// retitleDone finishes a background retitle: it marks the ask over, and on
+// success stores the name and tells every viewer. err is the failure, if
+// any, to surface to the feed.
+func (l *live) retitleDone(stored bool, id, title string, err error) {
+	defer l.maybeEmitNotice(err)
+	l.mu.Lock()
+	l.retitling = false
+	if !stored || err != nil {
+		l.mu.Unlock()
+		return
+	}
+	changed, err2 := l.srv.st.SetTitle(l.srv.base, id, title, "retitle")
+	if err2 != nil || !changed {
+		l.mu.Unlock()
+		return
+	}
+	l.title = title
+	l.emitSession()
+	l.mu.Unlock()
+}
+
+// maybeEmitNotice tells the viewers about a failed retitle; the feed shows
+// notices. nil says nothing happened.
+func (l *live) maybeEmitNotice(err error) {
+	if err == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.emit("notice", map[string]any{"level": "warning", "text": "retitling failed: " + err.Error()})
+}
+
+// digestOf renders the recent messages the retitle ask names.
+func digestOf(ms []store.Message) string {
+	var b strings.Builder
+	for _, m := range ms {
+		if m.Role != "user" && m.Role != "assistant" {
+			continue
+		}
+		c := strings.TrimSpace(strings.ReplaceAll(m.Content, "\n", " "))
+		if c == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "%s: %s\n", m.Role, c)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // setTitle is session.set title: the user's title wins over any other.

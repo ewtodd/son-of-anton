@@ -70,6 +70,7 @@ type live struct {
 	steer               string
 	hasSteer            bool
 	steerSentAt         time.Time              // when the first queued/steered message was sent
+	retitling           bool                   // a background model retitle runs
 	steerImages         []store.Image          // the images the steered messages attach
 	nudges              map[string]*time.Timer // request id -> the pending desktop nudge
 	waiting             bool                   // the queue waits for a turn that ends done, or queue.steer
@@ -348,12 +349,16 @@ func (l *live) next() {
 	if err != nil || len(items) == 0 {
 		return
 	}
-	// Leading receipts run as one turn: queued background notices ride
-	// together instead of one turn each. A user or step item still runs
-	// alone, at its own front.
+	// Leading run-of-receipts turns run as one: background completions that
+	// queued while the session was busy ride together, each tagged
+	// "[background receipt]". Chat notices (a takeover, a worker's end) are
+	// conversational events and keep their own turns, ahead of or behind the
+	// receipts; a user or step item still runs alone at its front.
 	take := items[:1]
-	for len(take) < len(items) && items[len(take)].Kind == "notice" && items[0].Kind == "notice" {
-		take = items[:len(take)+1]
+	if isReceipt(items[0].Text) {
+		for len(take) < len(items) && items[len(take)].Kind == "notice" && isReceipt(items[len(take)].Text) {
+			take = items[:len(take)+1]
+		}
 	}
 	ids := make([]string, len(take))
 	for i, it := range take {
@@ -450,6 +455,12 @@ func (l *live) stepEnded() {
 	}
 	l.emitQueue()
 	l.steerAt(strings.Join(texts, "\n\n"), sentAt, images)
+}
+
+// isReceipt says whether a queue text is one of the daemon's tagged
+// background receipts ([background receipt] …).
+func isReceipt(text string) bool {
+	return strings.HasPrefix(text, "[background receipt]")
 }
 
 // steerWith ends the running turn after its running tools finish and runs
@@ -550,8 +561,6 @@ func (l *live) shutdown() {
 	l.mu.Unlock()
 }
 
-// drainNotices turns background completion notices into one turn or queue
-// item: receipts that arrive together ride together, not a turn each.
 func (l *live) drainNotices() {
 	texts := l.sess.TakeNotifications()
 	l.mu.Lock()

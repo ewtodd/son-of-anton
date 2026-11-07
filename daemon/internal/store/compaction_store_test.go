@@ -59,6 +59,10 @@ func TestATitleNeverLosesToALowerSource(t *testing.T) {
 		{"Login work", "user", true, "Login work"},
 		{"An llm title", "llm", false, "Login work"},
 		{"Renamed", "user", true, "Renamed"},
+		{"Receipts and rerolling", "retitle", true, "Receipts and rerolling"},
+		{"An llm title again", "llm", false, "Receipts and rerolling"},
+		{"User had the last word", "user", true, "User had the last word"},
+		{"Retitled", "retitle", true, "Retitled"}, // an explicit ask beats a prior user rename
 	} {
 		changed, err := st.SetTitle(ctx, s.ID, step.title, step.source)
 		got, _ := st.Session(ctx, s.ID)

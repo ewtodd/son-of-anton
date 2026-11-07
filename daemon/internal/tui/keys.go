@@ -111,9 +111,11 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 	case "enter":
 		return m.submit("step")
 	// alt+enter and ctrl+j are the newline keys; under the kitty protocol
-	// shift+enter arrives as alt+enter too (kitty.go).
+	// shift+enter arrives as alt+enter too (kitty.go). The textarea's Update
+	// does nothing for a bare enter, so the newline goes in by hand.
 	case "alt+enter", "ctrl+j":
-		return m.edit(tea.KeyMsg{Type: tea.KeyEnter})
+		m.ta.InsertString("\n")
+		return m.refreshComp()
 	case "up":
 		if m.onFirstRow() {
 			m.recall(-1)

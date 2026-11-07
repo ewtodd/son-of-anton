@@ -7,6 +7,7 @@ package tui_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -97,21 +98,54 @@ func openTerminal(t *testing.T, d *daemon) *fakeTTY {
 
 func TestShiftEnterBreaksTheDraftInsteadOfSending(t *testing.T) {
 	fake := fakellm.New(t, fakellm.Turn{Content: "one answer"})
-	term := openTerminal(t, newDaemon(t, fake))
-	term.Type("alpha")
-	term.press(shiftEnter)
-	time.Sleep(250 * time.Millisecond) // the pipe's newline lands ahead of the typed b
-	term.Type("beta")
+	d := newDaemon(t, fake)
+	term := openTerminal(t, d)
+	// Everything goes through the one pipe: App.Type injects KeyMsgs past the
+	// reader, so a typed b could overtake the pipe's newline and the draft
+	// would read "alphab" as a timing accident.
+	for _, k := range "alpha" {
+		term.press(string(k))
+	}
+	term.press(shiftEnter) // a newline, not a send
+	for _, k := range "beta" {
+		term.press(string(k))
+	}
 	// The draft still holds both lines and nothing has been sent: the fake's
 	// single turn is unconsumed, so no answer can be on the screen yet. The
-	// rendered lines are padded, so "alphab" is the tell of a lost newline.
-	if s := term.Screen(); strings.Contains(s, "alphab") || !strings.Contains(s, "alpha") || !strings.Contains(s, "beta") || strings.Contains(s, "one answer") {
+	// lines render padded, so "alphab" is the tell of a lost newline; the
+	// wait itself proves beta landed after the newline.
+	waitScreen(t, term.App, "beta")
+	if s := term.Screen(); strings.Contains(s, "alphab") || strings.Contains(s, "one answer") {
 		t.Fatalf("after shift+enter the draft is not both lines, screen:\n%s", s)
 	}
 	term.press("\r")
 	waitScreen(t, term.App, "one answer")
-	if s := term.Screen(); strings.Contains(s, "alphab") || !strings.Contains(s, "alpha") || !strings.Contains(s, "beta") {
-		t.Fatalf("the two-line draft did not go as one message:\n%s", s)
+	// The submitted message is one message holding both lines: the store's
+	// user row says so, whatever the viewport scrolled away.
+	cc, err := client.Dial(d.home, "hist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	var hist struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := cc.Call(ctx, "session.history", map[string]any{"session": term.App.Session()}, &hist); err != nil {
+		t.Fatal(err)
+	}
+	found := ""
+	for _, m := range hist.Messages {
+		if m.Role == "user" {
+			found = m.Content
+		}
+	}
+	if !strings.Contains(found, "alpha\nbeta") {
+		t.Fatalf("the sent message = %q", found)
 	}
 }
 
