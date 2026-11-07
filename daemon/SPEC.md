@@ -184,8 +184,8 @@ and when an image's bytes will not attach, `read_file` falls back to them
 as text, an error only when they are binary.
 
 **Empty sessions (owner, 2026-11-06).** A session that never got a turn is
-not a session yet: the listings (`session.list`, the TUI's `/resume` and
-`/sessions`, the relay list, `-r latest` and `-c`) leave it out, and `/resume`
+not a session yet: the listings (`session.list`, the TUI's `/resume`, the
+relay list, `-r latest` and `-c`) leave it out, and `/resume`
 never offers the session it runs in. A session with its first turn in flight
 still counts — the user row lands with the first step's end, so the daemon
 adds what is loaded and running to what the store lists.
@@ -512,7 +512,7 @@ serving every instance until the last one migrates.
    section 7 (layers, per-kind defaults, `--system`, `--memory`).
 2. **Protocol and TUI:** socket API, attach/replay, events; the Textual
    client replaces `backend.py`; the slash commands in use (`/model`,
-   `/reasoning`, `/commit`, `/resume`, `/sessions`, `/new`, `/stop`,
+   `/reasoning`, `/commit`, `/resume`, `/new`, `/stop`,
    `/cancel`, `/sendnow`, `/sendall`, `/perm`, `/compact`).
 3. **Memory, recall, `session_search`, compaction, titles.**
 4. **Subagents** (section 9), daemon and TUI.

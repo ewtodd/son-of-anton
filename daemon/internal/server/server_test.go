@@ -737,6 +737,11 @@ func TestABackgroundNoticeStartsATurn(t *testing.T) {
 		!strings.Contains(str(starts[1], "text"), "exited with code 0") || !strings.Contains(str(starts[1], "text"), "bgdone") {
 		t.Fatalf("a completion notice starts a turn as a tagged receipt: %v", starts)
 	}
+	// The receipt ends with the output it carried and nothing else: the
+	// format's stray bracket is not part of it.
+	if text := str(starts[1], "text"); strings.HasSuffix(text, "]") {
+		t.Fatalf("the receipt ends in a stray bracket: %q", text)
+	}
 	last := wire(t, fake, 2)
 	if !strings.Contains(str(last[len(last)-1], "content"), "bgdone") {
 		t.Fatalf("the notice is the turn's user message: %v", last[len(last)-1])
