@@ -29,7 +29,6 @@ var cmdTable = []cmdDef{
 	{"model", "[model]", "Change the model for this session", "Configuration"},
 	{"reasoning", "[level]", "Change how hard this session's model reasons", "Configuration"},
 	{"perm", "[default|ask|lockdown|yolo]", "Change the permission mode", "Configuration"},
-	{"skin", "", "Show or switch the skin", "Configuration"},
 	{"help", "", "List the commands", "Info"},
 	{"quit", "", "Leave the TUI; asks first if a turn is running", "Exit"},
 }

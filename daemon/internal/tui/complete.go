@@ -132,10 +132,6 @@ func (m *model) completeArg(v string, start int, word string, explicit bool) (*c
 	switch cmd {
 	case "perm":
 		names = modes
-	case "skin":
-		for _, sk := range loadSkins(m.o.Home) {
-			names = append(names, sk.name)
-		}
 	case "model", "reasoning":
 		if m.models == nil {
 			return nil, true

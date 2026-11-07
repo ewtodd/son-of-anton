@@ -1,7 +1,7 @@
 package tui
 
-// Phase 9b helpers that need no daemon: what the terminal's reply, a skin's
-// value and a session's age are read as.
+// Phase 9b helpers that need no daemon: what the terminal's reply and a
+// session's age are read as.
 
 import (
 	"testing"
@@ -19,24 +19,6 @@ func TestOSCReplies(t *testing.T) {
 	} {
 		if got := parseOSCColor(reply); got != want {
 			t.Errorf("parseOSCColor(%q) = %q, want %q", reply, got, want)
-		}
-	}
-}
-
-func TestSkinColorValues(t *testing.T) {
-	for v, ok := range map[string]bool{
-		"yellow": true, "bold red": true, "dim cyan": true, "grey": true, "default": true,
-		"#fff": true, "#7EB8F6": true, "#12345": false, "#ggg": false, "": false, "chartreuse": false,
-	} {
-		if _, got := parseSkinColor(v); got != ok {
-			t.Errorf("parseSkinColor(%q) ok = %v, want %v", v, got, ok)
-		}
-	}
-	// A skin that gives nothing usable still has all six colours.
-	cols := skinColors(skinDef{name: "x", colors: map[string]string{"ui_accent": "chartreuse"}})
-	for _, k := range skinKeys {
-		if cols[k] == nil {
-			t.Errorf("no colour for %s", k)
 		}
 	}
 }

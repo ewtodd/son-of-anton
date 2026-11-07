@@ -157,10 +157,9 @@ in
           Make `settings` the whole of config.toml: each activation also drops
           every key it did not declare.
 
-          Off by default. Keys that the program itself writes (/skin, /perm)
-          are among the undeclared ones, and losing them on a rebuild is worse
-          than keeping a stale key. The ordinary merge already retracts keys
-          Nix declared earlier and has since dropped.
+          Off by default. An undeclared key — the program's own from an older
+          build, or yours — survives the ordinary merge, and pruning would
+          drop it.
         '';
       };
 

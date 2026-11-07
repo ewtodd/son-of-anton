@@ -123,9 +123,6 @@ type Config struct {
 		// working directory (a service account's home is its state dir).
 		HomeMode string `toml:"home_mode"`
 	} `toml:"terminal"`
-	Display struct {
-		Skin string `toml:"skin"` // the TUI's skin; empty is "default"
-	} `toml:"display"`
 	Web struct {
 		SearchFallback   string   `toml:"search_fallback"` // "duckduckgo" (default) or "none"
 		DuckDuckGoURL    string   `toml:"duckduckgo_url"`

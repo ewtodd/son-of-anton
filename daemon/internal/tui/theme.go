@@ -5,158 +5,30 @@ import (
 	"io"
 	"math"
 	"os"
-	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/term"
 	"github.com/muesli/termenv"
 	"golang.org/x/sys/unix"
-
-	"github.com/ewtodd/son-of-anton/daemon/internal/config"
 )
 
-// skinKeys are the colour keys of a skin.
-var skinKeys = []string{"ui_accent", "ui_thinking", "ui_tool", "ui_ok", "ui_warn", "ui_error"}
-
-type skinDef struct {
-	name, desc string
-	colors     map[string]string
+// themeColors are the colour roles of the one theme: the ANSI colours the
+// screen has always defaulted to, on whatever the terminal's own background
+// yields as surfaces.
+var themeColors = map[string]lipgloss.TerminalColor{
+	"ui_accent": lipgloss.Color("3"), "ui_thinking": lipgloss.Color("6"), "ui_tool": lipgloss.Color("3"),
+	"ui_ok": lipgloss.Color("2"), "ui_warn": lipgloss.Color("3"), "ui_error": lipgloss.Color("1"),
 }
 
-// builtinSkins are the skins that come with soa-d, in the order /skin lists
-// them. Each names all six colours. A user skin may leave keys out; those
-// come from the first, "default".
-var builtinSkins = []skinDef{
-	{"default", "Your terminal's own colours", map[string]string{
-		"ui_accent": "yellow", "ui_thinking": "cyan", "ui_tool": "yellow",
-		"ui_ok": "green", "ui_warn": "yellow", "ui_error": "red"}},
-	{"paper", "For light terminals", map[string]string{
-		"ui_accent": "#1F4E8C", "ui_thinking": "#5B5FC7", "ui_tool": "#1F4E8C",
-		"ui_ok": "#2E7D32", "ui_warn": "#9A6700", "ui_error": "#B3261E"}},
-	{"ash", "Greyscale", map[string]string{
-		"ui_accent": "#C8C8C8", "ui_thinking": "#9E9E9E", "ui_tool": "#B0B0B0",
-		"ui_ok": "#A0A0A0", "ui_warn": "#D0D0D0", "ui_error": "#EDEDED"}},
-	{"tide", "Cool blues", map[string]string{
-		"ui_accent": "#6CB6D9", "ui_thinking": "#9C8CD9", "ui_tool": "#6CB6D9",
-		"ui_ok": "#7CC4A0", "ui_warn": "#D9B26C", "ui_error": "#E07A6C"}},
-	{"ember", "Warm oranges", map[string]string{
-		"ui_accent": "#E08A3C", "ui_thinking": "#C9A0DC", "ui_tool": "#E08A3C",
-		"ui_ok": "#8FBF6A", "ui_warn": "#E0B43C", "ui_error": "#E05A4E"}},
-	{"moss", "Greens", map[string]string{
-		"ui_accent": "#8DBF5A", "ui_thinking": "#7FB2C9", "ui_tool": "#8DBF5A",
-		"ui_ok": "#8DBF5A", "ui_warn": "#D9B45A", "ui_error": "#D9655A"}},
-}
-
-// loadSkins is the built-ins, then the user skins in <home>/skins/*.toml by
-// name. A user skin named like a built-in replaces it in place.
-func loadSkins(home string) []skinDef {
-	skins := append([]skinDef(nil), builtinSkins...)
-	files, _ := filepath.Glob(filepath.Join(home, "skins", "*.toml"))
-	sort.Strings(files)
-	user := map[string]skinDef{}
-	for _, f := range files {
-		var data struct {
-			Name        string         `toml:"name"`
-			Description string         `toml:"description"`
-			Colors      map[string]any `toml:"colors"`
-		}
-		b, err := os.ReadFile(f)
-		if err != nil || toml.Unmarshal(b, &data) != nil {
-			continue
-		}
-		if data.Name == "" {
-			data.Name = strings.TrimSuffix(filepath.Base(f), ".toml")
-		}
-		sk := skinDef{name: data.Name, desc: data.Description, colors: map[string]string{}}
-		for k, v := range data.Colors {
-			if s, ok := v.(string); ok {
-				sk.colors[k] = s
-			}
-		}
-		user[sk.name] = sk
-	}
-	var extra []string
-	for name, sk := range user {
-		replaced := false
-		for i := range skins {
-			if skins[i].name == name {
-				skins[i], replaced = sk, true
-			}
-		}
-		if !replaced {
-			extra = append(extra, name)
-		}
-	}
-	sort.Strings(extra)
-	for _, name := range extra {
-		skins = append(skins, user[name])
-	}
-	return skins
-}
-
-var ansiNames = map[string]string{
-	"black": "0", "red": "1", "green": "2", "yellow": "3", "blue": "4", "magenta": "5", "cyan": "6", "white": "7",
-	"gray": "8", "grey": "8", // bright black
-}
-
-// parseSkinColor reads a skin colour value. The first colour name in it
-// (black, red, green, yellow, blue, magenta, cyan, white, gray) is that ANSI
-// colour, "default" is the terminal's own, "#rgb" and "#rrggbb" are taken as
-// written; anything else is not a colour.
-func parseSkinColor(v string) (lipgloss.TerminalColor, bool) {
-	v = strings.ToLower(strings.TrimSpace(v))
-	for _, w := range strings.Fields(strings.ReplaceAll(v, ",", " ")) {
-		if c, ok := ansiNames[w]; ok {
-			return lipgloss.Color(c), true
-		}
-		if w == "default" {
-			return lipgloss.NoColor{}, true
-		}
-	}
-	if strings.HasPrefix(v, "#") && (len(v) == 4 || len(v) == 7) {
-		h := v[1:]
-		if len(h) == 3 {
-			h = string([]byte{h[0], h[0], h[1], h[1], h[2], h[2]})
-		}
-		for _, r := range h {
-			if !strings.ContainsRune("0123456789abcdef", r) {
-				return nil, false
-			}
-		}
-		return lipgloss.Color("#" + h), true
-	}
-	return nil, false
-}
-
-// skinColors resolves the six colours of a skin.
-func skinColors(sk skinDef) map[string]lipgloss.TerminalColor {
-	out := map[string]lipgloss.TerminalColor{}
-	for _, k := range skinKeys {
-		def, _ := parseSkinColor(builtinSkins[0].colors[k])
-		c := def
-		if v, ok := sk.colors[k]; ok {
-			if p, ok := parseSkinColor(v); ok {
-				c = p
-			}
-		}
-		out[k] = c
-	}
-	return out
-}
-
-// theme is what the screen is drawn with: a skin's colours, the surfaces, and
-// the renderer they are drawn through. A new skin is a new theme, so cached
-// rows of the old one are never reused.
+// theme is what the screen is drawn with: the theme's colours, the surfaces,
+// and the renderer they are drawn through.
 type theme struct {
-	r    *lipgloss.Renderer
-	name string
+	r *lipgloss.Renderer
 
 	pal   map[string]string // Palette of the terminal's background, or nil
 	exact *strings.Replacer // corrects termenv's hex colours; nil when none needs it
@@ -167,20 +39,15 @@ type theme struct {
 	backdrop                                lipgloss.TerminalColor // the dim card behind a dialog
 	card                                    lipgloss.TerminalColor // a dialog's own surface
 
-	// missingSkin is the display.skin that named no skin, when the start fell
-	// back to the default.
-	missingSkin string
-
 	acc, think, toolS, okS, warnS, errS, mut, bld, plain lipgloss.Style
 }
 
-// newTheme builds the theme of skin sk. pal is Palette's answer for the
-// terminal's background, or nil when it is not known.
-func newTheme(r *lipgloss.Renderer, sk skinDef, pal map[string]string) *theme {
-	cols := skinColors(sk)
-	th := &theme{r: r, name: sk.name, pal: pal,
-		accent: cols["ui_accent"], thinking: cols["ui_thinking"], tool: cols["ui_tool"],
-		okC: cols["ui_ok"], warn: cols["ui_warn"], errC: cols["ui_error"]}
+// newTheme builds the one theme. pal is Palette's answer for the terminal's
+// background, or nil when it is not known.
+func newTheme(r *lipgloss.Renderer, pal map[string]string) *theme {
+	th := &theme{r: r, pal: pal,
+		accent: themeColors["ui_accent"], thinking: themeColors["ui_thinking"], tool: themeColors["ui_tool"],
+		okC: themeColors["ui_ok"], warn: themeColors["ui_warn"], errC: themeColors["ui_error"]}
 	fg := func(c lipgloss.TerminalColor) lipgloss.Style { return r.NewStyle().Foreground(c) }
 	th.acc, th.think, th.toolS = fg(th.accent), fg(th.thinking), fg(th.tool)
 	th.okS, th.warnS, th.errS = fg(th.okC), fg(th.warn), fg(th.errC)
@@ -238,13 +105,13 @@ var (
 	mdTheme     *theme
 )
 
-// markdownTheme is the theme Markdown draws with: the default skin, no palette.
+// markdownTheme is the theme Markdown draws with: no palette.
 func markdownTheme() *theme {
 	mdThemeOnce.Do(func() {
 		r := lipgloss.NewRenderer(io.Discard)
 		r.SetColorProfile(termenv.TrueColor)
 		r.SetHasDarkBackground(true)
-		mdTheme = newTheme(r, builtinSkins[0], nil)
+		mdTheme = newTheme(r, nil)
 	})
 	return mdTheme
 }
@@ -346,18 +213,8 @@ func parseOSCColor(payload string) string {
 	return ""
 }
 
-// fallbackNote is what the feed says once at start when display.skin named a
-// skin that does not exist.
-func (th *theme) fallbackNote() string {
-	if th.missingSkin == "" {
-		return ""
-	}
-	return "display.skin is \"" + th.missingSkin + "\", which is not a skin; using default (/skin lists them)"
-}
-
-// startTheme is the theme the app starts in: the skin of config.toml's
-// [display] skin (default when unset or unknown), on the surfaces of the
-// terminal's background.
+// startTheme is the theme the app starts in: the one theme, on the surfaces
+// of the terminal's background.
 func startTheme(o Options, out io.Writer) *theme {
 	bg := o.Background
 	if bg == "" {
@@ -368,21 +225,7 @@ func startTheme(o Options, out io.Writer) *theme {
 	if r, g, b, ok := parseHex(bg); ok {
 		dark = luminance(r, g, b) <= 127.5
 	}
-	want := ""
-	if cfg, err := config.Load(o.Home); err == nil {
-		want = cfg.Display.Skin
-	}
-	skin, found := builtinSkins[0], want == ""
-	for _, sk := range loadSkins(o.Home) {
-		if sk.name == want {
-			skin, found = sk, true
-		}
-	}
-	th := newTheme(newRenderer(out, dark), skin, pal)
-	if !found {
-		th.missingSkin = want
-	}
-	return th
+	return newTheme(newRenderer(out, dark), pal)
 }
 
 // exactSeqs lists, for each colour #rrggbb in hexes, the escape lipgloss writes

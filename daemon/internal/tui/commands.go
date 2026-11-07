@@ -320,8 +320,6 @@ func (m *model) command(name, args, line string) tea.Cmd {
 			})
 	case "cancel":
 		return m.cancelPicker()
-	case "skin":
-		m.skinCommand(args)
 	case "status":
 		s := m.sess
 		m.feed.note(fmt.Sprintf("session %s · %s · mode %s · in %s out %s · %s calls",
@@ -420,32 +418,6 @@ func (m *model) switchSession(pick func(context.Context, *client.Client) (string
 			return tea.Batch(m.adopt(res, resumed && len(res.Messages) > 0), m.afterAttach())
 		}}
 	}
-}
-
-// skinCommand is /skin: list the skins, or draw everything in one at once. It
-// is not saved (config.toml is Nix-managed).
-func (m *model) skinCommand(name string) {
-	skins := loadSkins(m.o.Home)
-	if name == "" {
-		lines := []string{"skin: " + m.th.name}
-		for _, sk := range skins {
-			mark := "    "
-			if sk.name == m.th.name {
-				mark = "  ● "
-			}
-			lines = append(lines, mark+sk.name+" — "+sk.desc)
-		}
-		m.feed.note(strings.Join(lines, "\n"), false)
-		return
-	}
-	for _, sk := range skins {
-		if sk.name == name {
-			m.setTheme(newTheme(m.th.r, sk, m.th.pal))
-			m.feed.note("skin: "+name, false)
-			return
-		}
-	}
-	m.feed.note("unknown skin: "+name, false)
 }
 
 // attachSession attaches to id as its driver. A session nobody may drive (a

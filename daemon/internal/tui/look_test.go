@@ -1,6 +1,6 @@
 package tui_test
 
-// Phase 9b: the sidebar, the wordmark, markdown, skins and surfaces
+// Phase 9b: the sidebar, the wordmark, markdown and surfaces
 // (daemon/phases/09b-tui-look.md).
 
 import (
@@ -203,39 +203,6 @@ func TestAnswersRenderAsMarkdown(t *testing.T) {
 	}
 }
 
-func TestSkins(t *testing.T) {
-	d := newDaemon(t, fakellm.New(t))
-	if err := os.MkdirAll(filepath.Join(d.home, "skins"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(d.home, "skins", "mine.toml"),
-		[]byte("name = \"mine\"\ndescription = \"my own\"\n\n[colors]\nui_accent = \"#123456\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	restartWith(t, d, "\n[display]\nskin = \"tide\"\n")
-	a := open(t, d, tui.Options{})
-	waitScreen(t, a, "Message Son of Anton…")
-	const tide, ember, mine = "38;2;108;182;217", "38;2;224;138;60", "38;2;18;52;86"
-	if !strings.Contains(a.Styled(), tide) {
-		t.Fatal("display.skin = tide is not the accent at start")
-	}
-	send(a, "/skin")
-	waitScreen(t, a, "skin: tide", "● tide — Cool blues",
-		"ember — Warm oranges", "moss — Greens", "mine — my own")
-	send(a, "/skin ember")
-	waitScreen(t, a, "skin: ember")
-	if st := a.Styled(); !strings.Contains(st, ember) || strings.Contains(st, tide) {
-		t.Fatal("/skin ember did not redraw everything in ember")
-	}
-	send(a, "/skin mine")
-	waitScreen(t, a, "skin: mine")
-	if !strings.Contains(a.Styled(), mine) {
-		t.Fatal("a user skin's accent is not drawn")
-	}
-	send(a, "/skin nope")
-	waitScreen(t, a, "unknown skin: nope")
-}
-
 func TestSurfacesFollowTheTerminal(t *testing.T) {
 	d := newDaemon(t, fakellm.New(t, fakellm.Turn{Content: "hello"}))
 	a := open(t, d, tui.Options{Background: "#1e1e2e"})
@@ -357,16 +324,4 @@ func TestARoutedModelReportsTheModelThatAnswered(t *testing.T) {
 	waitScreen(t, a, "auto → small-model", "▰▰▰▰▱▱▱▱▱▱  35%", "350 / 1.0K")
 	send(a, "/status")
 	waitScreen(t, a, "· auto → radiance/small-model · mode")
-}
-
-func TestAStartSkinThatNoLongerExistsFallsBackOnce(t *testing.T) {
-	d := newDaemon(t, fakellm.New(t))
-	restartWith(t, d, "\n[display]\nskin = \"slate\"\n")
-	a := open(t, d, tui.Options{})
-	s := waitScreen(t, a, "Message Son of Anton…", `display.skin is "slate"`)
-	if strings.Count(s, `display.skin is "slate"`) != 1 {
-		t.Fatalf("the fallback was not said exactly once:\n%s", s)
-	}
-	send(a, "/skin")
-	waitScreen(t, a, "skin: default")
 }

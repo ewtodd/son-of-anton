@@ -51,7 +51,7 @@ transcript, a sidebar on wide screens (`ctrl+b`), the prompt below.
   the newest subagent (`←`/`→` between them, `↑` back), `ctrl+t` expands or
   folds the newest tool row.
 - `/model`, `/reasoning`, `/resume` and `/cancel` open pickers; `/new`,
-  `/compact`, `/commit`, `/stop`, `/sendnow`, `/sendall`, `/status`, `/skin`.
+  `/compact`, `/commit`, `/stop`, `/sendnow`, `/sendall`, `/status`.
   `!cmd` runs a shell command without a model turn. The `/model` picker lists
   only the models the gateway is serving, and picking one opens its reasoning
   picker right after (`/reasoning` still works on its own; a session whose
