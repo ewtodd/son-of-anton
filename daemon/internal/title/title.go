@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -60,44 +61,8 @@ func Derive(text string) string {
 // A reply that is empty, answer-shaped (over 12 words) or degenerate is an
 // error.
 func Generate(ctx context.Context, c *provider.Client, model, text string) (string, error) {
-	return complete(ctx, c, model, systemPrompt, text, maxInput)
-}
-
-// retitlePrompt names a conversation where it stands today, not by how it
-// began: the digest arrives oldest first, latest work at the bottom.
-const retitlePrompt = "The text you receive is a digest of an ongoing conversation between a user and an assistant, oldest at the top and its latest activity at the bottom. " +
-	"Reply with a JSON object holding a title for that conversation as it stands now: name its current center of gravity, not only how it began. " +
-	"When the conversation has moved on from an early topic, it is the later work the title names.\n\n" +
-	titleStyle +
-	"Digest: \"user: the vision tool is broken\nassistant: the auxiliary vision tool is gone; images reach the model's own encoder now\nuser: so check the vision flow works end to end\"\n" +
-	"Reply: {\"title\": \"Verify native vision image flow\"}\n\n" +
-	"Output the JSON object and nothing else."
-
-// Retitle asks model for a title of a running conversation, from its
-// digest, with the same reply rules as Generate. A digest longer than
-// maxDigest keeps its tail: the latest work is what the title names.
-func Retitle(ctx context.Context, c *provider.Client, model, digest string) (string, error) {
-	digest = strings.ReplaceAll(digest, "\r\n", "\n")
-	if r := []rune(digest); len(r) > maxDigest {
-		digest = string(r[len(r)-maxDigest:])
-		if i := strings.Index(digest, "\n"); i >= 0 {
-			digest = digest[i+1:]
-		}
-	}
-	return complete(ctx, c, model, retitlePrompt, digest, maxDigest)
-}
-
-// titleStyle is the style every title keeps.
-const titleStyle = "A good title is a noun phrase or a short imperative of about five words, never more than seven, " +
-	"that states the job the user wants done. Keep identifiers, file names, numbers and error codes character for character. " +
-	"Write it in the message's own language, with no trailing period, no quotes, no \"Title:\" label and no mention of tools. " +
-	"Do not respond to the message itself, and do not leave the title empty even if the message is just a greeting.\n\n"
-
-// complete is the shared title ask: systemPrompt asks for the name, text is
-// the input cut at max, and the reply must be the title alone.
-func complete(ctx context.Context, c *provider.Client, model, systemPrompt, text string, max int) (string, error) {
-	if r := []rune(text); len(r) > max {
-		text = string(r[:max])
+	if r := []rune(text); len(r) > maxInput {
+		text = string(r[:maxInput])
 	}
 	if strings.TrimSpace(text) == "" {
 		return "", errors.New("title: no text to name")
@@ -122,6 +87,59 @@ func complete(ctx context.Context, c *provider.Client, model, systemPrompt, text
 		return "", errors.New("title: the model returned no title")
 	case len(strings.Fields(t)) > maxTitleWords:
 		return "", errors.New("title: the model answered instead of naming")
+	case degenerate(t):
+		return "", errors.New("title: degenerate title")
+	}
+	return t, nil
+}
+
+// retitlePrompt asks the session model — a chat model, not the little
+// titling model — to write the title itself: the exact text, no JSON
+// scaffold, nothing besides the title in the reply.
+const retitlePrompt = "You are writing the title of the conversation whose digest follows. " +
+	"The digest is the conversation so far, oldest first and its latest activity at the bottom; " +
+	"the title names where the conversation stands now, and later work outweighs how it began. " +
+	"Reply with the exact text to use as the title and nothing else: no quotes, no label, " +
+	"no explanation, no list, no mention of this instruction. At most 48 characters: " +
+	"a noun phrase or a short imperative of about five words, in the conversation's own language. " +
+	"Keep identifiers, file names, numbers and error codes character for character, and drop any trailing period."
+
+const maxRetitleTokens = 512 // a reasoning session model thinks before it names
+
+// Retitle asks the session model itself to name a running conversation from
+// its digest, the way you would ask a colleague: write the title, the exact
+// text, nothing else. The digest keeps its tail — the latest work is what
+// the title names. The reply is not JSON and is not a fixed schema: a big
+// conversational model takes a plain instruction, and its thought tokens
+// need room, hence the budget.
+func Retitle(ctx context.Context, c *provider.Client, model, digest string) (string, error) {
+	digest = strings.ReplaceAll(digest, "\r\n", "\n")
+	if r := []rune(digest); len(r) > maxDigest {
+		digest = string(r[len(r)-maxDigest:])
+		if i := strings.Index(digest, "\n"); i >= 0 {
+			digest = digest[i+1:]
+		}
+	}
+	if strings.TrimSpace(digest) == "" {
+		return "", errors.New("title: no text to name")
+	}
+	temp := 0.3
+	resp, err := c.Complete(ctx, provider.Request{
+		Model: model,
+		Messages: []provider.Message{
+			{Role: "system", Content: retitlePrompt},
+			{Role: "user", Content: digest},
+		},
+		MaxTokens:   maxRetitleTokens,
+		Temperature: &temp,
+	}, nil)
+	if err != nil {
+		return "", err
+	}
+	t := cap48(clean(extract(resp.Message.Content)))
+	switch {
+	case t == "":
+		return "", fmt.Errorf("title: the model returned no name (reply: %.160q)", resp.Message.Content)
 	case degenerate(t):
 		return "", errors.New("title: degenerate title")
 	}
@@ -209,4 +227,17 @@ func degenerate(t string) bool {
 		}
 	}
 	return false
+}
+
+// cap48 cuts a title at 48 characters on a word boundary. Longer answers
+// are trimmed, not refused: the model wrote the text to use.
+func cap48(s string) string {
+	if r := []rune(s); len(r) > maxDerived {
+		cut := string(r[:maxDerived])
+		if i := strings.LastIndex(cut, " "); i > maxDerived/2 {
+			cut = cut[:i]
+		}
+		s = strings.TrimRight(cut, " ,.;:—-")
+	}
+	return s
 }
