@@ -121,7 +121,9 @@ func TestShiftEnterBreaksTheDraftInsteadOfSending(t *testing.T) {
 	term.press("\r")
 	waitScreen(t, term.App, "one answer")
 	// The submitted message is one message holding both lines: the store's
-	// user row says so, whatever the viewport scrolled away.
+	// user row says so, whatever the viewport scrolled away. The row lands
+	// with the first step's end — the streamed answer may be on the screen
+	// long before — so the store is polled for it, not read once.
 	cc, err := client.Dial(d.home, "hist")
 	if err != nil {
 		t.Fatal(err)
@@ -133,19 +135,26 @@ func TestShiftEnterBreaksTheDraftInsteadOfSending(t *testing.T) {
 			Content string `json:"content"`
 		} `json:"messages"`
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := cc.Call(ctx, "session.history", map[string]any{"session": term.App.Session()}, &hist); err != nil {
-		t.Fatal(err)
-	}
+	deadline := time.Now().Add(30 * time.Second)
 	found := ""
-	for _, m := range hist.Messages {
-		if m.Role == "user" {
-			found = m.Content
+	for {
+		found = ""
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := cc.Call(ctx, "session.history", map[string]any{"session": term.App.Session()}, &hist)
+		cancel()
+		if err == nil {
+			for _, m := range hist.Messages {
+				if m.Role == "user" {
+					found = m.Content
+				}
+			}
 		}
-	}
-	if !strings.Contains(found, "alpha\nbeta") {
-		t.Fatalf("the sent message = %q", found)
+		if strings.Contains(found, "alpha\nbeta") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the sent message = %q (history read: %v)", found, err)
+		}
 	}
 }
 
