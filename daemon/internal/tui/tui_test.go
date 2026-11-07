@@ -509,6 +509,41 @@ func TestCommandsReachTheDaemon(t *testing.T) {
 	}
 }
 
+// The aliases the owner retired (90541457 cleared the table but left them in
+// dispatch's cases) stop resolving for good: /q, /exit, /reset and /sessions
+// each say the usual unknown-command note and do nothing else — no quit, no
+// fresh session, no switch, no picker, no model request.
+func TestTheRetiredAliasesDoNotResolve(t *testing.T) {
+	fake := fakellm.New(t)
+	d := newDaemon(t, fake)
+	a := open(t, d, tui.Options{})
+	sess := a.Session()
+	for _, alias := range []string{"/q", "/exit", "/reset", "/sessions"} {
+		if alias == "/q" {
+			// "/q" at the end of the draft opens completion ("/quit" is a
+			// prefix match), and enter over the list accepts the suggestion
+			// instead of sending. Sent from mid-draft — the cursor moves
+			// off the end, which is also how an edited line is sent — the
+			// name itself goes to dispatch, and dispatch must refuse it.
+			a.Type(alias)
+			a.Press("left")
+			a.Press("enter")
+		} else {
+			send(a, alias)
+		}
+		waitScreen(t, a, "unknown command "+alias+" (/help lists them)")
+		idle(t, a) // the prompt is back: no picker, no quit question
+		if got := a.Session(); got != sess {
+			t.Fatalf("%s left the session as %s", alias, got)
+		}
+	}
+	send(a, "/status")
+	waitScreen(t, a, "session "+sess)
+	if fake.Count() != 0 {
+		t.Fatalf("the aliases made %d model requests", fake.Count())
+	}
+}
+
 func TestBangRunsAShellCommandHere(t *testing.T) {
 	fake := fakellm.New(t)
 	d := newDaemon(t, fake)

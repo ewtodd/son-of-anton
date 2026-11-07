@@ -158,7 +158,7 @@ func runBang(cwd, line string, send func(tea.Msg)) {
 
 func (m *model) command(name, args, line string) tea.Cmd {
 	switch name {
-	case "quit", "exit", "q":
+	case "quit":
 		return m.leave()
 	}
 	m.feed.note("⚙ "+line, true)
@@ -188,7 +188,7 @@ func (m *model) command(name, args, line string) tea.Cmd {
 			return m.set(map[string]any{"mode": args}, "permission mode: "+args, name, nil)
 		}
 		m.feed.note("permission mode: "+m.sess.Mode+"  ("+strings.Join(modes, " | ")+")", false)
-	case "new", "reset", "clear":
+	case "new", "clear":
 		cwd := m.sess.Cwd
 		return m.switchSession(func(ctx context.Context, c *client.Client) (string, error) {
 			var created struct {
@@ -199,7 +199,7 @@ func (m *model) command(name, args, line string) tea.Cmd {
 			}
 			return str(created.Session, "id"), nil
 		}, false, name)
-	case "resume", "sessions":
+	case "resume":
 		if args != "" {
 			return m.switchSession(func(ctx context.Context, c *client.Client) (string, error) {
 				var res struct {
