@@ -77,8 +77,17 @@ func (readFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
-	if mime := SniffImage(data); mime != "" {
-		return readImage(ctx, env, a.Path, abs, data, mime), nil
+	mime := SniffImage(data)
+	if mime != "" {
+		if mime != "image/svg+xml" {
+			if out := readImage(ctx, env, a.Path, abs, data, mime); out != "" {
+				return out, nil
+			}
+			// The sniff said image, and this session could attach images,
+			// but the bytes still will not attach (a header the decoders
+			// refuse): a failed image is usually text that never was one,
+			// so read on.
+		}
 	}
 	if isBinary(data) {
 		return errorResult(abs + " holds binary data, not text"), nil
@@ -136,12 +145,38 @@ func (readFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 		size:    fi.Size(),
 		partial: offset > 1 || truncated,
 	})
+	if mime == "image/svg+xml" {
+		// An SVG answer is source first — the model reads and edits it —
+		// and, when it can be drawn, the render rides beside the source.
+		if img := attachSVGRender(ctx, env, abs, data); img != nil {
+			result["image"] = img
+		}
+	}
 	return jsonResult(result)
+}
+
+// attachSVGRender renders an SVG beside its source. When the session cannot
+// see images, or nothing renders (no rsvg-convert, markup that refuses), the
+// source alone is the read: a text file was read, and nothing is missing.
+func attachSVGRender(ctx context.Context, env *Env, abs string, data []byte) map[string]any {
+	if !env.Vision || env.Attach == nil {
+		return nil
+	}
+	out, outMime, _, err := PrepareImage(data, "image/svg+xml")
+	if err != nil {
+		return nil
+	}
+	id, err := env.Attach.Add(ctx, outMime, filepath.Base(abs), out)
+	if err != nil {
+		return nil
+	}
+	return map[string]any{"id": id, "mime": outMime, "name": filepath.Base(abs)}
 }
 
 // readImage returns an image as a multimodal result: the text names the file
 // and the image itself rides the result as an image part, straight to the
-// model's vision encoder. A model without vision gets an error instead.
+// model's vision encoder. A model without vision gets an error instead, and
+// bytes the decoders refuse come back as "" for the caller to read as text.
 func readImage(ctx context.Context, env *Env, path, abs string, data []byte, mime string) string {
 	if !env.Vision || env.Attach == nil {
 		return errorResult(fmt.Sprintf(
@@ -151,7 +186,7 @@ func readImage(ctx context.Context, env *Env, path, abs string, data []byte, mim
 	}
 	out, outMime, note, err := PrepareImage(data, mime)
 	if err != nil {
-		return errorResult(err.Error())
+		return ""
 	}
 	id, err := env.Attach.Add(ctx, outMime, filepath.Base(abs), out)
 	if err != nil {

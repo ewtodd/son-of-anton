@@ -34,7 +34,9 @@ const (
 	imgShrinkTarget = 5 << 20
 )
 
-// SniffImage names an image's type by its magic bytes ("" for none).
+// SniffImage names an image's type by its magic bytes ("" for none). Text
+// that merely looks the part is text: a BMP needs a header, not two letters,
+// and <svg> has to open the document, not turn up inside it.
 func SniffImage(data []byte) string {
 	h := data[:min(len(data), 64)]
 	switch {
@@ -44,7 +46,7 @@ func SniffImage(data []byte) string {
 		return "image/jpeg"
 	case bytes.HasPrefix(h, []byte("GIF87a")), bytes.HasPrefix(h, []byte("GIF89a")):
 		return "image/gif"
-	case bytes.HasPrefix(h, []byte("BM")):
+	case bytes.HasPrefix(h, []byte("BM")) && bmpHeader(data):
 		return "image/bmp"
 	case len(h) >= 12 && string(h[:4]) == "RIFF" && string(h[8:12]) == "WEBP":
 		return "image/webp"
@@ -53,10 +55,68 @@ func SniffImage(data []byte) string {
 	case bytes.HasPrefix(h, []byte("\x00\x00\x01\x00")):
 		return "image/x-icon"
 	}
-	if bytes.Contains(bytes.ToLower(data[:min(len(data), 4096)]), []byte("<svg")) {
+	if svgRoot(data) {
 		return "image/svg+xml"
 	}
 	return ""
+}
+
+// bmpHeader reads a BMP file header as a header: 14 bytes of it, a DIB size
+// one of the specs name, and a pixel offset inside the file.
+func bmpHeader(data []byte) bool {
+	if len(data) < 14+12 { // the smallest DIB there is
+		return false
+	}
+	switch binary.LittleEndian.Uint32(data[14:18]) {
+	case 12, 40, 52, 56, 64, 108, 124: // BITMAPCOREHEADER … BITMAPV5HEADER
+	default:
+		return false
+	}
+	return binary.LittleEndian.Uint32(data[10:14]) <= uint32(len(data))
+}
+
+// svgRoot reports whether data's document element is svg: an XML declaration,
+// comments, a doctype and whitespace may lead, and then the first element must
+// be svg itself (exactly that name). A stray <svg in prose, JSX or an inline
+// shape does not make a file an image.
+func svgRoot(data []byte) bool {
+	s := bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")) // a BOM may lead the declaration
+	s = s[:min(len(s), 4096)]
+	for {
+		s = bytes.TrimLeft(s, " \t\r\n")
+		var i int
+		switch {
+		case bytes.HasPrefix(s, []byte("<?xml")):
+			if i = bytes.Index(s, []byte("?>")); i < 0 {
+				return false
+			}
+			s = s[i+2:]
+		case bytes.HasPrefix(s, []byte("<!--")):
+			if i = bytes.Index(s, []byte("-->")); i < 0 {
+				return false
+			}
+			s = s[i+4:]
+		case bytes.HasPrefix(s, []byte("<!DOCTYPE")), bytes.HasPrefix(s, []byte("<!doctype")):
+			if i = bytes.IndexByte(s, '>'); i < 0 {
+				return false
+			}
+			s = s[i+1:]
+		default:
+			if !bytes.HasPrefix(s, []byte("<svg")) {
+				return false
+			}
+			if len(s) == 4 {
+				return false
+			}
+			// The name goes on with a letter, so <svgfoo is another element;
+			// a name ends before a space, a newline, '>' or '/'.
+			switch s[4] {
+			case ' ', '\t', '\r', '\n', '>', '/':
+				return true
+			}
+			return false
+		}
+	}
 }
 
 // PrepareImage returns an image in a form a chat-completions endpoint takes

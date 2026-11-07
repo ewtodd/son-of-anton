@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -349,5 +350,118 @@ func TestABadImageFailsTheReadNotTheDaemon(t *testing.T) {
 	c.send(id, "again")
 	if rows = toolRows(c.turn()); len(rows) != 0 {
 		t.Fatalf("the turn after the BMP = %v", rows)
+	}
+}
+
+// Text that merely looks like an image reads as text (owner, 2026-11-06): a
+// file whose bytes start "BM25", markdown or code that mentions <svg>, and
+// images.go itself — read_file's own source, which holds the string. A real
+// .svg reads as its source too, so it stays editable; a session with vision
+// is handed the render beside it when rsvg-convert works, and a session
+// without sees the source alone and is told nothing is missing.
+func TestReadFileReadsTextThatMerelyLooksLikeAnImage(t *testing.T) {
+	cwd := t.TempDir()
+	src, err := os.ReadFile(filepath.Join("..", "tools", "images.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"BM25.txt": "BM25 weights the query terms.\nIt is not a bitmap.\n",
+		"notes.md": "# Plan\n\nDraw the icon as `<svg viewBox=\"0 0 8 8\"/>` in the README.\n",
+		"icon.tsx": "export const Icon = () => <svg width=\"12\" height=\"12\" />;\n",
+		"page.html": `<html><body>
+<p>the shape</p>
+<svg viewBox="0 0 8 8"></svg>
+</body></html>
+`,
+		"images.go": string(src),
+		"pict.svg": `<?xml version="1.0" encoding="UTF-8"?>
+<!-- drawn by hand -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">
+  <rect width="24" height="24" fill="red"/>
+</svg>
+`,
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(cwd, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var calls []fakellm.ToolCall
+	for i, name := range []string{"BM25.txt", "notes.md", "icon.tsx", "page.html", "images.go", "pict.svg"} {
+		calls = append(calls, call(fmt.Sprintf("r%d", i), "read_file", fmt.Sprintf(`{"path":%q}`, name)))
+	}
+	fake := fakellm.New(t,
+		fakellm.Turn{ToolCalls: calls},
+		fakellm.Turn{Content: "done"},
+	)
+	h := newHarness(t, fake, "")
+	c := h.dial()
+	id := c.create(cwd)
+	c.attach(id, "driver")
+	c.send(id, "read these six files")
+	rows := toolRows(c.turn())
+	if len(rows) != len(files) {
+		t.Fatalf("rows = %v", rows)
+	}
+	for i, name := range []string{"BM25.txt", "notes.md", "icon.tsx", "page.html", "images.go", "pict.svg"} {
+		res := decodeRow(t, rows[i])
+		if res["error"] != nil {
+			t.Fatalf("read_file(%s) = %v; plain text, and images.go among it, must read", name, res)
+		}
+		if !strings.Contains(str(res, "content"), strings.TrimSpace(strings.SplitN(files[name], "\n", 2)[0])) {
+			t.Fatalf("read_file(%s) did not read the source: %.200v", name, res)
+		}
+		if name != "pict.svg" && obj(res, "image") != nil {
+			t.Fatalf("read_file(%s) attached an image: %v", name, res)
+		}
+	}
+	// The .svg: its source is what came back, and, with rsvg-convert on PATH
+	// and vision on, the render rides the result too.
+	svg := decodeRow(t, rows[5])
+	if !strings.Contains(str(svg, "content"), "<svg") {
+		t.Fatalf("the .svg did not read as source: %.300v", svg)
+	}
+	render, _ := exec.LookPath("rsvg-convert")
+	if (render != "") != (obj(svg, "image") != nil) {
+		t.Fatalf("rsvg-convert %q but the .svg image = %v", render, obj(svg, "image"))
+	}
+}
+
+// Without vision the .svg still reads as its source: a text file is a text
+// file, whatever the model can see.
+func TestASVGFileReadsWithoutVision(t *testing.T) {
+	home, err := os.MkdirTemp("", "soad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("SOA_D_TEST_KEY", "")
+	t.Setenv("SON_OF_ANTON_HOME", "")
+	cwd := t.TempDir()
+	svg := `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">
+  <rect width="24" height="24" fill="red"/>
+</svg>
+`
+	if err := os.WriteFile(filepath.Join(cwd, "pict.svg"), []byte(svg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fake := fakellm.New(t,
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("r1", "read_file", `{"path":"pict.svg"}`)}},
+		fakellm.Turn{Content: "done"},
+	)
+	h := writeHomeVision(t, home, fake.URL, "false")
+	c := h.dial()
+	id := c.create(cwd)
+	c.attach(id, "driver")
+	c.send(id, "look")
+	rows := toolRows(c.turn())
+	if len(rows) != 1 {
+		t.Fatalf("rows = %v", rows)
+	}
+	res := decodeRow(t, rows[0])
+	if res["error"] != nil || res["image"] != nil || !strings.Contains(str(res, "content"), "<svg") {
+		t.Fatalf("a .svg without vision = %v", res)
 	}
 }

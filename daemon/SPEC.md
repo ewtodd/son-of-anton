@@ -175,7 +175,13 @@ queued and steered messages carry their images through the queue. A model
 takes images when config says so: the model's route `supports_vision`, else
 `[model].supports_vision`, else true — a text-only model (or a transcript
 carrying images for one) fails the read or the turn with that as the error,
-and nothing is quietly dropped.
+and nothing is quietly dropped. A `.svg`'s bytes are text above all: its
+source is what `read_file` returns (so it stays editable), with the render
+attached beside it when the session sees images and `rsvg-convert` works.
+Text that merely looks like an image — bytes opening "BM…" with no BMP
+header, or a `<svg>` inside prose, code or an HTML page — reads as text;
+and when an image's bytes will not attach, `read_file` falls back to them
+as text, an error only when they are binary.
 
 **Empty sessions (owner, 2026-11-06).** A session that never got a turn is
 not a session yet: the listings (`session.list`, the TUI's `/resume` and
