@@ -4,54 +4,13 @@ package server_test
 // (daemon/phases/10a-son-of-anton-command.md).
 
 import (
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/fakellm"
 )
 
-// /retitle: the session's own model names the conversation where it stands,
-// not the little titles model naming the opening message. An explicit user
-// rename still wins afterwards, and a later retitle beats that too.
-func TestARetitleLetsTheSessionModelNameIt(t *testing.T) {
-	fake := fakellm.New(t,
-		fakellm.Turn{Content: "the answer"},
-		fakellm.Turn{Content: `{"title": "Receipts and rerolling"}`},
-		fakellm.Turn{Content: `{"title": "Session named again"}`},
-	)
-	h := newHarness(t, fake, "") // no auxiliary title model: the derived one stands
-	c := h.dial()
-	id := c.create(t.TempDir())
-	c.attach(id, "driver")
-	c.send(id, "retitle proves hard to spell")
-	c.turn()
-
-	c.ok("session.retitle", map[string]any{"session": id})
-	c.awaitWhere("session.updated", func(e map[string]any) bool {
-		return str(obj(e, "state"), "title") == "Receipts and rerolling"
-	})
-
-	// The ask went to the session's endpoint under the session's model, with
-	// both sides of the conversation in the digest.
-	if req := fake.Request(1); req["model"] != "test-model" {
-		t.Fatalf("retitle request = %v", req)
-	}
-	digest := string(fake.Messages(1)[1])
-	if !strings.Contains(digest, "user: retitle proves hard to spell") || !strings.Contains(digest, "assistant: the answer") {
-		t.Fatalf("the retitle digest = %s", digest)
-	}
-
-	c.ok("session.rename", map[string]any{"session": id, "title": "Login bugs"})
-	c.awaitWhere("session.updated", func(e map[string]any) bool {
-		return str(obj(e, "state"), "title") == "Login bugs"
-	})
-	c.ok("session.retitle", map[string]any{"session": id})
-	c.awaitWhere("session.updated", func(e map[string]any) bool {
-		return str(obj(e, "state"), "title") == "Session named again"
-	})
-	time.Sleep(150 * time.Millisecond) // the second retitle's event order settles
-}
+// The retitle-to-a-model ask is gone (owner, 2026-11-06): the compaction
+// rename tip and the TUI's /retitle replaced it, in retitle_tip_server_test.
 
 func TestRenameAndDeleteASession(t *testing.T) {
 	rel := make(chan struct{})

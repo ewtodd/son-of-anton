@@ -278,12 +278,17 @@ func (m *model) command(name, args, line string) tea.Cmd {
 				return nil
 			})
 	case "retitle":
-		return call(c, 10*time.Second, "session.retitle", map[string]any{"session": sid}, nil,
+		args = strings.TrimSpace(args)
+		if args == "" {
+			m.feed.note("usage: /retitle <the name this conversation has now> — it renames the session here and in /resume, the sidebar and fiona's lists", false)
+			return nil
+		}
+		return call(c, 10*time.Second, "session.rename", map[string]any{"session": sid, "title": args}, nil,
 			func(m *model, err error) tea.Cmd {
 				if err != nil {
 					fail(m, err)
 				} else {
-					m.feed.note("retitling — the session model is naming this conversation where it stands", false)
+					m.feed.note("retitled — the sidebar and /resume will follow", false)
 				}
 				return nil
 			})

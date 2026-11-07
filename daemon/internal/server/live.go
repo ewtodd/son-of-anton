@@ -70,7 +70,6 @@ type live struct {
 	steer               string
 	hasSteer            bool
 	steerSentAt         time.Time              // when the first queued/steered message was sent
-	retitling           bool                   // a background model retitle runs
 	steerImages         []store.Image          // the images the steered messages attach
 	nudges              map[string]*time.Timer // request id -> the pending desktop nudge
 	waiting             bool                   // the queue waits for a turn that ends done, or queue.steer

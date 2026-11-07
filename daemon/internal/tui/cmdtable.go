@@ -17,7 +17,7 @@ var cmdTable = []cmdDef{
 	{"new", "", "Open a new session", "Session"},
 	{"clear", "", "Open a new session and wipe the screen", "Session"},
 	{"resume", "[id or title]", "Go back to a session, yours or one fiona started", "Session"},
-	{"retitle", "", "Retitle this session, named by its own model where the conversation stands", "Session"},
+	{"retitle", "[new title]", "Retitle this session to what it has become", "Session"},
 	{"handoff", "", "Give this session to fiona and leave the TUI", "Session"},
 	{"commit", "[extra instructions]", "Look over the uncommitted changes, write a commit message that fits the repo, and commit", "Session"},
 	{"compact", "[focus topic | --preview]", "Condense older turns into a summary to make room (--preview only reports what would happen)", "Session"},

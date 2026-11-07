@@ -33,30 +33,6 @@ func (s *Server) rename(params json.RawMessage, bad func(error) (any, *rpcError)
 	return map[string]any{}, nil
 }
 
-// retitle is session.retitle: the session's own model names the conversation
-// where it stands now, instead of the little titles model naming its opening
-// message. The ask runs in the background; session.updated carries the name
-// when it lands.
-func (s *Server) retitle(params json.RawMessage, bad func(error) (any, *rpcError)) (any, *rpcError) {
-	var p struct {
-		Session string `json:"session"`
-	}
-	if err := json.Unmarshal(params, &p); err != nil {
-		return bad(err)
-	}
-	if _, e := s.socketSession(p.Session); e != nil {
-		return nil, e
-	}
-	l, err := s.load(s.base, p.Session)
-	if err != nil {
-		return nil, notFound(err, p.Session)
-	}
-	if !l.retitle() {
-		return nil, errf(codeInternal, "a retitle is already running")
-	}
-	return map[string]any{}, nil
-}
-
 // deleteSession is session.delete: the session, its children and everything
 // stored for them, refused while any of them is loaded (a turn runs, a client
 // is attached, or something still works in the background). The server's
