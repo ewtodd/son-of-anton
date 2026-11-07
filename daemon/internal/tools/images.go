@@ -131,13 +131,46 @@ func shrinkNote(s *scaleInfo) string {
 	return fmt.Sprintf("Image downscaled from %dx%d to %dx%d before it was attached; %s", s.ow, s.oh, s.nw, s.nh, clause)
 }
 
+// imgMaxPixels is the most pixels a source's declared dimensions may name.
+// Two letters and a header can claim anything; a decoder otherwise happily
+// allocates (or panics on) 2^31 x 2^31, and no picture a model should see
+// comes near this.
+const imgMaxPixels = 64 << 20
+
+// checkImageSize refuses a source whose declared rectangle is empty or past
+// the pixel budget: the decoders place little stock in what a header says.
+func checkImageSize(what string, cfg image.Config) error {
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return fmt.Errorf("%s declares %dx%d pixels", what, cfg.Width, cfg.Height)
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > imgMaxPixels {
+		return fmt.Errorf("%s declares %dx%d pixels, past the %d most an image takes in",
+			what, cfg.Width, cfg.Height, imgMaxPixels)
+	}
+	return nil
+}
+
 // decodeImage decodes any type an image source may hold (the first frame of
-// a GIF).
-func decodeImage(data []byte, mime string) (image.Image, error) {
+// a GIF). The input bytes are untrusted: the dimensions are read first and
+// refused when no picture needs them, and a decoder that still panics on the
+// absurd (image.NewRGBA refuses a huge Rectangle) becomes an error.
+func decodeImage(data []byte, mime string) (img image.Image, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			img, err = nil, fmt.Errorf("the %s decode failed: %v", mime, r)
+		}
+	}()
 	if mime == "image/x-icon" {
 		return decodeICO(data)
 	}
-	img, _, err := image.Decode(bytes.NewReader(data))
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	if err := checkImageSize("the image", cfg); err != nil {
+		return nil, err
+	}
+	img, _, err = image.Decode(bytes.NewReader(data))
 	return img, err
 }
 
@@ -199,7 +232,17 @@ func decodeICO(data []byte) (image.Image, error) {
 	copy(file, "BM")
 	binary.LittleEndian.PutUint32(file[2:], uint32(14+len(fixed)))
 	binary.LittleEndian.PutUint32(file[10:], uint32(14+hdr+palette))
-	return bmp.Decode(bytes.NewReader(append(file, fixed...)))
+	full := append(file, fixed...)
+	// The bitmap's own header is as untrusted as any file's: read the size
+	// before a decoder builds pixels out of the claim.
+	cfg, err := bmp.DecodeConfig(bytes.NewReader(full))
+	if err != nil {
+		return nil, err
+	}
+	if err := checkImageSize("the icon bitmap", cfg); err != nil {
+		return nil, err
+	}
+	return bmp.Decode(bytes.NewReader(full))
 }
 
 // scaleInfo is a downscale: the original and the new size.

@@ -10,6 +10,7 @@ package server_test
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -300,5 +301,53 @@ func TestReadImageErrorsOnATextOnlyModel(t *testing.T) {
 	}
 	if content, parts := toolRowParts(t, fake, 1); parts != nil || !strings.Contains(content, "no vision") {
 		t.Fatalf("something reached the model as parts: %q", content)
+	}
+}
+
+// hostileBMP is the 54-byte BMP that took the daemon down (owner, 2026-11-06):
+// "BM", pixel offset 54, a 40-byte BITMAPINFOHEADER, planes 1, 24 bpp and a
+// claimed rectangle of 0x7fffffff x 0x7fffffff.
+func hostileBMP() []byte {
+	b := make([]byte, 54)
+	copy(b, "BM")
+	binary.LittleEndian.PutUint32(b[10:], 54)
+	binary.LittleEndian.PutUint32(b[14:], 40)
+	binary.LittleEndian.PutUint32(b[18:], 0x7fffffff)
+	binary.LittleEndian.PutUint32(b[22:], 0x7fffffff)
+	binary.LittleEndian.PutUint16(b[26:], 1)
+	binary.LittleEndian.PutUint16(b[28:], 24)
+	return b
+}
+
+// A read_file of a hostile image reaches PrepareImage on the model's turn:
+// it must answer the model with an error and leave the daemon serving, not
+// panic soa-d (and its session) out of the air.
+func TestABadImageFailsTheReadNotTheDaemon(t *testing.T) {
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "bad.bmp"), hostileBMP(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fake := fakellm.New(t,
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("r1", "read_file", `{"path":"bad.bmp"}`)}},
+		fakellm.Turn{Content: "still here"},
+		fakellm.Turn{Content: "done again"},
+	)
+	h := newHarness(t, fake, "")
+	c := h.dial()
+	id := c.create(cwd)
+	c.attach(id, "driver")
+	c.send(id, "look at the picture")
+	rows := toolRows(c.turn())
+	if len(rows) != 1 {
+		t.Fatalf("rows = %v", rows)
+	}
+	res := decodeRow(t, rows[0])
+	if res["error"] == nil || res["image"] != nil {
+		t.Fatalf("the hostile BMP read = %v", res)
+	}
+	// The daemon made it through: the next turn goes round as usual.
+	c.send(id, "again")
+	if rows = toolRows(c.turn()); len(rows) != 0 {
+		t.Fatalf("the turn after the BMP = %v", rows)
 	}
 }
