@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -325,6 +326,90 @@ func TestTheStepBudgetEndsWithAToolFreeAnswer(t *testing.T) {
 		t.Fatalf("no synthetic user message may be injected: %s", roles(ms))
 	}
 	checkPairing(t, ms)
+}
+
+// repeatLimit is the agent's maxRepeatedSteps.
+const repeatLimit = 8
+
+func TestARunOfIdenticalToolCallsEndsWithAToolFreeAnswer(t *testing.T) {
+	st := newStore(t)
+	turns := []fakellm.Turn{}
+	for i := 0; i < repeatLimit; i++ {
+		turns = append(turns, fakellm.Turn{ToolCalls: []fakellm.ToolCall{call(fmt.Sprintf("c%d", i), "echo_tool", `{"a":1}`)}})
+	}
+	turns = append(turns, fakellm.Turn{Content: "it is still running"})
+	fake := fakellm.New(t, turns...)
+	r := toolRunner(t, st, fake, echoTool())
+	s, _ := r.NewSession(ctx, "interactive", t.TempDir())
+	if res := send(t, s, "go"); res.Content != "it is still running" {
+		t.Fatalf("result %+v", res)
+	}
+	if fake.Count() != repeatLimit+1 {
+		t.Fatalf("requests = %d, want %d calls plus the final answer", fake.Count(), repeatLimit)
+	}
+	for i := 0; i < repeatLimit; i++ {
+		if _, present := fake.Request(i)["tool_choice"]; present {
+			t.Fatalf("request %d must not restrict tools", i)
+		}
+	}
+	if fake.Request(repeatLimit)["tool_choice"] != "none" {
+		t.Fatalf("the request after the run must carry tool_choice none: %v", fake.Request(repeatLimit)["tool_choice"])
+	}
+	if rawTools(t, fake, repeatLimit) != rawTools(t, fake, 0) {
+		t.Fatal("the final request keeps the same tool list (the prefix stays cached)")
+	}
+	ms := full(t, fake.Messages(repeatLimit))
+	if strings.Count(roles(ms), "user") != 1 {
+		t.Fatalf("no synthetic user message may be injected: %s", roles(ms))
+	}
+	checkPairing(t, ms)
+}
+
+func TestDifferingToolCallsNeverEndTheRun(t *testing.T) {
+	st := newStore(t)
+	turns := []fakellm.Turn{}
+	// Alternating arguments for far more steps than the limit.
+	for i := 0; i < 3*repeatLimit; i++ {
+		turns = append(turns, fakellm.Turn{ToolCalls: []fakellm.ToolCall{call(fmt.Sprintf("c%d", i), "echo_tool", fmt.Sprintf(`{"a":%d}`, i%2))}})
+	}
+	turns = append(turns, fakellm.Turn{Content: "done"})
+	fake := fakellm.New(t, turns...)
+	r := toolRunner(t, st, fake, echoTool())
+	s, _ := r.NewSession(ctx, "interactive", t.TempDir())
+	if res := send(t, s, "go"); res.Content != "done" {
+		t.Fatalf("result %+v", res)
+	}
+	for i := 0; i < fake.Count(); i++ {
+		if _, present := fake.Request(i)["tool_choice"]; present {
+			t.Fatalf("request %d must not restrict tools", i)
+		}
+	}
+}
+
+func TestADifferentCallResetsTheRun(t *testing.T) {
+	st := newStore(t)
+	turns := []fakellm.Turn{}
+	n := 0
+	run := func(args string, times int) {
+		for i := 0; i < times; i++ {
+			turns = append(turns, fakellm.Turn{ToolCalls: []fakellm.ToolCall{call(fmt.Sprintf("c%d", n), "echo_tool", args)}})
+			n++
+		}
+	}
+	run(`{"a":1}`, repeatLimit-1)
+	run(`{"a":2}`, repeatLimit-1)
+	turns = append(turns, fakellm.Turn{Content: "done"})
+	fake := fakellm.New(t, turns...)
+	r := toolRunner(t, st, fake, echoTool())
+	s, _ := r.NewSession(ctx, "interactive", t.TempDir())
+	if res := send(t, s, "go"); res.Content != "done" {
+		t.Fatalf("result %+v", res)
+	}
+	for i := 0; i < fake.Count(); i++ {
+		if _, present := fake.Request(i)["tool_choice"]; present {
+			t.Fatalf("request %d must not restrict tools", i)
+		}
+	}
 }
 
 func TestLargeToolResultsAreTruncatedBeforeTheyEnterContext(t *testing.T) {

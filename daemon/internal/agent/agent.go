@@ -33,6 +33,11 @@ const (
 	// DefaultMaxSteps bounds the tool steps per turn before a final
 	// tool_choice=none request.
 	DefaultMaxSteps = 500
+	// maxRepeatedSteps is how many steps in a row may make exactly the same
+	// tool calls (same names and argument bytes, in order) before the next
+	// request is a tool_choice=none one, like the step budget's: a model that
+	// polls the same call over and over answers in text instead.
+	maxRepeatedSteps = 8
 	// DefaultMaxToolResultChars caps a tool result's size in context.
 	DefaultMaxToolResultChars = 100_000
 	// maxEmptyRetries bounds how many times a step's request is sent again
@@ -542,6 +547,8 @@ func (s *Session) SendMediaAt(ctx context.Context, text string, images []store.I
 		return ""
 	}
 	steps, empties := 0, 0
+	var lastCalls string // the previous step's tool calls
+	repeats := 0         // steps in a row that made exactly lastCalls
 	maxSteps := r.MaxSteps
 	if maxSteps <= 0 {
 		maxSteps = DefaultMaxSteps
@@ -589,7 +596,7 @@ func (s *Session) SendMediaAt(ctx context.Context, text string, images []store.I
 		}
 		if reg := s.registry(); reg != nil {
 			req.Tools = reg.Schemas()
-			if steps >= maxSteps {
+			if steps >= maxSteps || repeats >= maxRepeatedSteps {
 				req.ToolChoice = "none"
 			}
 		}
@@ -696,6 +703,15 @@ func (s *Session) SendMediaAt(ctx context.Context, text string, images []store.I
 		}
 		first = false
 		steps++
+		if calls := callsKey(resp.Message.ToolCalls); calls == lastCalls {
+			repeats++
+			if repeats == maxRepeatedSteps {
+				log.Printf("agent: session %s: %s called with the same arguments %d steps in a row; asking for an answer without tools",
+					s.id, resp.Message.ToolCalls[0].Function.Name, repeats)
+			}
+		} else {
+			lastCalls, repeats = calls, 1
+		}
 		empties = 0
 		if s.onStep != nil {
 			s.onStep()
@@ -1096,4 +1112,14 @@ func (s *Session) setServed(m string, emit func(Event)) {
 	if after != before {
 		emit(Event{Kind: "served", Text: after})
 	}
+}
+
+// callsKey is a step's tool calls as one string, to tell whether the next
+// step made exactly the same ones.
+func callsKey(calls []provider.ToolCall) string {
+	var b strings.Builder
+	for _, c := range calls {
+		fmt.Fprintf(&b, "%d:%s\x00%d:%s\x00", len(c.Function.Name), c.Function.Name, len(c.Function.Arguments), c.Function.Arguments)
+	}
+	return b.String()
 }
