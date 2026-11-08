@@ -34,9 +34,15 @@ son-of-anton                    the terminal UI (-c continues here, -r ID|latest
 son-of-anton "a question"       one answer, printed (also -q, --query-file FILE|-)
 son-of-anton -z "a task"        a delegated one-shot: lean prompt, no memory
 son-of-anton status             which daemon serves this home, Signal, cron, models
-son-of-anton sessions ...       list, rename, delete, import (Claude Code, Codex, opencode)
+son-of-anton sessions ...       list, rename, delete, report, import (Claude Code, Codex, opencode)
 son-of-anton view NAME [ID]     watch an instance's sessions read-only (see NixOS: viewerGroup)
 ```
+
+`sessions report ID` (and `view NAME report ID`) renders a session as a PDF:
+its requests and replies with their markdown, each tool call on one line with
+the start of its output, and its subagents in place. `-o FILE` names the file
+(`-` for standard output); the default is `./ID.pdf`. No model is involved; the
+package carries the typst that lays it out.
 
 `-m MODEL`, `--reasoning LEVEL` and `--yolo` apply to all three ways in. A
 one-shot denies dangerous commands unless `--yolo`, since nobody is there to
@@ -81,6 +87,7 @@ directory you name, through her `relay` tool. Workers keep
 `/approve <id>` and `/deny <id>`. A worker is just a session with no terminal
 attached: `/resume` in the terminal UI, or `son-of-anton -r`, takes one over;
 `son-of-anton -r ID --view` only watches it, and leaves it to fiona.
+Ask fiona for a report of a worker and she sends its PDF to the chat.
 On a single-user instance it works the other way too: fiona can see your
 terminal sessions and continue one from the chat, in place. If a terminal still
 has it open, that terminal closes and prints how to take the session back.
@@ -156,6 +163,7 @@ users.users.e-play.extraGroups = [ "soa-viewers" ];
 son-of-anton view ricky                 the workers (--all: every kind but chats)
 son-of-anton view ricky ID              one session in the terminal UI, read-only and live
 son-of-anton view ricky show ID         its transcript, printed (pipe it anywhere)
+son-of-anton view ricky report ID       the same as a PDF (-o FILE)
 ```
 
 The daemon then also listens on `/run/son-of-anton-<name>/view.sock` (0660,

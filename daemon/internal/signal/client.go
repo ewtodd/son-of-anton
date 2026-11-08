@@ -220,6 +220,18 @@ func (c *Client) Send(ctx context.Context, to, text string, styles []string) (in
 	default:
 		params["textStyles"] = styles
 	}
+	return c.send(ctx, to, params)
+}
+
+// SendFile sends text with one file attached. The file goes as a data URI
+// (signal-cli reads one as the attachment itself), since signal-cli may run
+// on another host and cannot read this one's files.
+func (c *Client) SendFile(ctx context.Context, to, text, name, mime string, data []byte) (int64, error) {
+	uri := "data:" + mime + ";filename=" + name + ";base64," + base64.StdEncoding.EncodeToString(data)
+	return c.send(ctx, to, map[string]any{"account": c.account, "message": text, "attachments": []string{uri}})
+}
+
+func (c *Client) send(ctx context.Context, to string, params map[string]any) (int64, error) {
 	target(params, to)
 	raw, err := c.rpc(ctx, "send", params)
 	if err != nil {

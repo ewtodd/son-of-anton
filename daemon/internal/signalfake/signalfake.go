@@ -233,6 +233,8 @@ type Sent struct {
 	Text   string
 	Styles []string
 	TS     int64 // its timestamp (what an echo of it carries)
+	// Attachments are the files sent with it, as given: data URIs.
+	Attachments []string
 }
 
 // Sends returns the text messages sent successfully, in order.
@@ -260,6 +262,13 @@ func (s *Server) Sends() []Sent {
 			for _, x := range sts {
 				if v, ok := x.(string); ok {
 					m.Styles = append(m.Styles, v)
+				}
+			}
+		}
+		if as, ok := p["attachments"].([]any); ok {
+			for _, x := range as {
+				if v, ok := x.(string); ok {
+					m.Attachments = append(m.Attachments, v)
 				}
 			}
 		}

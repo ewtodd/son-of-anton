@@ -364,7 +364,7 @@ func (s *Server) relay(ctx context.Context, stamp string, raw json.RawMessage) s
 		return s.relayList(ctx, stamp, a)
 	case "send":
 		return s.relaySendTo(ctx, stamp, a)
-	case "status", "stop", "detach":
+	case "status", "stop", "detach", "report":
 		w, errText := s.relayWorker(ctx, stamp, a.Session)
 		if errText != "" {
 			return relayFail(errText)
@@ -372,6 +372,8 @@ func (s *Server) relay(ctx context.Context, stamp string, raw json.RawMessage) s
 		switch a.Action {
 		case "status":
 			return s.relayStatusFor(ctx, stamp, w)
+		case "report":
+			return s.relayReport(ctx, stamp, w)
 		case "stop":
 			stopped := false
 			if l := s.loaded(w.ID); l != nil {
@@ -397,7 +399,7 @@ func (s *Server) relay(ctx context.Context, stamp string, raw json.RawMessage) s
 		}
 		return relayJSON(map[string]any{"success": true, "detached": detached})
 	}
-	return relayFail("action must be one of list, send, status, stop, detach")
+	return relayFail("action must be one of list, send, status, stop, detach, report")
 }
 
 // mayDrive says whether the chat may see and drive the session: any, on a

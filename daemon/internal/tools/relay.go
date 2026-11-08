@@ -33,7 +33,10 @@ func (relayTool) Schema() provider.Tool {
 			"that session. A busy worker runs the message after its current turn; `now` steers the running turn with it instead.\n" +
 			"- status: state, recent activity, queued messages, pending approvals. Do not poll it: a worker's results arrive as notifications.\n" +
 			"- stop: stop the running turn; the worker stays bound.\n" +
-			"- detach: unbind the worker from this chat. On a single-user instance it then stops reporting here.\n\n" +
+			"- detach: unbind the worker from this chat. On a single-user instance it then stops reporting here.\n" +
+			"- report: send the user a PDF of a worker's session (its requests, replies, tool calls and subagents) as an " +
+			"attachment in this chat. Use it when the user asks for a report or a write-up of what a worker did; the file " +
+			"arrives on its own, so just tell them it is there.\n\n" +
 			"Relay the user's words faithfully: pass their request as they gave it, without rewriting it or adding " +
 			"instructions of your own. Before choosing between continuing an existing worker and starting a new one, ask " +
 			"the user. A worker's results and its questions (answer one by sending the user's reply) arrive here as " +
@@ -43,7 +46,7 @@ func (relayTool) Schema() provider.Tool {
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "action": {"type": "string", "enum": ["list", "send", "status", "stop", "detach"]},
+    "action": {"type": "string", "enum": ["list", "send", "status", "stop", "detach", "report"]},
     "session": {"type": "string", "description": "Worker id or title. Default: the worker bound to this chat."},
     "message": {"type": "string", "description": "send: the user's request for the worker, as they gave it."},
     "new_in": {"type": "string", "description": "send: start a new worker in this directory instead."},
