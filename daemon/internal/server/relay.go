@@ -676,6 +676,14 @@ func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) str
 	}
 	var id, owner string
 	if dir := strings.TrimSpace(a.NewIn); dir != "" {
+		// A new worker named no model runs on relay.default_model, so it never
+		// inherits an instance fallback (model.default "auto").
+		if model == "" && s.cfg.Relay.DefaultModel != "" {
+			var err error
+			if model, err = s.workerDefault(); err != nil {
+				return relayFail(err.Error())
+			}
+		}
 		if fi, err := os.Stat(dir); !filepath.IsAbs(dir) || err != nil || !fi.IsDir() {
 			return relayFail(fmt.Sprintf("new_in %q must be an absolute path to an existing directory", dir))
 		}

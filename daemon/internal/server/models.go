@@ -324,15 +324,22 @@ func windowText(n int) string {
 // models note must keep following the listing. A failed fetch is remembered
 // in metaFail, so a chat turn during an outage does not each pay the timeout.
 func (s *Server) workerModels() []string {
+	names, _ := s.liveModels(true)
+	return names
+}
+
+// liveModels is the provider's live model list, sorted; ok is false when it
+// cannot be fetched. withoutHidden drops relay.hidden_models.
+func (s *Server) liveModels(withoutHidden bool) (names []string, ok bool) {
 	ep, err := s.cfg.Endpoint("")
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	s.metaMu.Lock()
 	failed := time.Since(s.metaFail[ep.BaseURL]) < catalogFailTTL
 	s.metaMu.Unlock()
 	if failed {
-		return nil
+		return nil, false
 	}
 	ctx, cancel := context.WithTimeout(s.base, 5*time.Second)
 	infos, err := provider.New(ep.BaseURL, ep.APIKey).ModelInfo(ctx)
@@ -341,21 +348,20 @@ func (s *Server) workerModels() []string {
 		s.metaMu.Lock()
 		s.metaFail[ep.BaseURL] = time.Now()
 		s.metaMu.Unlock()
-		return nil
+		return nil, false
 	}
 	for i := range infos {
 		infos[i].Status = lowerStatus(infos[i].Status)
 	}
 	s.refreshMeta(ep, infos)
-	var names []string
 	for _, info := range infos {
-		if info.ID == "" || (info.Status != "" && info.Status != "serving") || s.cfg.WorkerModelHidden(info.ID) {
+		if info.ID == "" || (info.Status != "" && info.Status != "serving") || (withoutHidden && s.cfg.WorkerModelHidden(info.ID)) {
 			continue
 		}
 		names = append(names, info.ID)
 	}
 	sort.Strings(names)
-	return names
+	return names, true
 }
 
 // modelsNoteText lists the models a worker may be set to, for a chat's
@@ -390,7 +396,7 @@ func (s *Server) modelsNoteText() string {
 		}
 		items = append(items, n)
 	}
-	return "[Models for relay send's model, up now: " + strings.Join(items, "; ") + "; default is " + s.cfg.Model.Default + ".]"
+	return "[Models for relay send's model, up now: " + strings.Join(items, "; ") + "; " + s.defaultNote() + ".]"
 }
 
 // modelsNote is the note a chat's turn carries: the models list on its first
@@ -409,12 +415,43 @@ func (s *Server) modelsNote(stamp string) string {
 	return note
 }
 
+// workerDefault is the model "default" means to a worker: relay.default_model
+// when set, else model.default. The owner sets it, so hidden_models does not
+// apply; but when the provider lists its live models and it is not among them
+// the send fails, rather than a worker starting on a model that is down (or
+// misspelled) and being served by a fallback. An unreachable list is not
+// held against it.
+func (s *Server) workerDefault() (string, error) {
+	d := s.cfg.Relay.DefaultModel
+	if d == "" {
+		return s.cfg.Model.Default, nil
+	}
+	if names, ok := s.liveModels(false); ok {
+		for _, n := range names {
+			if n == d {
+				return d, nil
+			}
+		}
+		return "", fmt.Errorf("relay.default_model %s is not live right now (known: %s); name a model in the send, or tell the owner", d, strings.Join(names, ", "))
+	}
+	return d, nil
+}
+
+// defaultNote is the models note's default clause: the workers' default
+// when relay.default_model is set, else the instance's model.
+func (s *Server) defaultNote() string {
+	if d := s.cfg.Relay.DefaultModel; d != "" {
+		return "default, which a new worker also starts on when none is named, is " + d
+	}
+	return "default is " + s.cfg.Model.Default
+}
+
 // workerModel resolves the model a relay send asks for: "default" is
-// model.default; a name that is not offered to workers (not live, hidden by
+// relay.default_model, else model.default; a name not offered to workers (not live, hidden by
 // relay.hidden_models, or unknown) is an error listing those that are.
 func (s *Server) workerModel(name string) (string, error) {
 	if name == "default" {
-		return s.cfg.Model.Default, nil
+		return s.workerDefault()
 	}
 	names := s.workerModels()
 	for _, n := range names {

@@ -86,6 +86,10 @@ type Config struct {
 		// HiddenModels are models a chat may not hand a worker: exact names,
 		// or prefixes ending in "/" ("eklow/").
 		HiddenModels []string `toml:"hidden_models"`
+		// DefaultModel is the model of the workers a chat starts: a new worker
+		// whose send names no model, and a send naming "default". Empty: the
+		// instance's model.default. It is not checked against HiddenModels.
+		DefaultModel string `toml:"default_model"`
 	} `toml:"relay"`
 	Gateway struct {
 		Model                string `toml:"model"`

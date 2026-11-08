@@ -218,7 +218,7 @@ func TestTheRelaySchemaOffersAModel(t *testing.T) {
 	if !strings.HasSuffix(sch.Description, " A send can also choose the worker's model: pick from the latest [Models] note by what the task needs, and tell the user which you chose.") {
 		t.Fatalf("the description ends: %q", sch.Description)
 	}
-	if !strings.Contains(string(sch.Parameters), `"model": {"type": "string", "description": "send: the model this worker runs on, from its next turn: one of the names in the latest [Models] note, or \"default\" for this instance's model. Leave it out to keep the worker's model."}`) {
+	if !strings.Contains(string(sch.Parameters), `"model": {"type": "string", "description": "send: the model this worker runs on, from its next turn: one of the names in the latest [Models] note, or \"default\" for the default model the [Models] note names. Leave it out to keep the worker's model."}`) {
 		t.Fatalf("the schema: %s", sch.Parameters)
 	}
 }
@@ -248,6 +248,81 @@ func TestWorkerModelsAreTheLiveOnesLessTheHidden(t *testing.T) {
 	r.reply(sigGroup, "Refused.")
 	res := toolResult(t, fake, "r2")
 	if res["success"] != false || res["error"] != "unknown model edge/small; known: auto, big/model" {
+		t.Fatalf("send = %v", res)
+	}
+	if requestWith(t, fake, asWorker) >= 0 {
+		t.Fatal("a worker ran")
+	}
+}
+
+// relay.default_model is the model of the workers a chat starts: a new worker
+// whose send names none, and "default". It is the owner's choice, so
+// relay.hidden_models does not apply; an existing worker keeps its model; the
+// models note says what "default" is.
+func TestRelayDefaultModelIsTheWorkersDefault(t *testing.T) {
+	dir := t.TempDir()
+	send := func(id string, args map[string]any) fakellm.Turn {
+		args["action"], args["message"] = "send", "job "+id
+		return fakellm.Turn{When: asFiona, ToolCalls: []fakellm.ToolCall{relayCall(id, args)}}
+	}
+	step := func(id string) []fakellm.Turn {
+		return []fakellm.Turn{
+			{When: asFiona, Content: "Started " + id},
+			{When: asWorker, Content: "done " + id},
+			{When: asFiona, Content: "Reported " + id},
+		}
+	}
+	turns := []fakellm.Turn{send("r1", map[string]any{"new_in": dir})}
+	turns = append(turns, step("r1")...)
+	turns = append(turns, send("r2", map[string]any{"model": "other-model"}))
+	turns = append(turns, step("r2")...)
+	turns = append(turns, send("r3", map[string]any{}))
+	turns = append(turns, step("r3")...)
+	turns = append(turns, send("r4", map[string]any{"model": "default"}))
+	turns = append(turns, step("r4")...)
+	fake := fakellm.New(t, turns...)
+	fake.SetModels("test-model", "other-model", "worker-model")
+	r := newChatRig(t, fake, "[relay]\ndefault_model = \"worker-model\"\nhidden_models = [\"worker-model\"]\n")
+
+	r.say("go")
+	note := "[Models for relay send's model, up now: other-model; test-model; default, which a new worker also starts on when none is named, is worker-model.]"
+	for i, id := range []string{"r1", "r2", "r3", "r4"} {
+		if i > 0 {
+			r.say("again " + id)
+		}
+		r.reply(sigGroup, "Started "+id)
+		r.reply(sigGroup, "Reported "+id)
+	}
+	if got := lastUser(t, fake, 0); got != "go\n\n"+note {
+		t.Fatalf("first turn = %q", got)
+	}
+	want := []string{"worker-model", "other-model", "other-model", "worker-model"}
+	reqs := workerRequests(t, fake)
+	if len(reqs) != len(want) {
+		t.Fatalf("worker requests = %v", reqs)
+	}
+	for i, m := range want {
+		if got := str(fake.Request(reqs[i]), "model"); got != m {
+			t.Errorf("worker turn %d ran on %q, want %q", i+1, got, m)
+		}
+	}
+}
+
+// An unset relay.default_model leaves "default" to model.default and a new
+// worker without a model to it too (the existing tests cover the rest); a set
+// one that the provider does not list fails the send and starts nothing.
+func TestRelayDefaultModelThatIsNotLiveFailsTheSend(t *testing.T) {
+	dir := t.TempDir()
+	fake := fakellm.New(t,
+		fakellm.Turn{When: asFiona, ToolCalls: []fakellm.ToolCall{relayCall("r1", map[string]any{"action": "send", "new_in": dir, "message": "job"})}},
+		fakellm.Turn{When: asFiona, Content: "Refused."},
+	)
+	fake.SetModels("test-model")
+	r := newChatRig(t, fake, "[relay]\ndefault_model = \"gone-model\"\n")
+	r.say("go")
+	r.reply(sigGroup, "Refused.")
+	res := toolResult(t, fake, "r1")
+	if res["success"] != false || !strings.Contains(res["error"].(string), "relay.default_model gone-model is not live") {
 		t.Fatalf("send = %v", res)
 	}
 	if requestWith(t, fake, asWorker) >= 0 {
