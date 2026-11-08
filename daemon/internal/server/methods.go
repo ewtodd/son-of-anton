@@ -30,7 +30,38 @@ type sessionParams struct {
 	Session string `json:"session"`
 }
 
+// viewMethods are all a view connection may call (phases/12-view-socket.md):
+// each only reads or watches. Every other method, one added later included,
+// is refused before it is looked up.
+var viewMethods = map[string]bool{
+	"hello": true, "session.list": true, "session.history": true, "session.children": true,
+	"session.attach": true, // as viewer only
+	"session.detach": true, // only ever the connection's own attachments
+	"model.list":     true, "physics.list": true, "physics.watch": true,
+}
+
+// viewGate refuses what a view connection may not do.
+func viewGate(req *request) *rpcError {
+	if !viewMethods[req.Method] {
+		return errf(codeReadOnly, "this is a read-only view connection: %q is not allowed", req.Method)
+	}
+	if req.Method == "session.attach" {
+		var p struct {
+			As string `json:"as"`
+		}
+		if json.Unmarshal(req.Params, &p) != nil || p.As != "viewer" {
+			return errf(codeReadOnly, "this is a read-only view connection: attach as viewer")
+		}
+	}
+	return nil
+}
+
 func (s *Server) dispatch(c *conn, req *request) (any, *rpcError) {
+	if c.view {
+		if e := viewGate(req); e != nil {
+			return nil, e
+		}
+	}
 	bad := func(err error) (any, *rpcError) { return nil, errf(codeBadParams, "invalid params: %v", err) }
 	var sp sessionParams
 	// Methods on one session: parse the id once, find the session, and for
@@ -69,7 +100,7 @@ func (s *Server) dispatch(c *conn, req *request) (any, *rpcError) {
 			return nil, errf(codeProtocol, "unsupported protocol version %d (this daemon speaks 1)", p.Protocol)
 		}
 		c.hello, c.client = true, p.Client
-		return map[string]any{"protocol": 1, "version": s.opt.Version, "pid": os.Getpid(), "home": s.opt.Home}, nil
+		return map[string]any{"protocol": 1, "version": s.opt.Version, "pid": os.Getpid(), "home": s.opt.Home, "read_only": c.view}, nil
 	case "session.list":
 		return s.list(req.Params, bad)
 	case "session.create":
@@ -372,10 +403,11 @@ func (s *Server) list(params json.RawMessage, bad func(error) (any, *rpcError)) 
 	}
 	// The store leaves out the sessions that never got a turn. One with its
 	// first turn in flight counts anyway: the user row lands with the first
-	// step's end, so a turning session can hold no rows yet.
+	// step's end, so a turning session can hold no rows yet. The wall holds
+	// here as in the store: a chat is not the socket's to see.
 	s.mu.Lock()
 	for id, l := range s.live {
-		if seen[id] {
+		if seen[id] || !l.common {
 			continue
 		}
 		l.mu.Lock()

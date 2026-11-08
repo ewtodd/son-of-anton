@@ -25,6 +25,7 @@ const waitFor = 10 * time.Second
 type harness struct {
 	t      *testing.T
 	home   string
+	view   string // the view socket (phases/12-view-socket.md), outside the home
 	fake   *fakellm.Server
 	cancel context.CancelFunc
 	done   chan error
@@ -68,7 +69,12 @@ func newHarness(t *testing.T, fake *fakellm.Server, extraConfig string) *harness
 	t.Setenv("SOA_D_TEST_KEY", "")
 	t.Setenv("SON_OF_ANTON_HOME", "")
 	writeHome(t, home, fake.URL, extraConfig)
-	h := &harness{t: t, home: home, fake: fake}
+	viewDir, err := os.MkdirTemp("", "soav")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(viewDir) })
+	h := &harness{t: t, home: home, view: filepath.Join(viewDir, "view.sock"), fake: fake}
 	h.start()
 	t.Cleanup(func() { _ = h.stop() })
 	return h
@@ -80,6 +86,17 @@ func (h *harness) start() {
 	if err != nil {
 		h.t.Fatalf("Listen: %v", err)
 	}
+	// A newHarness daemon also serves a view socket, as an instance with a
+	// viewerGroup does; its group is the test's own.
+	var views []net.Listener
+	if h.view != "" {
+		vln, err := server.ListenView(h.view, os.Getgid())
+		if err != nil {
+			_ = ln.Close()
+			h.t.Fatalf("ListenView: %v", err)
+		}
+		views = append(views, vln)
+	}
 	srv, err := server.New(server.Options{Home: h.home, Version: "test", NotifySend: func(title, body string) {
 		h.nmu.Lock()
 		h.nudges = append(h.nudges, title+"|"+body)
@@ -87,12 +104,15 @@ func (h *harness) start() {
 	}})
 	if err != nil {
 		_ = ln.Close()
+		for _, v := range views {
+			_ = v.Close()
+		}
 		h.t.Fatalf("New: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
 	h.done = make(chan error, 1)
-	go func() { h.done <- srv.Serve(ctx, ln) }()
+	go func() { h.done <- srv.Serve(ctx, ln, views...) }()
 }
 
 // stop shuts the server down and waits for Serve to return. Calling it again
@@ -149,9 +169,19 @@ type client struct {
 }
 
 // dialRaw connects without the hello handshake.
-func (h *harness) dialRaw() *client {
+func (h *harness) dialRaw() *client { h.t.Helper(); return h.dialRawAt(h.sock()) }
+
+// dialView connects to the view socket and says hello.
+func (h *harness) dialView() *client {
 	h.t.Helper()
-	conn, err := net.Dial("unix", h.sock())
+	c := h.dialRawAt(h.view)
+	c.ok("hello", map[string]any{"protocol": 1, "client": "test"})
+	return c
+}
+
+func (h *harness) dialRawAt(sock string) *client {
+	h.t.Helper()
+	conn, err := net.Dial("unix", sock)
 	if err != nil {
 		h.t.Fatalf("dial: %v", err)
 	}

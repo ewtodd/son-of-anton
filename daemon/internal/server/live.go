@@ -51,9 +51,10 @@ type usageTotals struct{ input, output, cached, reasoning, calls int }
 
 // live is a loaded session. Everything below mu changes only under mu.
 type live struct {
-	srv  *Server
-	id   string
-	sess *agent.Session // set once, before the live is shared
+	srv    *Server
+	id     string
+	sess   *agent.Session // set once, before the live is shared
+	common bool           // a common session, which the sockets may see (set once)
 
 	mu                  sync.Mutex
 	kind, cwd           string
@@ -95,7 +96,8 @@ type live struct {
 
 func newLive(s *Server, rec store.Session, sum store.Summary) *live {
 	return &live{
-		srv: s, id: rec.ID, kind: rec.Kind, cwd: rec.Cwd, parent: rec.ParentID, agent: rec.Agent, bg: map[string]context.CancelFunc{},
+		srv: s, id: rec.ID, common: store.Readable("common", rec),
+		kind: rec.Kind, cwd: rec.Cwd, parent: rec.ParentID, agent: rec.Agent, bg: map[string]context.CancelFunc{},
 		created: rec.Created, updated: sum.Updated, preview: sum.Preview,
 		usage: usageTotals{rec.Usage.Input, rec.Usage.Output, rec.Usage.Cached, rec.Usage.Reasoning, rec.Usage.Calls}, ctxTokens: rec.ContextTokens,
 		viewers: map[*conn]bool{}, waiting: true,

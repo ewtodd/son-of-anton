@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
@@ -59,14 +60,8 @@ func Listen(home string) (net.Listener, error) {
 		return nil, err
 	}
 	sock := filepath.Join(dir, "soa-d.sock")
-	if _, err := os.Lstat(sock); err == nil {
-		if c, err := net.DialTimeout("unix", sock, 2*time.Second); err == nil {
-			_ = c.Close()
-			return nil, ErrRunning
-		}
-		if err := os.Remove(sock); err != nil {
-			return nil, err
-		}
+	if err := claimSocket(sock); err != nil {
+		return nil, err
 	}
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
@@ -75,6 +70,72 @@ func Listen(home string) (net.Listener, error) {
 	if err := os.Chmod(sock, 0o600); err != nil {
 		_ = ln.Close()
 		return nil, err
+	}
+	return ln, nil
+}
+
+// claimSocket clears the way for a socket at path: a live daemon behind it is
+// ErrRunning, a stale file is removed.
+func claimSocket(path string) error {
+	if _, err := os.Lstat(path); err != nil {
+		return nil
+	}
+	if c, err := net.DialTimeout("unix", path, 2*time.Second); err == nil {
+		_ = c.Close()
+		return ErrRunning
+	}
+	return os.Remove(path)
+}
+
+// maxViewConns is how many view connections are served at once; more are
+// closed as they come, so viewers cannot take the daemon's descriptors.
+const maxViewConns = 32
+
+// ListenView listens on the view socket (phases/12-view-socket.md): mode
+// 0660, group gid. Every connection on it is read-only, and the socket's
+// permissions are the only authorization, so they are checked: the directory
+// must exist (the daemon would make it with the wrong group) and be writable
+// by its owner alone, and the socket must end up 0660 with group gid. The
+// daemon can give it that group when it is in the group, or when the
+// directory is setgid with it (the NixOS module's way).
+func ListenView(path string, gid int) (net.Listener, error) {
+	dir := filepath.Dir(path)
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("the view socket's directory: %w", err)
+	}
+	if !fi.IsDir() {
+		return nil, fmt.Errorf("the view socket's directory %s is not a directory", dir)
+	}
+	if perm := fi.Mode().Perm(); perm&0o022 != 0 {
+		return nil, fmt.Errorf("the view socket's directory %s is writable by its group or others (%o): whoever can write there can replace the socket", dir, perm)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || (int(st.Uid) != os.Getuid() && st.Uid != 0) {
+		return nil, fmt.Errorf("the view socket's directory %s belongs to someone else: whoever owns it can replace the socket", dir)
+	}
+	if err := claimSocket(path); err != nil {
+		return nil, err
+	}
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	fail := func(err error) (net.Listener, error) {
+		_ = ln.Close() // and the socket file goes with it
+		return nil, err
+	}
+	if err := os.Chown(path, -1, gid); err != nil {
+		return fail(fmt.Errorf("giving the view socket group %d: %w (the daemon must be in that group, or %s setgid with it)", gid, err, dir))
+	}
+	if err := os.Chmod(path, 0o660); err != nil {
+		return fail(err)
+	}
+	fi, err = os.Lstat(path)
+	if err != nil {
+		return fail(err)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Gid) != gid || fi.Mode().Perm() != 0o660 {
+		return fail(fmt.Errorf("the view socket %s did not become mode 660 with group %d", path, gid))
 	}
 	return ln, nil
 }
@@ -103,6 +164,7 @@ type Server struct {
 	mu      sync.Mutex
 	live    map[string]*live
 	conns   map[*conn]struct{}
+	views   int // the view connections among conns
 	closing bool
 
 	metaMu   sync.Mutex
@@ -165,8 +227,10 @@ func New(o Options) (*Server, error) {
 	return s, nil
 }
 
-// Serve accepts connections until ctx is done, then shuts down cleanly.
-func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+// Serve accepts connections on ln until ctx is done, then shuts down cleanly.
+// Connections on views (ListenView's listeners) are read-only view
+// connections; an accept error there is retried, never fatal.
+func (s *Server) Serve(ctx context.Context, ln net.Listener, views ...net.Listener) error {
 	s.applyRenames()
 	s.backfill()
 	s.physicsRecover()
@@ -177,8 +241,18 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		s.chats.start()
 	}
 	s.watchWorkerHours()
-	stopAccept := context.AfterFunc(ctx, func() { _ = ln.Close() })
+	closeAll := func() {
+		_ = ln.Close()
+		for _, v := range views {
+			_ = v.Close()
+		}
+	}
+	stopAccept := context.AfterFunc(ctx, closeAll)
 	defer stopAccept()
+	var viewWG sync.WaitGroup
+	for _, v := range views {
+		viewWG.Go(func() { s.acceptViews(ctx, v) })
+	}
 	var acceptErr error
 	for {
 		nc, err := ln.Accept()
@@ -188,21 +262,51 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			}
 			break
 		}
-		s.mu.Lock()
-		if s.closing {
-			s.mu.Unlock()
-			_ = nc.Close()
-			continue
-		}
-		c := newConn(s, nc)
-		s.conns[c] = struct{}{}
-		s.connWG.Add(1)
-		s.mu.Unlock()
-		go c.run()
+		s.addConn(nc, false)
 	}
-	_ = ln.Close()
+	closeAll()
+	viewWG.Wait()
 	s.shutdown()
 	return acceptErr
+}
+
+// acceptViews serves a view listener until it is closed. A failed accept
+// (out of descriptors, say) is retried after a pause.
+func (s *Server) acceptViews(ctx context.Context, ln net.Listener) {
+	pause := 5 * time.Millisecond
+	for {
+		nc, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return
+			}
+			time.Sleep(pause)
+			pause = min(2*pause, time.Second)
+			continue
+		}
+		pause = 5 * time.Millisecond
+		s.addConn(nc, true)
+	}
+}
+
+// addConn starts serving an accepted connection, unless the daemon is
+// closing or view says it is one view connection too many.
+func (s *Server) addConn(nc net.Conn, view bool) {
+	s.mu.Lock()
+	if s.closing || (view && s.views >= maxViewConns) {
+		s.mu.Unlock()
+		_ = nc.Close()
+		return
+	}
+	c := newConn(s, nc)
+	c.view = view
+	if view {
+		s.views++
+	}
+	s.conns[c] = struct{}{}
+	s.connWG.Add(1)
+	s.mu.Unlock()
+	go c.run()
 }
 
 func (s *Server) shutdown() {

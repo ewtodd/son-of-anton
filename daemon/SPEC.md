@@ -122,6 +122,15 @@ The daemon is the only writer of `state.db`. Clients never open it.
   by the instance user. Newline-delimited JSON. Requests and responses are
   JSON-RPC 2.0; events are notifications with a per-session sequence number so
   a client can resume after a reconnect.
+- **The view socket** (owner, 2026-11-08; `phases/12-view-socket.md`). With
+  `soa-d serve --view-socket PATH --view-group G` (the NixOS module's
+  `viewerGroup`) the daemon also listens on PATH, outside the home, 0660 with
+  group G; its permissions are the authorization. Every connection there is
+  read-only: `hello`, `session.list`, `session.history`, `session.children`,
+  `session.attach` as viewer, `session.detach`, `model.list`, `physics.list`
+  and `physics.watch`, and anything else, a method added later included, is
+  refused with -32014. A viewer is never a driver, so it changes nothing about
+  the session it watches; the wall holds as on the owner socket.
 - Handshake: `hello {protocol: 1, client: "tui"|"cli"}` → daemon version,
   instance name, capabilities.
 - Requests (initial set): `session.list`, `session.create`, `session.attach

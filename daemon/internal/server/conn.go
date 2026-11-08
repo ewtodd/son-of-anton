@@ -24,6 +24,7 @@ const (
 	codeNotFound   = -32011
 	codeNotPending = -32012
 	codeBusy       = -32013
+	codeReadOnly   = -32014 // a view connection (phases/12-view-socket.md)
 )
 
 const (
@@ -59,6 +60,7 @@ type conn struct {
 	nc     net.Conn
 	client string
 	hello  bool
+	view   bool // accepted on the view socket: read-only (viewGate)
 
 	omu     sync.Mutex // guards out, writing and dead; the innermost lock
 	out     [][]byte
@@ -186,6 +188,9 @@ func (c *conn) run() {
 	c.srv.physicsUnwatch(c)
 	c.srv.mu.Lock()
 	delete(c.srv.conns, c)
+	if c.view {
+		c.srv.views--
+	}
 	c.srv.mu.Unlock()
 }
 
