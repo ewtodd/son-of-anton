@@ -156,6 +156,7 @@ type Server struct {
 	chats   *chatHub     // nil: Signal is off
 	served  sync.Map     // session id -> the model that answered its last reply in this run
 	noted   sync.Map     // chat stamp -> the models note last given to that chat in this run
+	polled  statusSeen   // the last relay status each chat got for each worker, in this run
 	mem     *memory.Store
 	idx     *recall.Index   // nil: recall is off
 	base    context.Context // cancelled when shutdown starts

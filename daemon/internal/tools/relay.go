@@ -31,7 +31,7 @@ func (relayTool) Schema() provider.Tool {
 			"- send: give `message` to a worker. `session` (id or title) defaults to the one bound to this chat; `new_in` " +
 			"(a directory) starts a new worker there instead, and is refused while a session is running in that repository: send to " +
 			"that session. A busy worker runs the message after its current turn; `now` steers the running turn with it instead.\n" +
-			"- status: state, recent activity, queued messages, pending approvals.\n" +
+			"- status: state, recent activity, queued messages, pending approvals. Do not poll it: a worker's results arrive as notifications.\n" +
 			"- stop: stop the running turn; the worker stays bound.\n" +
 			"- detach: unbind the worker from this chat. On a single-user instance it then stops reporting here.\n\n" +
 			"Relay the user's words faithfully: pass their request as they gave it, without rewriting it or adding " +

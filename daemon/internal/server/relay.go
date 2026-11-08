@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
@@ -370,7 +371,7 @@ func (s *Server) relay(ctx context.Context, stamp string, raw json.RawMessage) s
 		}
 		switch a.Action {
 		case "status":
-			return s.relayStatus(ctx, w)
+			return s.relayStatusFor(ctx, stamp, w)
 		case "stop":
 			stopped := false
 			if l := s.loaded(w.ID); l != nil {
@@ -630,10 +631,54 @@ func (s *Server) relayList(ctx context.Context, stamp string, a relayArgs) strin
 	return relayJSON(map[string]any{"success": true, "workers": out})
 }
 
-func (s *Server) relayStatus(ctx context.Context, w store.Session) string {
+// statusSeen remembers, per chat and worker, the last relay status the chat
+// got and when it last asked. In memory only: a restart makes the next status
+// a full one.
+type statusSeen struct {
+	mu   sync.Mutex
+	seen map[string]seenStatus
+}
+
+type seenStatus struct {
+	text string
+	at   time.Time
+}
+
+// relayStatusFor is relayStatus, except that a running or queued worker whose
+// status is what this chat already got says so in a line, so a chat that
+// polls does not fill its context with the same answer.
+func (s *Server) relayStatusFor(ctx context.Context, stamp string, w store.Session) string {
+	full, res := s.relayStatus(ctx, w)
+	if res == nil {
+		return full
+	}
+	key := stamp + "\x00" + w.ID
+	state, _ := res["state"].(string)
+	s.polled.mu.Lock()
+	defer s.polled.mu.Unlock()
+	if state == "idle" {
+		delete(s.polled.seen, key)
+		return full
+	}
+	if s.polled.seen == nil {
+		s.polled.seen = map[string]seenStatus{}
+	}
+	prev, ok := s.polled.seen[key]
+	now := time.Now()
+	s.polled.seen[key] = seenStatus{full, now}
+	if !ok || prev.text != full {
+		return full
+	}
+	return relayJSON(map[string]any{"success": true, "worker": w.ID, "state": state, "unchanged": true,
+		"note": fmt.Sprintf("Nothing has changed since this chat's last status check of this worker (%s ago). Its result "+
+			"arrives in this chat as a notification when its turn ends. End your turn now and tell the user the worker is "+
+			"still running; do not check again.", now.Sub(prev.at).Round(time.Second))})
+}
+
+func (s *Server) relayStatus(ctx context.Context, w store.Session) (string, map[string]any) {
 	items, err := s.st.QueueItems(ctx, w.ID)
 	if err != nil {
-		return relayFail(err.Error())
+		return relayFail(err.Error()), nil
 	}
 	queued := []string{}
 	for _, it := range items {
@@ -659,7 +704,8 @@ func (s *Server) relayStatus(ctx context.Context, w store.Session) string {
 	}
 	res := map[string]any{"success": true, "worker": w.ID, "title": w.Title, "cwd": w.Cwd,
 		"state": s.workerState(w, len(items)), "queued": queued, "approvals_waiting": waiting, "last_reply": reply}
-	return relayJSON(s.withModel(res, w))
+	res = s.withModel(res, w)
+	return relayJSON(res), res
 }
 
 func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) string {
