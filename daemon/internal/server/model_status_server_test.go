@@ -212,6 +212,32 @@ func TestAChatWarnsOncePerOutage(t *testing.T) {
 	}
 }
 
+// Her model being the chat model (different from model.default) means a chat
+// falls back to the instance's model on its own: it is told so, not to pick.
+func TestAChatWithAFallbackIsToldItIsBeingAskedFor(t *testing.T) {
+	fake := fakellm.New(t,
+		fakellm.Turn{Content: "one"},
+		fakellm.Turn{Content: "two"},
+	)
+	modelStatuses(fake, []string{"test-model", "other-model"}, []string{"fiona-model"})
+	r := newChatRig(t, fake, "[gateway]\nmodel = \"fiona-model\"\n\n[custom_providers.custom.models.\"fiona-model\"]\n")
+	r.say("hi")
+	r.replyLike(sigGroup, "fiona-model is not being served; asking son-of-anton")
+	r.reply(sigGroup, "one")
+	r.say("again")
+	r.reply(sigGroup, "two")
+
+	warnings := 0
+	for _, m := range r.sig.Sends() {
+		if m.Text == "fiona-model is not being served; asking son-of-anton" {
+			warnings++
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("chat warnings = %d; one per outage", warnings)
+	}
+}
+
 // A 503 model_not_loaded does not change the session's model: the fallback
 // request may go elsewhere, but the session keeps its pin.
 func TestA503DoesNotSwitchTheSessionModel(t *testing.T) {

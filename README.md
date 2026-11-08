@@ -56,7 +56,9 @@ transcript, a sidebar on wide screens (`ctrl+b`), the prompt below.
   only the models the gateway is serving, and picking one opens its reasoning
   picker right after (`/reasoning` still works on its own; a session whose
   model is down is told `<model> is not being served; pick another model`,
-  in a chat as a message, once per outage). Naming an unloaded model with
+  in a chat as a message, once per outage; a chat that falls back to this
+  instance's model is told `<model> is not being served; asking son-of-anton`
+  instead). Naming an unloaded model with
   `/model <name>` still works. A tool row folds to one line; click it (or
   `ctrl+t`) to see its output. The sidebar keeps the session's todo checklist.
 - A message typed during a turn queues in the daemon, survives a restart and
@@ -88,8 +90,10 @@ fiona runs on `gateway.model` (here maitred's `fiona` route: whatever eklow
 serves) and falls back to `model.default` when it is down. Each message tells
 her which model answered the last one. In a chat: `/new`, `/stop`, `/status`,
 `/model [name|default]`, `/sendnow`, `/sendall`, `/approve`, `/deny`. When her
-model is not being served, the chat is told once per outage
-(`<model> is not being served; pick another model`). Subagents a session
+model is not being served, the chat is told once per outage —
+`<model> is not being served; asking son-of-anton` where she falls back to
+`model.default`, `<model> is not being served; pick another model` where she
+does not. Subagents a session
 delegates work to run on the parent's model, or `[delegation] model` when you
 set one; a `task` call may pin `model` for that call.
 

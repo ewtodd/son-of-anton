@@ -140,6 +140,22 @@ func downText(model string) string {
 	return model + " is not being served; pick another model"
 }
 
+// fallbackDownText is what a chat is told when its model is not being served
+// and the chat falls back to this instance's model on its own: nothing to
+// pick, the next turn is answered anyway.
+func fallbackDownText(model string) string {
+	return model + " is not being served; asking son-of-anton"
+}
+
+// chatFallsBack reports whether a chat on model is answered by this instance's
+// model when its own is down: the fallback chatRunner gives a chat whose model
+// is the chat model and differs from model.default (a /model pin to another
+// model has none).
+func (s *Server) chatFallsBack(model string) bool {
+	chat := s.cfg.ChatModel()
+	return chat != "" && chat != s.cfg.Model.Default && model == chat
+}
+
 // modelStatus reports the live status of model from the refreshed catalog and
 // whether it is known: "unavailable" when known down, "serving" when reported
 // serving, "" when the endpoint lists it without a status. known is false when
