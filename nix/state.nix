@@ -18,7 +18,10 @@ let
   # command too, so the person's own `son-of-anton` sees the same tools.
   packageFor =
     cfg:
-    if cfg.extraPackages == [ ] then cfg.package else cfg.package.override { inherit (cfg) extraPackages; };
+    if cfg.extraPackages == [ ] then
+      cfg.package
+    else
+      cfg.package.override { inherit (cfg) extraPackages; };
 
   # ── Files rendered from the options ──────────────────────────────────────
   toml = pkgs: pkgs.formats.toml { };
@@ -102,7 +105,9 @@ let
       settleLines =
         mode: paths:
         map (p: "${dry}chmod ${mode} ${p}") paths
-        ++ lib.optional (owner != null) "${dry}chown ${owner.user}:${owner.group} ${lib.concatStringsSep " " paths}";
+        ++ lib.optional (
+          owner != null
+        ) "${dry}chown ${owner.user}:${owner.group} ${lib.concatStringsSep " " paths}";
       settle = mode: paths: lib.concatStringsSep "\n" (settleLines mode paths);
 
       installAs = lib.optionalString (owner != null) "-o ${q owner.user} -g ${q owner.group} ";

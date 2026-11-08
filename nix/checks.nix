@@ -124,7 +124,10 @@
             ) systems;
           in
           evalCheck "son-of-anton-cross-eval" [
-            [ "package evaluates on ${lib.concatStringsSep ", " broken}" (broken == [ ]) ]
+            [
+              "package evaluates on ${lib.concatStringsSep ", " broken}"
+              (broken == [ ])
+            ]
           ] "package evaluates on ${toString (builtins.length systems)} platforms";
 
         build-package = pkgs.runCommand "son-of-anton-build-package" { } ''
@@ -255,100 +258,120 @@
             sc = n: (unit n).serviceConfig;
             inst = eval.config.services.son-of-anton.instances;
           in
-          evalCheck "son-of-anton-soad-backend"
-            (
-              map (n: [ "${n} runs soa-d serve" (lib.hasSuffix "/bin/soa-d serve" (execOf (unit n))) ]) [
+          evalCheck "son-of-anton-soad-backend" (
+            map
+              (n: [
+                "${n} runs soa-d serve"
+                (lib.hasSuffix "/bin/soa-d serve" (execOf (unit n)))
+              ])
+              [
                 "play"
                 "work"
                 "house"
                 "shop"
               ]
-              ++ [
-                [ "the backend option is gone" (!(inst.house ? backend)) ]
-                [
-                  "play's [daemon] is seeded"
-                  (
-                    inst.play.settings.daemon == {
-                      instance = "play";
-                      signal = true;
-                      cron = true;
-                      autostart = false;
-                      import_python = true;
-                    }
-                  )
-                ]
-                [
-                  "an explicit daemon key wins and the rest stays"
-                  (
-                    inst.work.settings.daemon == {
-                      instance = "work";
-                      signal = true;
-                      cron = false;
-                      autostart = false;
-                      import_python = true;
-                    }
-                  )
-                ]
-                [ "other settings pass through" (inst.work.settings.model.default == "auto") ]
-                [ "instance name is seeded" (inst.house.settings.daemon.instance == "house") ]
-                [
-                  "an owner's account has no filesystem sandbox"
-                  ((sc "play").ProtectSystem == false && (sc "play").PrivateTmp == false)
-                ]
-                [ "an owner's account still has NoNewPrivileges" (sc "play").NoNewPrivileges ]
-                [
-                  "a service account keeps the sandbox"
-                  ((sc "shop").ProtectSystem == "strict" && (sc "shop").PrivateTmp && (sc "shop").NoNewPrivileges)
-                ]
-                [
-                  "SON_OF_ANTON_HOME is the instance's"
-                  ((unit "play").environment.SON_OF_ANTON_HOME == "/home/e-play/.son-of-anton")
-                ]
-                [
-                  "the rendered config is a restart trigger"
-                  (lib.any (t: lib.hasSuffix "son-of-anton-config.toml" (toString t)) (unit "play").restartTriggers)
-                ]
-                [
-                  "different settings, different triggers"
-                  ((unit "play").restartTriggers != (unit "work").restartTriggers)
-                ]
+            ++ [
+              [
+                "the backend option is gone"
+                (!(inst.house ? backend))
               ]
-            )
-            "instances run the daemon, seed [daemon], and keep or drop the sandbox by account kind";
+              [
+                "play's [daemon] is seeded"
+                (
+                  inst.play.settings.daemon == {
+                    instance = "play";
+                    signal = true;
+                    cron = true;
+                    autostart = false;
+                    import_python = true;
+                  }
+                )
+              ]
+              [
+                "an explicit daemon key wins and the rest stays"
+                (
+                  inst.work.settings.daemon == {
+                    instance = "work";
+                    signal = true;
+                    cron = false;
+                    autostart = false;
+                    import_python = true;
+                  }
+                )
+              ]
+              [
+                "other settings pass through"
+                (inst.work.settings.model.default == "auto")
+              ]
+              [
+                "instance name is seeded"
+                (inst.house.settings.daemon.instance == "house")
+              ]
+              [
+                "an owner's account has no filesystem sandbox"
+                ((sc "play").ProtectSystem == false && (sc "play").PrivateTmp == false)
+              ]
+              [
+                "an owner's account still has NoNewPrivileges"
+                (sc "play").NoNewPrivileges
+              ]
+              [
+                "a service account keeps the sandbox"
+                ((sc "shop").ProtectSystem == "strict" && (sc "shop").PrivateTmp && (sc "shop").NoNewPrivileges)
+              ]
+              [
+                "SON_OF_ANTON_HOME is the instance's"
+                ((unit "play").environment.SON_OF_ANTON_HOME == "/home/e-play/.son-of-anton")
+              ]
+              [
+                "the rendered config is a restart trigger"
+                (lib.any (t: lib.hasSuffix "son-of-anton-config.toml" (toString t)) (unit "play").restartTriggers)
+              ]
+              [
+                "different settings, different triggers"
+                ((unit "play").restartTriggers != (unit "work").restartTriggers)
+              ]
+            ]
+          ) "instances run the daemon, seed [daemon], and keep or drop the sandbox by account kind";
 
         # The configuration shape /etc/nixos uses: the whole option surface on
         # two instances, and the package's own override.
         nixos-owner-shape =
           let
-            owner = name: account name // {
-              stateDir = "/home/e-${name}/.local/state/soa";
-              environmentFiles = [ "/run/agenix/${name}-env" ];
-              environment.SOA_CHECK = "1";
-              extraPackages = [ pkgs.hello ];
-              protectedPaths = [
-                ".gnupg"
-                ".config/secret"
-              ];
-              git.github = "/run/agenix/${name}-github";
-              memoryRulesFile = "/run/agenix/${name}-rules";
-              pruneUnmanagedSettings = true;
-              settings = {
-                model.default = "auto";
-                mcp_servers.search = {
-                  url = "http://127.0.0.1:9000/mcp";
-                  tools.include = [ "web_search" ];
+            owner =
+              name:
+              account name
+              // {
+                stateDir = "/home/e-${name}/.local/state/soa";
+                environmentFiles = [ "/run/agenix/${name}-env" ];
+                environment.SOA_CHECK = "1";
+                extraPackages = [ pkgs.hello ];
+                protectedPaths = [
+                  ".gnupg"
+                  ".config/secret"
+                ];
+                git.github = "/run/agenix/${name}-github";
+                memoryRulesFile = "/run/agenix/${name}-rules";
+                pruneUnmanagedSettings = true;
+                settings = {
+                  model.default = "auto";
+                  mcp_servers.search = {
+                    url = "http://127.0.0.1:9000/mcp";
+                    tools.include = [ "web_search" ];
+                  };
+                  gateway.model = "radiance/qwen3.8-27b";
+                  relay.worker_hours = {
+                    start = "08:00";
+                    end = "22:00";
+                  };
+                  models.renamed.old-name = "new-name";
                 };
-                gateway.model = "radiance/qwen3.8-27b";
-                relay.worker_hours = {
-                  start = "08:00";
-                  end = "22:00";
-                };
-                models.renamed.old-name = "new-name";
               };
-            };
             eval = nixos {
               play = owner "play";
-              work = owner "work" // { settings.daemon.cron = false; };
+              work = owner "work" // {
+                settings.daemon.cron = false;
+              };
             };
             u = n: (unitsOf eval)."son-of-anton-${n}";
             activation = activationOf eval;
@@ -356,9 +379,18 @@
           in
           holds
             [
-              [ "play serves" (lib.hasSuffix "/bin/soa-d serve" (execOf (u "play"))) ]
-              [ "work serves" (lib.hasSuffix "/bin/soa-d serve" (execOf (u "work"))) ]
-              [ "NoNewPrivileges on both" ((u "play").serviceConfig.NoNewPrivileges && (u "work").serviceConfig.NoNewPrivileges) ]
+              [
+                "play serves"
+                (lib.hasSuffix "/bin/soa-d serve" (execOf (u "play")))
+              ]
+              [
+                "work serves"
+                (lib.hasSuffix "/bin/soa-d serve" (execOf (u "work")))
+              ]
+              [
+                "NoNewPrivileges on both"
+                ((u "play").serviceConfig.NoNewPrivileges && (u "work").serviceConfig.NoNewPrivileges)
+              ]
               [
                 "no sandbox for the owner's account"
                 ((u "play").serviceConfig.ProtectSystem == false && (u "play").serviceConfig.PrivateTmp == false)
@@ -367,13 +399,34 @@
                 "a protected path resolves against HOME"
                 (lib.elem "-/home/e-play/.config/secret" (u "play").serviceConfig.InaccessiblePaths)
               ]
-              [ "extraPackages reach the unit PATH" (lib.hasInfix "hello" (toString (u "play").path)) ]
-              [ "config merge in activation" (lib.hasInfix "/bin/soa-d config merge " activation) ]
-              [ "rules merge in activation" (lib.hasInfix "/bin/soa-d rules merge " activation) ]
-              [ "pruneUnmanagedSettings adopts" (lib.hasInfix "--adopt" activation) ]
-              [ "the rules file is named by path" (lib.hasInfix "/run/agenix/play-rules" activation) ]
-              [ "the git key is installed" (lib.hasInfix "/run/agenix/play-github" activation) ]
-              [ "different settings, different triggers" ((u "play").restartTriggers != (u "work").restartTriggers) ]
+              [
+                "extraPackages reach the unit PATH"
+                (lib.hasInfix "hello" (toString (u "play").path))
+              ]
+              [
+                "config merge in activation"
+                (lib.hasInfix "/bin/soa-d config merge " activation)
+              ]
+              [
+                "rules merge in activation"
+                (lib.hasInfix "/bin/soa-d rules merge " activation)
+              ]
+              [
+                "pruneUnmanagedSettings adopts"
+                (lib.hasInfix "--adopt" activation)
+              ]
+              [
+                "the rules file is named by path"
+                (lib.hasInfix "/run/agenix/play-rules" activation)
+              ]
+              [
+                "the git key is installed"
+                (lib.hasInfix "/run/agenix/play-github" activation)
+              ]
+              [
+                "different settings, different triggers"
+                ((u "play").restartTriggers != (u "work").restartTriggers)
+              ]
             ]
             (
               scriptCheck "son-of-anton-owner-shape" ''
@@ -397,75 +450,158 @@
             play = units.son-of-anton-play;
             rules = pair.config.systemd.tmpfiles.rules;
             activation = activationOf pair;
-            created = map (r: lib.elemAt (lib.splitString " " r) 1) (lib.filter (r: lib.hasPrefix "d " r) rules);
+            created = map (r: lib.elemAt (lib.splitString " " r) 1) (
+              lib.filter (r: lib.hasPrefix "d " r) rules
+            );
             instances = pair.config.services.son-of-anton.instances;
             # Under ProtectSystem=strict a missing writable path stops the unit
             # (226/NAMESPACE). Each must be the account's existing home or
             # something tmpfiles creates.
-            startable = i: u: lib.all (p: lib.elem p (created ++ [ i.workingDirectory ])) u.serviceConfig.ReadWritePaths;
+            startable =
+              i: u: lib.all (p: lib.elem p (created ++ [ i.workingDirectory ])) u.serviceConfig.ReadWritePaths;
             refused = nixos {
               a = account "a" // {
-                memoryRules = [ { id = "x"; text = "y"; } ];
+                memoryRules = [
+                  {
+                    id = "x";
+                    text = "y";
+                  }
+                ];
                 memoryRulesFile = "/p";
               };
             };
             sharedUser = nixos {
               a = account "a";
-              b = account "b" // { user = "e-a"; };
+              b = account "b" // {
+                user = "e-a";
+              };
             };
             sharedHome = nixos {
               a = account "a";
-              b = account "b" // { son-of-antonHome = "/home/e-a/.son-of-anton"; };
+              b = account "b" // {
+                son-of-antonHome = "/home/e-a/.son-of-anton";
+              };
             };
             twoExporters = nixos {
-              a = account "a" // { addToSystemPackages = true; };
-              b = account "b" // { addToSystemPackages = true; };
+              a = account "a" // {
+                addToSystemPackages = true;
+              };
+              b = account "b" // {
+                addToSystemPackages = true;
+              };
             };
             says = eval: word: lib.any (a: lib.hasInfix word a.message) (failedAssertions eval);
           in
-          evalCheck "son-of-anton-nixos-module"
+          evalCheck "son-of-anton-nixos-module" [
             [
-              [ "a bare instance serves" (lib.hasSuffix "/bin/soa-d serve" (execOf single.config.systemd.services.son-of-anton-main)) ]
-              # What the merge writes is owned by the instance: activation runs
-              # as root, and a root-owned config.toml is unreadable to the unit.
-              [
-                "work's config.toml is chowned"
-                (lib.hasInfix "chown e-work:son-of-anton /home/e-work/.son-of-anton/config.toml" activation)
-              ]
-              [
-                "play's config.toml is chowned"
-                (lib.hasInfix "chown e-play:son-of-anton /home/e-play/.son-of-anton/config.toml" activation)
-              ]
-              [ "the state record is written" (lib.hasInfix "/home/e-work/.son-of-anton/.nix-managed.json" activation) ]
-              [ "config merge in activation" (lib.hasInfix "/bin/soa-d config merge " activation) ]
-              [ "rules merge in activation" (lib.hasInfix "/bin/soa-d rules merge " activation) ]
-              [ "both units exist" (units ? "son-of-anton-work" && units ? "son-of-anton-play") ]
-              [ "work's home" (work.environment.SON_OF_ANTON_HOME == "/home/e-work/.son-of-anton") ]
-              [ "play's home" (play.environment.SON_OF_ANTON_HOME == "/home/e-play/.son-of-anton") ]
-              [ "work's user" (work.serviceConfig.User == "e-work") ]
-              [ "play's user" (play.serviceConfig.User == "e-play") ]
-              [ "a human home stays owner-only" (work.serviceConfig.UMask == "0077") ]
-              [
-                "each instance has its own Signal lock directory"
-                (work.environment.SON_OF_ANTON_GATEWAY_LOCK_DIR != play.environment.SON_OF_ANTON_GATEWAY_LOCK_DIR)
-              ]
-              [ "gnupg is denied for work" (lib.elem "-/home/e-work/.gnupg" work.serviceConfig.InaccessiblePaths) ]
-              [ "git-credentials is denied for work" (lib.elem "-/home/e-work/.git-credentials" work.serviceConfig.InaccessiblePaths) ]
-              [ "gnupg is denied for play" (lib.elem "-/home/e-play/.gnupg" play.serviceConfig.InaccessiblePaths) ]
-              # ~/.ssh stays reachable so that git over SSH works.
-              [ "ssh is not denied" (!(lib.any (p: lib.hasSuffix "/.ssh" p) work.serviceConfig.InaccessiblePaths)) ]
-              # A 2770 rule on the home would make sshd refuse authorized_keys.
-              [ "no tmpfiles rule for work's home" (!(lib.any (r: lib.hasInfix "d /home/e-work " r) rules)) ]
-              [ "no tmpfiles rule for play's home" (!(lib.any (r: lib.hasInfix "d /home/e-play " r) rules)) ]
-              [ "work can start" (startable instances.work work) ]
-              [ "play can start" (startable instances.play play) ]
-              [ "both rule sources is refused" (says refused "memoryRulesFile") ]
-              [ "one user twice is refused" (says sharedUser "same user") ]
-              [ "one home twice is refused" (says sharedHome "SON_OF_ANTON_HOME") ]
-              [ "two exporters is refused" (says twoExporters "addToSystemPackages") ]
-              [ "a valid pair passes every assertion" (failedAssertions pair == [ ]) ]
+              "a bare instance serves"
+              (lib.hasSuffix "/bin/soa-d serve" (execOf single.config.systemd.services.son-of-anton-main))
             ]
-            "units are correct for one instance and isolated across two";
+            # What the merge writes is owned by the instance: activation runs
+            # as root, and a root-owned config.toml is unreadable to the unit.
+            [
+              "work's config.toml is chowned"
+              (lib.hasInfix "chown e-work:son-of-anton /home/e-work/.son-of-anton/config.toml" activation)
+            ]
+            [
+              "play's config.toml is chowned"
+              (lib.hasInfix "chown e-play:son-of-anton /home/e-play/.son-of-anton/config.toml" activation)
+            ]
+            [
+              "the state record is written"
+              (lib.hasInfix "/home/e-work/.son-of-anton/.nix-managed.json" activation)
+            ]
+            [
+              "config merge in activation"
+              (lib.hasInfix "/bin/soa-d config merge " activation)
+            ]
+            [
+              "rules merge in activation"
+              (lib.hasInfix "/bin/soa-d rules merge " activation)
+            ]
+            [
+              "both units exist"
+              (units ? "son-of-anton-work" && units ? "son-of-anton-play")
+            ]
+            [
+              "work's home"
+              (work.environment.SON_OF_ANTON_HOME == "/home/e-work/.son-of-anton")
+            ]
+            [
+              "play's home"
+              (play.environment.SON_OF_ANTON_HOME == "/home/e-play/.son-of-anton")
+            ]
+            [
+              "work's user"
+              (work.serviceConfig.User == "e-work")
+            ]
+            [
+              "play's user"
+              (play.serviceConfig.User == "e-play")
+            ]
+            [
+              "a human home stays owner-only"
+              (work.serviceConfig.UMask == "0077")
+            ]
+            [
+              "each instance has its own Signal lock directory"
+              (work.environment.SON_OF_ANTON_GATEWAY_LOCK_DIR != play.environment.SON_OF_ANTON_GATEWAY_LOCK_DIR)
+            ]
+            [
+              "gnupg is denied for work"
+              (lib.elem "-/home/e-work/.gnupg" work.serviceConfig.InaccessiblePaths)
+            ]
+            [
+              "git-credentials is denied for work"
+              (lib.elem "-/home/e-work/.git-credentials" work.serviceConfig.InaccessiblePaths)
+            ]
+            [
+              "gnupg is denied for play"
+              (lib.elem "-/home/e-play/.gnupg" play.serviceConfig.InaccessiblePaths)
+            ]
+            # ~/.ssh stays reachable so that git over SSH works.
+            [
+              "ssh is not denied"
+              (!(lib.any (p: lib.hasSuffix "/.ssh" p) work.serviceConfig.InaccessiblePaths))
+            ]
+            # A 2770 rule on the home would make sshd refuse authorized_keys.
+            [
+              "no tmpfiles rule for work's home"
+              (!(lib.any (r: lib.hasInfix "d /home/e-work " r) rules))
+            ]
+            [
+              "no tmpfiles rule for play's home"
+              (!(lib.any (r: lib.hasInfix "d /home/e-play " r) rules))
+            ]
+            [
+              "work can start"
+              (startable instances.work work)
+            ]
+            [
+              "play can start"
+              (startable instances.play play)
+            ]
+            [
+              "both rule sources is refused"
+              (says refused "memoryRulesFile")
+            ]
+            [
+              "one user twice is refused"
+              (says sharedUser "same user")
+            ]
+            [
+              "one home twice is refused"
+              (says sharedHome "SON_OF_ANTON_HOME")
+            ]
+            [
+              "two exporters is refused"
+              (says twoExporters "addToSystemPackages")
+            ]
+            [
+              "a valid pair passes every assertion"
+              (failedAssertions pair == [ ])
+            ]
+          ] "units are correct for one instance and isolated across two";
 
         # ── The view socket (daemon/phases/12-view-socket.md) ───────────────
         nixos-viewer-group =
@@ -476,15 +612,20 @@
                 user = "soa-shop";
                 viewerGroup = "soa-viewers";
               };
-              play = account "play" // { viewerGroup = "soa-viewers"; };
+              play = account "play" // {
+                viewerGroup = "soa-viewers";
+              };
               bare.enable = true;
             };
             units = unitsOf eval;
             sc = n: units."son-of-anton-${n}".serviceConfig;
             rules = eval.config.systemd.tmpfiles.rules;
-            created = map (r: lib.elemAt (lib.splitString " " r) 1) (lib.filter (r: lib.hasPrefix "d " r) rules);
+            created = map (r: lib.elemAt (lib.splitString " " r) 1) (
+              lib.filter (r: lib.hasPrefix "d " r) rules
+            );
             inst = eval.config.services.son-of-anton.instances;
-            startable = n: lib.all (p: lib.elem p (created ++ [ inst.${n}.workingDirectory ])) (sc n).ReadWritePaths;
+            startable =
+              n: lib.all (p: lib.elem p (created ++ [ inst.${n}.workingDirectory ])) (sc n).ReadWritePaths;
             says = e: word: lib.any (a: lib.hasInfix word a.message) (failedAssertions e);
             ownGroup = nixos {
               shop = {
@@ -510,8 +651,14 @@
                 "its directory is setgid with the viewer group and owner-writable only"
                 (lib.elem "d /run/son-of-anton-shop 2750 soa-shop soa-viewers - -" rules)
               ]
-              [ "the daemon may write it under ProtectSystem=strict" (lib.elem "/run/son-of-anton-shop" (sc "shop").ReadWritePaths) ]
-              [ "shop can start" (startable "shop") ]
+              [
+                "the daemon may write it under ProtectSystem=strict"
+                (lib.elem "/run/son-of-anton-shop" (sc "shop").ReadWritePaths)
+              ]
+              [
+                "shop can start"
+                (startable "shop")
+              ]
               [
                 "the service user is not in the viewer group"
                 (
@@ -519,14 +666,38 @@
                   && !(lib.elem "soa-viewers" eval.config.users.users.soa-shop.extraGroups)
                 )
               ]
-              [ "the viewer group exists" (eval.config.users.groups ? soa-viewers) ]
-              [ "a managed account gets one too" (lib.elem "d /run/son-of-anton-play 2750 e-play soa-viewers - -" rules) ]
-              [ "no viewerGroup, no view socket" (lib.hasSuffix "/bin/soa-d serve" (execOf units.son-of-anton-bare)) ]
-              [ "no viewerGroup, no runtime directory" (!(lib.any (r: lib.hasInfix "/run/son-of-anton-bare" r) rules)) ]
-              [ "no viewerGroup, /run stays read-only" (!(lib.elem "/run/son-of-anton-bare" (sc "bare").ReadWritePaths)) ]
-              [ "a valid set passes every assertion" (failedAssertions eval == [ ]) ]
-              [ "the instance's own group is refused" (says ownGroup "viewerGroup is its own group") ]
-              [ "a name that cannot name /run is refused" (says badName "needs a name of letters") ]
+              [
+                "the viewer group exists"
+                (eval.config.users.groups ? soa-viewers)
+              ]
+              [
+                "a managed account gets one too"
+                (lib.elem "d /run/son-of-anton-play 2750 e-play soa-viewers - -" rules)
+              ]
+              [
+                "no viewerGroup, no view socket"
+                (lib.hasSuffix "/bin/soa-d serve" (execOf units.son-of-anton-bare))
+              ]
+              [
+                "no viewerGroup, no runtime directory"
+                (!(lib.any (r: lib.hasInfix "/run/son-of-anton-bare" r) rules))
+              ]
+              [
+                "no viewerGroup, /run stays read-only"
+                (!(lib.elem "/run/son-of-anton-bare" (sc "bare").ReadWritePaths))
+              ]
+              [
+                "a valid set passes every assertion"
+                (failedAssertions eval == [ ])
+              ]
+              [
+                "the instance's own group is refused"
+                (says ownGroup "viewerGroup is its own group")
+              ]
+              [
+                "a name that cannot name /run is refused"
+                (says badName "needs a name of letters")
+              ]
             ]
             "a viewerGroup gives the instance a view socket in a setgid /run directory, and nothing without one";
 
@@ -649,22 +820,32 @@
             };
             activation = hmActivationOf eval;
           in
-          evalCheck "son-of-anton-home-manager-module"
+          evalCheck "son-of-anton-home-manager-module" [
             [
-              [
-                "the state record is beside config.toml"
-                (lib.hasInfix "--state /home/soa-checker/.son-of-anton/.nix-managed.json" activation)
-              ]
-              [ "config merge in activation" (lib.hasInfix "/bin/soa-d config merge " activation) ]
-              [ "rules merge in activation" (lib.hasInfix "/bin/soa-d rules merge " activation) ]
-              [ "secrets file is read" (lib.hasInfix "/run/agenix/check-env" activation) ]
-              [ "rules state record" (lib.hasInfix "memories/.nix-rules.json" activation) ]
-              [
-                "session variable"
-                (eval.config.home.sessionVariables.SON_OF_ANTON_HOME == "/home/soa-checker/.son-of-anton")
-              ]
+              "the state record is beside config.toml"
+              (lib.hasInfix "--state /home/soa-checker/.son-of-anton/.nix-managed.json" activation)
             ]
-            "activation and session environment are correct";
+            [
+              "config merge in activation"
+              (lib.hasInfix "/bin/soa-d config merge " activation)
+            ]
+            [
+              "rules merge in activation"
+              (lib.hasInfix "/bin/soa-d rules merge " activation)
+            ]
+            [
+              "secrets file is read"
+              (lib.hasInfix "/run/agenix/check-env" activation)
+            ]
+            [
+              "rules state record"
+              (lib.hasInfix "memories/.nix-rules.json" activation)
+            ]
+            [
+              "session variable"
+              (eval.config.home.sessionVariables.SON_OF_ANTON_HOME == "/home/soa-checker/.son-of-anton")
+            ]
+          ] "activation and session environment are correct";
 
         # ── memoryRulesFile ──────────────────────────────────────────────────
         # Activation names the run-time path and carries no rule text (that
@@ -688,19 +869,39 @@
             activation = hmActivationOf viaFile;
             mentions = eval: lib.any (a: lib.hasInfix "memoryRulesFile" a.message) (failedAssertions eval);
           in
-          evalCheck "son-of-anton-rules-file"
+          evalCheck "son-of-anton-rules-file" [
             [
-              [ "rules.toml is the target" (lib.hasInfix "memories/rules.toml" activation) ]
-              [ "the run-time path is used" (lib.hasInfix "/run/agenix/check-rules" activation) ]
-              [ "no rendered rules file" (!(lib.hasInfix "son-of-anton-rules.toml" activation)) ]
-              [ "a lone memoryRulesFile passes" (failedAssertions viaFile == [ ]) ]
-              [
-                "both options fail in Home Manager"
-                (!(builtins.tryEval (hm ({ enable = true; } // both)).config.home.activationPackage.drvPath).success)
-              ]
-              [ "both options fail in NixOS" (mentions (nixos { main = { enable = true; } // both; })) ]
+              "rules.toml is the target"
+              (lib.hasInfix "memories/rules.toml" activation)
             ]
-            "memoryRulesFile is referenced by path; both options is refused";
+            [
+              "the run-time path is used"
+              (lib.hasInfix "/run/agenix/check-rules" activation)
+            ]
+            [
+              "no rendered rules file"
+              (!(lib.hasInfix "son-of-anton-rules.toml" activation))
+            ]
+            [
+              "a lone memoryRulesFile passes"
+              (failedAssertions viaFile == [ ])
+            ]
+            [
+              "both options fail in Home Manager"
+              (
+                !(builtins.tryEval (hm ({ enable = true; } // both)).config.home.activationPackage.drvPath).success
+              )
+            ]
+            [
+              "both options fail in NixOS"
+              (mentions (nixos {
+                main = {
+                  enable = true;
+                }
+                // both;
+              }))
+            ]
+          ] "memoryRulesFile is referenced by path; both options is refused";
 
         # The rules merge, run from the store as activation runs it: it creates
         # rules.toml and its record, and a second run changes nothing.

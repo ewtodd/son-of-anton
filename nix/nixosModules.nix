@@ -223,7 +223,9 @@
             mkdir -p "$dir"
             chown ${own} "$dir"
             chmod ${s.dirMode} "$dir"
-            ${lib.optionalString (!i.managedAccount) ''find "$dir" -type f -exec chmod g+rw {} + 2>/dev/null || true''}
+            ${lib.optionalString (
+              !i.managedAccount
+            ) ''find "$dir" -type f -exec chmod g+rw {} + 2>/dev/null || true''}
           done
           ${lib.optionalString (i.git.github != null) ''
             # Git over SSH: the key and the ssh config that names it.
@@ -268,7 +270,12 @@
         ++ map (d: dir s.dirMode "${i.son-of-antonHome}/${d}") state.subdirs;
 
       exporters = lib.filterAttrs (_: i: i.addToSystemPackages) instances;
-      duplicated = f: let xs = each (_: f); in lib.length xs != lib.length (lib.unique xs);
+      duplicated =
+        f:
+        let
+          xs = each (_: f);
+        in
+        lib.length xs != lib.length (lib.unique xs);
     in
     {
       options.services.son-of-anton.instances = lib.mkOption {
@@ -286,7 +293,9 @@
       config = {
         assertions = [
           {
-            assertion = lib.all (i: i.memoryRules == [ ] || i.memoryRulesFile == null) (lib.attrValues instances);
+            assertion = lib.all (i: i.memoryRules == [ ] || i.memoryRulesFile == null) (
+              lib.attrValues instances
+            );
             message = ''
               An instance sets both memoryRules and memoryRulesFile; keep one.
               memoryRules ends up in the public Nix store, memoryRulesFile is
@@ -310,7 +319,9 @@
             '';
           }
           {
-            assertion = lib.all (i: i.viewerGroup == null || i.viewerGroup != i.group) (lib.attrValues instances);
+            assertion = lib.all (i: i.viewerGroup == null || i.viewerGroup != i.group) (
+              lib.attrValues instances
+            );
             message = ''
               A son-of-anton instance's viewerGroup is its own group. Members
               of the instance's group can already read and write its home, so
@@ -344,7 +355,9 @@
           # A viewer group exists unless something else defines it.
           (lib.listToAttrs (
             lib.concatLists (
-              each (_: i: lib.optional (i.viewerGroup != null) (lib.nameValuePair i.viewerGroup (lib.mkDefault { })))
+              each (
+                _: i: lib.optional (i.viewerGroup != null) (lib.nameValuePair i.viewerGroup (lib.mkDefault { }))
+              )
             )
           ))
         ];
@@ -385,7 +398,9 @@
           )
         ) instances;
 
-        systemd.services = lib.mapAttrs' (name: i: lib.nameValuePair "son-of-anton-${name}" (unitFor name i)) instances;
+        systemd.services = lib.mapAttrs' (
+          name: i: lib.nameValuePair "son-of-anton-${name}" (unitFor name i)
+        ) instances;
       };
     };
 }

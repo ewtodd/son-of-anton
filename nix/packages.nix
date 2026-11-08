@@ -2,7 +2,12 @@
 { inputs, ... }:
 {
   perSystem =
-    { pkgs, system, lib, ... }:
+    {
+      pkgs,
+      system,
+      lib,
+      ...
+    }:
     let
       # YY.MM.DD of the commit this flake is built from.
       version = import ./version.nix { inherit (inputs) self; };
@@ -15,7 +20,10 @@
         inherit version;
 
         src = lib.cleanSource ../daemon;
-        subPackages = [ "cmd/soa-d" "cmd/son-of-anton" ];
+        subPackages = [
+          "cmd/soa-d"
+          "cmd/son-of-anton"
+        ];
         env.CGO_ENABLED = "0";
 
         # One date version for both commands (internal/buildinfo).
@@ -24,8 +32,19 @@
         # The terminal and search tools shell out to bash and ripgrep (and
         # use coreutils); the wrapper puts them on PATH at run time and the
         # check phase needs them too.
-        nativeBuildInputs = [ pkgs.makeWrapper pkgs.bash pkgs.ripgrep pkgs.coreutils ];
-        nativeCheckInputs = [ pkgs.bash pkgs.ripgrep pkgs.coreutils pkgs.git pkgs.python3 ];
+        nativeBuildInputs = [
+          pkgs.makeWrapper
+          pkgs.bash
+          pkgs.ripgrep
+          pkgs.coreutils
+        ];
+        nativeCheckInputs = [
+          pkgs.bash
+          pkgs.ripgrep
+          pkgs.coreutils
+          pkgs.git
+          pkgs.python3
+        ];
 
         # The contract tests live in internal/*, which subPackages would skip
         # in the default check phase; test the whole module instead.

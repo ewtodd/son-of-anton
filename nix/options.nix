@@ -175,7 +175,7 @@ in
           which the program reads when it starts. The file is rebuilt from
           scratch every time, so nothing is appended twice.
         '';
-        example = literalExpression ''[ config.age.secrets.son-of-anton-env.path ]'';
+        example = literalExpression "[ config.age.secrets.son-of-anton-env.path ]";
       };
 
       environment = mkOption {
