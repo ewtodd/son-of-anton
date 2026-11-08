@@ -34,10 +34,12 @@ const usage = `usage:
   son-of-anton sessions [list] [--kind KIND]... [--all] [--limit N]
   son-of-anton sessions rename ID TITLE...
   son-of-anton sessions delete ID [--yes]
+  son-of-anton sessions report ID [-o FILE|-]  a session as a PDF
   son-of-anton sessions import ARGS...          (soa-d import's flags)
   son-of-anton view INSTANCE|--socket PATH [list] [--all] [--limit N]
   son-of-anton view INSTANCE|--socket PATH ID   a session, read-only, in the terminal UI
   son-of-anton view INSTANCE|--socket PATH show ID
+  son-of-anton view INSTANCE|--socket PATH report ID [-o FILE|-]
   son-of-anton --version
 
 flags: -m/--model M  --reasoning L  --yolo  --home DIR
@@ -461,7 +463,7 @@ func runSessions(f flags, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	switch action {
-	case "list", "rename", "delete":
+	case "list", "rename", "delete", "report":
 	default:
 		return usageErr(stderr, "unknown sessions action %q", action)
 	}
@@ -471,10 +473,17 @@ func runSessions(f flags, stdin io.Reader, stdout, stderr io.Writer) int {
 		all, yes    bool
 		limit       = 50
 		pos         []string
+		out         string
 	)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
+		case action == "report" && (a == "-o" || a == "--output"):
+			if i+1 >= len(args) {
+				return usageErr(stderr, "%s needs a value", a)
+			}
+			i++
+			out = args[i]
 		case action == "list" && a == "--kind", action == "list" && a == "--limit":
 			if i+1 >= len(args) {
 				return usageErr(stderr, "%s needs a value", a)
@@ -518,6 +527,10 @@ func runSessions(f flags, stdin io.Reader, stdout, stderr io.Writer) int {
 		if len(pos) != 1 {
 			return usageErr(stderr, "usage: sessions delete ID [--yes]")
 		}
+	case "report":
+		if len(pos) != 1 {
+			return usageErr(stderr, "usage: sessions report ID [-o FILE]")
+		}
 	}
 
 	c, err := client.Connect(home, "cli")
@@ -525,8 +538,11 @@ func runSessions(f flags, stdin io.Reader, stdout, stderr io.Writer) int {
 		return fail(stderr, "%v", err)
 	}
 	defer c.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	if action == "report" {
+		return writeReport(ctx, c, pos[0], out, stdout, stderr)
+	}
 	rpc := func(method string, params, out any) bool {
 		if err := c.Call(ctx, method, params, out); err != nil {
 			fail(stderr, "%v", err)

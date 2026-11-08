@@ -22,6 +22,8 @@
   soa-d,
   # Plain nixpkgs python3 (SON_OF_ANTON_PYTHON): execute_code and cron scripts.
   python3,
+  # typst with the report template's package (SON_OF_ANTON_TYPST, packages.nix).
+  reportTypst,
   # More tools on PATH, such as the language servers an editor config enables.
   extraPackages ? [ ],
 }:
@@ -47,6 +49,9 @@ let
     "--set"
     "SON_OF_ANTON_PYTHON"
     "${python3}/bin/python3"
+    "--set"
+    "SON_OF_ANTON_TYPST"
+    "${reportTypst}/bin/typst"
   ];
 in
 stdenv.mkDerivation {
@@ -70,7 +75,7 @@ stdenv.mkDerivation {
 
   passthru = {
     runtimeDeps = tools;
-    inherit python3;
+    inherit python3 reportTypst;
   };
 
   meta = {

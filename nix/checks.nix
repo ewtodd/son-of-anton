@@ -171,7 +171,14 @@
           done
           grep -q SOA_D_BIN ${package}/bin/son-of-anton
           grep -q ripgrep ${package}/bin/soa-d
-          echo "ok: both commands run, report ${version}, and carry a working python3"
+          # Reports render offline: the wrappers' typst has the template's package.
+          typst=$(grep -o '/nix/store/[^: ]*/bin/typst' ${package}/bin/son-of-anton | head -n1)
+          test -n "$typst"
+          grep -q SON_OF_ANTON_TYPST ${package}/bin/soa-d
+          printf '%s\n' '#import "@preview/cmarker:0.1.9"' '#cmarker.render("**ok**")' > t.typ
+          "$typst" compile --ignore-system-fonts t.typ t.pdf
+          head -c 5 t.pdf | grep -q '%PDF-'
+          echo "ok: both commands run, report ${version}, and carry a working python3 and typst"
         '';
 
         # The physics runtime is everything a sandboxed command may run. This
@@ -723,6 +730,7 @@
               environment.systemPackages = [
                 package
                 pkgs.socat
+                pkgs.poppler-utils
               ];
               services.son-of-anton.instances.shop = {
                 enable = true;
@@ -781,6 +789,11 @@
                   sid = line[0].split()[0]
                   out = machine.succeed(f"runuser -u alice -- son-of-anton view shop show {sid}")
                   assert "watch this" in out and "hello from the imported session" in out, out
+
+              with subtest("a viewer makes a report"):
+                  machine.succeed(f"cd /tmp && runuser -u alice -- son-of-anton view shop report {sid} -o /tmp/alice-report.pdf")
+                  out = machine.succeed("pdftotext -layout /tmp/alice-report.pdf -")
+                  assert "Imported from Claude Code: watch this" in out and "hello from the imported session" in out, out
 
               with subtest("a viewer cannot send"):
                   r = rpc("alice", view,

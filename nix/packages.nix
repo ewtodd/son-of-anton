@@ -12,6 +12,11 @@
       # YY.MM.DD of the commit this flake is built from.
       version = import ./version.nix { inherit (inputs) self; };
 
+      # typst with the one package a report's template imports
+      # (daemon/internal/report/report.typ, which names this version), so a
+      # report renders offline.
+      reportTypst = pkgs.typst.withPackages (ps: [ ps.cmarker_0_1_9 ]);
+
       # The Go daemon and the son-of-anton command (son-of-anton.nix wraps both).
       # Only daemon/ is the source, so nothing else in the repository rebuilds it.
       # Pure Go (CGO off); tests run in the check phase.
@@ -44,6 +49,9 @@
           pkgs.coreutils
           pkgs.git
           pkgs.python3
+          # the report tests render PDFs and read them back
+          reportTypst
+          pkgs.poppler-utils
         ];
 
         # The contract tests live in internal/*, which subPackages would skip
@@ -60,11 +68,13 @@
         '';
 
         vendorHash = "sha256-kn0pKTfxgsVjpEai2HKeI3WRGGZCXgBfcWNhxfFr7hs=";
+
+        passthru.reportTypst = reportTypst;
       };
 
       package = pkgs.callPackage ./son-of-anton.nix {
         # `son-of-anton` is its Go command; the TUI, -q and -z run on the daemon
-        inherit soa-d;
+        inherit soa-d reportTypst;
         python3 = pkgs.python3;
       };
     in

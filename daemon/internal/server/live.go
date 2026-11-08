@@ -10,6 +10,7 @@ import (
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
+	"github.com/ewtodd/son-of-anton/daemon/internal/report"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 	"github.com/ewtodd/son-of-anton/daemon/internal/tools"
 )
@@ -203,7 +204,7 @@ func (l *live) onAgentLocked(e agent.Event) (progress map[string]any) {
 	case "assistant.delta", "reasoning.delta":
 		l.emit(e.Kind, map[string]any{"text": e.Text})
 	case "tool.start":
-		summary := summarize(e.Tool, e.Text)
+		summary := report.Summary(e.Tool, e.Text)
 		l.emit("tool.start", map[string]any{"call_id": e.CallID, "name": e.Tool, "arguments": e.Text, "summary": summary})
 		if l.run != nil {
 			l.run.onToolStart(l, e.CallID, e.Tool, e.Text)
@@ -214,7 +215,7 @@ func (l *live) onAgentLocked(e agent.Event) (progress map[string]any) {
 		}
 	case "tool.end":
 		l.emit("tool.end", map[string]any{"call_id": e.CallID, "name": e.Tool, "result": e.Text,
-			"is_error": isError(e.Tool, e.Text), "duration_ms": e.Duration.Milliseconds()})
+			"is_error": report.IsError(e.Tool, e.Text), "duration_ms": e.Duration.Milliseconds()})
 		if l.run != nil {
 			l.run.onToolEnd(l, e.CallID, e.Tool, e.Text, e.Duration)
 		}

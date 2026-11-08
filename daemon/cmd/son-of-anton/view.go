@@ -21,10 +21,10 @@ import (
 
 func runView(args []string, stdout, stderr io.Writer) int {
 	var (
-		socket, instance string
-		all, limitSet    bool
-		limit            = 50
-		pos              []string
+		socket, instance, out string
+		all, limitSet, outSet bool
+		limit                 = 50
+		pos                   []string
 	)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -36,7 +36,7 @@ func runView(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		switch {
-		case name == "--socket" || name == "--limit":
+		case name == "--socket" || name == "--limit" || name == "-o" || name == "--output":
 			if !joined {
 				if i+1 >= len(args) {
 					return usageErr(stderr, "%s needs a value", name)
@@ -44,9 +44,13 @@ func runView(args []string, stdout, stderr io.Writer) int {
 				i++
 				value = args[i]
 			}
-			if name == "--socket" {
+			switch name {
+			case "--socket":
 				socket = value
-				break
+				continue
+			case "-o", "--output":
+				out, outSet = value, true
+				continue
 			}
 			n, err := strconv.Atoi(value)
 			if err != nil || n < 1 {
@@ -74,18 +78,21 @@ func runView(args []string, stdout, stderr io.Writer) int {
 	action, id := "list", ""
 	switch {
 	case len(pos) == 0, len(pos) == 1 && pos[0] == "list":
-	case pos[0] == "show":
+	case pos[0] == "show" || pos[0] == "report":
 		if len(pos) != 2 {
-			return usageErr(stderr, "usage: view INSTANCE|--socket PATH show ID")
+			return usageErr(stderr, "usage: view INSTANCE|--socket PATH %s ID", pos[0])
 		}
-		action, id = "show", pos[1]
+		action, id = pos[0], pos[1]
 	case len(pos) == 1:
 		action, id = "open", pos[0]
 	default:
-		return usageErr(stderr, "view takes one session: view INSTANCE|--socket PATH [show] ID")
+		return usageErr(stderr, "view takes one session: view INSTANCE|--socket PATH [show|report] ID")
 	}
 	if action != "list" && (all || limitSet) {
 		return usageErr(stderr, "--all and --limit go with list")
+	}
+	if outSet && action != "report" {
+		return usageErr(stderr, "-o goes with report")
 	}
 	if action == "open" {
 		return execSoaD([]string{"tui", "--socket", socket, "--view", "--resume", id}, stderr)
@@ -102,10 +109,13 @@ func runView(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "%s", msg)
 	}
 	defer c.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	if action == "show" {
+	switch action {
+	case "show":
 		return viewShow(ctx, c, id, stdout, stderr)
+	case "report":
+		return writeReport(ctx, c, id, out, stdout, stderr)
 	}
 	want := []string{"interactive"}
 	if all {
@@ -148,36 +158,11 @@ func localTime(s, layout string) string {
 	return s
 }
 
-type viewMessage struct {
-	Seq       int64  `json:"seq"`
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	ToolName  string `json:"tool_name"`
-	TS        string `json:"ts"`
-	ToolCalls []struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"tool_calls"`
-}
-
-// viewShow prints a session's stored transcript, oldest first: session.history
-// pages back from the newest message to the first.
+// viewShow prints a session's stored transcript, oldest first.
 func viewShow(ctx context.Context, c *client.Client, id string, stdout, stderr io.Writer) int {
-	var msgs []viewMessage
-	before := int64(0)
-	for {
-		var res struct {
-			Messages   []viewMessage `json:"messages"`
-			MoreBefore bool          `json:"more_before"`
-		}
-		if err := c.Call(ctx, "session.history", map[string]any{"session": id, "before_seq": before, "limit": 1000}, &res); err != nil {
-			return fail(stderr, "%v", err)
-		}
-		msgs = append(res.Messages, msgs...)
-		if !res.MoreBefore || len(res.Messages) == 0 {
-			break
-		}
-		before = res.Messages[0].Seq
+	msgs, err := history(ctx, c, id)
+	if err != nil {
+		return fail(stderr, "%v", err)
 	}
 	var b strings.Builder
 	for i, m := range msgs {
