@@ -91,7 +91,7 @@ func (m *model) copyShown(now time.Time) bool {
 
 // mouse handles a mouse event on whichever view is showing.
 func (m *model) mouse(k tea.MouseMsg) tea.Cmd {
-	if m.quitting || len(m.modals) > 0 || m.picker != nil {
+	if m.quitting || (len(m.modals) > 0 && !m.o.View) || m.picker != nil {
 		return nil
 	}
 	if m.view != nil {

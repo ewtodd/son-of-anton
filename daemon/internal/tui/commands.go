@@ -162,13 +162,17 @@ func (m *model) command(name, args, line string) tea.Cmd {
 		return m.leave()
 	}
 	m.feed.note("⚙ "+line, true)
+	if m.o.View && !viewCommands[name] {
+		m.feed.note("read-only view: /"+name+" is not available", false)
+		return nil
+	}
 	c, sid := m.cl, m.sess.ID
 	fail := func(m *model, err error) {
 		m.feed.errNote("/" + name + ": " + err.Error())
 	}
 	switch name {
 	case "help":
-		m.feed.note(helpText(), false)
+		m.feed.note(helpText(m.o.View), false)
 	case "model":
 		if args != "" {
 			return m.modelNamed(args)
@@ -378,7 +382,7 @@ func (e errNote) Error() string { return string(e) }
 // switchSession makes another session the current one: pick names it (and may
 // create it), then it is attached as driver and the old one detached.
 func (m *model) switchSession(pick func(context.Context, *client.Client) (string, error), resumed bool, name string) tea.Cmd {
-	c, old := m.cl, m.sess.ID
+	c, old, view := m.cl, m.sess.ID, m.o.View
 	return func() tea.Msg {
 		ctx, cancel := ctxTimeout(30 * time.Second)
 		defer cancel()
@@ -401,7 +405,7 @@ func (m *model) switchSession(pick func(context.Context, *client.Client) (string
 			return fail(err)
 		}
 		var res attachResult
-		if err := attachSession(ctx, c, map[string]any{"session": id}, &res); err != nil {
+		if err := attachSession(ctx, c, map[string]any{"session": id}, &res, view); err != nil {
 			if rpcCode(err) == codeNoSession {
 				return fail(errNote("session " + id + " is not in soa-d"))
 			}
@@ -420,10 +424,14 @@ func (m *model) switchSession(pick func(context.Context, *client.Client) (string
 	}
 }
 
-// attachSession attaches to id as its driver. A session nobody may drive (a
-// physics run's: its controller does) is attached as a viewer instead, so the
-// run can be watched.
-func attachSession(ctx context.Context, c *client.Client, params map[string]any, res *attachResult) error {
+// attachSession attaches to id as its driver, or with view as a viewer only. A
+// session nobody may drive (a physics run's: its controller does) is attached
+// as a viewer instead, so the run can be watched.
+func attachSession(ctx context.Context, c *client.Client, params map[string]any, res *attachResult, view bool) error {
+	if view {
+		params["as"] = "viewer"
+		return c.Call(ctx, "session.attach", params, res)
+	}
 	params["as"] = "driver"
 	err := c.Call(ctx, "session.attach", params, res)
 	if rpcCode(err) == codeNotDriver {

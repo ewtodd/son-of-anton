@@ -16,6 +16,7 @@ type choice struct{ value, label, desc string }
 type modal struct {
 	question bool
 	quit     bool // asks about a running turn before quitting; no daemon answer
+	readOnly bool // shown to a read-only view: nothing picks, nothing answers
 	id       string
 
 	// approval, and the quit question
@@ -270,7 +271,11 @@ func (md *modal) view(w int, th *theme) []string {
 	border := th.acc
 	var body []string
 	add := func(s string) { body = append(body, s) }
+	const readOnlyHint = "read-only: the session's driver or its chat answers this · esc hides it"
 	row := func(i, sel int, text, desc string, mark string) {
+		if md.readOnly {
+			sel = -1 // nothing is picked here
+		}
 		label := fmt.Sprintf("%s%d. %s", mark, i+1, text)
 		line := label
 		if desc != "" {
@@ -290,10 +295,13 @@ func (md *modal) view(w int, th *theme) []string {
 			add(l)
 		}
 		add("")
-		if md.typing {
+		switch {
+		case md.typing && md.readOnly:
+			add(th.mut.Render("(it asks for a typed answer)"))
+		case md.typing:
 			add(th.mut.Render("your answer"))
 			add(th.acc.Render("> ") + ellipsize(md.input, inner-3) + "▏")
-		} else {
+		default:
 			for i, o := range md.options {
 				mark := ""
 				if md.multi {
@@ -313,6 +321,9 @@ func (md *modal) view(w int, th *theme) []string {
 		if md.typing {
 			hint = "enter send · esc dismiss"
 		}
+		if md.readOnly {
+			hint = readOnlyHint
+		}
 		add(th.mut.Render(ellipsize(hint, inner)))
 	} else {
 		border = th.warnS
@@ -331,7 +342,11 @@ func (md *modal) view(w int, th *theme) []string {
 			row(i, md.sel, c.label, c.desc, "")
 		}
 		add("")
-		add(th.mut.Render(ellipsize("1-9 pick · ↑↓ move · enter pick · esc cancel", inner)))
+		hint := "1-9 pick · ↑↓ move · enter pick · esc cancel"
+		if md.readOnly {
+			hint = readOnlyHint
+		}
+		add(th.mut.Render(ellipsize(hint, inner)))
 	}
 	box := th.r.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border.GetForeground()).
 		Padding(0, 1).Width(bw - 2).Render(strings.Join(body, "\n"))

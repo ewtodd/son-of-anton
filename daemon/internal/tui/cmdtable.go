@@ -33,17 +33,28 @@ var cmdTable = []cmdDef{
 	{"quit", "", "Leave the TUI; asks first if a turn is running", "Exit"},
 }
 
-// helpText is /help, from the table.
-func helpText() string {
+// viewCommands are the commands of a read-only view
+// (daemon/phases/12-view-socket.md): none of them changes a session.
+var viewCommands = map[string]bool{"resume": true, "status": true, "help": true, "quit": true}
+
+// helpText is /help, from the table; view lists a read-only view's.
+func helpText(view bool) string {
 	lines := []string{"commands:"}
 	for _, c := range cmdTable {
+		if view && !viewCommands[c.name] {
+			continue
+		}
 		l := "  /" + c.name
 		if c.args != "" {
 			l += " " + c.args
 		}
 		lines = append(lines, l+" — "+c.desc)
 	}
-	lines = append(lines, "  !cmd runs here · ctrl+p opens the palette · ctrl+t expands a tool · :q quits")
+	if view {
+		lines = append(lines, "  read-only view: ctrl+p runs these · ctrl+t expands a tool · ctrl+x ↓ subagents · ctrl+q quits")
+	} else {
+		lines = append(lines, "  !cmd runs here · ctrl+p opens the palette · ctrl+t expands a tool · :q quits")
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -54,10 +65,14 @@ type cmdEntry struct {
 	cat  string
 }
 
-// cmdEntries lists every command in table order.
-func cmdEntries() []cmdEntry {
+// cmdEntries lists every command in table order; view only a read-only
+// view's.
+func cmdEntries(view bool) []cmdEntry {
 	out := make([]cmdEntry, 0, len(cmdTable))
 	for _, c := range cmdTable {
+		if view && !viewCommands[c.name] {
+			continue
+		}
 		out = append(out, cmdEntry{c.name, c.desc, c.category})
 	}
 	return out
@@ -65,7 +80,7 @@ func cmdEntries() []cmdEntry {
 
 // canonicalCmd is the command a name stands for, or "".
 func canonicalCmd(name string) string {
-	for _, e := range cmdEntries() {
+	for _, e := range cmdEntries(false) {
 		if e.name == name {
 			return e.name
 		}

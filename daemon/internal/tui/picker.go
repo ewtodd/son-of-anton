@@ -407,13 +407,18 @@ func cutRunes(s string, n int) string {
 	return s
 }
 
-// palettePicker is ctrl+p: every command; picking puts it in the prompt.
+// palettePicker is ctrl+p: every command; picking puts it in the prompt. A
+// read-only view has no prompt: it lists only its commands and runs the one
+// picked.
 func (m *model) palettePicker() {
 	var rows []pickRow
-	for _, e := range cmdEntries() {
+	for _, e := range cmdEntries(m.o.View) {
 		rows = append(rows, pickRow{key: e.name, label: "/" + e.name, desc: e.cat + " · " + e.desc})
 	}
 	p := newPicker("Commands", rows, true, false, func(m *model, keys []string) tea.Cmd {
+		if m.o.View {
+			return m.command(keys[0], "", "/"+keys[0])
+		}
 		m.ta.SetValue("/" + keys[0] + " ")
 		m.histPos = len(m.hist)
 		m.resetPrompt()

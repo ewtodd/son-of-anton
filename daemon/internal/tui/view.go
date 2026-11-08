@@ -13,6 +13,9 @@ import (
 
 const margin = "  "
 
+// readOnlyLine stands in for the prompt in a read-only view.
+const readOnlyLine = "read-only view: you can watch this session, not send to it or answer it"
+
 const (
 	sidebarWidth     = 42  // columns
 	sidebarThreshold = 120 // the sidebar shows by itself on a screen wider than this
@@ -77,6 +80,9 @@ func renderSegs(ss []seg, w int) string {
 // taRows is the height of the text area: it grows with the draft, to ten rows
 // at most and never so far that fewer than three feed rows remain.
 func (m *model) taRows() int {
+	if m.o.View {
+		return 1 // the read-only line
+	}
 	rows := draftRows(m.ta.Value(), max(m.contentWidth()-3, 1))
 	return min(rows, m.taCap())
 }
@@ -118,7 +124,11 @@ func (m *model) statusLine(cw int, now time.Time) string {
 			pct := (100*m.sess.CtxTokens + m.sess.CtxLen/2) / m.sess.CtxLen
 			right = append(right, seg{fmt.Sprintf("%d%% context  ·  ", pct), th.mut})
 		}
-		right = append(right, seg{"/help", th.bld}, seg{" commands", th.plain})
+		if m.o.View {
+			right = append(right, seg{"ctrl+p", th.bld}, seg{" commands", th.plain})
+		} else {
+			right = append(right, seg{"/help", th.bld}, seg{" commands", th.plain})
+		}
 	}
 	if m.busy() {
 		label := "thinking"
@@ -134,6 +144,9 @@ func (m *model) statusLine(cw int, now time.Time) string {
 		}
 		left = []seg{{spinnerFrame(m.spin), th.bld}, {" ", th.plain}, {label, th.plain}, {fmt.Sprintf("  %ds", secs), th.mut}}
 		right = []seg{{"ctrl+c", th.bld}, {" interrupt", th.plain}}
+		if m.o.View {
+			right = []seg{{"ctrl+q", th.bld}, {" quit", th.plain}}
+		}
 	} else {
 		left = []seg{{tilde(m.sess.Cwd), th.plain}}
 		if m.editing {
@@ -218,6 +231,9 @@ func (m *model) queueStrip(cw int) []string {
 	case len(m.queue) > 1:
 		hint = "/sendnow sends the oldest · /sendall sends all"
 	}
+	if m.o.View {
+		hint = "queued: these go in when the session gets to them"
+	}
 	out = append(out, th.mut.Render(ellipsize(hint, cw)))
 	for i := range out {
 		out[i] = "   " + out[i]
@@ -255,7 +271,9 @@ func (m *model) render() []string {
 	}
 	dock = append(dock, "", frame(rail))
 	taLines := strings.Split(m.ta.View(), "\n")
-	if sg := m.suggestion(); sg != "" && ta == 1 {
+	if m.o.View {
+		taLines = []string{th.mut.Render(ellipsize(readOnlyLine, max(cw-3, 1)))}
+	} else if sg := m.suggestion(); sg != "" && ta == 1 {
 		if row := m.suggestRow(sg, max(cw-3, 1)); row != "" {
 			taLines[0] = row
 		}

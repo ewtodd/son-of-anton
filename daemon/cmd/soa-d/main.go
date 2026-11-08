@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -40,9 +43,10 @@ const usage = `soa-d — the Son of Anton daemon
 usage:
   soa-d query [--home DIR] [--model M] [--reasoning LEVEL] [--yolo] [--system FILE] [--memory | --no-memory] PROMPT
   soa-d oneshot [--home DIR] [--model M] [--reasoning LEVEL] [--yolo] [--system FILE] [--memory | --no-memory] [--usage-file PATH] PROMPT
-  soa-d serve [--home DIR]
+  soa-d serve [--home DIR] [--view-socket PATH --view-group GROUP]
   soa-d sandbox-run [--home DIR] --run DIR [--data PATH]... -- COMMAND...
   soa-d tui [--home DIR] [--in DIR] [-c | --resume ID|latest] [-m MODEL] [--reasoning LEVEL] [--yolo]
+  soa-d tui [--home DIR | --socket PATH] --view --resume ID|latest
   soa-d import --from DIR [--home DIR]
   soa-d import (--from-claude [ROOT] | --from-codex [ROOT] | --from-opencode [DB]) [--home DIR] [--force]
   soa-d config merge DECLARED CONFIG [--state STATE] [--adopt] [--dry-run]
@@ -363,14 +367,36 @@ func queryMode(cfg *config.Config, yolo bool) approval.Mode {
 // runServe is the daemon: listen first (a second daemon on the same home
 // stops here), then serve until SIGINT or SIGTERM.
 func runServe(args []string, stderr io.Writer) int {
-	home := ""
+	var home, viewSocket, viewGroup string
 	for i := 0; i < len(args); i++ {
-		if args[i] != "--home" || i+1 >= len(args) {
+		if i+1 >= len(args) {
 			fmt.Fprint(stderr, usage)
 			return 2
 		}
-		home = args[i+1]
+		switch args[i] {
+		case "--home":
+			home = args[i+1]
+		case "--view-socket":
+			viewSocket = args[i+1]
+		case "--view-group":
+			viewGroup = args[i+1]
+		default:
+			fmt.Fprint(stderr, usage)
+			return 2
+		}
 		i++
+	}
+	if (viewSocket == "") != (viewGroup == "") {
+		fmt.Fprintf(stderr, "soa-d serve: --view-socket and --view-group go together\n\n%s", usage)
+		return 2
+	}
+	gid := -1
+	if viewGroup != "" {
+		var err error
+		if gid, err = lookupGroup(viewGroup); err != nil {
+			fmt.Fprintf(stderr, "soa-d serve: the view group: %v\n", err)
+			return 1
+		}
 	}
 	if home == "" {
 		var err error
@@ -396,21 +422,52 @@ func runServe(args []string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "soa-d serve: %v\n", err)
 		return 1
 	}
+	var views []net.Listener
+	if viewSocket != "" {
+		vln, err := server.ListenView(viewSocket, gid)
+		if err != nil {
+			_ = ln.Close()
+			fmt.Fprintf(stderr, "soa-d serve: the view socket: %v\n", err)
+			return 1
+		}
+		views = append(views, vln)
+	}
+	closeAll := func() {
+		_ = ln.Close()
+		for _, v := range views {
+			_ = v.Close()
+		}
+	}
 	retirePython(home, stderr)
 	srv, err := server.New(server.Options{Home: home, Version: buildinfo.Version})
 	if err != nil {
-		_ = ln.Close()
+		closeAll()
 		fmt.Fprintf(stderr, "soa-d serve: %v\n", err)
 		return 1
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	fmt.Fprintf(stderr, "soa-d serve: listening on %s\n", ln.Addr())
-	err = srv.Serve(ctx, ln)
+	for _, v := range views {
+		fmt.Fprintf(stderr, "soa-d serve: read-only viewers on %s (group %s)\n", v.Addr(), viewGroup)
+	}
+	err = srv.Serve(ctx, ln, views...)
 	fmt.Fprintln(stderr, "soa-d serve: stopped")
 	if err != nil {
 		fmt.Fprintf(stderr, "soa-d serve: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+// lookupGroup is a group's id, from a number or a name.
+func lookupGroup(g string) (int, error) {
+	if n, err := strconv.Atoi(g); err == nil && n >= 0 {
+		return n, nil
+	}
+	gr, err := user.LookupGroup(g)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(gr.Gid)
 }

@@ -73,7 +73,7 @@ func (m *model) complete(explicit, paths bool) (c *completion, need bool) {
 	case strings.HasPrefix(v, "/") && start == 0:
 		var items []cand
 		sel := 0
-		for _, e := range cmdEntries() {
+		for _, e := range cmdEntries(false) {
 			if strings.HasPrefix("/"+e.name, strings.ToLower(word)) {
 				if "/"+e.name == word {
 					sel = len(items)
@@ -110,7 +110,7 @@ func isPathWord(w string) bool {
 }
 
 func isCommandWord(w string) bool {
-	for _, e := range cmdEntries() {
+	for _, e := range cmdEntries(false) {
 		if strings.HasPrefix("/"+e.name, strings.ToLower(w)) {
 			return true
 		}

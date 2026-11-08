@@ -68,13 +68,31 @@ type Client struct {
 // SocketPath is the daemon's socket under home.
 func SocketPath(home string) string { return filepath.Join(home, "run", "soa-d.sock") }
 
+// ViewSocketPath is where the NixOS module puts an instance's view socket
+// (daemon/phases/12-view-socket.md). An instance name is letters, digits,
+// '.', '_' and '-', not starting with '.', so it cannot leave /run.
+func ViewSocketPath(instance string) (string, error) {
+	ok := instance != "" && instance[0] != '.'
+	for _, r := range instance {
+		ok = ok && (r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-')
+	}
+	if !ok {
+		return "", fmt.Errorf("%q is not an instance name", instance)
+	}
+	return "/run/son-of-anton-" + instance + "/view.sock", nil
+}
+
 func dialSocket(home string) (net.Conn, error) {
 	return net.DialTimeout("unix", SocketPath(home), 5*time.Second)
 }
 
 // Dial connects to the daemon under home and says hello as name.
-func Dial(home, name string) (*Client, error) {
-	conn, err := dialSocket(home)
+func Dial(home, name string) (*Client, error) { return DialSocket(SocketPath(home), name) }
+
+// DialSocket connects to the socket at path and says hello as name. It never
+// starts a daemon.
+func DialSocket(path, name string) (*Client, error) {
+	conn, err := net.DialTimeout("unix", path, 5*time.Second)
 	if err != nil {
 		return nil, err
 	}

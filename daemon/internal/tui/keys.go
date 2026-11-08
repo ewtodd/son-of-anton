@@ -30,6 +30,9 @@ func (m *model) key(k tea.KeyMsg) tea.Cmd {
 	}
 	s := k.String()
 	m.sel, m.press = nil, nil
+	if m.o.View {
+		return m.viewKey(k)
+	}
 	if len(m.modals) > 0 && s != "ctrl+c" && s != "ctrl+q" {
 		return m.modalKey(k)
 	}
@@ -136,6 +139,9 @@ func (m *model) sendNowKey() tea.Cmd {
 	if m.quitting {
 		return nil
 	}
+	if m.o.View {
+		return m.viewKey(tea.KeyMsg{Type: tea.KeyEnter})
+	}
 	if len(m.modals) > 0 || m.picker != nil || m.view != nil || m.comp != nil {
 		return m.key(tea.KeyMsg{Type: tea.KeyEnter})
 	}
@@ -145,6 +151,68 @@ func (m *model) sendNowKey() tea.Cmd {
 		return m.command("sendnow", "", "/sendnow")
 	}
 	return m.submit("now")
+}
+
+// viewKey is a key in a read-only view (daemon/phases/12-view-socket.md). It
+// quits, scrolls, shows and switches; nothing it does reaches the session.
+// There is no prompt, an approval or question box answers nothing (esc hides
+// it here only), and ctrl+c leaves without interrupting anything.
+func (m *model) viewKey(k tea.KeyMsg) tea.Cmd {
+	s := k.String()
+	switch s {
+	case "ctrl+c", "ctrl+q":
+		return m.quit(false)
+	}
+	if p := m.picker; p != nil {
+		if s == "ctrl+p" && p.palette {
+			m.picker = nil
+			return nil
+		}
+		return m.pickerKey(k)
+	}
+	if s == "esc" && len(m.modals) > 0 {
+		m.modals = m.modals[1:]
+		return nil
+	}
+	leader := !m.leaderAt.IsZero() && time.Since(m.leaderAt) < leaderWindow
+	m.leaderAt = time.Time{}
+	if s == "ctrl+x" {
+		m.leaderAt = time.Now()
+		return nil
+	}
+	if leader && s == "down" && m.view == nil {
+		return m.openNewestChild()
+	}
+	if m.view != nil {
+		switch s {
+		case "up", "left", "right", "pgup", "pgdown":
+			return m.childKey(k)
+		}
+		return nil
+	}
+	switch s {
+	case "ctrl+p":
+		m.palettePicker()
+	case "ctrl+b":
+		show, _ := m.sidebarState()
+		show = !show
+		m.sbForced = &show
+	case "ctrl+t":
+		m.toggleLastTool()
+	case "ctrl+l":
+		m.feed.clearKeepIntro()
+		m.curAsst, m.curReason = nil, nil
+		m.follow = true
+	case "pgup":
+		m.scroll(-1)
+	case "pgdown":
+		m.scroll(1)
+	case "up":
+		m.scrollBy(-1)
+	case "down":
+		m.scrollBy(1)
+	}
+	return nil
 }
 
 // edit hands a key to the text area.
@@ -194,7 +262,9 @@ func (m *model) record(text string) {
 	}
 	m.hist = append(m.hist, text)
 	m.histPos = len(m.hist)
-	_ = AppendHistory(m.histPath, text) // unwritable: history stays in memory
+	if m.histPath != "" {
+		_ = AppendHistory(m.histPath, text) // unwritable: history stays in memory
+	}
 }
 
 func (m *model) ctrlC() tea.Cmd {

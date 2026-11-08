@@ -28,6 +28,7 @@ const waitFor = 10 * time.Second
 type daemon struct {
 	t      *testing.T
 	home   string
+	view   string // the view socket (phases/12-view-socket.md)
 	cwd    string
 	cancel context.CancelFunc
 	done   chan error
@@ -54,7 +55,12 @@ func newDaemon(t *testing.T, fake *fakellm.Server) *daemon {
 	if err := os.WriteFile(filepath.Join(home, ".env"), []byte("SOA_D_TEST_KEY=s3cret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := &daemon{t: t, home: home, cwd: t.TempDir()}
+	viewDir, err := os.MkdirTemp("", "soav")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(viewDir) })
+	d := &daemon{t: t, home: home, view: filepath.Join(viewDir, "view.sock"), cwd: t.TempDir()}
 	d.start()
 	t.Cleanup(d.stop)
 	return d
@@ -66,13 +72,17 @@ func (d *daemon) start() {
 	if err != nil {
 		d.t.Fatal(err)
 	}
+	vln, err := server.ListenView(d.view, os.Getgid())
+	if err != nil {
+		d.t.Fatal(err)
+	}
 	srv, err := server.New(server.Options{Home: d.home, Version: "test"})
 	if err != nil {
 		d.t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	d.cancel, d.done = cancel, make(chan error, 1)
-	go func() { d.done <- srv.Serve(ctx, ln) }()
+	go func() { d.done <- srv.Serve(ctx, ln, vln) }()
 }
 
 func (d *daemon) stop() {

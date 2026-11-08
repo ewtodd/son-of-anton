@@ -30,6 +30,12 @@ type Options struct {
 	Autostart  bool      // reconnect with client.Connect rather than client.Dial
 	Stderr     io.Writer // -c's "nothing to continue" line; nil means os.Stderr
 	Background string    // the terminal's background as #rrggbb; empty: ask the terminal
+	// View is read-only (daemon/phases/12-view-socket.md): every attach is as
+	// viewer, there is no prompt, and nothing is sent that changes anything.
+	View bool
+	// Socket, when set, is the socket a reconnect dials (a view socket):
+	// never a daemon start, and Home is not used.
+	Socket string
 }
 
 // App is a running TUI.
@@ -57,6 +63,14 @@ func Start(c *client.Client, o Options, in io.Reader, out io.Writer) (*App, erro
 	}
 	if o.Cwd == "" {
 		o.Cwd, _ = os.Getwd()
+	}
+	if o.View {
+		switch {
+		case o.Resume == "":
+			return nil, errors.New("a read-only view needs a session to watch (--resume ID|latest)")
+		case o.Continue || o.Model != "" || o.Reasoning != "" || o.Yolo:
+			return nil, errors.New("a read-only view only watches: it takes no -c, model, reasoning or mode")
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -157,7 +171,7 @@ func attachFirst(ctx context.Context, c *client.Client, o Options) (res attachRe
 	} else {
 		resumed = true
 	}
-	if err = attachSession(ctx, c, map[string]any{"session": id}, &res); err != nil {
+	if err = attachSession(ctx, c, map[string]any{"session": id}, &res, o.View); err != nil {
 		if rpcCode(err) == codeNoSession {
 			err = errors.New("session " + id + " is not in soa-d")
 		}

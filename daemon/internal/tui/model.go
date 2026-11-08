@@ -141,10 +141,14 @@ func newModel(a *App, c *client.Client, o Options, res attachResult, resumed boo
 	ta.Focus()
 	m := &model{
 		app: a, o: o, cl: c, w: 100, h: 30, feed: newFeed(), follow: true, ta: ta, th: th,
-		histPath: o.Home + "/.son_of_anton_history",
+	}
+	if !o.View { // a view has no prompt, and a viewer cannot read the home
+		m.histPath = o.Home + "/.son_of_anton_history"
 	}
 	m.setTheme(th)
-	m.hist = ReadHistory(m.histPath)
+	if m.histPath != "" {
+		m.hist = ReadHistory(m.histPath)
+	}
 	m.histPos = len(m.hist)
 	m.initCmd = m.adopt(res, resumed)
 	return m
@@ -221,9 +225,13 @@ func (m *model) setTodos(result string) {
 
 func (m *model) addIntro() {
 	b := &block{kind: bkIntro}
+	hint := "/help for commands · :q to quit"
+	if m.o.View {
+		hint = "read-only view · ctrl+p for commands · ctrl+q to quit"
+	}
 	b.notes = []noteLine{
 		{"v" + m.o.Version + "  ·  " + modelShort(m.sess.Model, m.sess.Served) + "  ·  session " + m.sess.ID + "  ·  " + tilde(m.sess.Cwd), true, false},
-		{"/help for commands · :q to quit", true, false},
+		{hint, true, false},
 	}
 	m.feed.add(b)
 }
@@ -558,6 +566,9 @@ func (m *model) onEvent(ev client.Event) tea.Cmd {
 		}
 		m.queue, m.qitems = queueTexts(items), items
 	case "role":
+		if m.o.View {
+			return nil // a view never drove the session, so it has nothing to lose
+		}
 		m.role = str(p, "as")
 		if m.role == "viewer" && !m.quitting {
 			m.exitNote = lostDriverNote(str(p, "by"), m.sess.ID)
@@ -567,6 +578,7 @@ func (m *model) onEvent(ev client.Event) tea.Cmd {
 		m.feed.note(str(p, "text"), str(p, "level") == "info")
 	case "approval.request", "question.request":
 		md := newModal(ev.Kind, p)
+		md.readOnly = m.o.View
 		if cs := str(p, "child_session"); cs != "" && !md.question {
 			md.title = m.kidTitle(cs) + ": " + md.title
 		}
@@ -610,14 +622,18 @@ func (m *model) onLost() tea.Cmd {
 
 func (m *model) tryReconnect() tea.Cmd {
 	home, autostart, sid, after := m.o.Home, m.o.Autostart, m.sess.ID, m.lastSeq
+	socket, view := m.o.Socket, m.o.View
 	return func() tea.Msg {
 		var (
 			c   *client.Client
 			err error
 		)
-		if autostart {
+		switch {
+		case socket != "": // a view socket: never a daemon start
+			c, err = client.DialSocket(socket, "tui")
+		case autostart:
 			c, err = client.Connect(home, "tui")
-		} else {
+		default:
 			c, err = client.Dial(home, "tui")
 		}
 		if err != nil {
@@ -627,7 +643,7 @@ func (m *model) tryReconnect() tea.Cmd {
 		defer cancel()
 		var res attachResult
 		params := map[string]any{"session": sid, "after_seq": after}
-		if err := attachSession(ctx, c, params, &res); err != nil {
+		if err := attachSession(ctx, c, params, &res, view); err != nil {
 			_ = c.Close()
 			return reconnectedMsg{err: err}
 		}

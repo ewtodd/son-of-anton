@@ -35,10 +35,13 @@ const usage = `usage:
   son-of-anton sessions rename ID TITLE...
   son-of-anton sessions delete ID [--yes]
   son-of-anton sessions import ARGS...          (soa-d import's flags)
+  son-of-anton view INSTANCE|--socket PATH [list] [--all] [--limit N]
+  son-of-anton view INSTANCE|--socket PATH ID   a session, read-only, in the terminal UI
+  son-of-anton view INSTANCE|--socket PATH show ID
   son-of-anton --version
 
 flags: -m/--model M  --reasoning L  --yolo  --home DIR
-       UI only: --in DIR  -c/--continue  -r/--resume ID|latest
+       UI only: --in DIR  -c/--continue  -r/--resume ID|latest  --view (with -r: read-only)
        -z only: --usage-file F
 `
 
@@ -62,9 +65,9 @@ type flags struct {
 	home, model, reasoning, in, resume   string
 	query, oneshot, queryFile, usageFile string
 	hasQuery, hasOneshot, hasQueryFile   bool
-	yolo, cont, version, help            bool
+	yolo, cont, version, help, view      bool
 	words                                []string
-	command                              string // status, sessions or problem
+	command                              string // status, sessions, problem or view
 	rest                                 []string
 }
 
@@ -90,7 +93,7 @@ func parse(args []string, stderr io.Writer) (f flags, code int, ok bool) {
 		if !strings.HasPrefix(arg, "-") || arg == "-" {
 			if len(f.words) == 0 {
 				switch arg {
-				case "status", "sessions", "problem":
+				case "status", "sessions", "problem", "view":
 					f.command, f.rest = arg, args[i+1:]
 					return f, 0, true
 				case "chat":
@@ -142,6 +145,8 @@ func parse(args []string, stderr io.Writer) (f flags, code int, ok bool) {
 		switch name {
 		case "--yolo":
 			f.yolo = true
+		case "--view":
+			f.view = true
 		case "-c", "--continue":
 			f.cont = true
 		case "--version", "-V":
@@ -178,6 +183,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runStatus(f, stdout, stderr)
 	case "sessions":
 		return runSessions(f, stdin, stdout, stderr)
+	case "view":
+		return runView(f.rest, stdout, stderr)
 	}
 	return runSoaD(f, stdin, stderr)
 }
@@ -249,6 +256,16 @@ func runSoaD(f flags, stdin io.Reader, stderr io.Writer) int {
 			return usageErr(stderr, "-c and --resume have no meaning with a query or -z")
 		}
 	}
+	if f.view {
+		switch {
+		case oneQuery || f.hasOneshot:
+			return usageErr(stderr, "--view opens a session in the terminal UI; it has no meaning with a query or -z")
+		case f.resume == "":
+			return usageErr(stderr, "--view needs the session to watch: -r ID|latest")
+		case f.model != "" || f.reasoning != "" || f.yolo:
+			return usageErr(stderr, "--view only watches: -m, --reasoning and --yolo would change the session")
+		}
+	}
 	home, err := homeOf(f)
 	if err != nil {
 		return fail(stderr, "%v", err)
@@ -315,6 +332,9 @@ func runSoaD(f flags, stdin io.Reader, stderr io.Writer) int {
 		argv = append(argv, "--resume", strings.TrimSpace(f.resume))
 	case f.cont:
 		argv = append(argv, "-c")
+	}
+	if f.view {
+		argv = append(argv, "--view")
 	}
 	return execSoaD(argv, stderr)
 }
