@@ -35,6 +35,7 @@ son-of-anton "a question"       one answer, printed (also -q, --query-file FILE|
 son-of-anton -z "a task"        a delegated one-shot: lean prompt, no memory
 son-of-anton status             which daemon serves this home, Signal, cron, models
 son-of-anton sessions ...       list, rename, delete, import (Claude Code, Codex, opencode)
+son-of-anton view NAME [ID]     watch an instance's sessions read-only (see NixOS: viewerGroup)
 ```
 
 `-m MODEL`, `--reasoning LEVEL` and `--yolo` apply to all three ways in. A
@@ -78,7 +79,8 @@ work (code, files, commands) to a **worker**, a terminal session in the
 directory you name, through her `relay` tool. Workers keep
 `[relay] worker_hours`; their approvals and questions come to the chat as
 `/approve <id>` and `/deny <id>`. A worker is just a session with no terminal
-attached: `/resume` in the terminal UI, or `son-of-anton -r`, takes one over.
+attached: `/resume` in the terminal UI, or `son-of-anton -r`, takes one over;
+`son-of-anton -r ID --view` only watches it, and leaves it to fiona.
 On a single-user instance it works the other way too: fiona can see your
 terminal sessions and continue one from the chat, in place. If a terminal still
 has it open, that terminal closes and prints how to take the session back.
@@ -141,6 +143,34 @@ other people gets its own service account (`createUser = true`); on a
 person's own account (`managedAccount`) the unit drops its filesystem sandbox,
 since it is that person's terminal agent too. Nothing soa-d runs can gain
 privileges: no sudo, on any instance.
+
+`viewerGroup` lets the members of a group watch an instance's sessions without
+being able to touch them, or reading its home:
+
+```nix
+services.son-of-anton.instances.ricky.viewerGroup = "soa-viewers";
+users.users.e-play.extraGroups = [ "soa-viewers" ];
+```
+
+```
+son-of-anton view ricky                 the workers (--all: every kind but chats)
+son-of-anton view ricky ID              one session in the terminal UI, read-only and live
+son-of-anton view ricky show ID         its transcript, printed (pipe it anywhere)
+```
+
+The daemon then also listens on `/run/son-of-anton-<name>/view.sock` (0660,
+the viewer group), in a directory tmpfiles makes owner-writable and setgid with
+that group (2750), so the socket is born with the group and the service user
+is never a member of it (otherwise its agent could watch every instance that
+shares the group). The socket's permissions are the authorization: the daemon
+refuses everything on it but listing, reading and following sessions
+(`hello`, `session.list`, `session.history`, `session.children`,
+`session.attach` as a viewer, `session.detach`, `model.list`, `physics.list`,
+`physics.watch`). A viewer is never a session's driver, so
+a worker it watches still reports to fiona, asks her for approvals and keeps
+its hours. Chats are not visible, as on the owner's socket. Default `null`: no
+view socket. The group is created if nothing else defines it, and must not be
+the instance's own `group`, whose members can already read and write the home.
 
 ## Development
 

@@ -113,6 +113,19 @@
           StrictHostKeyChecking accept-new
       '';
 
+      # The view socket's directory (daemon/phases/12-view-socket.md): outside
+      # the home, which a viewer cannot traverse. client.ViewSocketPath names
+      # the same path from the instance name.
+      viewDir = name: "/run/son-of-anton-${name}";
+      viewArgs =
+        name: i:
+        lib.optionals (i.viewerGroup != null) [
+          "--view-socket"
+          "${viewDir name}/view.sock"
+          "--view-group"
+          i.viewerGroup
+        ];
+
       unitFor =
         name: i:
         let
@@ -140,7 +153,7 @@
           };
 
           serviceConfig = {
-            ExecStart = lib.escapeShellArgs (state.argv i);
+            ExecStart = lib.escapeShellArgs (state.argv i ++ viewArgs name i);
             User = i.user;
             Group = i.group;
             WorkingDirectory = i.workingDirectory;
@@ -154,11 +167,15 @@
             # Under strict, systemd refuses to start (226/NAMESPACE) if a
             # writable path is missing, and the module creates nothing in a
             # managed account's home. Hence the unit's HOME, not stateDir.
-            ReadWritePaths = lib.unique [
-              s.home
-              i.son-of-antonHome
-              i.workingDirectory
-            ];
+            # The view socket's directory too: under strict, /run is read-only.
+            ReadWritePaths = lib.unique (
+              [
+                s.home
+                i.son-of-antonHome
+                i.workingDirectory
+              ]
+              ++ lib.optional (i.viewerGroup != null) (viewDir name)
+            );
             # Applied after ReadWritePaths, so a denied path inside a writable
             # home stays denied. "-": a missing path is not an error.
             InaccessiblePaths = map (
@@ -227,14 +244,19 @@
         '';
 
       tmpfilesFor =
-        i:
+        name: i:
         let
           s = shape i;
           dir = mode: path: "d ${path} ${mode} ${i.user} ${i.group} - -";
         in
+        # The view socket's directory, owner-writable only and setgid with the
+        # viewer group: the socket the daemon makes in it is born with that
+        # group, so the service user needs no membership of it (which would
+        # let its agent watch every other instance sharing the group).
+        lib.optional (i.viewerGroup != null) "d ${viewDir name} 2750 ${i.user} ${i.viewerGroup} - -"
         # A managed account's home above son-of-antonHome is never touched: a
         # 2770 rule on it would make sshd's StrictModes refuse its keys.
-        lib.optionals (!i.managedAccount) [
+        ++ lib.optionals (!i.managedAccount) [
           (dir "2770" i.stateDir)
           (dir "0750" "${i.stateDir}/home")
           (dir "2770" i.workingDirectory)
@@ -288,6 +310,24 @@
             '';
           }
           {
+            assertion = lib.all (i: i.viewerGroup == null || i.viewerGroup != i.group) (lib.attrValues instances);
+            message = ''
+              A son-of-anton instance's viewerGroup is its own group. Members
+              of the instance's group can already read and write its home, so
+              they are not viewers; give viewerGroup a group of its own.
+            '';
+          }
+          {
+            assertion = lib.all (
+              n: instances.${n}.viewerGroup == null || builtins.match "[A-Za-z0-9_][A-Za-z0-9._-]*" n != null
+            ) (lib.attrNames instances);
+            message = ''
+              An instance with a viewerGroup needs a name of letters, digits,
+              '.', '_' and '-' (not starting with '.'): it names
+              /run/son-of-anton-<name>, which `son-of-anton view <name>` dials.
+            '';
+          }
+          {
             assertion = lib.length (lib.attrNames exporters) <= 1;
             message = ''
               These son-of-anton instances all set addToSystemPackages: ${lib.concatStringsSep ", " (lib.attrNames exporters)}.
@@ -297,9 +337,17 @@
           }
         ];
 
-        users.groups = lib.listToAttrs (
-          lib.concatLists (each (_: i: lib.optional i.createUser (lib.nameValuePair i.group { })))
-        );
+        users.groups = lib.mkMerge [
+          (lib.listToAttrs (
+            lib.concatLists (each (_: i: lib.optional i.createUser (lib.nameValuePair i.group { })))
+          ))
+          # A viewer group exists unless something else defines it.
+          (lib.listToAttrs (
+            lib.concatLists (
+              each (_: i: lib.optional (i.viewerGroup != null) (lib.nameValuePair i.viewerGroup (lib.mkDefault { })))
+            )
+          ))
+        ];
 
         users.users = lib.listToAttrs (
           lib.concatLists (
@@ -326,7 +374,7 @@
           _: i: lib.nameValuePair "SON_OF_ANTON_HOME" i.son-of-antonHome
         ) exporters;
 
-        systemd.tmpfiles.rules = lib.concatLists (each (_: tmpfilesFor));
+        systemd.tmpfiles.rules = lib.concatLists (each tmpfilesFor);
 
         system.activationScripts = lib.mapAttrs' (
           name: i:

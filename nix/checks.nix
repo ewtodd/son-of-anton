@@ -467,6 +467,172 @@
             ]
             "units are correct for one instance and isolated across two";
 
+        # ── The view socket (daemon/phases/12-view-socket.md) ───────────────
+        nixos-viewer-group =
+          let
+            eval = nixos {
+              shop = {
+                enable = true;
+                user = "soa-shop";
+                viewerGroup = "soa-viewers";
+              };
+              play = account "play" // { viewerGroup = "soa-viewers"; };
+              bare.enable = true;
+            };
+            units = unitsOf eval;
+            sc = n: units."son-of-anton-${n}".serviceConfig;
+            rules = eval.config.systemd.tmpfiles.rules;
+            created = map (r: lib.elemAt (lib.splitString " " r) 1) (lib.filter (r: lib.hasPrefix "d " r) rules);
+            inst = eval.config.services.son-of-anton.instances;
+            startable = n: lib.all (p: lib.elem p (created ++ [ inst.${n}.workingDirectory ])) (sc n).ReadWritePaths;
+            says = e: word: lib.any (a: lib.hasInfix word a.message) (failedAssertions e);
+            ownGroup = nixos {
+              shop = {
+                enable = true;
+                viewerGroup = "son-of-anton";
+              };
+            };
+            badName = nixos {
+              "my shop" = {
+                enable = true;
+                viewerGroup = "soa-viewers";
+              };
+            };
+            exec = execOf units.son-of-anton-shop;
+          in
+          evalCheck "son-of-anton-nixos-viewer-group"
+            [
+              [
+                "shop serves a view socket with its group"
+                (lib.hasSuffix "/bin/soa-d serve --view-socket /run/son-of-anton-shop/view.sock --view-group soa-viewers" exec)
+              ]
+              [
+                "its directory is setgid with the viewer group and owner-writable only"
+                (lib.elem "d /run/son-of-anton-shop 2750 soa-shop soa-viewers - -" rules)
+              ]
+              [ "the daemon may write it under ProtectSystem=strict" (lib.elem "/run/son-of-anton-shop" (sc "shop").ReadWritePaths) ]
+              [ "shop can start" (startable "shop") ]
+              [
+                "the service user is not in the viewer group"
+                (
+                  !(lib.elem "soa-viewers" ((sc "shop").SupplementaryGroups or [ ]))
+                  && !(lib.elem "soa-viewers" eval.config.users.users.soa-shop.extraGroups)
+                )
+              ]
+              [ "the viewer group exists" (eval.config.users.groups ? soa-viewers) ]
+              [ "a managed account gets one too" (lib.elem "d /run/son-of-anton-play 2750 e-play soa-viewers - -" rules) ]
+              [ "no viewerGroup, no view socket" (lib.hasSuffix "/bin/soa-d serve" (execOf units.son-of-anton-bare)) ]
+              [ "no viewerGroup, no runtime directory" (!(lib.any (r: lib.hasInfix "/run/son-of-anton-bare" r) rules)) ]
+              [ "no viewerGroup, /run stays read-only" (!(lib.elem "/run/son-of-anton-bare" (sc "bare").ReadWritePaths)) ]
+              [ "a valid set passes every assertion" (failedAssertions eval == [ ]) ]
+              [ "the instance's own group is refused" (says ownGroup "viewerGroup is its own group") ]
+              [ "a name that cannot name /run is refused" (says badName "needs a name of letters") ]
+            ]
+            "a viewerGroup gives the instance a view socket in a setgid /run directory, and nothing without one";
+
+        # A machine with the instance running: a user in the viewer group lists
+        # and reads its sessions and cannot send; a user outside it cannot
+        # connect. The session comes from an import, so no model is needed.
+        nixos-view-socket =
+          let
+            claude = pkgs.writeTextDir "proj/s1.jsonl" ''
+              {"type":"user","uuid":"u1","parentUuid":null,"sessionId":"vm-s1","cwd":"/tmp","timestamp":"2026-11-08T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"watch this"}]}}
+              {"type":"assistant","uuid":"u2","parentUuid":"u1","timestamp":"2026-11-08T10:00:05Z","message":{"role":"assistant","content":[{"type":"text","text":"hello from the imported session"}]}}
+            '';
+          in
+          pkgs.testers.runNixOSTest {
+            name = "son-of-anton-view-socket";
+            nodes.machine = {
+              imports = [ inputs.self.nixosModules.default ];
+              users.users.alice = {
+                isNormalUser = true;
+                extraGroups = [ "soa-viewers" ];
+              };
+              users.users.bob.isNormalUser = true;
+              environment.systemPackages = [
+                package
+                pkgs.socat
+              ];
+              services.son-of-anton.instances.shop = {
+                enable = true;
+                viewerGroup = "soa-viewers";
+                settings = {
+                  model = {
+                    default = "test-model";
+                    provider = "custom";
+                  };
+                  custom_providers.custom.base_url = "http://127.0.0.1:9/v1";
+                  daemon = {
+                    signal = false;
+                    cron = false;
+                  };
+                };
+              };
+            };
+            testScript = ''
+              import json, shlex
+
+              home = "/var/lib/son-of-anton-shop/.son-of-anton"
+              view = "/run/son-of-anton-shop/view.sock"
+
+              def rpc(user, sock, *reqs):
+                  lines = "".join(json.dumps({"jsonrpc": "2.0", "id": i + 1, "method": m, "params": p}) + "\n" for i, (m, p) in enumerate(reqs))
+                  out = machine.succeed(f"printf %s {shlex.quote(lines)} | runuser -u {user} -- socat -t 5 - UNIX-CONNECT:{sock}")
+                  return {r["id"]: r for r in map(json.loads, out.splitlines()) if r.get("id") is not None}
+
+              machine.wait_for_unit("son-of-anton-shop.service")
+              machine.wait_for_file(view)
+
+              # The session to watch, imported while the daemon is stopped.
+              machine.succeed("systemctl stop son-of-anton-shop.service")
+              machine.succeed(f"runuser -u son-of-anton-shop -- soa-d import --from-claude ${claude} --home {home}")
+              machine.succeed("systemctl start son-of-anton-shop.service")
+              machine.wait_for_unit("son-of-anton-shop.service")
+              machine.wait_for_file(view)
+
+              with subtest("the sockets' modes"):
+                  machine.succeed("test \"$(stat -c '%a %U %G' /run/son-of-anton-shop)\" = '2750 son-of-anton-shop soa-viewers'")
+                  machine.succeed(f"test \"$(stat -c '%a %G' {view})\" = '660 soa-viewers'")
+                  machine.succeed(f"test \"$(stat -c '%a' {home}/run)\" = 700")
+                  machine.succeed(f"test \"$(stat -c '%a' {home}/run/soa-d.sock)\" = 600")
+                  # The daemon holds no membership of the viewer group.
+                  machine.fail("id -nG son-of-anton-shop | tr ' ' '\\n' | grep -qx soa-viewers")
+                  gid = machine.succeed("getent group soa-viewers | cut -d: -f3").strip()
+                  pid = machine.succeed("systemctl show -p MainPID --value son-of-anton-shop.service").strip()
+                  groups = machine.succeed(f"grep '^Groups:' /proc/{pid}/status").split()[1:]
+                  assert gid not in groups, f"the daemon is in the viewer group: {groups}"
+
+              with subtest("a viewer lists and reads, without the home"):
+                  machine.fail(f"runuser -u alice -- ls {home}")
+                  out = machine.succeed("runuser -u alice -- son-of-anton view shop")
+                  line = [l for l in out.splitlines() if "Imported from Claude Code: watch this" in l]
+                  assert len(line) == 1, out
+                  sid = line[0].split()[0]
+                  out = machine.succeed(f"runuser -u alice -- son-of-anton view shop show {sid}")
+                  assert "watch this" in out and "hello from the imported session" in out, out
+
+              with subtest("a viewer cannot send"):
+                  r = rpc("alice", view,
+                      ("hello", {"protocol": 1, "client": "vm"}),
+                      ("session.attach", {"session": sid, "as": "viewer"}),
+                      ("turn.send", {"session": sid, "text": "hijack"}),
+                      ("session.attach", {"session": sid, "as": "driver"}),
+                      ("session.rename", {"session": sid, "title": "hijacked"}),
+                      ("session.create", {"cwd": "/tmp"}))
+                  assert r[1]["result"]["read_only"] is True, r[1]
+                  assert r[2]["result"]["role"] == "viewer", r[2]
+                  for i in (3, 4, 5, 6):
+                      assert r[i]["error"]["code"] == -32014, r[i]
+                  out = machine.succeed(f"runuser -u alice -- son-of-anton view shop show {sid}")
+                  assert "hijack" not in out, out
+
+              with subtest("someone outside the group cannot connect"):
+                  status, out = machine.execute("runuser -u bob -- son-of-anton view shop 2>&1")
+                  assert status == 1 and "permission denied" in out, (status, out)
+                  machine.fail(f"runuser -u bob -- socat -t 1 - UNIX-CONNECT:{view} </dev/null")
+            '';
+          };
+
         # ── Home Manager module ──────────────────────────────────────────────
         home-manager-module =
           let

@@ -283,6 +283,26 @@ in
         '';
       };
 
+      viewerGroup = mkOption {
+        type = types.nullOr (types.strMatching "[a-z_][a-z0-9_-]*");
+        default = null;
+        example = "soa-viewers";
+        description = ''
+          A group whose members may watch this instance's sessions and do
+          nothing else: list them, read their transcripts and follow them
+          live with `son-of-anton view <name>`, without access to the home
+          and without any way to send, answer an approval or change a
+          setting. The daemon refuses everything else on that connection.
+
+          Set, the daemon also listens on
+          `/run/son-of-anton-<name>/view.sock` (mode 0660, this group), in a
+          directory tmpfiles makes setgid with this group (2750), and the
+          group is created if nothing else defines it. Members of `group`
+          are not viewers (they can already read and write the home), so the
+          two must differ. null: no view socket.
+        '';
+      };
+
       addToSystemPackages = mkOption {
         type = types.bool;
         default = false;
