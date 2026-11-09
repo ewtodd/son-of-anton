@@ -89,10 +89,14 @@ func TestLosingTheDriverClosesTheTUIAndSaysWhy(t *testing.T) {
 }
 
 func TestQuitDoesNotAskWhenNothingRuns(t *testing.T) {
-	fake := fakellm.New(t, fakellm.Turn{Content: "done"})
+	fake := fakellm.New(t, fakellm.Turn{Content: "the work is done"})
 	d := newDaemon(t, fake)
 	a := open(t, d, tui.Options{})
 	send(a, "work")
+	// The reply first: the idle hint is on screen before the turn starts
+	// too, and a :q in that gap either quit without asking and cut the
+	// turn's request mid-send, or met the question and never exited.
+	waitScreen(t, a, "the work is done")
 	idle(t, a)
 	send(a, ":q")
 	waitExit(t, a)
