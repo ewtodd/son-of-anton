@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
@@ -88,12 +89,16 @@ func (searchFilesTool) Run(ctx context.Context, env *Env, args json.RawMessage) 
 	if err := env.Policy.CheckConfined(abs); err != nil {
 		return errorResult(err.Error()), nil
 	}
-	if fi, err := envStat(env, abs); err != nil || !fi.IsDir() {
-		return errorResult("nothing at " + a.Path), nil
+	fi, err := envStat(env, abs)
+	if err != nil {
+		return errorResult("nothing at " + abs), nil
 	}
 
 	switch a.Target {
 	case "files":
+		if !fi.IsDir() {
+			return matchOneFile(env, a, abs)
+		}
 		return runFileSearch(ctx, env, a, abs)
 	case "content":
 		return runContentSearch(ctx, env, a, abs)
@@ -286,12 +291,17 @@ func parseRgJSON(out string) ([]rgEntry, []string) {
 	return entries, matchFiles
 }
 
-func runFileSearch(ctx context.Context, env *Env, a searchArgs, abs string) (string, error) {
-	glob := a.Pattern
-	if !strings.ContainsAny(glob, "*?[") {
-		glob = "*" + glob + "*"
+// fileSearchGlob is the glob a file search matches names with: a pattern
+// without wildcards matches the names that contain it.
+func fileSearchGlob(pattern string) string {
+	if !strings.ContainsAny(pattern, "*?[") {
+		return "*" + pattern + "*"
 	}
-	cmdArgs := []string{"--files", "--sortr", "modified", "--glob", glob, abs}
+	return pattern
+}
+
+func runFileSearch(ctx context.Context, env *Env, a searchArgs, abs string) (string, error) {
+	cmdArgs := []string{"--files", "--sortr", "modified", "--glob", fileSearchGlob(a.Pattern), abs}
 	cmd, err := rgCommand(ctx, env, cmdArgs...)
 	if err != nil {
 		return errorResult(err.Error()), nil
@@ -300,7 +310,14 @@ func runFileSearch(ctx context.Context, env *Env, a searchArgs, abs string) (str
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
-		return errorResult("rg failed: " + strings.TrimSpace(errBuf.String())), nil
+		// rg exits 1 when no file matched: an empty answer, not a failure.
+		if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
+			reason := strings.TrimSpace(errBuf.String())
+			if reason == "" {
+				reason = err.Error()
+			}
+			return errorResult("rg failed: " + reason), nil
+		}
 	}
 	var all []string
 	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
@@ -311,13 +328,26 @@ func runFileSearch(ctx context.Context, env *Env, a searchArgs, abs string) (str
 			all = append(all, line)
 		}
 	}
+	return pageFiles(all, a)
+}
+
+// matchOneFile answers a file search whose path is one file: that file when
+// its name matches the pattern, else nothing. rg --files lists a file named
+// on its command line whatever its glob says, so the name is matched here.
+func matchOneFile(env *Env, a searchArgs, abs string) (string, error) {
+	var all []string
+	if ok, _ := filepath.Match(fileSearchGlob(a.Pattern), filepath.Base(abs)); ok && env.Policy.CheckRead(abs) == nil {
+		all = append(all, abs)
+	}
+	return pageFiles(all, a)
+}
+
+func pageFiles(all []string, a searchArgs) (string, error) {
 	total := len(all)
 	truncated := total > a.Offset+a.Limit
-	end := a.Offset + a.Limit
-	if end > total {
-		end = total
-	}
-	page := all[a.Offset:end]
+	start := min(a.Offset, total)
+	end := min(a.Offset+a.Limit, total)
+	page := all[start:end]
 	return jsonResult(map[string]any{
 		"files": page, "total_count": total, "truncated": truncated,
 	})

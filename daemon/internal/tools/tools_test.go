@@ -242,6 +242,38 @@ func TestReadFileRefusals(t *testing.T) {
 	}
 }
 
+// The binary sniff reads a window of the file's start; a text file whose
+// window ends inside a character is still text. On 2026-11-07 a notes file
+// with an en-dash across byte 8192 read as binary.
+func TestReadFileTextWhoseSniffWindowEndsInsideACharacter(t *testing.T) {
+	f := setup(t, nil)
+	// lead bytes of short lines, so read_file's line cut keeps the tail.
+	pad := func(lead int) string {
+		return strings.Repeat(strings.Repeat("a", 99)+"\n", lead/100) + strings.Repeat("a", lead%100)
+	}
+	for _, lead := range []int{8189, 8190, 8191} {
+		name := fmt.Sprintf("dash%d.md", lead)
+		f.write(t, name, pad(lead)+"– and \U0001F431 after\nline two\n")
+		r := f.call(t, "read_file", map[string]any{"path": name})
+		if isErr(r) || !strings.Contains(str(r, "content"), "– and \U0001F431 after") || num(r, "total_lines") != lead/100+2 {
+			t.Errorf("%d bytes before the dash: %v", lead, r["error"])
+		}
+	}
+	for _, lead := range []int{8189, 8190, 8191} {
+		name := fmt.Sprintf("cat%d.md", lead)
+		f.write(t, name, pad(lead)+"\U0001F431\n")
+		if r := f.call(t, "read_file", map[string]any{"path": name}); isErr(r) {
+			t.Errorf("%d bytes before a 4-byte character: %v", lead, str(r, "error"))
+		}
+	}
+	for name, tail := range map[string]string{"ff.dat": "\xff", "cont.dat": "\x80", "lead.dat": "\xc0"} {
+		f.write(t, name, strings.Repeat("a", 8191)+tail+"rest\n")
+		if r := f.call(t, "read_file", map[string]any{"path": name}); !strings.Contains(strings.ToLower(str(r, "error")), "binary") {
+			t.Errorf("%s: a byte that is not UTF-8 at the window's edge must still be binary: %v", name, r)
+		}
+	}
+}
+
 func TestReadFileResolvesRelativeToTheSessionAndTilde(t *testing.T) {
 	f := setup(t, nil)
 	if err := os.WriteFile(filepath.Join(f.home, "top.txt"), []byte("home file\n"), 0o644); err != nil {
@@ -495,8 +527,44 @@ func TestSearchFiles(t *testing.T) {
 	if got := strings.Join(sorted(paths_(t, r, "files")), ","); got != "a.go,c.go" {
 		t.Fatalf("files target: %v", r)
 	}
-	if r := f.call(t, "search_files", map[string]any{"pattern": "x", "path": "no/such/dir"}); !isErr(r) {
+	if r := f.call(t, "search_files", map[string]any{"pattern": "x", "path": "no/such/dir"}); !isErr(r) || !strings.Contains(str(r, "error"), "no/such/dir") {
 		t.Fatalf("missing path: %v", r)
+	}
+}
+
+// A file search that finds nothing is an empty answer: rg exits 1 for it,
+// which once came back as `rg failed: ` with no reason.
+func TestSearchFilesFindingNothing(t *testing.T) {
+	f := searchFixture(t)
+	r := f.call(t, "search_files", map[string]any{"pattern": "resync-health-digest.sh", "target": "files"})
+	if isErr(r) || num(r, "total_count") != 0 {
+		t.Fatalf("no match: %v", r)
+	}
+	r = f.call(t, "search_files", map[string]any{"pattern": "*.go", "target": "files", "offset": 10})
+	if isErr(r) || num(r, "total_count") != 2 || len(paths_(t, r, "files")) != 0 {
+		t.Fatalf("offset past the end: %v", r)
+	}
+}
+
+// The schema says a path may be a single file, and it may.
+func TestSearchASingleFile(t *testing.T) {
+	f := searchFixture(t)
+	r := f.call(t, "search_files", map[string]any{"pattern": "hit", "path": "many.txt"})
+	if isErr(r) || num(r, "total_count") != 5 {
+		t.Fatalf("content search in one file: %v", r)
+	}
+	if got := paths_(t, r, "matches"); len(got) == 0 || got[0] != "many.txt" {
+		t.Fatalf("content search in one file: %v", r)
+	}
+	r = f.call(t, "search_files", map[string]any{"pattern": "*.txt", "target": "files", "path": "b.txt"})
+	if got := paths_(t, r, "files"); isErr(r) || len(got) != 1 || got[0] != "b.txt" {
+		t.Fatalf("file search naming a matching file: %v", r)
+	}
+	for _, pattern := range []string{"*.go", "nope"} {
+		r = f.call(t, "search_files", map[string]any{"pattern": pattern, "target": "files", "path": "b.txt"})
+		if isErr(r) || num(r, "total_count") != 0 {
+			t.Fatalf("file search %q naming a file it does not match: %v", pattern, r)
+		}
 	}
 }
 

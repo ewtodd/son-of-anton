@@ -18,6 +18,7 @@ const (
 	readMaxLineChars = 2000
 	readBudgetChars  = 100_000
 	similarFileLimit = 5
+	binarySniffBytes = 8192
 )
 
 type readFileTool struct{}
@@ -209,15 +210,27 @@ func readImage(ctx context.Context, env *Env, path, abs string, data []byte, mim
 
 // isBinary reports whether data looks binary: a NUL byte in the first 8 KiB
 // or invalid UTF-8.
+// isBinary sniffs the first binarySniffBytes: a NUL byte, or bytes that are
+// not UTF-8. A window that ends inside a character is cut back to where the
+// character starts, so text is never called binary for where the window fell
+// (a notes file full of dashes was, on 2026-11-07).
 func isBinary(data []byte) bool {
-	n := len(data)
-	if n > 8192 {
-		n = 8192
+	head := data
+	if len(head) > binarySniffBytes {
+		head = head[:binarySniffBytes]
+		for i := 1; i < utf8.UTFMax && i <= len(head); i++ {
+			if utf8.RuneStart(head[len(head)-i]) {
+				if !utf8.FullRune(head[len(head)-i:]) {
+					head = head[:len(head)-i]
+				}
+				break
+			}
+		}
 	}
-	if bytesIndexByte(data[:n], 0) >= 0 {
+	if bytesIndexByte(head, 0) >= 0 {
 		return true
 	}
-	return !utf8.Valid(data[:n])
+	return !utf8.Valid(head)
 }
 
 func bytesIndexByte(b []byte, c byte) int {
