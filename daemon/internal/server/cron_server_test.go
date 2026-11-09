@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/cron"
 	"github.com/ewtodd/son-of-anton/daemon/internal/fakellm"
+	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
 	"github.com/ewtodd/son-of-anton/daemon/internal/signal"
 	"github.com/ewtodd/son-of-anton/daemon/internal/signalfake"
 )
@@ -180,6 +182,74 @@ func TestCronDeliversToTheOriginChat(t *testing.T) {
 	time.Sleep(400 * time.Millisecond)
 	if fake.Count() != before {
 		t.Fatal("an echoed delivery reached the model")
+	}
+}
+
+// SPEC 12: a job that delivers to Signal has the chat's limits (its tools but
+// clarify, relay and cronjob; files in the notes folder only; the notes folder
+// as its directory whatever its workdir) and a prompt that says so in place of
+// the coding guidance. A local job keeps every tool and the coding guidance.
+func TestASignalJobHasTheChatsLimits(t *testing.T) {
+	t.Setenv("SON_OF_ANTON_TIMEZONE", "UTC")
+	escape := filepath.Join(t.TempDir(), "escape.md")
+	fake := fakellm.New(t,
+		fakellm.Turn{When: "the signal job", ToolCalls: []fakellm.ToolCall{
+			call("w1", "write_file", `{"path":"chores.md","content":"tally"}`),
+			call("w2", "write_file", `{"path":"`+escape+`","content":"x"}`),
+		}},
+		fakellm.Turn{When: "the signal job", Content: "Chores logged."},
+		fakellm.Turn{When: "the local job", Content: "local done"},
+	)
+	r := newChatRig(t, fake, "cron = true\ncron_tick = 1\n")
+	origin := map[string]any{"platform": "signal", "chat_id": "group:" + sigGroup, "chat_name": "The Group", "thread_id": nil, "user_id": sigAccount}
+	writeJobs(t, r.h.home,
+		cronJob("bbbbbbbbbbb1", "Chores", "the signal job", map[string]any{"deliver": "origin", "origin": origin, "workdir": t.TempDir()}),
+		cronJob("bbbbbbbbbbb2", "Local", "the local job", nil),
+	)
+	chores, _ := signal.Format(cron.Frame("Chores", "bbbbbbbbbbb1", "Chores logged."))
+	r.reply(sigGroup, chores)
+	waitJob(t, r.h.home, "bbbbbbbbbbb2", "the local job to run", func(j map[string]any) bool { return j["last_status"] == "ok" })
+
+	request := func(marker string) map[string]any {
+		for i := 0; i < fake.Count(); i++ {
+			if b, _ := json.Marshal(fake.Request(i)); strings.Contains(string(b), marker) {
+				return fake.Request(i)
+			}
+		}
+		t.Fatalf("no request for %q", marker)
+		return nil
+	}
+	system := func(req map[string]any) string {
+		ms, _ := req["messages"].([]any)
+		return str(ms[0].(map[string]any), "content")
+	}
+	notes := filepath.Join(r.h.home, "notes", "gateway")
+
+	sig := request("the signal job")
+	names := toolNames(t, sig)
+	sort.Strings(names)
+	if got := strings.Join(names, ","); got != "memory,patch,read_file,search_files,session_search,todo,web_extract,web_search,write_file" {
+		t.Fatalf("a Signal job's tools = %s", got)
+	}
+	if sys := system(sig); !strings.HasPrefix(sys, prompt.SignalJobIdentity()+"\n\nYour notes folder: "+notes) || strings.Contains(sys, prompt.Guidance) {
+		t.Fatalf("a Signal job's prompt:\n%.900s", sys)
+	}
+	if b, err := os.ReadFile(filepath.Join(notes, "chores.md")); err != nil || string(b) != "tally" {
+		t.Fatalf("a relative path lands in the notes folder: %q, %v", b, err)
+	}
+	if _, err := os.Stat(escape); err == nil {
+		t.Fatal("a Signal job wrote outside the notes folder")
+	}
+	if res := toolResult(t, fake, "w2"); !strings.Contains(str(res, "error"), "outside the notes folder") {
+		t.Fatalf("the escape's result = %v", res)
+	}
+
+	local := request("the local job")
+	if names := strings.Join(toolNames(t, local), ","); !strings.Contains(names, "terminal") {
+		t.Fatalf("a local job keeps every tool: %s", names)
+	}
+	if sys := system(local); !strings.HasPrefix(sys, prompt.DefaultIdentity+"\n\n"+prompt.Guidance) {
+		t.Fatalf("a local job's prompt:\n%.400s", sys)
 	}
 }
 

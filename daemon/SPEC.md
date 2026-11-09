@@ -198,7 +198,7 @@ relay list, `-r latest` and `-c`) leave it out, and `/resume`
 never offers the session it runs in. A session with its first turn in flight
 still counts — the user row lands with the first step's end, so the daemon
 adds what is loaded and running to what the store lists.
-- Files that stay as they are: `config.toml`, `.env`, `SOUL.md`,
+- Files that stay as they are: `config.toml`, `.env`,
   `memories/*.toml`, `notes/`, `cron/jobs.json` (same format), `scripts/`.
 - Importer: `soa-d import --from <home>` reads the Python fork's `state.db`
   (sessions and messages, including foreign-imported ones), `cron/jobs.json`
@@ -268,10 +268,16 @@ The Python fork only has `--ignore-rules`, which drops everything (including
 The system prompt is built from layers, in this order (most stable first, for
 the prefix cache):
 
-1. identity: `SOUL.md`, or a short default;
+1. identity: a short default (a subagent has its type's prompt);
 2. tool and behavior guidance;
 3. project context files from the session's cwd (`AGENTS.md` and friends);
-4. memory rules for the session's scope.
+4. memory rules of the session's scope only (common, or gateway for a chat
+   or a Signal-bound cron job).
+
+A chat's prompt is fiona's block (section 12) in place of 1 and 2, then her
+notes folder, 3 and 4. A Signal-bound cron job's is the same with
+`prompt.SignalJobIdentity` (the default identity and the Signal side's limits)
+as its block.
 
 Per-turn recall rides the user message, never the system prompt. The turn's
 user message also carries its send time in the API copy (`api_content`), not
@@ -399,51 +405,52 @@ merge is the one running.
   control-command path in `gateway/run.py`.
 - Every instance's chat agent is **fiona**: it runs on fiona's auto route in
   maitred (whatever eklow serves), always on, and falls back to son-of-anton's
-  auto route when fiona is down. Its identity block is generated from config
-  when a chat session starts (so it is byte-stable for the session): it is
-  fiona, it does not run commands or edit project files, real work goes to
-  son-of-anton workers through `relay`, and this instance's worker hours (or
-  "any time"). The instance's `SOUL.md` persona follows it after a blank
-  line; with none, the block is the whole identity (never the default
-  "Son of Anton Agent"). The text (owner-approved first pass, 2026-11-02;
-  `<instance>` and the hours come from config):
+  auto route when fiona is down. Her block (`prompt.FionaIdentity`) is
+  generated from config when a chat session starts (so it is byte-stable for
+  the session) and is her whole identity and guidance: the default identity
+  and the coding guidance never appear in a chat. It says, in this order
+  (owner-approved, 2026-11-08, after the transcripts of 2026-11-03 to 11-08
+  showed fiona reading the coding guidance as hers: "I can run shell
+  commands", "I can't run `date`"):
+  - who she is: fiona, the front desk of this instance (`<instance>`), on
+    Signal; she answers questions, looks things up on the web, reads images,
+    keeps notes and memories;
+  - what she cannot do: her file tools reach only her notes folder, she runs
+    no commands, and web_search / web_extract read the internet, not this
+    machine; anything needing a command or a file outside her notes goes to
+    a worker through `relay`;
+  - handing work over: the user's own words, then context from her memory or
+    notes marked as hers; one request, one send; after a send she ends her
+    turn, since the report arrives as a message starting with "[worker"
+    (2026-11-08: 493 status calls in a row "to wait");
+  - this instance's worker hours, or "any time", and what to tell the user
+    when a send queues;
+  - getting it right: look up how something here works before explaining it
+    (cronjob list, relay list, notes), ask when a message could be about more
+    than one thing, recheck when told she is wrong and change her answer for
+    what she finds, say plainly when a tool fails;
+  - time: each user message starts with its send time (the send-time rule,
+    so her messages are stamped), the only clock she has;
+  - replies: the answer first, short, for a phone.
 
-  > You are fiona, the front desk of this son-of-anton instance
-  > (`<instance>`), talking with the user over Signal. You answer questions,
-  > look things up, read images, and keep notes and memories yourself.
-  >
-  > You never run commands or edit project files. Your file tools reach only
-  > your notes folder. Real work (code, files, commands, anything in a
-  > repository or on a machine) goes to a son-of-anton worker through the
-  > relay tool: pass the user's request on as they gave it, then tell them
-  > what the worker reports. A worker cannot see your memory, so add
-  > anything from it the worker needs, marked as context from you.
-
-  then, with no worker hours:
-
-  > Workers here can run at any time. A request sent while a worker is busy
-  > waits in a queue, and the relay result says when it will run (for
-  > example "after the current turn"). Tell the user exactly that. At a
-  > terminal, the user can take a worker over with /resume.
-
-  or, with hours (ricky and markets: 20:00 to 07:00):
-
-  > Workers here run only between 20:00 and 07:00. A request sent outside
-  > those hours, or while a worker is busy, waits in a queue, and the relay
-  > result says when it will run (for example "queued until 20:00" or "after
-  > the current turn"). Tell the user exactly that; don't promise it sooner.
-  > At a terminal, the user can take a worker over with /resume, which runs
-  > it at once whatever the hours.
+  The prompt then names her notes folder and carries the project files, the
+  gateway-scope rules only (owner, 2026-11-08: the common ones are about
+  son-of-anton work) and the date line.
 - The chat is relay-only on every instance: `relay`, `memory`,
   `session_search`, `clarify`, `cronjob`, `todo`, `web_search`, `web_extract`,
   and read/patch/write confined to
   `notes/gateway/`. No terminal, no execute_code, no MCP, no `task`.
-  Signal-bound cron gets the same set.
+  Signal-bound cron gets the same set less `clarify`, `relay` and `cronjob`,
+  runs in the notes folder whatever its workdir, and keeps the cron model, so
+  it is not fiona (owner, 2026-11-08: before, it had every tool but clarify,
+  and play's 7am check-in hunted through `tool_search` and the shell for a way
+  to send its message itself).
 - `relay send` creates or feeds a worker (section 3: top-level, terminal
   scope, `model.default`). Worker hours per instance (ricky and markets 20-7);
   outside them, or while the worker is busy, the send queues. The `relay`
   result states exactly when it will run ("queued until 20:00", "after the
-  current turn"), fiona passes that on, and `relay list` and the TUI session
+  current turn") and that the report arrives in the chat as a message, so she
+  ends her turn; fiona passes the when on, and `relay list` and the TUI session
   list show the same status. A TUI `/resume` makes the TUI the session's driver
   and overrides the hours.
 - On a single-user instance `relay` drives any session, not just the ones it

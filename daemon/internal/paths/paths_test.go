@@ -94,7 +94,6 @@ func TestProtectedInstructionFilesNeedApproval(t *testing.T) {
 		filepath.Join(home, "proj", "AGENTS.md"),
 		filepath.Join(home, "proj", "sub", "agents.md"),
 		filepath.Join(home, "proj", "CLAUDE.md"),
-		filepath.Join(p.SoaHome, "SOUL.md"),
 		filepath.Join(home, "proj", ".cursorrules"),
 	} {
 		c := p.CheckWrite(abs)

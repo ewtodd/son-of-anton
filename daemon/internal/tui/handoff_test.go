@@ -21,7 +21,7 @@ func TestHandoffClosesTheTUIAndSaysHowToComeBack(t *testing.T) {
 	t.Setenv("SIGNAL_REQUIRE_MENTION", "")
 	t.Setenv("SON_OF_ANTON_GATEWAY_LOCK_DIR", t.TempDir())
 	fake := fakellm.New(t,
-		fakellm.Turn{When: "You never run commands", Content: "Hello."},
+		fakellm.Turn{When: "You are fiona, the front desk", Content: "Hello."},
 		fakellm.Turn{When: "start at the desk", Content: "desk work done"},
 		fakellm.Turn{When: "[worker ", Content: "It is with me now."},
 	)

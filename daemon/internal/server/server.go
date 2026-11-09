@@ -149,18 +149,21 @@ type Server struct {
 	regTask *tools.Registry // reg plus the task tool: an interactive session's
 	regChat *tools.Registry // a chat session's: notes, memory, recall, web, vision, cron, relay; no terminal
 	regCron *tools.Registry // a cron job's: every builtin tool but clarify
-	cron    *cronSched
-	web     *tools.Web   // the web tools' settings, shared by every session
-	mcp     *mcp.Manager // nil: no MCP server is enabled
-	lsp     *lsp.Service // nil: LSP is disabled
-	chats   *chatHub     // nil: Signal is off
-	served  sync.Map     // session id -> the model that answered its last reply in this run
-	noted   sync.Map     // chat stamp -> the models note last given to that chat in this run
-	polled  statusSeen   // the last relay status each chat got for each worker, in this run
-	mem     *memory.Store
-	idx     *recall.Index   // nil: recall is off
-	base    context.Context // cancelled when shutdown starts
-	stop    context.CancelFunc
+	// regSignalCron is a Signal-bound cron job's: the chat's tools but
+	// clarify, relay and cronjob.
+	regSignalCron *tools.Registry
+	cron          *cronSched
+	web           *tools.Web   // the web tools' settings, shared by every session
+	mcp           *mcp.Manager // nil: no MCP server is enabled
+	lsp           *lsp.Service // nil: LSP is disabled
+	chats         *chatHub     // nil: Signal is off
+	served        sync.Map     // session id -> the model that answered its last reply in this run
+	noted         sync.Map     // chat stamp -> the models note last given to that chat in this run
+	polled        statusSeen   // the last relay status each chat got for each worker, in this run
+	mem           *memory.Store
+	idx           *recall.Index   // nil: recall is off
+	base          context.Context // cancelled when shutdown starts
+	stop          context.CancelFunc
 
 	mu      sync.Mutex
 	live    map[string]*live
@@ -222,6 +225,11 @@ func New(o Options) (*Server, error) {
 		}
 	}
 	s.regCron = s.reg.Only(cronTools...)
+	// SPEC 12: a cron job that delivers to Signal has the chat's limits, less
+	// clarify (nobody is there), relay (it has no chat to relay from) and
+	// cronjob. With every tool, play's 7am check-in hunted through tool_search
+	// and the shell for a way to send its message itself.
+	s.regSignalCron = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "memory", "session_search", "web_search", "web_extract")
 	s.web = WebConfig(cfg, o.Home)
 	s.chats = s.newChatHub()
 	s.base, s.stop = context.WithCancel(context.Background())

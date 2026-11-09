@@ -214,9 +214,9 @@
             chown ${own} ${q i.stateDir} ${q "${i.stateDir}/home"} ${q i.workingDirectory}
             chmod 2770 ${q i.stateDir} ${q i.workingDirectory}
             chmod 0750 ${q "${i.stateDir}/home"}
-            # Databases and SOUL.md must stay writable to the service group.
+            # Databases must stay writable to the service group.
             find ${q i.son-of-antonHome} -maxdepth 1 \
-              \( -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' -o -name SOUL.md \) \
+              \( -name '*.db' -o -name '*.db-wal' -o -name '*.db-shm' \) \
               -exec chmod g+rw {} + 2>/dev/null || true
           ''}
           for dir in ${lib.concatMapStringsSep " " q dirs}; do

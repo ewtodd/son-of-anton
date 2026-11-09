@@ -14,7 +14,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// DefaultIdentity is the identity when the home has no SOUL.md.
+// DefaultIdentity is the identity of every full prompt but a chat's and a
+// subagent's (Options.Identity).
 const DefaultIdentity = "You are Son of Anton, an assistant that works through tools on the user's machine. " +
 	"Answer plainly and get to the point. Read before you change things, " +
 	"check your work, and say so when you are unsure or when something failed. " +
@@ -44,8 +45,13 @@ type Options struct {
 	Home, Cwd, Scope string // instance home; session cwd; "common" | "gateway"
 	Memory           bool   // identity + all rules (true), or lean (false)
 	Identity         string // when set, layer 1 whatever Memory says (a subagent's type prompt)
-	Now              time.Time
-	RulesCharLimit   int // 0 means 6000
+	// Signal is a prompt for the Signal side, a chat or a cron job that
+	// delivers to one: Identity is its whole identity and guidance
+	// (FionaIdentity, SignalJobIdentity), so the coding guidance is left out
+	// and the environment line names the notes folder.
+	Signal         bool
+	Now            time.Time
+	RulesCharLimit int // 0 means 6000
 }
 
 // Result is the prompt and what went into it.
@@ -62,17 +68,13 @@ func Build(o Options) (Result, error) {
 	if o.Identity != "" {
 		layers = append(layers, o.Identity)
 	} else if o.Memory {
-		id := DefaultIdentity
-		if data, err := os.ReadFile(filepath.Join(o.Home, "SOUL.md")); err == nil {
-			if s := strings.TrimSpace(string(data)); s != "" {
-				id = s
-			}
-		} else if !os.IsNotExist(err) {
-			return res, err
-		}
-		layers = append(layers, id)
+		layers = append(layers, DefaultIdentity)
 	}
-	layers = append(layers, Guidance, "Host: Linux\nCurrent working directory: "+o.Cwd)
+	if o.Signal {
+		layers = append(layers, "Your notes folder: "+o.Cwd+" (relative paths start there).")
+	} else {
+		layers = append(layers, Guidance, "Host: Linux\nCurrent working directory: "+o.Cwd)
+	}
 	if block, files, err := projectContext(o.Cwd); err != nil {
 		return res, err
 	} else if block != "" {
@@ -128,6 +130,14 @@ func loadRules(o Options) (string, []string) {
 	if err := toml.Unmarshal(data, &f); err != nil {
 		return "", []string{fmt.Sprintf("rules: %s does not parse, no rules loaded: %v", path, err)}
 	}
+	// A session loads the rules of its own scope only: the terminal side
+	// (common) never sees gateway rules, and a chat or Signal-bound cron job
+	// (gateway) never sees common ones, which are about son-of-anton work
+	// (commits, /etc/nixos, downloads) and only crowded fiona's prompt.
+	sessionScope := o.Scope
+	if sessionScope == "" {
+		sessionScope = "common"
+	}
 	var lines []string
 	used := 0
 	for _, r := range f.Rule {
@@ -135,7 +145,7 @@ func loadRules(o Options) (string, []string) {
 		if scope == "" {
 			scope = "common"
 		}
-		if scope != "common" && !(scope == "gateway" && o.Scope == "gateway") {
+		if scope != sessionScope {
 			continue
 		}
 		if !o.Memory && !r.Delegated {
@@ -155,11 +165,7 @@ func loadRules(o Options) (string, []string) {
 	if limit <= 0 {
 		limit = defaultRulesLimit
 	}
-	scope := o.Scope
-	if scope == "" {
-		scope = "common"
-	}
-	head := fmt.Sprintf("STANDING RULES (%s scope, %d of %d characters used). Follow these; they come from the owner.", scope, used, limit)
+	head := fmt.Sprintf("STANDING RULES (%s scope, %d of %d characters used). Follow these; they come from the owner.", sessionScope, used, limit)
 	return head + "\n" + strings.Join(lines, "\n"), nil
 }
 

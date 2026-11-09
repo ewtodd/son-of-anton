@@ -17,7 +17,7 @@ import (
 
 // testHome is an instance home pointing at the fake model server; the key
 // lives only in .env, the way Nix installs it.
-func testHome(t *testing.T, fake *fakellm.Server, soul string) string {
+func testHome(t *testing.T, fake *fakellm.Server) string {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := "[model]\ndefault = \"test-model\"\nprovider = \"custom\"\n\n" +
@@ -28,11 +28,6 @@ func testHome(t *testing.T, fake *fakellm.Server, soul string) string {
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("SOA_D_TEST_KEY=s3cret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if soul != "" {
-		if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte(soul), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
 	t.Setenv("SOA_D_TEST_KEY", "")
 	t.Setenv("SON_OF_ANTON_HOME", "")
 	return dir
@@ -40,7 +35,7 @@ func testHome(t *testing.T, fake *fakellm.Server, soul string) string {
 
 func TestQueryPrintsTheAnswerAndRecordsTheSession(t *testing.T) {
 	fake := fakellm.New(t, fakellm.Turn{Content: "pong", ChunkRunes: 2})
-	home := testHome(t, fake, "")
+	home := testHome(t, fake)
 	var out, errOut bytes.Buffer
 	if code := run([]string{"query", "--home", home, "ping"}, &out, &errOut); code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, errOut.String())
@@ -73,22 +68,9 @@ func TestQueryPrintsTheAnswerAndRecordsTheSession(t *testing.T) {
 	}
 }
 
-func TestQueryUsesSoulAsTheSystemPrompt(t *testing.T) {
-	fake := fakellm.New(t, fakellm.Turn{Content: "ok"})
-	home := testHome(t, fake, "You are test-soul.")
-	var out, errOut bytes.Buffer
-	if code := run([]string{"query", "--home", home, "hello"}, &out, &errOut); code != 0 {
-		t.Fatalf("exit %d, stderr %q", code, errOut.String())
-	}
-	msgs := fake.Messages(0)
-	if !bytes.Contains(msgs[0], []byte("You are test-soul.")) || !bytes.Contains(msgs[0], []byte(`"system"`)) {
-		t.Fatalf("system message = %s", msgs[0])
-	}
-}
-
 func TestQueryHomeComesFromTheEnvironment(t *testing.T) {
 	fake := fakellm.New(t, fakellm.Turn{Content: "ok"})
-	home := testHome(t, fake, "")
+	home := testHome(t, fake)
 	t.Setenv("SON_OF_ANTON_HOME", home)
 	var out, errOut bytes.Buffer
 	if code := run([]string{"query", "hi"}, &out, &errOut); code != 0 || out.String() != "ok\n" {
@@ -98,7 +80,7 @@ func TestQueryHomeComesFromTheEnvironment(t *testing.T) {
 
 func TestQueryFailsCleanly(t *testing.T) {
 	fake := fakellm.New(t, fakellm.Turn{Status: 400, Body: `{"error":"no such model"}`})
-	home := testHome(t, fake, "")
+	home := testHome(t, fake)
 	var out, errOut bytes.Buffer
 	code := run([]string{"query", "--home", home, "ping"}, &out, &errOut)
 	if code == 0 || out.Len() != 0 {
@@ -134,7 +116,7 @@ func toolTurns(command string) []fakellm.Turn {
 
 func TestQueryRunsToolsInTheWorkingDirectory(t *testing.T) {
 	fake := fakellm.New(t, toolTurns("echo made > made.txt")...)
-	home := testHome(t, fake, "")
+	home := testHome(t, fake)
 	work := t.TempDir()
 	t.Chdir(work)
 	var out, errOut bytes.Buffer
@@ -155,7 +137,7 @@ func TestQueryRunsToolsInTheWorkingDirectory(t *testing.T) {
 func TestQueryDeniesDangerousCommandsUnlessYolo(t *testing.T) {
 	for _, yolo := range []bool{false, true} {
 		fake := fakellm.New(t, toolTurns("rm -r victim")...)
-		home := testHome(t, fake, "")
+		home := testHome(t, fake)
 		work := t.TempDir()
 		victim := filepath.Join(work, "victim")
 		if err := os.MkdirAll(filepath.Join(victim, "inner"), 0o755); err != nil {

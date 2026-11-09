@@ -16,7 +16,7 @@ func TestQueryRecallsAndOneshotDoesNot(t *testing.T) {
 		recall bool
 	}{{"query", true}, {"oneshot", false}} {
 		fake := fakellm.New(t, fakellm.Turn{Content: "ok"})
-		home := testHome(t, fake, "")
+		home := testHome(t, fake)
 		cfg, _ := os.ReadFile(filepath.Join(home, "config.toml"))
 		cfg = append(cfg, []byte("\n[memory.rag]\nenabled = true\nbase_url = \""+fake.URL+"\"\nmodel = \"embed\"\nmin_score = 0.4\n")...)
 		if err := os.WriteFile(filepath.Join(home, "config.toml"), cfg, 0o600); err != nil {

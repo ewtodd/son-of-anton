@@ -37,8 +37,8 @@ func (relayTool) Schema() provider.Tool {
 			"- report: send the user a PDF of a worker's session (its requests, replies, tool calls and subagents) as an " +
 			"attachment in this chat. Use it when the user asks for a report or a write-up of what a worker did; the file " +
 			"arrives on its own, so just tell them it is there.\n\n" +
-			"Relay the user's words faithfully: pass their request as they gave it, without rewriting it or adding " +
-			"instructions of your own. Before choosing between continuing an existing worker and starting a new one, ask " +
+			"Relay the user's words faithfully: pass their request as they gave it, without rewriting it; anything you " +
+			"add from your memory or notes goes after it, marked as context from you. Before choosing between continuing an existing worker and starting a new one, ask " +
 			"the user. A worker's results and its questions (answer one by sending the user's reply) arrive here as " +
 			"notifications; tell the user briefly. Its approval requests also arrive here, and the user answers them with " +
 			"/approve or /deny. " +

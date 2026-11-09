@@ -160,7 +160,7 @@ var (
 	deniedHomeDirs     = []string{".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"}
 	deniedConfigDirs   = []string{"gh", "gcloud"}
 	deniedHomeFiles    = map[string]bool{".netrc": true, ".pgpass": true, ".npmrc": true, ".pypirc": true, ".git-credentials": true}
-	protectedBasenames = map[string]bool{"agents.md": true, "claude.md": true, "soul.md": true, ".cursorrules": true}
+	protectedBasenames = map[string]bool{"agents.md": true, "claude.md": true, ".cursorrules": true}
 )
 
 // CheckWrite classifies a write target: denied (never), protected (approval

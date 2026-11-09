@@ -11,7 +11,7 @@ import (
 func TestReasoningFlagSetsTheEffort(t *testing.T) {
 	for _, cmd := range []string{"oneshot", "query"} {
 		fake := fakellm.New(t, fakellm.Turn{Content: "ok"})
-		home := testHome(t, fake, "")
+		home := testHome(t, fake)
 		if code, _, errOut := runIn(t, cmd, "--home", home, "--reasoning", "low", "go"); code != 0 {
 			t.Fatalf("%s: exit %d: %s", cmd, code, errOut)
 		}

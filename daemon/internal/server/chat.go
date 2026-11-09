@@ -488,13 +488,10 @@ func (s *Server) chatRunner(r *agent.Runner, stamp string, l *live) {
 		if warn != "" {
 			log.Printf("signal: %s", warn)
 		}
-		identity, err := prompt.FionaIdentity(s.opt.Home, strings.TrimSpace(s.cfg.Daemon.Instance), hours)
-		if err != nil {
-			return "", err
-		}
 		res, err := prompt.Build(prompt.Options{
-			Home: s.opt.Home, Cwd: ss.Cwd, Scope: "gateway", Memory: true, Identity: identity,
-			Now: time.Now().In(prompt.LocalZone()), RulesCharLimit: s.cfg.Memory.RulesCharLimit,
+			Home: s.opt.Home, Cwd: ss.Cwd, Scope: "gateway", Memory: true, Signal: true,
+			Identity: prompt.FionaIdentity(strings.TrimSpace(s.cfg.Daemon.Instance), hours),
+			Now:      time.Now().In(prompt.LocalZone()), RulesCharLimit: s.cfg.Memory.RulesCharLimit,
 		})
 		for _, w := range res.Warnings {
 			log.Printf("signal: prompt: %s", w)

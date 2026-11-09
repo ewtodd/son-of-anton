@@ -38,7 +38,7 @@ func TestOneshotRefusesExecuteCodeUnlessYolo(t *testing.T) {
 		}
 	}
 	fake := fakellm.New(t, turns()...)
-	home := testHome(t, fake, "")
+	home := testHome(t, fake)
 	if code, _, errOut := runIn(t, "oneshot", "--home", home, "compute"); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
@@ -56,7 +56,7 @@ func TestOneshotRefusesExecuteCodeUnlessYolo(t *testing.T) {
 	}
 	t.Setenv("SON_OF_ANTON_PYTHON", py)
 	fake = fakellm.New(t, turns()...)
-	home = testHome(t, fake, "")
+	home = testHome(t, fake)
 	if code, _, errOut := runIn(t, "oneshot", "--home", home, "--yolo", "compute"); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}

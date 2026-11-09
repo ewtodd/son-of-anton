@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	asFiona  = "You never run commands or edit project files."
+	asFiona  = "You are fiona, the front desk"
 	asWorker = "You are Son of Anton, an assistant"
 )
 
@@ -73,6 +73,9 @@ func TestARelayedTaskReportsBack(t *testing.T) {
 	worker, _ := sent["worker"].(string)
 	if sent["success"] != true || sent["status"] != "started" || sent["when"] != "now" || worker == "" {
 		t.Fatalf("relay send = %v", sent)
+	}
+	if note, _ := sent["note"].(string); !strings.Contains(note, "End your turn now") || !strings.Contains(note, "do not check its status") {
+		t.Fatalf("a send's result says how waiting works: %v", sent)
 	}
 	st := openStore(t, r.h.home)
 	w, err := st.Session(context.Background(), worker)

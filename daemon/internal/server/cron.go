@@ -378,14 +378,22 @@ func (c *cronSched) agentRun(job cron.Job, extra string) (o outcome) {
 	r := s.runner(&live{}, ep, s.cfg.PermissionMode(), "cron", nil)
 	r.Tools, r.Approver, r.Ask, r.AsyncDelivery, r.Cron = s.regCron, nil, nil, false, nil
 	r.MemoryScope = scope
-	if scope == "gateway" {
-		r.Scope = "gateway"
+	signalSide := scope == "gateway"
+	if signalSide {
+		// The chat's limits: its tools (regSignalCron), its notes folder as
+		// the only place the file tools reach, and a prompt that says so.
+		r.Scope, r.Tools = "gateway", s.regSignalCron
+		r.Policy.Confine = s.notesDir()
 	}
 	r.Prompt = func(_ context.Context, ss store.Session) (string, error) {
-		res, err := prompt.Build(prompt.Options{
+		o := prompt.Options{
 			Home: s.opt.Home, Cwd: ss.Cwd, Scope: scope, Memory: true,
 			Now: time.Now().In(prompt.LocalZone()), RulesCharLimit: s.cfg.Memory.RulesCharLimit,
-		})
+		}
+		if signalSide {
+			o.Signal, o.Identity = true, prompt.SignalJobIdentity()
+		}
+		res, err := prompt.Build(o)
 		for _, w := range res.Warnings {
 			log.Printf("cron: prompt: %s", w)
 		}
@@ -396,7 +404,14 @@ func (c *cronSched) agentRun(job cron.Job, extra string) (o outcome) {
 		r.SearchMessages = s.searchMessages(scope)
 	}
 	cwd := s.opt.Home
-	if wd := jobText(job, "workdir"); wd != "" {
+	if signalSide {
+		// A workdir outside the notes folder is out of reach: the job runs
+		// in the notes folder, as the chat does.
+		cwd = s.notesDir()
+		if err := os.MkdirAll(cwd, 0o700); err != nil {
+			return fail(err.Error())
+		}
+	} else if wd := jobText(job, "workdir"); wd != "" {
 		if fi, err := os.Stat(wd); err == nil && fi.IsDir() {
 			cwd = wd
 		}

@@ -83,28 +83,22 @@ scope = "gateway"
 source = "user"
 `
 
-func TestIdentityComesFromSoulOrTheDefault(t *testing.T) {
+func TestAFullPromptOpensWithTheDefaultIdentity(t *testing.T) {
 	f := setup(t)
-	r := build(t, f.opts(true))
-	if !strings.HasPrefix(r.Text, prompt.DefaultIdentity) {
-		t.Fatalf("no SOUL.md: the prompt must open with the default identity:\n%.200s", r.Text)
-	}
-	write(t, filepath.Join(f.home, "SOUL.md"), "You are fiona-test.\n")
-	if r := build(t, f.opts(true)); !strings.HasPrefix(r.Text, "You are fiona-test.") || strings.Contains(r.Text, prompt.DefaultIdentity) {
-		t.Fatalf("SOUL.md must replace the default identity:\n%.200s", r.Text)
+	if r := build(t, f.opts(true)); !strings.HasPrefix(r.Text, prompt.DefaultIdentity) {
+		t.Fatalf("the prompt must open with the default identity:\n%.200s", r.Text)
 	}
 }
 
 func TestLeanPromptsLeaveOutTheUsersContext(t *testing.T) {
 	f := setup(t)
-	write(t, filepath.Join(f.home, "SOUL.md"), "You are fiona-test.\n")
 	write(t, filepath.Join(f.home, "memories", "rules.toml"), rules)
 	full := build(t, f.opts(true)).Text
 	lean := build(t, f.opts(false)).Text
-	if !strings.Contains(full, "You are fiona-test.") || !strings.Contains(full, "[plain-prose] Write in plain English.") {
+	if !strings.Contains(full, prompt.DefaultIdentity) || !strings.Contains(full, "[plain-prose] Write in plain English.") {
 		t.Fatalf("the full prompt needs the identity and the rules:\n%s", full)
 	}
-	if strings.Contains(lean, "fiona-test") || strings.Contains(lean, prompt.DefaultIdentity) || strings.Contains(lean, "plain-prose") {
+	if strings.Contains(lean, prompt.DefaultIdentity) || strings.Contains(lean, "plain-prose") {
 		t.Fatalf("a lean prompt carries no identity and no ordinary rules:\n%s", lean)
 	}
 	if !strings.Contains(lean, "[never-delete] Never delete user files. (Deletion is unrecoverable.)") {
@@ -127,11 +121,83 @@ func TestRulesFollowTheScope(t *testing.T) {
 	o := f.opts(true)
 	o.Scope = "gateway"
 	gw := build(t, o).Text
-	if !strings.Contains(gw, "[second-person]") || !strings.Contains(gw, "[plain-prose]") {
-		t.Fatalf("a gateway session sees common and gateway rules:\n%s", gw)
+	// Owner, 2026-11-08: a gateway session (a chat, a Signal-bound cron job)
+	// sees gateway rules only; the common ones are about son-of-anton work.
+	if !strings.Contains(gw, "[second-person]") || strings.Contains(gw, "[plain-prose]") || strings.Contains(gw, "[never-delete]") {
+		t.Fatalf("a gateway session sees gateway rules only:\n%s", gw)
 	}
-	if !strings.Contains(common, "STANDING RULES") {
-		t.Fatalf("the rules block has its header:\n%s", common)
+	if !strings.Contains(common, "STANDING RULES (common scope") || !strings.Contains(gw, "STANDING RULES (gateway scope") {
+		t.Fatalf("the rules block has its header:\n%s\n---\n%s", common, gw)
+	}
+}
+
+// A chat's prompt is fiona's block, her notes folder, the project files, the
+// gateway rules and the date line: no coding guidance, no shell's working
+// directory, and the send-time rule from her own block, so its messages are
+// still stamped.
+func TestAChatsPrompt(t *testing.T) {
+	f := setup(t)
+	write(t, filepath.Join(f.home, "memories", "rules.toml"), rules)
+	write(t, filepath.Join(f.cwd, "AGENTS.md"), "PROJECT RULES")
+	fiona := prompt.FionaIdentity("play", nil)
+	text := build(t, prompt.Options{Home: f.home, Cwd: f.cwd, Scope: "gateway", Memory: true, Signal: true, Identity: fiona, Now: now}).Text
+	marks := []string{fiona, "Your notes folder: " + f.cwd + " (relative paths start there).", "PROJECT RULES", "STANDING RULES (gateway scope", "[second-person]", "Conversation started: Monday, November 2, 2026"}
+	last := -1
+	for _, m := range marks {
+		i := strings.Index(text, m)
+		if i <= last {
+			t.Fatalf("layer %q is missing or out of order:\n%s", m, text)
+		}
+		last = i
+	}
+	for _, not := range []string{prompt.Guidance, prompt.DefaultIdentity, "Current working directory", "Host: Linux", "[plain-prose]", "`date`"} {
+		if strings.Contains(text, not) {
+			t.Errorf("a chat's prompt carries %q", not)
+		}
+	}
+	if !strings.Contains(fiona, prompt.SentTimeRule) {
+		t.Error("fiona's block must carry the send-time rule, or her messages go unstamped")
+	}
+}
+
+// A cron job that delivers to Signal runs on the cron model, so it is not
+// fiona; its block is the default identity and the Signal side's limits.
+func TestSignalJobIdentity(t *testing.T) {
+	job := prompt.SignalJobIdentity()
+	if !strings.HasPrefix(job, prompt.DefaultIdentity+"\n\n") || !strings.Contains(job, prompt.SentTimeRule) {
+		t.Fatalf("a Signal job's block:\n%s", job)
+	}
+	for _, want := range []string{"you cannot run commands", "They cannot see this machine.", "cannot be done from here", "read on a phone"} {
+		if !strings.Contains(job, want) {
+			t.Errorf("a Signal job's block lacks %q", want)
+		}
+	}
+	for _, not := range []string{"fiona", "relay", prompt.Guidance, "—"} {
+		if strings.Contains(job, not) {
+			t.Errorf("a Signal job's block carries %q", not)
+		}
+	}
+}
+
+func TestFionaIdentity(t *testing.T) {
+	anyTime := prompt.FionaIdentity("play", nil)
+	hours := prompt.FionaIdentity("", &[2]int{20, 7})
+	if !strings.HasPrefix(anyTime, "You are fiona, the front desk of this son-of-anton instance (play). ") ||
+		!strings.Contains(anyTime, "Workers here can run at any time.") {
+		t.Fatalf("any time:\n%s", anyTime)
+	}
+	if !strings.HasPrefix(hours, "You are fiona, the front desk of this son-of-anton instance. ") ||
+		!strings.Contains(hours, "Workers here run only between 20:00 and 07:00.") || !strings.Contains(hours, "\"queued until 20:00\"") {
+		t.Fatalf("hours:\n%s", hours)
+	}
+	for _, want := range []string{"you cannot run commands", "They cannot see this machine.", "starting with \"[worker\"",
+		"Do not call relay status to wait for it", "If you have not checked, say so instead of agreeing.", "it is read on a phone"} {
+		if !strings.Contains(anyTime, want) {
+			t.Errorf("fiona's block lacks %q", want)
+		}
+	}
+	if strings.Contains(anyTime, "—") {
+		t.Error("plain prose: no em-dashes in fiona's block")
 	}
 }
 
@@ -238,14 +304,13 @@ func TestOutsideAGitRepoOnlyTheCwdIsRead(t *testing.T) {
 // identity, then the usual layers, with only delegated rules.
 func TestAnIdentityReplacesTheFirstLayer(t *testing.T) {
 	f := setup(t)
-	write(t, filepath.Join(f.home, "SOUL.md"), "I am the user's assistant.")
 	write(t, filepath.Join(f.home, "memories", "rules.toml"),
 		"[[rule]]\nid = \"plain\"\ntext = \"Plain English.\"\nsource = \"user\"\n\n[[rule]]\nid = \"guard\"\ntext = \"Never delete user files.\"\nsource = \"user\"\ndelegated = true\n")
 	res, err := prompt.Build(prompt.Options{Home: f.home, Cwd: f.cwd, Scope: "common", Memory: false, Now: now, Identity: "You are a file search specialist."})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(res.Text, "You are a file search specialist.\n\n"+prompt.Guidance) || strings.Contains(res.Text, "user's assistant") {
+	if !strings.HasPrefix(res.Text, "You are a file search specialist.\n\n"+prompt.Guidance) || strings.Contains(res.Text, prompt.DefaultIdentity) {
 		t.Fatalf("prompt = %q", res.Text[:200])
 	}
 	if !strings.Contains(res.Text, "[guard]") || strings.Contains(res.Text, "[plain]") {

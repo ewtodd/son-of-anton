@@ -68,7 +68,7 @@ func TestOneshotPrintsOnlyTheFinalAnswer(t *testing.T) {
 		fakellm.Turn{Content: "thinking out loud", ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "terminal", Arguments: `{"command":"echo hi"}`}}},
 		fakellm.Turn{Content: "the answer"},
 	)
-	home := testHome(t, fake, "")
+	home := testHome(t, fake)
 	code, out, errOut := runIn(t, "oneshot", "--home", home, "do it")
 	if code != 0 || out != "the answer\n" {
 		t.Fatalf("exit %d, stdout %q, stderr %q: stdout carries only the final answer", code, out, errOut)
@@ -80,7 +80,7 @@ func TestOneshotUsageFile(t *testing.T) {
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "terminal", Arguments: `{"command":"true"}`}}, PromptTokens: 100, CompletionTokens: 10, CachedTokens: 40},
 		fakellm.Turn{Content: "done", PromptTokens: 120, CompletionTokens: 5, ReasoningTokens: 2},
 	)
-	home := testHome(t, fake, "")
+	home := testHome(t, fake)
 	usage := filepath.Join(t.TempDir(), "usage.json")
 	if code, _, errOut := runIn(t, "oneshot", "--home", home, "--usage-file", usage, "go"); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
@@ -98,7 +98,7 @@ func TestOneshotUsageFile(t *testing.T) {
 
 func TestOneshotFailureStillWritesUsage(t *testing.T) {
 	fake := fakellm.New(t, fakellm.Turn{Status: 400, Body: `{"error":"no such model"}`})
-	home := testHome(t, fake, "")
+	home := testHome(t, fake)
 	usage := filepath.Join(t.TempDir(), "usage.json")
 	code, out, errOut := runIn(t, "oneshot", "--home", home, "--usage-file", usage, "go")
 	if code != 1 || out != "" || !strings.Contains(errOut, "400") {
@@ -116,38 +116,38 @@ func TestOneshotFailureStillWritesUsage(t *testing.T) {
 
 func TestOneshotIsLeanByDefault(t *testing.T) {
 	fake := fakellm.New(t, fakellm.Turn{Content: "ok"}, fakellm.Turn{Content: "ok"})
-	home := testHome(t, fake, "You are fiona-test.")
+	home := testHome(t, fake)
 	withRules(t, home)
 	runIn(t, "oneshot", "--home", home, "task")
 	lean := systemOf(t, fake)
-	if strings.Contains(lean, "fiona-test") || strings.Contains(lean, "plain-prose") {
+	if strings.Contains(lean, prompt.DefaultIdentity) || strings.Contains(lean, "plain-prose") {
 		t.Fatalf("a oneshot carries no identity and no ordinary rules:\n%s", lean)
 	}
 	if !strings.Contains(lean, "[never-delete]") || !strings.Contains(lean, prompt.Guidance) {
 		t.Fatalf("a oneshot keeps delegated rules and the guidance:\n%s", lean)
 	}
 	fake2 := fakellm.New(t, fakellm.Turn{Content: "ok"})
-	home2 := testHome(t, fake2, "You are fiona-test.")
+	home2 := testHome(t, fake2)
 	withRules(t, home2)
 	runIn(t, "oneshot", "--home", home2, "--memory", "task")
-	if full := systemOf(t, fake2); !strings.Contains(full, "fiona-test") || !strings.Contains(full, "[plain-prose]") {
+	if full := systemOf(t, fake2); !strings.Contains(full, prompt.DefaultIdentity) || !strings.Contains(full, "[plain-prose]") {
 		t.Fatalf("--memory gives a oneshot the full prompt:\n%s", full)
 	}
 }
 
 func TestQueryUsesTheFullPromptUnlessNoMemory(t *testing.T) {
 	fake := fakellm.New(t, fakellm.Turn{Content: "ok"})
-	home := testHome(t, fake, "You are fiona-test.")
+	home := testHome(t, fake)
 	withRules(t, home)
 	runIn(t, "query", "--home", home, "q")
-	if full := systemOf(t, fake); !strings.Contains(full, "fiona-test") || !strings.Contains(full, "[plain-prose]") || !strings.Contains(full, prompt.Guidance) {
+	if full := systemOf(t, fake); !strings.Contains(full, prompt.DefaultIdentity) || !strings.Contains(full, "[plain-prose]") || !strings.Contains(full, prompt.Guidance) {
 		t.Fatalf("query's default prompt is the full one:\n%s", full)
 	}
 	fake2 := fakellm.New(t, fakellm.Turn{Content: "ok"})
-	home2 := testHome(t, fake2, "You are fiona-test.")
+	home2 := testHome(t, fake2)
 	withRules(t, home2)
 	runIn(t, "query", "--home", home2, "--no-memory", "q")
-	if lean := systemOf(t, fake2); strings.Contains(lean, "fiona-test") || strings.Contains(lean, "plain-prose") {
+	if lean := systemOf(t, fake2); strings.Contains(lean, prompt.DefaultIdentity) || strings.Contains(lean, "plain-prose") {
 		t.Fatalf("query --no-memory is lean:\n%s", lean)
 	}
 }
@@ -155,7 +155,7 @@ func TestQueryUsesTheFullPromptUnlessNoMemory(t *testing.T) {
 func TestSystemFileIsTheWholePrompt(t *testing.T) {
 	for _, cmd := range []string{"oneshot", "query"} {
 		fake := fakellm.New(t, fakellm.Turn{Content: "ok"})
-		home := testHome(t, fake, "You are fiona-test.")
+		home := testHome(t, fake)
 		withRules(t, home)
 		sys := filepath.Join(t.TempDir(), "sys.md")
 		if err := os.WriteFile(sys, []byte("Only this.\nNothing else.\n"), 0o600); err != nil {
@@ -175,7 +175,7 @@ func TestSystemFileIsTheWholePrompt(t *testing.T) {
 func TestSystemPromptWithoutTheRuleGetsNoSendTimePrefix(t *testing.T) {
 	for _, cmd := range []string{"oneshot", "query"} {
 		fake := fakellm.New(t, fakellm.Turn{Content: "ok"})
-		home := testHome(t, fake, "You are fiona-test.")
+		home := testHome(t, fake)
 		withRules(t, home)
 		sys := filepath.Join(t.TempDir(), "sys.md")
 		if err := os.WriteFile(sys, []byte("Only this.\nNothing else.\n"), 0o600); err != nil {
@@ -198,7 +198,7 @@ func TestOneshotSessionAndClarify(t *testing.T) {
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "clarify", Arguments: `{"question":"Which one?","choices":["a","b"]}`}}},
 		fakellm.Turn{Content: "picked a"},
 	)
-	home := testHome(t, fake, "")
+	home := testHome(t, fake)
 	if code, _, errOut := runIn(t, "oneshot", "--home", home, "choose"); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}

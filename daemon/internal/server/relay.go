@@ -274,6 +274,10 @@ func (l *live) letGo() {
 	l.waiting = true
 }
 
+// sendNote rides every relay send's result.
+const sendNote = "The worker's report arrives in this chat as a message when its turn ends. " +
+	"End your turn now and tell the user when it will run; do not check its status to wait for it."
+
 // relaySent is how a send to a worker went; took says it took the session from
 // a terminal.
 type relaySent struct {
@@ -782,7 +786,10 @@ func (s *Server) relaySendTo(ctx context.Context, stamp string, a relayArgs) str
 		if err != nil {
 			return relayFail(err.Error())
 		}
-		res := map[string]any{"success": true, "worker": id, "title": sent.title, "status": sent.status, "when": sent.when}
+		res := map[string]any{"success": true, "worker": id, "title": sent.title, "status": sent.status, "when": sent.when,
+			// On 2026-11-08 fiona polled status 493 times right after a send,
+			// "to wait": the result says how waiting works.
+			"note": sendNote}
 		if sent.took {
 			res["took_from_terminal"] = true
 		}

@@ -35,7 +35,7 @@ func shortHome(t *testing.T, fake *fakellm.Server) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	src := testHome(t, fake, "")
+	src := testHome(t, fake)
 	for _, f := range []string{"config.toml", ".env"} {
 		b, err := os.ReadFile(filepath.Join(src, f))
 		if err != nil {
