@@ -496,6 +496,10 @@ type RAG struct {
 	FailureCooldownSeconds *float64 `toml:"failure_cooldown_seconds"`
 	NotesDir               string   `toml:"notes_dir"`
 	MaxChunkChars          int      `toml:"max_chunk_chars"`
+	RerankModel            string   `toml:"rerank_model"`
+	RerankCandidates       *int     `toml:"rerank_candidates"`
+	RerankMinScore         *float64 `toml:"rerank_min_score"`
+	RerankTimeoutSeconds   *float64 `toml:"rerank_timeout_seconds"`
 }
 
 // Getenv is the value of an environment variable: the process environment

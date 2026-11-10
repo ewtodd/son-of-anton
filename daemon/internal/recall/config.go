@@ -21,6 +21,14 @@ type Config struct {
 	SearchTimeout, FailureCooldown time.Duration
 	NotesDir                       string // "" means <home>/notes
 	MaxChunkChars                  int
+
+	// RerankModel, when set, reorders the cosine candidates (at most
+	// RerankCandidates of those at MinScore or above) by <BaseURL>/rerank and
+	// keeps those scoring RerankMinScore or above.
+	RerankModel      string
+	RerankCandidates int
+	RerankMinScore   float64
+	RerankTimeout    time.Duration
 }
 
 func isGemma(model string) bool { return strings.Contains(strings.ToLower(model), "embeddinggemma") }
@@ -39,7 +47,8 @@ func ConfigFrom(c *config.Config, home string) (Config, bool) {
 	}
 	cfg := Config{BaseURL: base, Model: model, TopK: 5, MinScore: 0.5,
 		SearchTimeout: 3 * time.Second, FailureCooldown: time.Minute,
-		NotesDir: strings.TrimSpace(r.NotesDir), MaxChunkChars: r.MaxChunkChars}
+		NotesDir: strings.TrimSpace(r.NotesDir), MaxChunkChars: r.MaxChunkChars,
+		RerankModel: strings.TrimSpace(r.RerankModel), RerankCandidates: 10, RerankMinScore: 0.5, RerankTimeout: 3 * time.Second}
 	if cfg.APIKey = strings.TrimSpace(r.APIKey); cfg.APIKey == "" && strings.TrimSpace(r.APIKeyEnv) != "" {
 		cfg.APIKey = c.Getenv(strings.TrimSpace(r.APIKeyEnv))
 	}
@@ -65,6 +74,15 @@ func ConfigFrom(c *config.Config, home string) (Config, bool) {
 	}
 	if r.FailureCooldownSeconds != nil {
 		cfg.FailureCooldown = secs(*r.FailureCooldownSeconds)
+	}
+	if r.RerankCandidates != nil {
+		cfg.RerankCandidates = *r.RerankCandidates
+	}
+	if r.RerankMinScore != nil {
+		cfg.RerankMinScore = *r.RerankMinScore
+	}
+	if r.RerankTimeoutSeconds != nil {
+		cfg.RerankTimeout = secs(*r.RerankTimeoutSeconds)
 	}
 	if cfg.NotesDir != "" && strings.HasPrefix(cfg.NotesDir, "~/") {
 		cfg.NotesDir = filepath.Join(userHome(), cfg.NotesDir[2:])

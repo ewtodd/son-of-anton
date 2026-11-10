@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -92,6 +93,11 @@ type Server struct {
 
 	embedStatus int        // when set, /v1/embeddings answers with this status
 	embedCalls  [][]string // the inputs of every embeddings request
+
+	rerankStatus int                             // when set, /v1/rerank answers with this status
+	rerankDelay  time.Duration                   // when set, /v1/rerank sleeps this long first
+	rerankScore  func(query, doc string) float64 // nil means RerankScore
+	rerankCalls  []RerankCall
 }
 
 // New starts a fake that answers the given turns in order.
@@ -102,6 +108,7 @@ func New(t testing.TB, turns ...Turn) *Server {
 	s.mux.HandleFunc("/v1/chat/completions", s.handle)
 	s.mux.HandleFunc("/v1/models", s.handleModels)
 	s.mux.HandleFunc("/v1/embeddings", s.handleEmbeddings)
+	s.mux.HandleFunc("/v1/rerank", s.handleRerank)
 	srv := httptest.NewServer(s.mux)
 	t.Cleanup(srv.Close)
 	s.URL = srv.URL + "/v1"
@@ -500,4 +507,114 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "model": req.Model, "data": data})
+}
+
+// RerankCall is one /v1/rerank request as the fake received it.
+type RerankCall struct {
+	Model, Query string
+	Documents    []string
+	TopN         int
+}
+
+// RerankScore is the fake reranker's default score: the share of the query's
+// distinct words that appear in the document, so a document holding every
+// word of the query scores 1.
+func RerankScore(query, doc string) float64 {
+	words := func(text string) map[int]bool {
+		m := map[int]bool{}
+		for i, v := range WordVector(text) {
+			if v > 0 {
+				m[i] = true
+			}
+		}
+		return m
+	}
+	q, d := words(query), words(doc)
+	if len(q) == 0 {
+		return 0
+	}
+	n := 0
+	for w := range q {
+		if d[w] {
+			n++
+		}
+	}
+	return float64(n) / float64(len(q))
+}
+
+// SetRerankScore replaces the fake reranker's scoring (nil restores RerankScore).
+func (s *Server) SetRerankScore(f func(query, doc string) float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rerankScore = f
+}
+
+// SetRerankStatus makes /v1/rerank fail with status (0 restores it).
+func (s *Server) SetRerankStatus(status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rerankStatus = status
+}
+
+// SetRerankDelay makes /v1/rerank wait d before answering.
+func (s *Server) SetRerankDelay(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rerankDelay = d
+}
+
+// RerankCalls returns every rerank request so far.
+func (s *Server) RerankCalls() []RerankCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]RerankCall, len(s.rerankCalls))
+	copy(out, s.rerankCalls)
+	return out
+}
+
+// handleRerank answers in the Cohere/Jina shape llama.cpp's server uses:
+// results sorted by relevance_score, each with its document's index.
+func (s *Server) handleRerank(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Model     string   `json:"model"`
+		Query     string   `json:"query"`
+		Documents []string `json:"documents"`
+		TopN      int      `json:"top_n"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	status, delay, score := s.rerankStatus, s.rerankDelay, s.rerankScore
+	s.rerankCalls = append(s.rerankCalls, RerankCall{req.Model, req.Query, req.Documents, req.TopN})
+	s.mu.Unlock()
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
+	}
+	if status != 0 {
+		http.Error(w, `{"error":"reranker down"}`, status)
+		return
+	}
+	if score == nil {
+		score = RerankScore
+	}
+	type result struct {
+		Index int     `json:"index"`
+		Score float64 `json:"relevance_score"`
+	}
+	results := make([]result, len(req.Documents))
+	for i, d := range req.Documents {
+		results[i] = result{i, score(req.Query, d)}
+	}
+	sort.SliceStable(results, func(i, j int) bool { return results[i].Score > results[j].Score })
+	if req.TopN > 0 && req.TopN < len(results) {
+		results = results[:req.TopN]
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"model": req.Model, "results": results})
 }

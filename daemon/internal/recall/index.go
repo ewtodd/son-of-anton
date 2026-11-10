@@ -41,9 +41,10 @@ type Index struct {
 	db    *sql.DB
 	http  *http.Client
 
-	msgMu         sync.Mutex // serializes IndexMessages
-	mu            sync.Mutex
-	cooldownUntil time.Time
+	msgMu               sync.Mutex // serializes IndexMessages
+	mu                  sync.Mutex
+	cooldownUntil       time.Time
+	rerankCooldownUntil time.Time
 }
 
 // Open opens (creating) the index database.
@@ -228,38 +229,14 @@ func (x *Index) embed(ctx context.Context, inputs []string) ([][]float32, error)
 		ctx, cancel = context.WithTimeout(ctx, x.cfg.SearchTimeout)
 		defer cancel()
 	}
-	body, _ := json.Marshal(map[string]any{"model": x.cfg.Model, "input": inputs})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, x.cfg.BaseURL+"/embeddings", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if x.cfg.APIKey != "" {
-		// Bifrost accepts the virtual key as x-bf-vk; the bearer form keeps
-		// plain OpenAI-compatible endpoints working.
-		req.Header.Set("Authorization", "Bearer "+x.cfg.APIKey)
-		req.Header.Set("x-bf-vk", x.cfg.APIKey)
-	}
-	resp, err := x.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("embeddings request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
-	if err != nil {
-		return nil, fmt.Errorf("embeddings request failed: %w", err)
-	}
-	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("embeddings request failed: HTTP %d", resp.StatusCode)
-	}
 	var out struct {
 		Data []struct {
 			Index     int       `json:"index"`
 			Embedding []float64 `json:"embedding"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("embeddings response unreadable: %w", err)
+	if err := x.post(ctx, "embeddings", map[string]any{"model": x.cfg.Model, "input": inputs}, &out); err != nil {
+		return nil, err
 	}
 	if len(out.Data) != len(inputs) {
 		return nil, fmt.Errorf("embedding endpoint returned %d vector(s) for %d input(s)", len(out.Data), len(inputs))
@@ -277,6 +254,89 @@ func (x *Index) embed(ctx context.Context, inputs []string) ([][]float32, error)
 		vs[i] = v
 	}
 	return vs, nil
+}
+
+// rerankQueryChars bounds the query the reranker reads. It scores every
+// candidate against the whole query, so a long message would cost seconds a
+// turn; the whole message still chooses the candidates.
+const rerankQueryChars = 500
+
+// rerank scores cands against query at <BaseURL>/rerank under RerankTimeout
+// and returns those scoring at least RerankMinScore, best first, each with
+// the reranker's score. The query goes without QueryPrompt and the
+// documents without DocumentPrompt: those frame the embedder's inputs.
+func (x *Index) rerank(ctx context.Context, query string, cands []scored) ([]scored, error) {
+	if x.cfg.RerankTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, x.cfg.RerankTimeout)
+		defer cancel()
+	}
+	if q := []rune(query); len(q) > rerankQueryChars {
+		query = string(q[:rerankQueryChars])
+	}
+	docs := make([]string, len(cands))
+	for i, c := range cands {
+		docs[i] = c.text
+	}
+	var out struct {
+		Results []struct {
+			Index int     `json:"index"`
+			Score float64 `json:"relevance_score"`
+		} `json:"results"`
+	}
+	payload := map[string]any{"model": x.cfg.RerankModel, "query": query, "documents": docs, "top_n": len(docs)}
+	if err := x.post(ctx, "rerank", payload, &out); err != nil {
+		return nil, err
+	}
+	if len(out.Results) == 0 {
+		return nil, errors.New("rerank endpoint returned no results")
+	}
+	seen := make([]bool, len(cands))
+	var kept []scored
+	for _, r := range out.Results {
+		if r.Index < 0 || r.Index >= len(cands) || seen[r.Index] {
+			return nil, fmt.Errorf("rerank endpoint returned index %d for %d document(s)", r.Index, len(cands))
+		}
+		seen[r.Index] = true
+		if r.Score >= x.cfg.RerankMinScore {
+			kept = append(kept, scored{r.Score, cands[r.Index].hit})
+		}
+	}
+	sort.SliceStable(kept, func(i, j int) bool { return kept[i].score > kept[j].score })
+	return kept, nil
+}
+
+// post sends payload to <BaseURL>/<path> and decodes the JSON answer into
+// out. Errors name the endpoint ("embeddings request failed: HTTP 503").
+func (x *Index) post(ctx context.Context, path string, payload, out any) error {
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, x.cfg.BaseURL+"/"+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if x.cfg.APIKey != "" {
+		// Bifrost accepts the virtual key as x-bf-vk; the bearer form keeps
+		// plain OpenAI-compatible endpoints working.
+		req.Header.Set("Authorization", "Bearer "+x.cfg.APIKey)
+		req.Header.Set("x-bf-vk", x.cfg.APIKey)
+	}
+	resp, err := x.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("%s request failed: %w", path, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return fmt.Errorf("%s request failed: %w", path, err)
+	}
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("%s request failed: HTTP %d", path, resp.StatusCode)
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("%s response unreadable: %w", path, err)
+	}
+	return nil
 }
 
 func encode(v []float32) []byte {
@@ -409,12 +469,32 @@ func (x *Index) semantic(ctx context.Context, scope, query string) ([]hit, int, 
 		}
 	}
 	sort.SliceStable(good, func(i, j int) bool { return good[i].score > good[j].score })
+	good = x.reranked(ctx, query, good)
 	good = good[:min(len(good), max(x.cfg.TopK, 1))]
 	hits := make([]hit, len(good))
 	for i, s := range good {
 		hits[i] = s.hit
 	}
 	return hits, facts, nil
+}
+
+// reranked is good (best first by cosine) as the reranker orders its first
+// RerankCandidates, when a reranker is configured. Without one, while it
+// cools down, or when it fails, good is returned as it is; a failure other
+// than a cancelled turn leaves the reranker alone for FailureCooldown.
+func (x *Index) reranked(ctx context.Context, query string, good []scored) []scored {
+	if x.cfg.RerankModel == "" || len(good) == 0 || time.Now().Before(x.rerankCooldownUntil) {
+		return good
+	}
+	kept, err := x.rerank(ctx, query, good[:min(len(good), max(x.cfg.RerankCandidates, 1))])
+	if err != nil {
+		if ctx.Err() == nil {
+			x.rerankCooldownUntil = time.Now().Add(x.cfg.FailureCooldown)
+			log.Printf("recall: reranking failed (%v); cosine order for %.0fs", err, x.cfg.FailureCooldown.Seconds())
+		}
+		return good
+	}
+	return kept
 }
 
 // keyword is the fallback over the facts scope can see, read from the files.

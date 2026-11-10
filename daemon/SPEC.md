@@ -394,6 +394,17 @@ it in lean prompts (section 7). The rules loader, the Nix `memoryRules` /
 Python fork's merge rejects unknown keys, so rules are tagged only once soa-d's
 merge is the one running.
 
+A second addition: reranking. With `[memory.rag]` `rerank_model` set, the
+cosine candidates (at least `min_score`, at most `rerank_candidates`, 10) go
+to `<base_url>/rerank` (Cohere/Jina shape, as llama.cpp's `--reranking` server
+and maitred serve it) with the turn's first 500 characters as the query, no
+task prompts on either side. Those scoring at least `rerank_min_score` (0.5)
+are kept in the reranker's order, at most `top_k`. The reranker reads every
+candidate against the query, so it costs time on every turn that has
+candidates: `rerank_timeout_seconds` (3) bounds it, and a timeout or any other
+failure keeps cosine order and leaves the reranker alone for
+`failure_cooldown_seconds`, while the embedder stays in use.
+
 ## 12. Signal, fiona and the relay
 
 - Signal adapter over signal-cli's HTTP JSON-RPC (`SIGNAL_HTTP_URL`): receive,
