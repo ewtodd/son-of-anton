@@ -398,12 +398,36 @@ A second addition: reranking. With `[memory.rag]` `rerank_model` set, the
 cosine candidates (at least `min_score`, at most `rerank_candidates`, 10) go
 to `<base_url>/rerank` (Cohere/Jina shape, as llama.cpp's `--reranking` server
 and maitred serve it) with the turn's first 500 characters as the query, no
-task prompts on either side. Those scoring at least `rerank_min_score` (0.5)
-are kept in the reranker's order, at most `top_k`. The reranker reads every
+task prompts on either side. Those scoring at least `rerank_min_score` (0.01)
+are kept in the reranker's order, at most `top_k`. The floor is low on
+purpose: Qwen3-Reranker's score is its probability of "yes", and on 18
+paraphrased questions against 12 facts (2026-11-10) it put the relevant fact
+first every time but scored indirect ones as low as 0.015 ("the doctor wants
+to prescribe me an antibiotic" against a penicillin allergy), while unrelated
+facts stayed at 0.002 or under; 0.5 would have dropped 9 of 17. The reranker reads every
 candidate against the query, so it costs time on every turn that has
 candidates: `rerank_timeout_seconds` (3) bounds it, and a timeout or any other
 failure keeps cosine order and leaves the reranker alone for
 `failure_cooldown_seconds`, while the embedder stays in use.
+
+`session_search` reranks too when it ranks by relevance (no `sort`). A query
+fetches twice `limit` text-matched sessions and the meaning matches, and at
+most 24 of those, after the wall, go to the reranker, each as the session's
+title (`Conversation "…"`), then the message's role and its indexed chunk, or
+1,200 characters of the text-matched message around the snippet's first
+highlighted term. The query goes as plain words (FTS5 quotes, stars,
+parentheses, `AND`/`OR`, and `NOT` with its word dropped) after "Find the past
+conversation about: ": the reranker looks for passages that answer a query,
+and a match is often a past question, which framed scores like an answer
+("wifi disconnects" against a titled "my wifi keeps dropping every evening":
+0.205 plain, 0.975 framed). Sessions come back in the reranker's order and
+none is dropped, since a real match can score like an unrelated one (a past
+"won't suspend since the kernel update": 0.002-0.013 for "sleep broken after
+upgrade") while the order still puts it first. `session_id` + `query`
+reorders that session's matches the same way, which picks the anchor. A tool
+call can wait longer than a turn: `session_search_rerank_timeout_seconds`
+(10) bounds it. A failure keeps the old order (text matches, then meaning
+matches) and starts the same cooldown.
 
 ## 12. Signal, fiona and the relay
 

@@ -402,6 +402,7 @@ func (c *cronSched) agentRun(job cron.Job, extra string) (o outcome) {
 	if s.idx != nil {
 		r.Recall = func(ctx context.Context, text string) string { return s.idx.Recall(ctx, scope, text) }
 		r.SearchMessages = s.searchMessages(scope)
+		r.Rerank = s.reranker()
 	}
 	cwd := s.opt.Home
 	if signalSide {

@@ -38,6 +38,7 @@ func rerankIndex(t *testing.T, edit func(*recall.Config)) (*recall.Index, *fakel
 		QueryPrompt: "q: ", DocumentPrompt: "d: ",
 		SearchTimeout: 3 * time.Second, FailureCooldown: time.Minute,
 		RerankModel: "rerank", RerankCandidates: 10, RerankMinScore: 0.5, RerankTimeout: 3 * time.Second,
+		SessionSearchRerankTimeout: 3 * time.Second,
 	}
 	if edit != nil {
 		edit(&cfg)
@@ -172,17 +173,56 @@ func TestRerankConfigFromTheConfigFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	rc, _ := recall.ConfigFrom(cfg, home)
-	if rc.RerankModel != "" || rc.RerankCandidates != 10 || rc.RerankMinScore != 0.5 || rc.RerankTimeout != 3*time.Second {
+	if rc.RerankModel != "" || rc.RerankCandidates != 10 || rc.RerankMinScore != 0.01 || rc.RerankTimeout != 3*time.Second || rc.SessionSearchRerankTimeout != 10*time.Second {
 		t.Fatalf("defaults: %+v", rc)
 	}
 	put(t, home, "config.toml", "[memory.rag]\nenabled = true\nbase_url = \"http://embed.test/v1\"\nmodel = \"embed/embeddinggemma-2\"\n"+
-		"rerank_model = \"rerank/qwen3-reranker-0.6b\"\nrerank_candidates = 8\nrerank_min_score = 0\nrerank_timeout_seconds = 2\n")
+		"rerank_model = \"rerank/qwen3-reranker-0.6b\"\nrerank_candidates = 8\nrerank_min_score = 0\nrerank_timeout_seconds = 2\nsession_search_rerank_timeout_seconds = 20\n")
 	cfg, err = config.Load(home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rc, _ = recall.ConfigFrom(cfg, home)
-	if rc.RerankModel != "rerank/qwen3-reranker-0.6b" || rc.RerankCandidates != 8 || rc.RerankMinScore != 0 || rc.RerankTimeout != 2*time.Second {
+	if rc.RerankModel != "rerank/qwen3-reranker-0.6b" || rc.RerankCandidates != 8 || rc.RerankMinScore != 0 || rc.RerankTimeout != 2*time.Second || rc.SessionSearchRerankTimeout != 20*time.Second {
 		t.Fatalf("explicit values, a zero score included: %+v", rc)
+	}
+}
+
+func TestRerankScoresDocumentsInOrderForSessionSearch(t *testing.T) {
+	x, fake := rerankIndex(t, nil)
+	got, err := x.Rerank(ctx, threeQuery, []string{"nothing here", pizzaText, printerText})
+	if err != nil || !reflect.DeepEqual(got, []float64{0.2, 0.6, 0.9}) {
+		t.Fatalf("Rerank = %v, %v; one score per document, in the documents' order", got, err)
+	}
+	if calls := fake.RerankCalls(); len(calls) != 1 || calls[0].Query != threeQuery || calls[0].TopN != 3 {
+		t.Fatalf("rerank calls = %+v", calls)
+	}
+	if !x.Reranks() {
+		t.Fatal("the switch session_search reads")
+	}
+	none, _ := rerankIndex(t, func(c *recall.Config) { c.RerankModel = "" })
+	if _, err := none.Rerank(ctx, "q", []string{"d"}); err == nil || none.Reranks() {
+		t.Fatal("no reranker configured: an error")
+	}
+}
+
+func TestASessionSearchFailureCoolsTheRerankerForRecallToo(t *testing.T) {
+	x, fake := rerankIndex(t, func(c *recall.Config) {
+		c.TopK = 2
+		c.RerankTimeout = 3 * time.Second
+		c.SessionSearchRerankTimeout = 50 * time.Millisecond
+	})
+	fake.SetRerankDelay(5 * time.Second)
+	start := time.Now()
+	if _, err := x.Rerank(ctx, "q", []string{"d"}); err == nil || time.Since(start) > 2*time.Second {
+		t.Fatalf("Rerank err = %v after %v; SessionSearchRerankTimeout bounds it", err, time.Since(start))
+	}
+	fake.SetRerankDelay(0)
+	calls := len(fake.RerankCalls())
+	if got := x.Recall(ctx, "common", threeQuery); got != block("[fact nas-address] "+nasText, "[fact pizza] "+pizzaText) {
+		t.Fatalf("Recall during the cooldown = %q; cosine order", got)
+	}
+	if _, err := x.Rerank(ctx, "q", []string{"d"}); err == nil || len(fake.RerankCalls()) != calls {
+		t.Fatal("during the cooldown neither recall nor session_search asks the reranker")
 	}
 }

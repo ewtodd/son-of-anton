@@ -29,6 +29,9 @@ type Config struct {
 	RerankCandidates int
 	RerankMinScore   float64
 	RerankTimeout    time.Duration
+	// SessionSearchRerankTimeout bounds session_search's reranking, a tool call
+	// that can wait longer than a turn's recall.
+	SessionSearchRerankTimeout time.Duration
 }
 
 func isGemma(model string) bool { return strings.Contains(strings.ToLower(model), "embeddinggemma") }
@@ -48,7 +51,8 @@ func ConfigFrom(c *config.Config, home string) (Config, bool) {
 	cfg := Config{BaseURL: base, Model: model, TopK: 5, MinScore: 0.5,
 		SearchTimeout: 3 * time.Second, FailureCooldown: time.Minute,
 		NotesDir: strings.TrimSpace(r.NotesDir), MaxChunkChars: r.MaxChunkChars,
-		RerankModel: strings.TrimSpace(r.RerankModel), RerankCandidates: 10, RerankMinScore: 0.5, RerankTimeout: 3 * time.Second}
+		RerankModel: strings.TrimSpace(r.RerankModel), RerankCandidates: 10, RerankMinScore: 0.01, RerankTimeout: 3 * time.Second,
+		SessionSearchRerankTimeout: 10 * time.Second}
 	if cfg.APIKey = strings.TrimSpace(r.APIKey); cfg.APIKey == "" && strings.TrimSpace(r.APIKeyEnv) != "" {
 		cfg.APIKey = c.Getenv(strings.TrimSpace(r.APIKeyEnv))
 	}
@@ -83,6 +87,9 @@ func ConfigFrom(c *config.Config, home string) (Config, bool) {
 	}
 	if r.RerankTimeoutSeconds != nil {
 		cfg.RerankTimeout = secs(*r.RerankTimeoutSeconds)
+	}
+	if r.SessionSearchRerankTimeoutSeconds != nil {
+		cfg.SessionSearchRerankTimeout = secs(*r.SessionSearchRerankTimeoutSeconds)
 	}
 	if cfg.NotesDir != "" && strings.HasPrefix(cfg.NotesDir, "~/") {
 		cfg.NotesDir = filepath.Join(userHome(), cfg.NotesDir[2:])

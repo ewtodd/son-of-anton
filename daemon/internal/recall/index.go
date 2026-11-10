@@ -261,22 +261,39 @@ func (x *Index) embed(ctx context.Context, inputs []string) ([][]float32, error)
 // turn; the whole message still chooses the candidates.
 const rerankQueryChars = 500
 
-// rerank scores cands against query at <BaseURL>/rerank under RerankTimeout
-// and returns those scoring at least RerankMinScore, best first, each with
-// the reranker's score. The query goes without QueryPrompt and the
-// documents without DocumentPrompt: those frame the embedder's inputs.
+// rerank scores cands against query under RerankTimeout and returns those
+// scoring at least RerankMinScore, best first, each with the reranker's score.
 func (x *Index) rerank(ctx context.Context, query string, cands []scored) ([]scored, error) {
-	if x.cfg.RerankTimeout > 0 {
+	docs := make([]string, len(cands))
+	for i, c := range cands {
+		docs[i] = c.text
+	}
+	scores, err := x.scores(ctx, query, docs, x.cfg.RerankTimeout)
+	if err != nil {
+		return nil, err
+	}
+	var kept []scored
+	for i, s := range scores {
+		if s >= x.cfg.RerankMinScore {
+			kept = append(kept, scored{s, cands[i].hit})
+		}
+	}
+	sort.SliceStable(kept, func(i, j int) bool { return kept[i].score > kept[j].score })
+	return kept, nil
+}
+
+// scores asks <BaseURL>/rerank for each document's relevance to query, in
+// the documents' order, within timeout (0: none); an answer that leaves a
+// document out is an error. The query goes without QueryPrompt and the
+// documents without DocumentPrompt: those frame the embedder's inputs.
+func (x *Index) scores(ctx context.Context, query string, docs []string, timeout time.Duration) ([]float64, error) {
+	if timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, x.cfg.RerankTimeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	if q := []rune(query); len(q) > rerankQueryChars {
 		query = string(q[:rerankQueryChars])
-	}
-	docs := make([]string, len(cands))
-	for i, c := range cands {
-		docs[i] = c.text
 	}
 	var out struct {
 		Results []struct {
@@ -288,22 +305,46 @@ func (x *Index) rerank(ctx context.Context, query string, cands []scored) ([]sco
 	if err := x.post(ctx, "rerank", payload, &out); err != nil {
 		return nil, err
 	}
-	if len(out.Results) == 0 {
-		return nil, errors.New("rerank endpoint returned no results")
-	}
-	seen := make([]bool, len(cands))
-	var kept []scored
+	scores := make([]float64, len(docs))
+	seen := make([]bool, len(docs))
 	for _, r := range out.Results {
-		if r.Index < 0 || r.Index >= len(cands) || seen[r.Index] {
-			return nil, fmt.Errorf("rerank endpoint returned index %d for %d document(s)", r.Index, len(cands))
+		if r.Index < 0 || r.Index >= len(docs) || seen[r.Index] {
+			return nil, fmt.Errorf("rerank endpoint returned index %d for %d document(s)", r.Index, len(docs))
 		}
-		seen[r.Index] = true
-		if r.Score >= x.cfg.RerankMinScore {
-			kept = append(kept, scored{r.Score, cands[r.Index].hit})
-		}
+		seen[r.Index], scores[r.Index] = true, r.Score
 	}
-	sort.SliceStable(kept, func(i, j int) bool { return kept[i].score > kept[j].score })
-	return kept, nil
+	if len(out.Results) != len(docs) {
+		return nil, fmt.Errorf("rerank endpoint scored %d of %d document(s)", len(out.Results), len(docs))
+	}
+	return scores, nil
+}
+
+// Reranks says whether a reranker is configured.
+func (x *Index) Reranks() bool { return x.cfg.RerankModel != "" }
+
+// Rerank scores docs against query for session_search: one score per
+// document, in order, within SessionSearchRerankTimeout. It fails without a
+// reranker and while the reranker cools down after a failure; a failure
+// other than a cancelled call starts that cooldown. The index lock is not
+// held while the reranker answers, so a slow search never delays a recall.
+func (x *Index) Rerank(ctx context.Context, query string, docs []string) ([]float64, error) {
+	if !x.Reranks() {
+		return nil, errors.New("recall: no reranker is configured")
+	}
+	x.mu.Lock()
+	cooling := time.Now().Before(x.rerankCooldownUntil)
+	x.mu.Unlock()
+	if cooling {
+		return nil, errors.New("recall: the reranker is cooling down after a failure")
+	}
+	scores, err := x.scores(ctx, query, docs, x.cfg.SessionSearchRerankTimeout)
+	if err != nil && ctx.Err() == nil {
+		x.mu.Lock()
+		x.rerankCooldownUntil = time.Now().Add(x.cfg.FailureCooldown)
+		x.mu.Unlock()
+		log.Printf("recall: reranking session_search failed (%v); its own order for %.0fs", err, x.cfg.FailureCooldown.Seconds())
+	}
+	return scores, err
 }
 
 // post sends payload to <BaseURL>/<path> and decodes the JSON answer into

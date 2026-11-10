@@ -414,6 +414,7 @@ func (s *Server) runner(l *live, ep config.Endpoint, mode approval.Mode, source 
 	if s.idx != nil {
 		r.Recall = func(ctx context.Context, text string) string { return s.idx.Recall(ctx, "common", text) }
 		r.SearchMessages = s.searchMessages("common")
+		r.Rerank = s.reranker()
 	}
 	return r
 }

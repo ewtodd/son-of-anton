@@ -28,6 +28,15 @@ func (s *Server) searchMessages(scope string) tools.MessageSearch {
 	}
 }
 
+// reranker orders session_search's matches; nil when recall or its reranker
+// is off.
+func (s *Server) reranker() tools.Reranker {
+	if s.idx == nil || !s.idx.Reranks() {
+		return nil
+	}
+	return s.idx.Rerank
+}
+
 // indexAfterTurn indexes the session's new rows in the background. It is
 // called from a turn goroutine, so the turns group is still non-empty.
 func (s *Server) indexAfterTurn(id string) {

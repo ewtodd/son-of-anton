@@ -501,6 +501,7 @@ func (s *Server) chatRunner(r *agent.Runner, stamp string, l *live) {
 	if s.idx != nil {
 		r.Recall = func(ctx context.Context, text string) string { return s.idx.Recall(ctx, "gateway", text) }
 		r.SearchMessages = s.searchMessages("gateway")
+		r.Rerank = s.reranker()
 	}
 }
 

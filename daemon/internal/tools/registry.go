@@ -50,6 +50,8 @@ type Env struct {
 	Store          *store.Store
 	SessionID      string
 	SearchMessages MessageSearch
+	// Rerank orders session_search's matches by relevance (nil: no reranker).
+	Rerank Reranker
 	// SessionState says what a session is doing now, as relay list reports
 	// it (nil: no daemon to ask, and results leave it out).
 	SessionState func(ctx context.Context, id string) string

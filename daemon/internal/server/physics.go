@@ -459,7 +459,7 @@ func (s *Server) physicsRunner(r *agent.Runner, rec store.Session) error {
 	if err != nil {
 		return fmt.Errorf("session %s belongs to no physics run: %v", rec.ID, err)
 	}
-	r.Recall, r.SearchMessages, r.Memory, r.MCP, r.Web, r.LSP, r.Cron, r.Vision = nil, nil, nil, nil, nil, nil, nil, nil
+	r.Recall, r.SearchMessages, r.Rerank, r.Memory, r.MCP, r.Web, r.LSP, r.Cron, r.Vision = nil, nil, nil, nil, nil, nil, nil, nil, nil
 	r.Ask, r.Approver, r.AsyncDelivery, r.Relay = nil, nil, false, nil
 	r.Mode = approval.Yolo
 	r.MaxSteps = physicsMaxStepsDefault

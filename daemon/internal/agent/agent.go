@@ -102,6 +102,8 @@ type Runner struct {
 	MemoryApproval bool
 	// SearchMessages adds meaning-based matches to session_search (nil: off).
 	SearchMessages tools.MessageSearch
+	// Rerank orders session_search's matches by relevance (nil: off).
+	Rerank tools.Reranker
 	// SessionState gives session_search each session's state (tools.Env.SessionState).
 	SessionState func(ctx context.Context, id string) string
 	// WallChat walls session_search to one chat (tools.Env.WallChat).
@@ -737,7 +739,7 @@ func (s *Session) runToolCalls(ctx context.Context, stopped func() bool, calls [
 	base := tools.Env{Policy: s.policy, Sandbox: s.sandbox, CommandHome: s.runner.CommandHome, Gate: s.gate, State: s.state, Ask: s.runner.Ask, AsyncDelivery: s.runner.AsyncDelivery, Model: s.ServedModel(),
 		Vision: vision,
 		Memory: s.runner.Memory, MemoryScope: s.runner.MemoryScope, MemoryApproval: s.runner.MemoryApproval,
-		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, SessionState: s.runner.SessionState, WallChat: s.runner.WallChat, Web: s.runner.Web, MCP: s.runner.MCP,
+		Store: s.runner.Store, SessionID: s.id, SearchMessages: s.runner.SearchMessages, Rerank: s.runner.Rerank, SessionState: s.runner.SessionState, WallChat: s.runner.WallChat, Web: s.runner.Web, MCP: s.runner.MCP,
 		LSP: s.runner.LSP, NoScripts: s.runner.NoScripts, Cron: s.runner.Cron, Relay: s.runner.Relay}
 	var emitMu sync.Mutex
 	emit := func(e Event) {

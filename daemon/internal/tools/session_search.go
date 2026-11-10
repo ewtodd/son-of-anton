@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 	"github.com/ewtodd/son-of-anton/daemon/internal/store"
@@ -25,7 +27,22 @@ type MessageHit struct {
 // Its results are untrusted: the tool applies the wall to them again.
 type MessageSearch func(ctx context.Context, query string, k int) []MessageHit
 
+// Reranker gives each document's relevance to query, in the documents'
+// order (nil in Env when no reranker is configured). session_search uses it
+// to order its matches when the caller asks for relevance (no sort), and
+// keeps its own order when it fails.
+type Reranker func(ctx context.Context, query string, docs []string) ([]float64, error)
+
 const (
+	// rerankFrame introduces the query: the reranker is trained to find
+	// passages that answer one, and a match is often the question itself.
+	// Framed, a past question about the query scores like an answer to it.
+	rerankFrame = "Find the past conversation about: "
+	// rerankDocMax is how much of a matched message the reranker reads, and
+	// rerankMax how many matches one search sends it.
+	rerankDocMax = 1200
+	rerankMax    = 24
+
 	contentMax   = 4000
 	bookendMax   = 1200
 	readAll      = 30
@@ -353,11 +370,28 @@ func (sr *searcher) inSession(ctx context.Context, id, query string, w, limit in
 	if !ok {
 		return notFound(id)
 	}
+	rerank := sr.env.Rerank != nil && sortBy == ""
+	fetch := limit
+	if rerank {
+		fetch = 2 * limit
+	}
 	hits, err := sr.env.Store.SearchMessages(ctx, store.MessageQuery{Query: query, Caller: sr.caller, Chat: sr.chat, Roles: sr.roles,
-		Sort: sortBy, Session: id, Limit: limit})
+		Sort: sortBy, Session: id, Limit: fetch})
 	if err != nil {
 		return searchFail("search failed: " + err.Error())
 	}
+	if rerank {
+		bySeq := map[int64]store.Hit{}
+		fs := make([]found, len(hits))
+		for i, h := range hits {
+			bySeq[h.Seq], fs[i] = h, found{id: id, seq: h.Seq, snippet: h.Snippet, literal: true}
+		}
+		hits = hits[:0:0]
+		for _, f := range sr.reranked(ctx, query, fs) {
+			hits = append(hits, bySeq[f.seq])
+		}
+	}
+	hits = hits[:min(len(hits), limit)]
 	matches := []map[string]any{}
 	for _, h := range hits {
 		matches = append(matches, map[string]any{"seq": h.Seq, "role": h.Role, "snippet": h.Snippet})
@@ -374,16 +408,23 @@ func (sr *searcher) inSession(ctx context.Context, id, query string, w, limit in
 	return jsonResult(res)
 }
 
-// found is one session in a discover result.
+// found is one matched message: a text match's (literal, with its snippet)
+// or a meaning match's (with the indexed chunk that matched).
 type found struct {
-	id    string
-	seq   int64
-	match store.Message
+	id            string
+	seq           int64
+	snippet, text string
+	literal       bool
 }
 
 func (sr *searcher) discover(ctx context.Context, query string, limit int, sortBy string, full bool) (string, error) {
+	rerank := sr.env.Rerank != nil && sortBy == ""
+	fetch := limit
+	if rerank {
+		fetch = 2 * limit
+	}
 	hits, err := sr.env.Store.SearchMessages(ctx, store.MessageQuery{Query: query, Caller: sr.caller, Chat: sr.chat, Roles: sr.roles,
-		Sort: sortBy, Exclude: sr.env.SessionID, Limit: limit, PerSession: true})
+		Sort: sortBy, Exclude: sr.env.SessionID, Limit: fetch, PerSession: true})
 	if err != nil {
 		return searchFail("search failed: " + err.Error())
 	}
@@ -392,10 +433,10 @@ func (sr *searcher) discover(ctx context.Context, query string, limit int, sortB
 	for _, h := range hits {
 		if !seen[h.SessionID] {
 			seen[h.SessionID] = true
-			order = append(order, found{id: h.SessionID, seq: h.Seq})
+			order = append(order, found{id: h.SessionID, seq: h.Seq, snippet: h.Snippet, literal: true})
 		}
 	}
-	if sr.env.SearchMessages != nil && len(order) < limit {
+	if sr.env.SearchMessages != nil && (len(order) < limit || rerank) {
 		for _, h := range sr.env.SearchMessages(ctx, query, limit*3) {
 			if seen[h.SessionID] {
 				continue
@@ -404,8 +445,11 @@ func (sr *searcher) discover(ctx context.Context, query string, limit int, sortB
 				continue // the wall again: the index is not trusted
 			}
 			seen[h.SessionID] = true
-			order = append(order, found{id: h.SessionID, seq: h.Seq})
+			order = append(order, found{id: h.SessionID, seq: h.Seq, text: h.Text})
 		}
+	}
+	if rerank {
+		order = sr.reranked(ctx, query, order)
 	}
 	results := []map[string]any{}
 	for _, f := range order {
@@ -468,4 +512,100 @@ func skipSeqs(ms []store.Message, drop func(store.Message) bool) map[int64]bool 
 		}
 	}
 	return out
+}
+
+// reranked is order as the reranker ranks it: at most rerankMax matches,
+// each scored on what rerankDoc reads of it, best first. Nothing is dropped:
+// the reranker can score a real match as low as an unrelated one (a past
+// "won't suspend since the kernel update" at 0.002 for "sleep broken after
+// upgrade"), while its order put the real ones first. On any failure it is
+// order as it was.
+func (sr *searcher) reranked(ctx context.Context, query string, order []found) []found {
+	order = order[:min(len(order), rerankMax)]
+	q := rerankQuery(query)
+	if len(order) == 0 || q == "" {
+		return order
+	}
+	docs := make([]string, len(order))
+	for i, f := range order {
+		docs[i] = sr.rerankDoc(ctx, f)
+	}
+	scores, err := sr.env.Rerank(ctx, rerankFrame+q, docs)
+	if err != nil || len(scores) != len(order) {
+		return order
+	}
+	idx := make([]int, len(order))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(i, j int) bool { return scores[idx[i]] > scores[idx[j]] })
+	out := make([]found, len(order))
+	for i, k := range idx {
+		out[i] = order[k]
+	}
+	return out
+}
+
+// rerankDoc is what the reranker reads of a match: the session's title, then
+// the message's role and a meaning match's chunk, or rerankDocMax characters
+// of a text match's message centred on the first term its snippet
+// highlights. A message gone since it matched leaves the chunk or snippet.
+func (sr *searcher) rerankDoc(ctx context.Context, f found) string {
+	text := strings.NewReplacer("«", "", "»", "", "…", "").Replace(f.snippet)
+	if !f.literal {
+		text = centred(f.text, "", rerankDocMax)
+	}
+	role := ""
+	if ms, _, err := sr.env.Store.MessagesAfter(ctx, f.id, f.seq-1, 1); err == nil && len(ms) > 0 && ms[0].Seq == f.seq {
+		role = ms[0].Role + ": "
+		if f.literal {
+			term := ""
+			if _, rest, ok := strings.Cut(f.snippet, "«"); ok {
+				term, _, _ = strings.Cut(rest, "»")
+			}
+			text = centred(ms[0].Content, term, rerankDocMax)
+		}
+	}
+	head := ""
+	if s, err := sr.env.Store.Session(ctx, f.id); err == nil && strings.TrimSpace(s.Title) != "" {
+		head = fmt.Sprintf("Conversation %q\n", strings.TrimSpace(s.Title))
+	}
+	return head + role + text
+}
+
+// centred is n characters of text around the first occurrence of term (any
+// case), or its first n when term is empty or absent.
+func centred(text, term string, n int) string {
+	r := []rune(text)
+	if len(r) <= n {
+		return text
+	}
+	at := 0
+	if term != "" {
+		low := strings.ToLower(text) // rune for rune, so rune offsets carry over
+		if i := strings.Index(low, strings.ToLower(term)); i >= 0 {
+			at = utf8.RuneCountInString(low[:i])
+		}
+	}
+	start := max(0, min(at-n/2, len(r)-n))
+	return string(r[start : start+n])
+}
+
+// rerankQuery is an FTS5 query as plain words for the reranker: quotes,
+// prefix stars and parentheses dropped, AND and OR dropped, and NOT dropped
+// with the word after it.
+func rerankQuery(q string) string {
+	words := strings.Fields(strings.NewReplacer(`"`, " ", "*", " ", "(", " ", ")", " ").Replace(q))
+	var out []string
+	for i := 0; i < len(words); i++ {
+		switch words[i] {
+		case "AND", "OR":
+			continue
+		case "NOT":
+			i++
+			continue
+		}
+		out = append(out, words[i])
+	}
+	return strings.Join(out, " ")
 }

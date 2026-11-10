@@ -61,7 +61,7 @@ func (s *Server) childRunner(r *agent.Runner, l *live, rec store.Session) *agent
 		}
 	}
 	r.Tools = s.reg.Only(allowed...)
-	r.Ask, r.Recall, r.SearchMessages = nil, nil, nil
+	r.Ask, r.Recall, r.SearchMessages, r.Rerank = nil, nil, nil, nil
 	r.AsyncDelivery = false // nobody is waiting for a background process's notice
 	r.Approver = func(ctx context.Context, req approval.Request) (approval.Choice, error) {
 		if p := s.loaded(rec.ParentID); p != nil {

@@ -119,7 +119,7 @@ TOML under `~/.son-of-anton/memories/`, addressed by id:
 The terminal never sees the chat's memory (`scope = "gateway"`), and
 `session_search` never finds a chat from the terminal. With `memory.rag`,
 recall and `session_search` also match by meaning, and with
-`memory.rag.rerank_model` a reranker orders what recall finds.
+`memory.rag.rerank_model` a reranker orders what both find.
 
 ## Scheduled jobs
 
