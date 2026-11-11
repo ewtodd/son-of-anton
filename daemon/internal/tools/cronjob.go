@@ -66,7 +66,8 @@ func (t cronjobTool) Schema() provider.Tool {
     "deliver": {"type": "string", "description": "Where each result is sent. Leave it out to answer in the current chat, which is nearly always what is wanted. Values: 'local' (keep it on disk, send nothing), 'all' (every connected home channel), 'signal:<chat_id>' (that chat). Several can be joined with commas, as in 'origin,all'."},
     "script": {"type": "string", "description": ` + quote("A script to run before each run. Its stdout is appended to the prompt; with no_agent, its stdout is the message itself. Give a path relative to "+displayHome(t.home)+"/scripts/. Files ending in .sh or .bash are run with bash and any others with Python. On update, an empty string removes the script.") + `},
     "no_agent": {"type": "boolean", "default": false, "description": "Run the script alone, without a model. Output on stdout is sent as the message, no output sends nothing, and a failing script sends an alert. This requires script and ignores prompt. It suits checks whose script prints the text to deliver; anything that calls for judgement needs the model."},
-    "workdir": {"type": "string", "description": "An absolute path of an existing directory to run the job in. The job reads that directory's AGENTS.md and its terminal and file tools start there. Jobs with a workdir run one after another, never together. An empty string removes it."}
+    "workdir": {"type": "string", "description": "An absolute path of an existing directory to run the job in. The job reads that directory's AGENTS.md and its terminal and file tools start there. Jobs with a workdir run one after another, never together. An empty string removes it."},
+    "include_completed": {"type": "boolean", "default": false, "description": "For list, also show the jobs that have run for the last time, such as a one-time job after its run. They are left out otherwise."}
   },
   "required": ["action"]
 }`
@@ -90,18 +91,18 @@ func quote(s string) string {
 }
 
 type cronArgs struct {
-	Action          string   `json:"action"`
-	JobID           string   `json:"job_id"`
-	Prompt          *string  `json:"prompt"`
-	Schedule        *string  `json:"schedule"`
-	Name            *string  `json:"name"`
-	Repeat          *float64 `json:"repeat"`
-	Deliver         *string  `json:"deliver"`
-	Script          *string  `json:"script"`
-	NoAgent         *bool    `json:"no_agent"`
-	Workdir         *string  `json:"workdir"`
-	Reason          *string  `json:"reason"`
-	IncludeDisabled *bool    `json:"include_disabled"`
+	Action           string   `json:"action"`
+	JobID            string   `json:"job_id"`
+	Prompt           *string  `json:"prompt"`
+	Schedule         *string  `json:"schedule"`
+	Name             *string  `json:"name"`
+	Repeat           *float64 `json:"repeat"`
+	Deliver          *string  `json:"deliver"`
+	Script           *string  `json:"script"`
+	NoAgent          *bool    `json:"no_agent"`
+	Workdir          *string  `json:"workdir"`
+	Reason           *string  `json:"reason"`
+	IncludeCompleted bool     `json:"include_completed"`
 }
 
 // indented renders v as JSON with two-space indentation and no escaping of
@@ -157,15 +158,23 @@ func (h *cronHandler) run(a cronArgs) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		out := []any{}
+		out, completed := []any{}, 0
 		for _, j := range jobs {
 			n := cron.Normalize(j)
-			if IsReminder(n) || a.IncludeDisabled != nil && !*a.IncludeDisabled && !cron.Enabled(n) {
+			if IsReminder(n) {
+				continue
+			}
+			if n["state"] == "completed" && !a.IncludeCompleted {
+				completed++
 				continue
 			}
 			out = append(out, formatJob(n))
 		}
-		return answer{"success": true, "count": len(out), "jobs": out}, nil
+		res := answer{"success": true, "count": len(out), "jobs": out}
+		if completed > 0 {
+			res["completed_left_out"] = completed
+		}
+		return res, nil
 	}
 	if a.JobID == "" {
 		return nil, fmt.Errorf("the %s action needs a job_id", action)

@@ -214,9 +214,9 @@ func TestLogOnlyAsksEveryQuestionRecordsAndSendsNothingBack(t *testing.T) {
 	in := check.Input{Steps: []check.Step{{Calls: []check.Call{{Name: "write_file"}}, Results: []string{"ok"}}},
 		Draft: "I saved it.", Chat: "signal:group:gW", Model: "eklow/bolt"}
 	note, flags, err := k.Review(ctx, in, 0)
-	if err != nil || note != "" || len(flags) != 2 || strings.Join((*asked)[0], ",") != "claim,offtopic,unchecked" {
-		t.Fatalf("note %q flags %v err %v asked %v; log_only asks all three, even unchecked after a tool call, and sends nothing back",
-			note, flags, err, *asked)
+	if err != nil || note != "" || strings.Join(flags, ",") != "claim 0.90" || strings.Join((*asked)[0], ",") != "claim,offtopic,unchecked" {
+		t.Fatalf("note %q flags %v err %v asked %v; log_only asks all three, even unchecked after a tool call, sends nothing "+
+			"back, and flags only what a live checker would have sent back (not unchecked after a tool call)", note, flags, err, *asked)
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -227,7 +227,7 @@ func TestLogOnlyAsksEveryQuestionRecordsAndSendsNothingBack(t *testing.T) {
 		t.Fatalf("record file = %q", b)
 	}
 	if rec.Chat != "signal:group:gW" || rec.Model != "eklow/bolt" || rec.State != check.State(in) || rec.SentBack ||
-		rec.Answers["unchecked"] != 0.95 || rec.Cutoffs["claim"] != 0.7 || len(rec.Flags) != 2 {
+		rec.Answers["unchecked"] != 0.95 || rec.Cutoffs["claim"] != 0.7 || rec.Cutoffs["unchecked"] != 0.5 || len(rec.Flags) != 1 {
 		t.Fatalf("record = %+v", rec)
 	}
 	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {

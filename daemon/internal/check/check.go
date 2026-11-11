@@ -262,42 +262,46 @@ func (k *Checker) first(in Input) []Question {
 // sent back already: the first draft gets the questions first gives it, each
 // at its cut-off, a retried one only Recheck at RecheckCutoff (when claim is
 // asked at all), and none past MaxRetries. note is "" when the draft stands;
-// otherwise it is the message that sends it back. flags are the questions at
-// or over their cut-offs, sent back or not. With LogOnly the draft is asked
-// every question in Questions, and note is always "". A checker that fails or
-// times out lets the draft stand (err says why). Every answered check is
-// recorded (Record).
+// otherwise it is the message that sends it back. flags are those questions
+// at or over their cut-offs, sent back or not. With LogOnly a first draft is
+// also asked the rest of Questions, for the record only (an answer to one of
+// them is never a flag), and note is always "". A checker that fails or times
+// out lets the draft stand (err says why). Every answered check is recorded
+// (Record).
 func (k *Checker) Review(ctx context.Context, in Input, attempt int) (note string, flags []string, err error) {
 	if attempt >= k.cfg.MaxRetries {
 		return "", nil, nil
 	}
 	qs, cutoff := k.first(in), func(q string) float64 { return k.cfg.Cutoffs[q] }
-	if k.cfg.LogOnly {
-		qs = nil
-		for _, q := range Questions {
-			if len(k.cfg.Questions) == 0 || slices.Contains(k.cfg.Questions, q.ID) {
-				qs = append(qs, q)
-			}
-		}
-	}
 	if attempt > 0 {
 		qs, cutoff = nil, func(string) float64 { return k.cfg.RecheckCutoff }
 		if len(k.cfg.Questions) == 0 || slices.Contains(k.cfg.Questions, Recheck.ID) {
 			qs = []Question{Recheck}
 		}
 	}
-	if len(qs) == 0 {
+	asked := qs
+	if k.cfg.LogOnly && attempt == 0 {
+		asked = nil
+		for _, q := range Questions {
+			if len(k.cfg.Questions) == 0 || slices.Contains(k.cfg.Questions, q.ID) {
+				asked = append(asked, q)
+			}
+		}
+	}
+	if len(asked) == 0 {
 		return "", nil, nil
 	}
 	state := State(in)
-	ps, err := k.ask(ctx, state, qs)
+	ps, err := k.ask(ctx, state, asked)
 	if err != nil {
 		return "", nil, err
 	}
-	var nudges []string
 	cutoffs := map[string]float64{}
-	for _, q := range qs {
+	for _, q := range asked {
 		cutoffs[q.ID] = cutoff(q.ID)
+	}
+	var nudges []string
+	for _, q := range qs {
 		if ps[q.ID] >= cutoff(q.ID) {
 			flags = append(flags, fmt.Sprintf("%s %.2f", q.ID, ps[q.ID]))
 			nudges = append(nudges, q.Nudge)
