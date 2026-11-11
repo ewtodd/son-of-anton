@@ -113,7 +113,9 @@ With `[checker]`, a reply from one of its `models` is read by a small judge
 claims an action no tool call made, answers a question about a job, file or
 worker without checking it, or answers an earlier topic goes back to the model
 with a note, at most `max_retries` (2) times. Neither the draft nor the note is
-kept. A checker that is down lets the reply through.
+kept. A checker that is down lets the reply through. With `log_only = true` it
+sends nothing back and only logs what it would have, and with `record = true`
+every check goes to `checker/checks.jsonl` in the home, to label and refit on.
 
 ## Memory
 
@@ -133,7 +135,9 @@ recall and `session_search` also match by meaning, and with
 ## Scheduled jobs
 
 The agent schedules with its `cronjob` tool; with `[daemon] cron = true` the
-daemon runs the jobs and delivers to the chat that asked.
+daemon runs the jobs and delivers to the chat that asked. A chat's reminders
+are its `reminder` tool's: at their time the text itself is sent ("⏰ Reminder:
+…"), with no model run.
 
 ## Physics
 

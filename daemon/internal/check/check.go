@@ -15,9 +15,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
@@ -72,6 +76,13 @@ type Config struct {
 	Questions     []string
 	RecheckCutoff float64
 	MaxRetries    int
+	// LogOnly checks every draft but sends none back: a draft is asked every
+	// question in Questions (the unchecked gate is for sending back), and
+	// stands whatever the answers.
+	LogOnly bool
+	// RecordPath, when set, is a JSONL file each check is appended to (see
+	// Record), the data to label and fit the heads on.
+	RecordPath string
 }
 
 // ConfigFrom resolves [checker]; ok says it is configured (a base URL and at
@@ -100,6 +111,7 @@ func ConfigFrom(c *config.Config) (Config, bool) {
 		cfg.MaxRetries = *k.MaxRetries
 	}
 	cfg.Questions = k.Questions
+	cfg.LogOnly = k.LogOnly
 	return cfg, true
 }
 
@@ -129,6 +141,9 @@ type Input struct {
 	User  string   // the turn's user message as the model saw it
 	Steps []Step   // the turn's tool steps before the draft
 	Draft string   // the reply that would end the turn
+	// Chat and Model only label the record (Config.RecordPath); State
+	// leaves them out.
+	Chat, Model string
 }
 
 // State is the text the questions are asked of, in the exact shape the
@@ -165,8 +180,9 @@ func cut(s string, n int) string {
 
 // Checker asks the questions over HTTP.
 type Checker struct {
-	cfg  Config
-	http *http.Client
+	cfg      Config
+	http     *http.Client
+	recordMu sync.Mutex
 }
 
 // New returns a checker for cfg.
@@ -246,13 +262,24 @@ func (k *Checker) first(in Input) []Question {
 // sent back already: the first draft gets the questions first gives it, each
 // at its cut-off, a retried one only Recheck at RecheckCutoff (when claim is
 // asked at all), and none past MaxRetries. note is "" when the draft stands;
-// otherwise it is the message that sends it back. A checker that fails or
-// times out lets the draft stand (err says why).
+// otherwise it is the message that sends it back. flags are the questions at
+// or over their cut-offs, sent back or not. With LogOnly the draft is asked
+// every question in Questions, and note is always "". A checker that fails or
+// times out lets the draft stand (err says why). Every answered check is
+// recorded (Record).
 func (k *Checker) Review(ctx context.Context, in Input, attempt int) (note string, flags []string, err error) {
 	if attempt >= k.cfg.MaxRetries {
 		return "", nil, nil
 	}
 	qs, cutoff := k.first(in), func(q string) float64 { return k.cfg.Cutoffs[q] }
+	if k.cfg.LogOnly {
+		qs = nil
+		for _, q := range Questions {
+			if len(k.cfg.Questions) == 0 || slices.Contains(k.cfg.Questions, q.ID) {
+				qs = append(qs, q)
+			}
+		}
+	}
 	if attempt > 0 {
 		qs, cutoff = nil, func(string) float64 { return k.cfg.RecheckCutoff }
 		if len(k.cfg.Questions) == 0 || slices.Contains(k.cfg.Questions, Recheck.ID) {
@@ -262,19 +289,67 @@ func (k *Checker) Review(ctx context.Context, in Input, attempt int) (note strin
 	if len(qs) == 0 {
 		return "", nil, nil
 	}
-	ps, err := k.ask(ctx, State(in), qs)
+	state := State(in)
+	ps, err := k.ask(ctx, state, qs)
 	if err != nil {
 		return "", nil, err
 	}
 	var nudges []string
+	cutoffs := map[string]float64{}
 	for _, q := range qs {
+		cutoffs[q.ID] = cutoff(q.ID)
 		if ps[q.ID] >= cutoff(q.ID) {
 			flags = append(flags, fmt.Sprintf("%s %.2f", q.ID, ps[q.ID]))
 			nudges = append(nudges, q.Nudge)
 		}
 	}
-	if len(nudges) == 0 {
-		return "", nil, nil
+	if len(nudges) > 0 && !k.cfg.LogOnly {
+		note = NotePrefix + strings.Join(nudges, " ") + NoteSuffix
 	}
-	return NotePrefix + strings.Join(nudges, " ") + NoteSuffix, flags, nil
+	if err := k.record(Record{Time: time.Now().Format(time.RFC3339), Chat: in.Chat, Model: in.Model, Attempt: attempt,
+		State: state, Answers: ps, Cutoffs: cutoffs, Flags: flags, SentBack: note != ""}); err != nil {
+		log.Printf("check: recording: %v", err)
+	}
+	return note, flags, nil
+}
+
+// Record is one check as Config.RecordPath keeps it, a line of JSON: the
+// text the questions were asked of and every answer, so that the drafts can
+// be labelled and the heads fitted again.
+type Record struct {
+	Time     string             `json:"time"`
+	Chat     string             `json:"chat"`
+	Model    string             `json:"model"`
+	Attempt  int                `json:"attempt"`
+	State    string             `json:"state"`
+	Answers  map[string]float64 `json:"answers"`
+	Cutoffs  map[string]float64 `json:"cutoffs"`
+	Flags    []string           `json:"flags"`
+	SentBack bool               `json:"sent_back"`
+}
+
+// record appends r to RecordPath (nothing when it is ""), creating the file
+// and its directory private to this account.
+func (k *Checker) record(r Record) error {
+	if k.cfg.RecordPath == "" {
+		return nil
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	k.recordMu.Lock()
+	defer k.recordMu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(k.cfg.RecordPath), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(k.cfg.RecordPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }

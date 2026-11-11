@@ -209,9 +209,14 @@ func (c *cronSched) runJob(job cron.Job, extra string) {
 		defer c.workdirMu.Unlock()
 	}
 	var o outcome
-	if no, _ := job["no_agent"].(bool); no {
+	switch no, _ := job["no_agent"].(bool); {
+	case tools.IsReminder(job):
+		msg := jobText(job, "message")
+		o = outcome{ok: true, response: msg,
+			doc: header(job, "", time.Now().In(cron.Zone(home))) + "**Run:** a reminder (no model)\n\n---\n\n" + msg + "\n"}
+	case no:
 		o = c.scriptRun(job)
-	} else {
+	default:
 		o = c.agentRun(job, extra)
 	}
 	if s.base.Err() != nil {
@@ -481,7 +486,11 @@ func (c *cronSched) deliver(job cron.Job, o outcome) string {
 		if s.chats == nil {
 			errs = append(errs, "Signal is not served by this daemon")
 		} else {
-			text, styles := signal.Format(cron.Frame(fmt.Sprint(job["name"]), fmt.Sprint(job["id"]), content))
+			framed := cron.Frame(fmt.Sprint(job["name"]), fmt.Sprint(job["id"]), content)
+			if tools.IsReminder(job) && o.ok {
+				framed = tools.ReminderPrefix + content
+			}
+			text, styles := signal.Format(framed)
 			for _, to := range targets {
 				if err := s.chats.sendTo(to, text, styles); err != nil {
 					errs = append(errs, fmt.Sprintf("delivery to signal:%s failed: %v", to, err))

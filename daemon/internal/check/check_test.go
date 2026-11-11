@@ -21,7 +21,7 @@ import (
 func TestConfigFromReadsTheCheckerTable(t *testing.T) {
 	home := t.TempDir()
 	toml := "[checker]\nbase_url = \"http://fiona:8084/v1/\"\nmodels = [\"eklow/\"]\nquestions = [\"claim\", \"unchecked\"]\n" +
-		"max_retries = 1\n[checker.cutoffs]\nclaim = 0.7342\n"
+		"max_retries = 1\nlog_only = true\n[checker.cutoffs]\nclaim = 0.7342\n"
 	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestConfigFromReadsTheCheckerTable(t *testing.T) {
 	}
 	cfg, ok := check.ConfigFrom(c)
 	if !ok || cfg.BaseURL != "http://fiona:8084/v1" || strings.Join(cfg.Questions, ",") != "claim,unchecked" ||
-		cfg.MaxRetries != 1 || cfg.Cutoffs["claim"] != 0.7342 || cfg.Cutoffs["offtopic"] != 0.5 || cfg.Timeout != 3*time.Second {
+		cfg.MaxRetries != 1 || !cfg.LogOnly || cfg.Cutoffs["claim"] != 0.7342 || cfg.Cutoffs["offtopic"] != 0.5 || cfg.Timeout != 3*time.Second {
 		t.Fatalf("ConfigFrom = %+v, %v", cfg, ok)
 	}
 	if _, ok := check.ConfigFrom(&config.Config{}); ok {
@@ -203,5 +203,50 @@ func TestAppliesByServedModelPrefix(t *testing.T) {
 	c := check.Config{Models: []string{"eklow/nemotron", ""}}
 	if !c.Applies("eklow/nemotron-3.5-bolt-e4b") || c.Applies("radiance/qwen3.8-27b") || c.Applies("") {
 		t.Fatal("prefixes of the served model; an empty prefix matches nothing")
+	}
+}
+
+func TestLogOnlyAsksEveryQuestionRecordsAndSendsNothingBack(t *testing.T) {
+	srv, asked := server(t, map[string]float64{"claim": 0.9, "unchecked": 0.95, "offtopic": 0.1}, 0)
+	path := filepath.Join(t.TempDir(), "checker", "checks.jsonl")
+	k := check.New(check.Config{BaseURL: srv.URL + "/v1", Timeout: time.Second, MaxRetries: 2, RecheckCutoff: 0.5,
+		Cutoffs: map[string]float64{"claim": 0.7, "unchecked": 0.5, "offtopic": 0.4}, LogOnly: true, RecordPath: path})
+	in := check.Input{Steps: []check.Step{{Calls: []check.Call{{Name: "write_file"}}, Results: []string{"ok"}}},
+		Draft: "I saved it.", Chat: "signal:group:gW", Model: "eklow/bolt"}
+	note, flags, err := k.Review(ctx, in, 0)
+	if err != nil || note != "" || len(flags) != 2 || strings.Join((*asked)[0], ",") != "claim,offtopic,unchecked" {
+		t.Fatalf("note %q flags %v err %v asked %v; log_only asks all three, even unchecked after a tool call, and sends nothing back",
+			note, flags, err, *asked)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec check.Record
+	if lines := strings.Split(strings.TrimSpace(string(b)), "\n"); len(lines) != 1 || json.Unmarshal([]byte(lines[0]), &rec) != nil {
+		t.Fatalf("record file = %q", b)
+	}
+	if rec.Chat != "signal:group:gW" || rec.Model != "eklow/bolt" || rec.State != check.State(in) || rec.SentBack ||
+		rec.Answers["unchecked"] != 0.95 || rec.Cutoffs["claim"] != 0.7 || len(rec.Flags) != 2 {
+		t.Fatalf("record = %+v", rec)
+	}
+	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
+		t.Fatalf("record file mode %v; it holds chats", st.Mode().Perm())
+	}
+}
+
+func TestASentBackCheckIsRecordedAsSuch(t *testing.T) {
+	srv, _ := server(t, map[string]float64{"claim": 0.9, "unchecked": 0.1, "offtopic": 0.1}, 0)
+	path := filepath.Join(t.TempDir(), "checks.jsonl")
+	k := check.New(check.Config{BaseURL: srv.URL + "/v1", Timeout: time.Second, MaxRetries: 2, RecheckCutoff: 0.5,
+		Cutoffs: map[string]float64{"claim": 0.7, "unchecked": 0.5, "offtopic": 0.4}, RecordPath: path})
+	note, _, _ := k.Review(ctx, check.Input{Draft: "d"}, 0)
+	k.Review(ctx, check.Input{Draft: "d2"}, 1)
+	b, _ := os.ReadFile(path)
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	var first, second check.Record
+	if note == "" || len(lines) != 2 || json.Unmarshal([]byte(lines[0]), &first) != nil || json.Unmarshal([]byte(lines[1]), &second) != nil ||
+		!first.SentBack || first.Attempt != 0 || second.Attempt != 1 || len(second.Answers) != 1 {
+		t.Fatalf("note %q records %q", note, b)
 	}
 }

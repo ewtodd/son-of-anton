@@ -72,7 +72,8 @@ func (t cronjobTool) Schema() provider.Tool {
 }`
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
 		Name: "cronjob",
-		Description: "Set up and look after jobs that run a prompt at a later time or repeatedly. Actions: create (needs schedule and prompt), list, update, pause, resume, remove, run.\n\n" +
+		Description: "Set up and look after jobs that run a prompt at a later time or repeatedly: each run is a model that follows the prompt. " +
+			"To remind the user of something, use the reminder tool instead. Actions: create (needs schedule and prompt), list, update, pause, resume, remove, run.\n\n" +
 			"Each run is a new session. It has no memory of this chat and nobody to ask, so the prompt has to stand on its own, and whatever the run replies last is what gets delivered. " +
 			"Before changing or stopping a job, list to find its job_id; do not guess one. Update an existing job rather than adding a near copy of it. " +
 			"run starts a job right now in the background and its result comes back later as a new message, so do not wait for it or poll.",
@@ -159,7 +160,7 @@ func (h *cronHandler) run(a cronArgs) (any, error) {
 		out := []any{}
 		for _, j := range jobs {
 			n := cron.Normalize(j)
-			if a.IncludeDisabled != nil && !*a.IncludeDisabled && !cron.Enabled(n) {
+			if IsReminder(n) || a.IncludeDisabled != nil && !*a.IncludeDisabled && !cron.Enabled(n) {
 				continue
 			}
 			out = append(out, formatJob(n))
@@ -189,6 +190,9 @@ func (h *cronHandler) run(a cronArgs) (any, error) {
 		return answer{"success": false, "error": fmt.Sprintf("No job has the id or name '%s'. List the jobs to see what exists.", a.JobID)}, nil
 	}
 	job = cron.Normalize(job)
+	if IsReminder(job) {
+		return answer{"success": false, "error": fmt.Sprintf("'%s' is a reminder: change or cancel it with the reminder tool.", job["name"])}, nil
+	}
 	id := job["id"].(string)
 	switch action {
 	case "remove":

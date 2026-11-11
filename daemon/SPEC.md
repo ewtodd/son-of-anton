@@ -485,10 +485,11 @@ matches) and starts the same cooldown.
   gateway-scope rules only (owner, 2026-11-08: the common ones are about
   son-of-anton work) and the date line.
 - The chat is relay-only on every instance: `relay`, `memory`,
-  `session_search`, `clarify`, `cronjob`, `todo`, `web_search`, `web_extract`,
-  and read/patch/write confined to
+  `session_search`, `clarify`, `cronjob`, `reminder`, `todo`, `web_search`,
+  `web_extract`, and read/patch/write confined to
   `notes/gateway/`. No terminal, no execute_code, no MCP, no `task`.
-  Signal-bound cron gets the same set less `clarify`, `relay` and `cronjob`,
+  Signal-bound cron gets the same set less `clarify`, `relay`, `cronjob` and
+  `reminder`,
   runs in the notes folder whatever its workdir, and keeps the cron model, so
   it is not fiona (owner, 2026-11-08: before, it had every tool but clarify,
   and play's 7am check-in hunted through `tool_search` and the shell for a way
@@ -573,6 +574,26 @@ matches) and starts the same cooldown.
   replay (2026-11-10), Bolt-E4B with laya's 0.8B reader and heads fitted on
   that replay's other models caught 11 of 14 bad replies and flagged 3 of 15
   good ones (held-out cut-offs claim 0.73, unchecked 0.59, offtopic 0.44).
+  `log_only = true` checks every draft but sends none back: each draft is
+  asked every question in `questions` (no unchecked gate) and stands, and a
+  flag is only logged. `record = true` appends every answered check to
+  `<home>/checker/checks.jsonl` (0600): time, chat, served model, attempt, the
+  state text, every answer, the cut-offs, the flags and whether it was sent
+  back, the data to label and fit the heads on again. Why (owner,
+  2026-11-11): in the first day of real chats every send-back was wrong
+  (unchecked on chit-chat and a logged check-in, offtopic in its noisy band,
+  claim at 0.88 and 0.91 on a reply whose write_file the turn had just made),
+  and the cut-offs rested on a replay with one positive claim example.
+- Reminders (`reminder`, chats only; owner, 2026-11-11) are the chat's own
+  tool, apart from `cronjob`: set (a text and when, in the cronjob schedule
+  forms), list, change and cancel, each only for the calling chat's
+  reminders. A reminder is a cron job of kind "reminder" holding its text, not
+  a prompt; at its time the daemon sends "⏰ Reminder: " and the text to the
+  chat, with no model run and no job frame, so it arrives even when no model
+  is served. `cronjob` neither lists nor changes reminders. Why: asked to
+  remind, fiona (Bolt-E4B) wrote the user's words as a job's prompt ("Text my
+  uncle Mike."), and a cron run is a model that follows its prompt; on the
+  fiona replay it did so in 24 of 24 tries.
 
 ## 13. Cron
 

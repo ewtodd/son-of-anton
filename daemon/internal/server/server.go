@@ -214,6 +214,9 @@ func New(o Options) (*Server, error) {
 		meta: map[string]map[string]metaEntry{}, metaAt: map[string]time.Time{}, metaFail: map[string]time.Time{},
 		learned: map[string]int{}, notify: runNotify}
 	if kc, ok := check.ConfigFrom(cfg); ok {
+		if cfg.Checker.Record {
+			kc.RecordPath = filepath.Join(o.Home, "checker", "checks.jsonl")
+		}
 		s.chk = check.New(kc)
 	}
 	if o.NotifySend != nil {
@@ -222,7 +225,7 @@ func New(o Options) (*Server, error) {
 	s.cron = s.newCron()
 	cronTool := tools.CronJob(o.Home)
 	s.regTask = tools.NewRegistry(append(base, subagent.Tool(subagent.Builtin(), true, s.spawnTask), cronTool)...)
-	s.regChat = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "clarify", "memory", "session_search", "web_search", "web_extract").With(cronTool, tools.RelayTool())
+	s.regChat = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "clarify", "memory", "session_search", "web_search", "web_extract").With(cronTool, tools.Reminder(), tools.RelayTool())
 	var cronTools []string
 	for _, n := range s.reg.Names() {
 		if n != "clarify" {

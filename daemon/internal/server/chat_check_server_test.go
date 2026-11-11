@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -92,5 +94,26 @@ func TestTheGatewayLeavesOtherModelsUnchecked(t *testing.T) {
 	r.reply(sigGroup, "Done.")
 	if asked.Load() != 0 {
 		t.Fatalf("checker asked %d times about a model outside [checker] models", asked.Load())
+	}
+}
+
+func TestALogOnlyGatewayRecordsAndLetsTheDraftThrough(t *testing.T) {
+	srv, asked := systemOne(t)
+	fake := fakellm.New(t, fakellm.Turn{Content: "I've logged it.", ServedModel: "eklow/bolt"})
+	r := newChatRig(t, fake, checkerConfig(srv.URL)+"log_only = true\nrecord = true\n")
+	r.say("log my weight")
+	r.reply(sigGroup, "I've logged it.")
+	if fake.Count() != 1 || asked.Load() != 1 {
+		t.Fatalf("%d model requests, %d checks; log_only checks once and sends nothing back", fake.Count(), asked.Load())
+	}
+	var b []byte
+	waitUntil(t, "the check to be recorded", func() bool {
+		b, _ = os.ReadFile(filepath.Join(r.h.home, "checker", "checks.jsonl"))
+		return len(b) > 0
+	})
+	var rec check.Record
+	if err := json.Unmarshal(b, &rec); err != nil || rec.SentBack || len(rec.Flags) != 1 || rec.Model != "eklow/bolt" ||
+		rec.Chat != "signal:group:"+sigGroup+":"+sigAccount || !strings.Contains(rec.State, "I've logged it.") {
+		t.Fatalf("record %s: %+v, %v", b, rec, err)
 	}
 }

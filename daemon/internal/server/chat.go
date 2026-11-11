@@ -505,13 +505,13 @@ func (s *Server) chatRunner(r *agent.Runner, stamp string, l *live) {
 		r.SearchMessages = s.searchMessages("gateway")
 		r.Rerank = s.reranker()
 	}
-	r.Check = s.gatewayCheck()
+	r.Check = s.gatewayCheck(stamp)
 }
 
-// gatewayCheck is the gateway's end-of-turn checker (nil when [checker] is
-// not configured). It reviews only replies served by one of its models; a
-// checker that cannot answer lets the reply stand and logs why.
-func (s *Server) gatewayCheck() func(ctx context.Context, model string, in check.Input, attempt int) string {
+// gatewayCheck is the end-of-turn checker of the chat stamp (nil when
+// [checker] is not configured). It reviews only replies served by one of its
+// models; a checker that cannot answer lets the reply stand and logs why.
+func (s *Server) gatewayCheck(stamp string) func(ctx context.Context, model string, in check.Input, attempt int) string {
 	if s.chk == nil {
 		return nil
 	}
@@ -519,13 +519,15 @@ func (s *Server) gatewayCheck() func(ctx context.Context, model string, in check
 		if !s.chk.Config().Applies(model) {
 			return ""
 		}
+		in.Chat, in.Model = stamp, model
 		note, flags, err := s.chk.Review(ctx, in, attempt)
-		if err != nil {
+		switch {
+		case err != nil:
 			log.Printf("check: %v; the reply stands", err)
-			return ""
-		}
-		if note != "" {
+		case note != "":
 			log.Printf("check: %s's reply sent back (attempt %d): %s", model, attempt+1, strings.Join(flags, ", "))
+		case len(flags) > 0:
+			log.Printf("check: %s's reply would have been sent back (log_only): %s", model, strings.Join(flags, ", "))
 		}
 		return note
 	}

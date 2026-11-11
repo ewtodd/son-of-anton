@@ -60,6 +60,8 @@ type Config struct {
 		RecheckCutoff  *float64           `toml:"recheck_cutoff"`
 		MaxRetries     *int               `toml:"max_retries"`
 		Questions      []string           `toml:"questions"` // ids asked of a first draft; empty: all
+		LogOnly        bool               `toml:"log_only"`  // check every draft, send none back
+		Record         bool               `toml:"record"`    // append each check to <home>/checker/checks.jsonl
 	} `toml:"checker"`
 	Approvals struct {
 		Mode string `toml:"mode"`
