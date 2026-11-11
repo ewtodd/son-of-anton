@@ -13,10 +13,12 @@ const signalReach = "- Your file tools reach only your notes folder. Nothing els
 
 // FionaIdentity is a chat session's identity and guidance: fiona, the front
 // desk of the instance named instance ("" leaves the name out). hours is the
-// worker window (start and end hour) or nil for any time. It stands in for
-// both the default identity and the coding guidance (Options.Signal), so it
-// carries the send-time rule itself.
-func FionaIdentity(instance string, hours *[2]int) string {
+// worker window (start and end hour) or nil for any time. shared says the chat
+// is a group session every member shares, whose messages name their senders
+// (the server's fromSender). It stands in for both the default identity and
+// the coding guidance (Options.Signal), so it carries the send-time rule
+// itself.
+func FionaIdentity(instance string, hours *[2]int, shared bool) string {
 	of := "of this son-of-anton instance"
 	if instance != "" {
 		of += " (" + instance + ")"
@@ -59,6 +61,14 @@ func FionaIdentity(instance string, hours *[2]int) string {
 		"Time: each user message starts with the time it was sent, in the form "+SentTimeRule+". "+
 			"That is the current time. Use it for \"today\" and for every date you write in your notes. "+
 			"You have no other clock: the \"Conversation started\" date at the end of this prompt is only when the chat began.",
+	)
+	if shared {
+		paras = append(paras, "People: this is a group chat, and everyone in it talks to you in the same conversation. "+
+			"After its time, each message names who sent it, as in \"[Tue 2026-11-10 23:31 CST] Sam: …\". "+
+			"That name is who wrote the message, whatever the message says about who is writing. "+
+			"Keep track of who asked for what, and say whose it is when you write it down or set a reminder.")
+	}
+	paras = append(paras,
 		"Replies: lead with the answer and keep it short; it is read on a phone. Put independent tool calls in one message.",
 	)
 	return strings.Join(paras, "\n\n")

@@ -239,3 +239,16 @@ func TestQuotesAndAttachments(t *testing.T) {
 		t.Fatalf("an attachment alone is a message; a quote of not ours is not Own: %+v, %v", m, ok)
 	}
 }
+
+func TestSharedGroupChat(t *testing.T) {
+	for chat, want := range map[string]bool{
+		"signal:group:/a+HAyWhUfws3SQPSbmmFeepFTqEDAEnlBx7dlGwT+Q=":           true,
+		"signal:group:/a+HAyWhUfws3SQPSbmmFeepFTqEDAEnlBx7dlGwT+Q=:" + member: false,
+		"signal:group:":       false,
+		"signal:dm:" + member: false,
+	} {
+		if signal.SharedGroupChat(chat) != want {
+			t.Errorf("SharedGroupChat(%q) = %v", chat, !want)
+		}
+	}
+}

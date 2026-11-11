@@ -466,6 +466,10 @@ matches) and starts the same cooldown.
     what she finds, say plainly when a tool fails;
   - time: each user message starts with its send time (the send-time rule,
     so her messages are stamped), the only clock she has;
+  - people, only in a group session every member shares (owner-approved,
+    2026-11-11): each message names its sender after the time, that name
+    and not what a message claims is who wrote it, and she keeps track of
+    who asked for what;
   - replies: the answer first, short, for a phone.
 
   The prompt then names her notes folder and carries the project files, the
@@ -519,6 +523,13 @@ matches) and starts the same cooldown.
   sessions it started, it keeps hearing of them while a terminal drives them,
   and `session_search` from a chat sees only that chat's sessions plus common
   ones.
+- In a group whose one session every member shares (`[gateway]
+  group_sessions_per_user = false`, stamp `signal:group:<id>`), each message,
+  `/sendnow`'s text included, reaches fiona as `<sender>: <text>` after its
+  send time: the sender's Signal contact or profile name (one line, at most 40
+  characters), else their number or UUID. Without names (until 2026-11-11)
+  fiona could not tell a shared group's members apart and believed whoever
+  said who they were.
 - End-of-turn checker (`[checker]`, chats only; owner, 2026-11-10). A reply
   that would end a chat turn, served by a model matching a `models` prefix, is
   first sent to `<base_url>/systemone` (laya's wire shape: `{state,

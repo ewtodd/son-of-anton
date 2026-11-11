@@ -139,7 +139,7 @@ func TestAChatsPrompt(t *testing.T) {
 	f := setup(t)
 	write(t, filepath.Join(f.home, "memories", "rules.toml"), rules)
 	write(t, filepath.Join(f.cwd, "AGENTS.md"), "PROJECT RULES")
-	fiona := prompt.FionaIdentity("play", nil)
+	fiona := prompt.FionaIdentity("play", nil, false)
 	text := build(t, prompt.Options{Home: f.home, Cwd: f.cwd, Scope: "gateway", Memory: true, Signal: true, Identity: fiona, Now: now}).Text
 	marks := []string{fiona, "Your notes folder: " + f.cwd + " (relative paths start there).", "PROJECT RULES", "STANDING RULES (gateway scope", "[second-person]", "Conversation started: Monday, November 2, 2026"}
 	last := -1
@@ -180,8 +180,8 @@ func TestSignalJobIdentity(t *testing.T) {
 }
 
 func TestFionaIdentity(t *testing.T) {
-	anyTime := prompt.FionaIdentity("play", nil)
-	hours := prompt.FionaIdentity("", &[2]int{20, 7})
+	anyTime := prompt.FionaIdentity("play", nil, false)
+	hours := prompt.FionaIdentity("", &[2]int{20, 7}, false)
 	if !strings.HasPrefix(anyTime, "You are fiona, the front desk of this son-of-anton instance (play). ") ||
 		!strings.Contains(anyTime, "Workers here can run at any time.") {
 		t.Fatalf("any time:\n%s", anyTime)
@@ -198,6 +198,15 @@ func TestFionaIdentity(t *testing.T) {
 	}
 	if strings.Contains(anyTime, "—") {
 		t.Error("plain prose: no em-dashes in fiona's block")
+	}
+	shared := prompt.FionaIdentity("ricky", nil, true)
+	people := strings.Index(shared, "People: this is a group chat")
+	if strings.Contains(anyTime, "People:") || people < 0 || people > strings.Index(shared, "Replies:") ||
+		people < strings.Index(shared, "Time:") || !strings.Contains(shared, "whatever the message says about who is writing") {
+		t.Fatalf("a shared group's block names its senders, between Time and Replies; others do not:\n%s", shared)
+	}
+	if strings.Replace(shared, shared[people:strings.Index(shared, "Replies:")], "", 1) != prompt.FionaIdentity("ricky", nil, false) {
+		t.Fatal("the People paragraph is the only difference")
 	}
 }
 

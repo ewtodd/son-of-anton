@@ -491,7 +491,7 @@ func (s *Server) chatRunner(r *agent.Runner, stamp string, l *live) {
 		}
 		res, err := prompt.Build(prompt.Options{
 			Home: s.opt.Home, Cwd: ss.Cwd, Scope: "gateway", Memory: true, Signal: true,
-			Identity: prompt.FionaIdentity(strings.TrimSpace(s.cfg.Daemon.Instance), hours),
+			Identity: prompt.FionaIdentity(strings.TrimSpace(s.cfg.Daemon.Instance), hours, signal.SharedGroupChat(stamp)),
 			Now:      time.Now().In(prompt.LocalZone()), RulesCharLimit: s.cfg.Memory.RulesCharLimit,
 		})
 		for _, w := range res.Warnings {
@@ -633,6 +633,9 @@ func (h *chatHub) handle(data []byte) {
 	cs := h.state(in.Chat)
 	if name, args, ok := parseCommand(in.Text); ok {
 		ts := in.Timestamp
+		if name == "sendnow" {
+			args = fromSender(in, args)
+		}
 		cs.cmds.push(func() { h.command(cs, name, args, ts) })
 		return
 	}
@@ -736,9 +739,31 @@ func (h *chatHub) ack(cs *chatState) {
 	}
 }
 
-// userText is the text the model sees: the quote the message replies to, the
-// message, and a line for each attachment saved to disk. Image attachments
-// also come back as image references, to attach to the turn natively.
+// fromSender starts text with its sender's name when in's chat is a group
+// session every member shares, so fiona can tell who wrote what: Signal's
+// contact or profile name, else the number or UUID. Elsewhere the text is
+// unchanged.
+func fromSender(in signal.Inbound, text string) string {
+	if text == "" || !signal.SharedGroupChat(in.Chat) {
+		return text
+	}
+	name := strings.Join(strings.Fields(in.SenderName), " ")
+	if r := []rune(name); len(r) > senderNameMax {
+		name = string(r[:senderNameMax])
+	}
+	if name == "" {
+		name = in.Sender
+	}
+	return name + ": " + text
+}
+
+// senderNameMax caps a sender's name in fromSender's label.
+const senderNameMax = 40
+
+// userText is the text the model sees: the sender in a shared group (see
+// fromSender), the quote the message replies to, the message, and a line for
+// each attachment saved to disk. Image attachments also come back as image
+// references, to attach to the turn natively.
 func (h *chatHub) userText(in signal.Inbound) (string, []store.Image) {
 	text := strings.TrimSpace(in.Text)
 	if q := in.Quote; q != nil && strings.TrimSpace(q.Text) != "" {
@@ -779,7 +804,7 @@ func (h *chatHub) userText(in signal.Inbound) (string, []store.Image) {
 		}
 		lines = append(lines, fmt.Sprintf("[Attachment from the user: %s (%s), stored at %s]", name, kind, path))
 	}
-	return strings.Join(lines, "\n"), images
+	return fromSender(in, strings.Join(lines, "\n")), images
 }
 
 // imageAttachment turns an image attachment into a media reference, reading

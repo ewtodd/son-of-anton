@@ -40,6 +40,15 @@ type Inbound struct {
 	Quote                                            *Quote
 }
 
+// SharedGroupChat says whether the chat stamp chat is a group's one session,
+// shared by every member ("signal:group:<id>"), rather than a member's own
+// session in it ("signal:group:<id>:<sender>") or a DM. Group ids are base64,
+// so they hold no colon.
+func SharedGroupChat(chat string) bool {
+	id, ok := strings.CutPrefix(chat, "signal:group:")
+	return ok && id != "" && !strings.Contains(id, ":")
+}
+
 type sentRecord struct {
 	ts     int64
 	at     time.Time
