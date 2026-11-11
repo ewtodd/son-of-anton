@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
+	"github.com/ewtodd/son-of-anton/daemon/internal/check"
 	"github.com/ewtodd/son-of-anton/daemon/internal/lsp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/mcp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/memory"
@@ -104,6 +105,12 @@ type Runner struct {
 	SearchMessages tools.MessageSearch
 	// Rerank orders session_search's matches by relevance (nil: off).
 	Rerank tools.Reranker
+	// Check reviews a reply that would end the turn, served by model (nil:
+	// off): a non-empty note sends the draft back with the note as the next
+	// message, for that request only (neither is stored). attempt counts the
+	// drafts of this turn sent back so far. It owns its own policy (which
+	// models, how many retries) and lets a draft stand when it cannot answer.
+	Check func(ctx context.Context, model string, in check.Input, attempt int) (note string)
 	// SessionState gives session_search each session's state (tools.Env.SessionState).
 	SessionState func(ctx context.Context, id string) string
 	// WallChat walls session_search to one chat (tools.Env.WallChat).
@@ -299,6 +306,26 @@ func (s *Session) sandboxed(pol *sandbox.Policy) {
 
 // registry is the tools this session offers and runs.
 func (s *Session) registry() *tools.Registry { return s.reg }
+
+// toolNames are the names of the tools the model is offered, in schema order.
+func (s *Session) toolNames() []string {
+	reg := s.registry()
+	if reg == nil {
+		return nil
+	}
+	var names []string
+	for _, t := range reg.Schemas() {
+		names = append(names, t.Function.Name)
+	}
+	return names
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
 
 // Session is one conversation, bound to its stored transcript and prompt.
 type Session struct {
@@ -549,8 +576,10 @@ func (s *Session) SendMediaAt(ctx context.Context, text string, images []store.I
 		return ""
 	}
 	steps, empties := 0, 0
-	var lastCalls string // the previous step's tool calls
-	repeats := 0         // steps in a row that made exactly lastCalls
+	var turnSteps []check.Step // this turn's tool steps, for Check
+	checks := 0                // drafts of this turn Check sent back
+	var lastCalls string       // the previous step's tool calls
+	repeats := 0               // steps in a row that made exactly lastCalls
 	maxSteps := r.MaxSteps
 	if maxSteps <= 0 {
 		maxSteps = DefaultMaxSteps
@@ -682,6 +711,20 @@ func (s *Session) SendMediaAt(ctx context.Context, text string, images []store.I
 					resp.Usage.CompletionTokens, empties, maxEmptyRetries)})
 				continue
 			}
+			// Not under tool_choice none: the notes ask for a tool call. A stop
+			// cancels the check, and a draft whose turn was stopped stands.
+			if r.Check != nil && req.ToolChoice != "none" && !stopped() {
+				in := check.Input{Tools: s.toolNames(), User: apiText, Steps: turnSteps, Draft: resp.Message.Content}
+				if note := r.Check(reqCtx, s.ServedModel(), in, checks); note != "" && !stopped() {
+					// The draft and the note ride this request only: a retry that
+					// calls tools is persisted and the next request is rebuilt from
+					// the store, so neither ever enters the transcript.
+					checks++
+					msgs = append(msgs, provider.Message{Role: "assistant", Content: resp.Message.Content},
+						provider.Message{Role: "user", Content: note})
+					continue
+				}
+			}
 			assistant := store.Message{
 				Role:      "assistant",
 				Content:   resp.Message.Content,
@@ -694,6 +737,14 @@ func (s *Session) SendMediaAt(ctx context.Context, text string, images []store.I
 			return total, nil
 		}
 		rows := s.runToolCalls(toolCtx, stopped, resp.Message.ToolCalls, emit, maxChars)
+		step := check.Step{}
+		for _, c := range resp.Message.ToolCalls {
+			step.Calls = append(step.Calls, check.Call{Name: c.Function.Name, Arguments: c.Function.Arguments})
+		}
+		for _, row := range rows {
+			step.Results = append(step.Results, firstNonEmpty(row.APIContent, row.Content))
+		}
+		turnSteps = append(turnSteps, step)
 		assistant := store.Message{
 			Role:      "assistant",
 			Content:   resp.Message.Content,

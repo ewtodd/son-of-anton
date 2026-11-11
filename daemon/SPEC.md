@@ -519,6 +519,32 @@ matches) and starts the same cooldown.
   sessions it started, it keeps hearing of them while a terminal drives them,
   and `session_search` from a chat sees only that chat's sessions plus common
   ones.
+- End-of-turn checker (`[checker]`, chats only; owner, 2026-11-10). A reply
+  that would end a chat turn, served by a model matching a `models` prefix, is
+  first sent to `<base_url>/systemone` (laya's wire shape: `{state,
+  questions: {id: {type: "noul", instructions}}}`, answered with
+  `answers[id].noul`, the probability of yes). The state is the tool names, the
+  user message as the model saw it (stamp, recalled notes and model note
+  included), this turn's tool calls then results per step (arguments cut at
+  600 characters, results at 1500, the message and the draft at 3000), and the
+  draft: byte for byte the text the replay's `checker.py` built, which the
+  heads were fitted on. A first draft is asked three questions, each against
+  its own cut-off (`cutoffs`, default 0.5): `claim` (says it did something no
+  tool call did), `unchecked` (answers a question about current state with no
+  tool call that checked it), `offtopic` (does not answer the latest message).
+  A retried draft is asked only `claim`, at `recheck_cutoff` (0.5), since a
+  nudged model tends to answer with an invented "I've logged it". A flagged
+  draft goes back with a note naming each problem, as a user message prefixed
+  "[A check by son-of-anton, not a message from the user]"; the draft and the
+  note ride that request only and are never stored, and the chat sees only the
+  reply that stands. At most `max_retries` (2) drafts go back per turn. Not
+  checked: answers under tool_choice none (the step budget: the notes ask for
+  a tool call), and a stopped turn, whose stop cancels the check and keeps the
+  draft. A check that fails, answers incompletely or exceeds
+  `timeout_seconds` (3) lets the draft stand and is logged. Why: on the fiona
+  replay (2026-11-10), Bolt-E4B with laya's 0.8B reader and heads fitted on
+  that replay's other models caught 11 of 14 bad replies and flagged 3 of 15
+  good ones (held-out cut-offs claim 0.73, unchecked 0.59, offtopic 0.44).
 
 ## 13. Cron
 

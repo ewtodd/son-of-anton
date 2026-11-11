@@ -24,6 +24,7 @@ import (
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
+	"github.com/ewtodd/son-of-anton/daemon/internal/check"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
 	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
 	"github.com/ewtodd/son-of-anton/daemon/internal/signal"
@@ -502,6 +503,30 @@ func (s *Server) chatRunner(r *agent.Runner, stamp string, l *live) {
 		r.Recall = func(ctx context.Context, text string) string { return s.idx.Recall(ctx, "gateway", text) }
 		r.SearchMessages = s.searchMessages("gateway")
 		r.Rerank = s.reranker()
+	}
+	r.Check = s.gatewayCheck()
+}
+
+// gatewayCheck is the gateway's end-of-turn checker (nil when [checker] is
+// not configured). It reviews only replies served by one of its models; a
+// checker that cannot answer lets the reply stand and logs why.
+func (s *Server) gatewayCheck() func(ctx context.Context, model string, in check.Input, attempt int) string {
+	if s.chk == nil {
+		return nil
+	}
+	return func(ctx context.Context, model string, in check.Input, attempt int) string {
+		if !s.chk.Config().Applies(model) {
+			return ""
+		}
+		note, flags, err := s.chk.Review(ctx, in, attempt)
+		if err != nil {
+			log.Printf("check: %v; the reply stands", err)
+			return ""
+		}
+		if note != "" {
+			log.Printf("check: %s's reply sent back (attempt %d): %s", model, attempt+1, strings.Join(flags, ", "))
+		}
+		return note
 	}
 }
 

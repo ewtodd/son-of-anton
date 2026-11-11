@@ -108,6 +108,13 @@ does not. A chat starts a fresh conversation with the first message after 4am
 delegates work to run on the parent's model, or `[delegation] model` when you
 set one; a `task` call may pin `model` for that call.
 
+With `[checker]`, a reply from one of its `models` is read by a small judge
+(a laya-style `/v1/systemone` endpoint) before it reaches the chat: one that
+claims an action no tool call made, answers a question about a job, file or
+worker without checking it, or answers an earlier topic goes back to the model
+with a note, at most `max_retries` (2) times. Neither the draft nor the note is
+kept. A checker that is down lets the reply through.
+
 ## Memory
 
 TOML under `~/.son-of-anton/memories/`, addressed by id:

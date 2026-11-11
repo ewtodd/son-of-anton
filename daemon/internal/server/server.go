@@ -22,6 +22,7 @@ import (
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/agent"
 	"github.com/ewtodd/son-of-anton/daemon/internal/approval"
+	"github.com/ewtodd/son-of-anton/daemon/internal/check"
 	"github.com/ewtodd/son-of-anton/daemon/internal/config"
 	"github.com/ewtodd/son-of-anton/daemon/internal/lsp"
 	"github.com/ewtodd/son-of-anton/daemon/internal/mcp"
@@ -162,6 +163,7 @@ type Server struct {
 	polled        statusSeen   // the last relay status each chat got for each worker, in this run
 	mem           *memory.Store
 	idx           *recall.Index   // nil: recall is off
+	chk           *check.Checker  // nil: the gateway's end-of-turn checker is off
 	base          context.Context // cancelled when shutdown starts
 	stop          context.CancelFunc
 
@@ -211,6 +213,9 @@ func New(o Options) (*Server, error) {
 		live: map[string]*live{}, indexed: map[string]int64{}, conns: map[*conn]struct{}{},
 		meta: map[string]map[string]metaEntry{}, metaAt: map[string]time.Time{}, metaFail: map[string]time.Time{},
 		learned: map[string]int{}, notify: runNotify}
+	if kc, ok := check.ConfigFrom(cfg); ok {
+		s.chk = check.New(kc)
+	}
 	if o.NotifySend != nil {
 		s.notify = o.NotifySend
 	}

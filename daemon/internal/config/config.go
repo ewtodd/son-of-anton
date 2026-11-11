@@ -49,6 +49,17 @@ type Config struct {
 		WriteApproval  bool `toml:"write_approval"`
 		RAG            RAG  `toml:"rag"`
 	} `toml:"memory"`
+	// Checker is the end-of-turn checker (internal/check): a System One
+	// endpoint asked about each reply that ends a chat turn on the named models.
+	Checker struct {
+		BaseURL        string             `toml:"base_url"`
+		APIKeyEnv      string             `toml:"api_key_env"`
+		Models         []string           `toml:"models"` // served-model prefixes
+		TimeoutSeconds *float64           `toml:"timeout_seconds"`
+		Cutoffs        map[string]float64 `toml:"cutoffs"`
+		RecheckCutoff  *float64           `toml:"recheck_cutoff"`
+		MaxRetries     *int               `toml:"max_retries"`
+	} `toml:"checker"`
 	Approvals struct {
 		Mode string `toml:"mode"`
 	} `toml:"approvals"`
