@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -480,7 +481,7 @@ func (s *Server) chatRunner(r *agent.Runner, stamp string, l *live) {
 	if !s.cfg.Gateway.SingleUser {
 		r.WallChat = stamp
 	}
-	r.Prompt = func(_ context.Context, ss store.Session) (string, error) {
+	r.Prompt = func(ctx context.Context, ss store.Session) (string, error) {
 		var hours *[2]int
 		start, end, ok, warn := s.cfg.WorkerHours()
 		if ok {
@@ -491,7 +492,7 @@ func (s *Server) chatRunner(r *agent.Runner, stamp string, l *live) {
 		}
 		res, err := prompt.Build(prompt.Options{
 			Home: s.opt.Home, Cwd: ss.Cwd, Scope: "gateway", Memory: true, Signal: true,
-			Identity: prompt.FionaIdentity(strings.TrimSpace(s.cfg.Daemon.Instance), hours, signal.SharedGroupChat(stamp)),
+			Identity: prompt.FionaIdentity(strings.TrimSpace(s.cfg.Daemon.Instance), hours, s.chatGroup(ctx, stamp)),
 			Now:      time.Now().In(prompt.LocalZone()), RulesCharLimit: s.cfg.Memory.RulesCharLimit,
 		})
 		for _, w := range res.Warnings {
@@ -1207,3 +1208,45 @@ func (l *live) stopChat() bool {
 	l.interruptLocked()
 	return active
 }
+
+// chatGroup is fiona's view of a shared group chat (nil for any other chat):
+// its members as Signal names them on this account, the owner first and
+// marked, the rest by name. They are read when a session's prompt is built,
+// so the prompt stays the same for the session; a failed read leaves them out
+// and is logged.
+func (s *Server) chatGroup(ctx context.Context, stamp string) *prompt.Group {
+	if !signal.SharedGroupChat(stamp) {
+		return nil
+	}
+	g := &prompt.Group{}
+	if s.chats == nil {
+		return g
+	}
+	ctx, cancel := context.WithTimeout(ctx, groupLookupTimeout)
+	defer cancel()
+	members, err := s.chats.cl.GroupMembers(ctx, strings.TrimPrefix(stamp, "signal:group:"))
+	if err != nil {
+		log.Printf("signal: the members of %s: %v", stamp, err)
+		return g
+	}
+	slices.SortStableFunc(members, func(a, b signal.Member) int {
+		if a.Own != b.Own {
+			if a.Own {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	for _, m := range members {
+		if m.Own {
+			m.Name += " (the owner)"
+		}
+		g.Members = append(g.Members, m.Name)
+	}
+	return g
+}
+
+// groupLookupTimeout bounds chatGroup's two signal-cli calls, which a new
+// session's first reply waits for.
+const groupLookupTimeout = 5 * time.Second

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,7 +38,9 @@ type Server struct {
 	nextTS      int64
 	sendFails   bool
 	checkStatus int
-	account     string // the last event stream's account
+	account     string              // the last event stream's account
+	groups      map[string][]string // group id -> members' numbers, as listGroups lists them
+	contacts    map[string]any      // number -> the contact, as listContacts gives it
 }
 
 // New starts a fake daemon, closed when the test ends.
@@ -142,6 +145,25 @@ func (s *Server) rpc(w http.ResponseWriter, r *http.Request) {
 		default:
 			result = data
 		}
+	case "listGroups":
+		// Every group, whatever groupId asks for: the caller must pick its own.
+		var list []any
+		for id, numbers := range s.groups {
+			var members []any
+			for _, n := range numbers {
+				members = append(members, map[string]any{"number": n, "uuid": "uuid-" + n, "isAdmin": false})
+			}
+			list = append(list, map[string]any{"id": id, "name": "The Group", "members": members})
+		}
+		result = list
+	case "listContacts":
+		var list []any
+		for _, n := range stringList(req.Params["recipient"]) {
+			if c, ok := s.contacts[n]; ok {
+				list = append(list, c)
+			}
+		}
+		result = list
 	default:
 		result = map[string]any{}
 	}
@@ -353,4 +375,37 @@ func (s *Server) StreamAccount() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.account
+}
+
+// SetGroup makes listGroups list group with members (numbers), and
+// listContacts give each member's names: contact name, nickname and profile
+// name, each "" for none.
+func (s *Server) SetGroup(group string, members ...Contact) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.groups == nil {
+		s.groups, s.contacts = map[string][]string{}, map[string]any{}
+	}
+	s.groups[group] = nil
+	for _, m := range members {
+		s.groups[group] = append(s.groups[group], m.Number)
+		given, family, _ := strings.Cut(m.Profile, " ")
+		s.contacts[m.Number] = map[string]any{"number": m.Number, "uuid": "uuid-" + m.Number, "name": m.Name,
+			"nickName": m.Nick, "profile": map[string]any{"givenName": given, "familyName": family}}
+	}
+}
+
+// Contact is a group member for SetGroup.
+type Contact struct{ Number, Name, Nick, Profile string }
+
+// stringList reads a JSON-RPC list parameter.
+func stringList(v any) []string {
+	var out []string
+	list, _ := v.([]any)
+	for _, x := range list {
+		if s, ok := x.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }

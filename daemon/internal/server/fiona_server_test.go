@@ -31,7 +31,7 @@ func TestFionaIsTheChatsIdentity(t *testing.T) {
 	sys := systemPrompt(t, fake, 0)
 	// fiona's block, then her notes folder; neither the default identity nor
 	// the coding guidance appears in a chat.
-	want := prompt.FionaIdentity("play", nil, false) + "\n\nYour notes folder: " + filepath.Join(r.h.home, "notes", "gateway")
+	want := prompt.FionaIdentity("play", nil, nil) + "\n\nYour notes folder: " + filepath.Join(r.h.home, "notes", "gateway")
 	if !strings.HasPrefix(sys, want) {
 		t.Fatalf("the chat's identity:\n%.900s", sys)
 	}
@@ -48,7 +48,7 @@ func TestWorkerHoursAndNoInstanceName(t *testing.T) {
 	r.say("hello")
 	r.reply(sigGroup, "hi")
 	sys := systemPrompt(t, fake, 0)
-	if !strings.HasPrefix(sys, prompt.FionaIdentity("", &[2]int{20, 7}, false)+"\n\n") {
+	if !strings.HasPrefix(sys, prompt.FionaIdentity("", &[2]int{20, 7}, nil)+"\n\n") {
 		t.Fatalf("hours and no instance:\n%.900s", sys)
 	}
 }

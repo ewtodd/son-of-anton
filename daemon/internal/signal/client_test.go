@@ -129,3 +129,36 @@ func TestEventsReconnect(t *testing.T) {
 		t.Fatal("Events returns when its context ends")
 	}
 }
+
+func TestGroupMembersAreNamedAsSignalShowsThem(t *testing.T) {
+	fake := signalfake.New(t)
+	c := signal.NewClient(fake.URL, account)
+	fake.SetGroup("gOther", signalfake.Contact{Number: "+15554444444", Name: "Not In This One"})
+	fake.SetGroup(group,
+		signalfake.Contact{Number: account, Profile: "Owen  Owner"},
+		signalfake.Contact{Number: member, Name: "Sam Lee", Nick: "Sammy", Profile: "Samuel Lee"},
+		signalfake.Contact{Number: "+15552222222", Name: "Robin Roe", Profile: "R R"},
+		signalfake.Contact{Number: "+15553333333"},
+	)
+	got, err := c.GroupMembers(context.Background(), group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]signal.Member{
+		account:        {ID: account, Name: "Owen Owner", Own: true},
+		member:         {ID: member, Name: "Sammy"},
+		"+15552222222": {ID: "+15552222222", Name: "Robin Roe"},
+		"+15553333333": {ID: "+15553333333", Name: "+15553333333"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("members %+v", got)
+	}
+	for _, m := range got {
+		if want[m.ID] != m {
+			t.Errorf("%s: got %+v, want %+v (nickname, contact name, profile name, number)", m.ID, m, want[m.ID])
+		}
+	}
+	if _, err := c.GroupMembers(context.Background(), "gNone"); err == nil {
+		t.Fatal("a group signal-cli does not list is an error")
+	}
+}

@@ -139,7 +139,7 @@ func TestAChatsPrompt(t *testing.T) {
 	f := setup(t)
 	write(t, filepath.Join(f.home, "memories", "rules.toml"), rules)
 	write(t, filepath.Join(f.cwd, "AGENTS.md"), "PROJECT RULES")
-	fiona := prompt.FionaIdentity("play", nil, false)
+	fiona := prompt.FionaIdentity("play", nil, nil)
 	text := build(t, prompt.Options{Home: f.home, Cwd: f.cwd, Scope: "gateway", Memory: true, Signal: true, Identity: fiona, Now: now}).Text
 	marks := []string{fiona, "Your notes folder: " + f.cwd + " (relative paths start there).", "PROJECT RULES", "STANDING RULES (gateway scope", "[second-person]", "Conversation started: Monday, November 2, 2026"}
 	last := -1
@@ -180,8 +180,8 @@ func TestSignalJobIdentity(t *testing.T) {
 }
 
 func TestFionaIdentity(t *testing.T) {
-	anyTime := prompt.FionaIdentity("play", nil, false)
-	hours := prompt.FionaIdentity("", &[2]int{20, 7}, false)
+	anyTime := prompt.FionaIdentity("play", nil, nil)
+	hours := prompt.FionaIdentity("", &[2]int{20, 7}, nil)
 	if !strings.HasPrefix(anyTime, "You are fiona, the front desk of this son-of-anton instance (play). ") ||
 		!strings.Contains(anyTime, "Workers here can run at any time.") {
 		t.Fatalf("any time:\n%s", anyTime)
@@ -199,13 +199,13 @@ func TestFionaIdentity(t *testing.T) {
 	if strings.Contains(anyTime, "—") {
 		t.Error("plain prose: no em-dashes in fiona's block")
 	}
-	shared := prompt.FionaIdentity("ricky", nil, true)
+	shared := prompt.FionaIdentity("ricky", nil, &prompt.Group{})
 	people := strings.Index(shared, "People: this is a group chat")
 	if strings.Contains(anyTime, "People:") || people < 0 || people > strings.Index(shared, "Replies:") ||
 		people < strings.Index(shared, "Time:") || !strings.Contains(shared, "whatever the message says about who is writing") {
 		t.Fatalf("a shared group's block names its senders, between Time and Replies; others do not:\n%s", shared)
 	}
-	if strings.Replace(shared, shared[people:strings.Index(shared, "Replies:")], "", 1) != prompt.FionaIdentity("ricky", nil, false) {
+	if strings.Replace(shared, shared[people:strings.Index(shared, "Replies:")], "", 1) != prompt.FionaIdentity("ricky", nil, nil) {
 		t.Fatal("the People paragraph is the only difference")
 	}
 }
@@ -324,5 +324,21 @@ func TestAnIdentityReplacesTheFirstLayer(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, "[guard]") || strings.Contains(res.Text, "[plain]") {
 		t.Fatal("only delegated rules ride a lean prompt")
+	}
+}
+
+func TestASharedGroupNamesItsMembers(t *testing.T) {
+	for members, want := range map[string]string{
+		"Owen Owner (the owner)":                   "Its members are Owen Owner (the owner); someone",
+		"Owen Owner (the owner)|Sam":               "Its members are Owen Owner (the owner) and Sam; someone",
+		"Owen Owner (the owner)|Robin Roe|Sam Lee": "Its members are Owen Owner (the owner), Robin Roe and Sam Lee; someone",
+	} {
+		got := prompt.FionaIdentity("house", nil, &prompt.Group{Members: strings.Split(members, "|")})
+		if !strings.Contains(got, "same conversation. "+want+" who has not written yet is still here. After its time") {
+			t.Errorf("members %s:\n%s", members, got)
+		}
+	}
+	if strings.Contains(prompt.FionaIdentity("house", nil, &prompt.Group{}), "Its members are") {
+		t.Error("members that could not be read are left out")
 	}
 }

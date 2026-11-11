@@ -292,3 +292,87 @@ func (c *Client) Attachment(ctx context.Context, id string) ([]byte, error) {
 	}
 	return b, nil
 }
+
+// Member is a member of a group: the number (else the UUID) Signal knows them
+// by, the name to call them, and whether they are this account (the owner).
+type Member struct {
+	ID, Name string
+	Own      bool
+}
+
+// GroupMembers returns the members of group (a group id), named as Signal
+// shows them on this account: the nickname, else the contact name, else the
+// profile name, else the number or UUID.
+func (c *Client) GroupMembers(ctx context.Context, group string) ([]Member, error) {
+	raw, err := c.rpc(ctx, "listGroups", map[string]any{"account": c.account, "groupId": []string{group}})
+	if err != nil {
+		return nil, err
+	}
+	var groups []struct {
+		ID      string `json:"id"`
+		Members []struct {
+			Number string `json:"number"`
+			UUID   string `json:"uuid"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(raw, &groups); err != nil {
+		return nil, fmt.Errorf("signal: listGroups: %w", err)
+	}
+	var members []Member
+	var ids []string
+	for _, g := range groups {
+		if g.ID != group {
+			continue
+		}
+		for _, m := range g.Members {
+			id := m.Number
+			if id == "" {
+				id = m.UUID
+			}
+			if id != "" {
+				members = append(members, Member{ID: id, Name: id, Own: c.account != "" && m.Number == c.account})
+				ids = append(ids, id)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("signal: group %s has no members listed", group)
+	}
+	raw, err = c.rpc(ctx, "listContacts", map[string]any{"account": c.account, "recipient": ids, "allRecipients": true})
+	if err != nil {
+		return members, nil
+	}
+	var contacts []struct {
+		Number   string `json:"number"`
+		UUID     string `json:"uuid"`
+		Name     string `json:"name"`
+		NickName string `json:"nickName"`
+		Profile  *struct {
+			GivenName  string `json:"givenName"`
+			FamilyName string `json:"familyName"`
+		} `json:"profile"`
+	}
+	if json.Unmarshal(raw, &contacts) != nil {
+		return members, nil
+	}
+	names := map[string]string{}
+	for _, k := range contacts {
+		name := strings.TrimSpace(k.NickName)
+		if name == "" {
+			name = strings.TrimSpace(k.Name)
+		}
+		if name == "" && k.Profile != nil {
+			name = strings.TrimSpace(k.Profile.GivenName + " " + k.Profile.FamilyName)
+		}
+		if name != "" {
+			names[k.Number] = name
+			names[k.UUID] = name
+		}
+	}
+	for i, m := range members {
+		if name := names[m.ID]; name != "" {
+			members[i].Name = strings.Join(strings.Fields(name), " ")
+		}
+	}
+	return members, nil
+}

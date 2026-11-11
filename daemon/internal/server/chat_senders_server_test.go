@@ -40,7 +40,7 @@ func TestPerMemberGroupSessionsAreUnlabelled(t *testing.T) {
 	if got := lastUser(t, fake, 0); got != "hi" {
 		t.Fatalf("a member's own session labelled the message: %q", got)
 	}
-	if sys := systemPrompt(t, fake, 0); !strings.HasPrefix(sys, prompt.FionaIdentity("", nil, false)) {
+	if sys := systemPrompt(t, fake, 0); !strings.HasPrefix(sys, prompt.FionaIdentity("", nil, nil)) {
 		t.Fatalf("a per-member session's prompt changed:\n%.600s", sys)
 	}
 }
@@ -55,5 +55,17 @@ func TestASharedGroupLabelsSendnowAndTidiesNames(t *testing.T) {
 	r.reply(sigGroup, "one")
 	if got := lastUser(t, fake, 0); got != "Sam Lee "+strings.Repeat("x", 32)+": look at this" {
 		t.Fatalf("/sendnow's text reached fiona as %q; the name on one line, at most 40 characters", got)
+	}
+}
+
+func TestASharedGroupsPromptNamesItsMembers(t *testing.T) {
+	fake := fakellm.New(t, fakellm.Turn{Content: "one"})
+	r := newChatRig(t, fake, "[gateway]\ngroup_sessions_per_user = false\n")
+	r.sig.SetGroup(sigGroup, signalfake.Contact{Number: sigMember, Name: "Sam Lee"},
+		signalfake.Contact{Number: sigAccount, Profile: "Zed Owner"})
+	r.say("who is in this chat?")
+	r.reply(sigGroup, "one")
+	if sys := systemPrompt(t, fake, 0); !strings.Contains(sys, "Its members are Zed Owner (the owner) and Sam Lee; ") {
+		t.Fatalf("a shared group's prompt does not name its members, the owner first:\n%.900s", sys)
 	}
 }
