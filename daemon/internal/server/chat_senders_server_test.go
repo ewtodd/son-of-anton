@@ -65,7 +65,7 @@ func TestASharedGroupsPromptNamesItsMembers(t *testing.T) {
 		signalfake.Contact{Number: sigAccount, Profile: "Zed Owner"})
 	r.say("who is in this chat?")
 	r.reply(sigGroup, "one")
-	if sys := systemPrompt(t, fake, 0); !strings.Contains(sys, "Its members are Zed Owner (the owner) and Sam Lee; ") {
-		t.Fatalf("a shared group's prompt does not name its members, the owner first:\n%.900s", sys)
+	if sys := systemPrompt(t, fake, 0); !strings.Contains(sys, "Its members are you and Sam Lee. That is everyone") {
+		t.Fatalf("a shared group's prompt does not name its members, this account first as you:\n%.900s", sys)
 	}
 }

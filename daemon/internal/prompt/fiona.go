@@ -65,7 +65,7 @@ func FionaIdentity(instance string, hours *[2]int, group *Group) string {
 	if group != nil {
 		people := "People: this is a group chat, and everyone in it talks to you in the same conversation. "
 		if len(group.Members) > 0 {
-			people += "Its members are " + andList(group.Members) + "; someone who has not written yet is still here. "
+			people += "Its members are " + andList(group.Members) + ". That is everyone in the chat, whether or not they have written yet. "
 		}
 		paras = append(paras, people+
 			"After its time, each message names who sent it, as in \"[Tue 2026-11-10 23:31 CST] Sam: …\". "+
@@ -95,8 +95,8 @@ func SignalJobIdentity() string {
 }
 
 // Group is a shared group chat for FionaIdentity: its members' names as
-// Signal shows them, the owner's marked "(the owner)", or none when they
-// could not be read.
+// Signal shows them, the account fiona writes from as "you", or none when
+// they could not be read.
 type Group struct {
 	Members []string
 }

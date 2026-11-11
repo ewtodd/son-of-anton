@@ -329,12 +329,12 @@ func TestAnIdentityReplacesTheFirstLayer(t *testing.T) {
 
 func TestASharedGroupNamesItsMembers(t *testing.T) {
 	for members, want := range map[string]string{
-		"Owen Owner (the owner)":                   "Its members are Owen Owner (the owner); someone",
-		"Owen Owner (the owner)|Sam":               "Its members are Owen Owner (the owner) and Sam; someone",
-		"Owen Owner (the owner)|Robin Roe|Sam Lee": "Its members are Owen Owner (the owner), Robin Roe and Sam Lee; someone",
+		"you":                   "Its members are you.",
+		"you|Sam":               "Its members are you and Sam.",
+		"you|Robin Roe|Sam Lee": "Its members are you, Robin Roe and Sam Lee.",
 	} {
 		got := prompt.FionaIdentity("house", nil, &prompt.Group{Members: strings.Split(members, "|")})
-		if !strings.Contains(got, "same conversation. "+want+" who has not written yet is still here. After its time") {
+		if !strings.Contains(got, "same conversation. "+want+" That is everyone in the chat, whether or not they have written yet. After its time") {
 			t.Errorf("members %s:\n%s", members, got)
 		}
 	}

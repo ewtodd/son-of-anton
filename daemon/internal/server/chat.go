@@ -1210,10 +1210,10 @@ func (l *live) stopChat() bool {
 }
 
 // chatGroup is fiona's view of a shared group chat (nil for any other chat):
-// its members as Signal names them on this account, the owner first and
-// marked, the rest by name. They are read when a session's prompt is built,
-// so the prompt stays the same for the session; a failed read leaves them out
-// and is logged.
+// its members as Signal names them on this account, the account itself (the
+// one fiona writes from) first, as "you", then the rest by name. They are read
+// when a session's prompt is built, so the prompt stays the same for the
+// session; a failed read leaves them out and is logged.
 func (s *Server) chatGroup(ctx context.Context, stamp string) *prompt.Group {
 	if !signal.SharedGroupChat(stamp) {
 		return nil
@@ -1240,7 +1240,7 @@ func (s *Server) chatGroup(ctx context.Context, stamp string) *prompt.Group {
 	})
 	for _, m := range members {
 		if m.Own {
-			m.Name += " (the owner)"
+			m.Name = "you"
 		}
 		g.Members = append(g.Members, m.Name)
 	}

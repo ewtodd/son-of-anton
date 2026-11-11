@@ -294,7 +294,7 @@ func (c *Client) Attachment(ctx context.Context, id string) ([]byte, error) {
 }
 
 // Member is a member of a group: the number (else the UUID) Signal knows them
-// by, the name to call them, and whether they are this account (the owner).
+// by, the name to call them, and whether they are this account itself.
 type Member struct {
 	ID, Name string
 	Own      bool

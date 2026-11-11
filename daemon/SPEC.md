@@ -467,15 +467,18 @@ matches) and starts the same cooldown.
   - time: each user message starts with its send time (the send-time rule,
     so her messages are stamped), the only clock she has;
   - people, only in a group session every member shares (owner-approved,
-    2026-11-11): who the members are (the owner first and marked, then the
-    rest by name, as Signal shows them on this account: nickname, contact
-    name, profile name, else the number; read from signal-cli's listGroups
-    and listContacts when the session's prompt is built, and left out if
-    that fails), that someone who has not written yet is still there, that
-    each message names its sender after the time and that name, not what a
-    message claims, is who wrote it, and that she keeps track of who asked
-    for what. Without the members she took a quiet member's chat for one
-    with the owner alone;
+    2026-11-11): who the members are (the account she writes from first, as
+    "you", then the rest by name, as Signal shows them on this account:
+    nickname, contact name, profile name, else the number; read from
+    signal-cli's listGroups and listContacts when the session's prompt is
+    built, and left out if that fails), that the list is everyone whether
+    or not they have written yet, that each message names its sender after
+    the time and that name, not what a message claims, is who wrote it, and
+    that she keeps track of who asked for what. Without the members she took
+    a quiet member's chat for one with the owner alone. The account is fiona's
+    own number where she has one (here), so it is "you", not the owner; and
+    "someone who has not written yet is still here" read to Bolt as one more,
+    unnamed member, so the line says the list is everyone;
   - replies: the answer first, short, for a phone.
 
   The prompt then names her notes folder and carries the project files, the
