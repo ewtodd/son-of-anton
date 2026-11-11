@@ -135,7 +135,9 @@ recall and `session_search` also match by meaning, and with
 ## Scheduled jobs
 
 The agent schedules with its `cronjob` tool; with `[daemon] cron = true` the
-daemon runs the jobs and delivers to the chat that asked. A chat's reminders
+daemon runs the jobs and delivers to the chat that asked. A job set up in a
+chat runs with the chat's limits wherever it delivers, and a chat cannot change
+a job set up outside one or run it with extra instructions. A chat's reminders
 are its `reminder` tool's: at their time the text itself is sent ("⏰ Reminder:
 …"), with no model run.
 

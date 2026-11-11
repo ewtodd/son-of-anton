@@ -188,7 +188,8 @@ func TestCronDeliversToTheOriginChat(t *testing.T) {
 // SPEC 12: a job that delivers to Signal has the chat's limits (its tools but
 // clarify, relay and cronjob; files in the notes folder only; the notes folder
 // as its directory whatever its workdir) and a prompt that says so in place of
-// the coding guidance. A local job keeps every tool and the coding guidance.
+// the coding guidance. So does a job set up in a chat that delivers nowhere. A
+// local job from outside a chat keeps every tool and the coding guidance.
 func TestASignalJobHasTheChatsLimits(t *testing.T) {
 	t.Setenv("SON_OF_ANTON_TIMEZONE", "UTC")
 	escape := filepath.Join(t.TempDir(), "escape.md")
@@ -199,16 +200,19 @@ func TestASignalJobHasTheChatsLimits(t *testing.T) {
 		}},
 		fakellm.Turn{When: "the signal job", Content: "Chores logged."},
 		fakellm.Turn{When: "the local job", Content: "local done"},
+		fakellm.Turn{When: "the quiet chat job", Content: "quiet done"},
 	)
 	r := newChatRig(t, fake, "cron = true\ncron_tick = 1\n")
 	origin := map[string]any{"platform": "signal", "chat_id": "group:" + sigGroup, "chat_name": "The Group", "thread_id": nil, "user_id": sigAccount}
 	writeJobs(t, r.h.home,
 		cronJob("bbbbbbbbbbb1", "Chores", "the signal job", map[string]any{"deliver": "origin", "origin": origin, "workdir": t.TempDir()}),
 		cronJob("bbbbbbbbbbb2", "Local", "the local job", nil),
+		cronJob("bbbbbbbbbbb3", "Quiet", "the quiet chat job", map[string]any{"deliver": "local", "origin": origin}),
 	)
 	chores, _ := signal.Format(cron.Frame("Chores", "bbbbbbbbbbb1", "Chores logged."))
 	r.reply(sigGroup, chores)
 	waitJob(t, r.h.home, "bbbbbbbbbbb2", "the local job to run", func(j map[string]any) bool { return j["last_status"] == "ok" })
+	waitJob(t, r.h.home, "bbbbbbbbbbb3", "the quiet chat job to run", func(j map[string]any) bool { return j["last_status"] == "ok" })
 
 	request := func(marker string) map[string]any {
 		for i := 0; i < fake.Count(); i++ {
@@ -242,6 +246,16 @@ func TestASignalJobHasTheChatsLimits(t *testing.T) {
 	}
 	if res := toolResult(t, fake, "w2"); !strings.Contains(str(res, "error"), "outside the notes folder") {
 		t.Fatalf("the escape's result = %v", res)
+	}
+
+	quiet := request("the quiet chat job")
+	names = toolNames(t, quiet)
+	sort.Strings(names)
+	if got := strings.Join(names, ","); got != "memory,patch,read_file,search_files,session_search,todo,web_extract,web_search,write_file" {
+		t.Fatalf("a job set up in a chat that delivers nowhere has tools %s; it keeps the chat's limits", got)
+	}
+	if sys := system(quiet); !strings.HasPrefix(sys, prompt.SignalJobIdentity()+"\n\nYour notes folder: "+notes) {
+		t.Fatalf("a quiet chat job's prompt:\n%.400s", sys)
 	}
 
 	local := request("the local job")

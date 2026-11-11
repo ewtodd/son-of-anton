@@ -233,10 +233,10 @@ func New(o Options) (*Server, error) {
 		}
 	}
 	s.regCron = s.reg.Only(cronTools...)
-	// SPEC 12: a cron job that delivers to Signal has the chat's limits, less
-	// clarify (nobody is there), relay (it has no chat to relay from) and
-	// cronjob. With every tool, play's 7am check-in hunted through tool_search
-	// and the shell for a way to send its message itself.
+	// SPEC 12: a cron job that delivers to Signal or was set up in a chat has
+	// the chat's limits, less clarify (nobody is there), relay (it has no chat
+	// to relay from) and cronjob. With every tool, play's 7am check-in hunted
+	// through tool_search and the shell for a way to send its message itself.
 	s.regSignalCron = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "memory", "session_search", "web_search", "web_extract")
 	s.web = WebConfig(cfg, o.Home)
 	s.chats = s.newChatHub()

@@ -377,7 +377,9 @@ func (c *cronSched) agentRun(job cron.Job, extra string) (o outcome) {
 
 	targets, _ := cron.ResolveTargets(job, s.signalHome())
 	scope := "common"
-	if len(targets) > 0 {
+	// A job set up in a chat keeps the chat's limits wherever it delivers: set
+	// to local, it would otherwise run with every tool and report to no one.
+	if len(targets) > 0 || cron.OriginChat(job) != "" {
 		scope = "gateway"
 	}
 	r := s.runner(&live{}, ep, s.cfg.PermissionMode(), "cron", nil)

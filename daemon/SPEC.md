@@ -493,7 +493,11 @@ matches) and starts the same cooldown.
   runs in the notes folder whatever its workdir, and keeps the cron model, so
   it is not fiona (owner, 2026-11-08: before, it had every tool but clarify,
   and play's 7am check-in hunted through `tool_search` and the shell for a way
-  to send its message itself).
+  to send its message itself). A job set up in a chat gets those limits
+  wherever it delivers, since one set to `local` would otherwise run with every
+  tool and report to no one; a chat's `cronjob` cannot update a job set up
+  outside a chat or `run` it with extra instructions (it can still pause,
+  resume, run or remove it).
 - `relay send` creates or feeds a worker (section 3: top-level, terminal
   scope, `model.default`). Worker hours per instance (ricky and markets 20-7);
   outside them, or while the worker is busy, the send queues. The `relay`

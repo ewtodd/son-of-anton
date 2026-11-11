@@ -203,6 +203,15 @@ func (h *cronHandler) run(a cronArgs) (any, error) {
 		return answer{"success": false, "error": fmt.Sprintf("'%s' is a reminder: change or cancel it with the reminder tool.", job["name"])}, nil
 	}
 	id := job["id"].(string)
+	if action == "run_now" || action == "trigger" {
+		action = "run"
+	}
+	if h.origin() != nil && cron.OriginChat(job) == "" &&
+		(action == "update" || action == "run" && a.Prompt != nil && strings.TrimSpace(*a.Prompt) != "") {
+		return answer{"success": false, "error": fmt.Sprintf("'%s' was set up outside a chat and runs with every tool, so a chat "+
+			"cannot change it or give it extra instructions. From here it can be paused, resumed, run as it is or removed; "+
+			"the user can change it from the terminal.", job["name"])}, nil
+	}
 	switch action {
 	case "remove":
 		return h.remove(id, job)
@@ -236,7 +245,7 @@ func (h *cronHandler) run(a cronArgs) (any, error) {
 			return nil, err
 		}
 		return answer{"success": true, "job": formatJob(updated)}, nil
-	case "run", "run_now", "trigger":
+	case "run":
 		return h.runNow(id, job, a)
 	case "update":
 		return h.update(id, job, a)
