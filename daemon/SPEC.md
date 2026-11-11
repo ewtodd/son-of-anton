@@ -506,6 +506,15 @@ matches) and starts the same cooldown.
 - `new_in` is refused while a session the chat may drive has a turn running in
   that directory's workspace (the git root): two agents in one repository undo
   each other's work.
+- A chat's conversation lasts a day (owner, 2026-11-10, instead of compacting
+  fiona's long chats sooner). With `[gateway] daily_reset` (default true), the
+  first message, worker report or notice after `daily_reset_hour` (4, local
+  time) has come round with nothing happening in the chat's session since
+  starts a new session, as `/new` would. The old one stays, and that chat's
+  `session_search` still finds it. A conversation still going past midnight is
+  not cut, and a running turn is never reset (what arrives queues into it).
+  The new session keeps the chat's `/model` choice and reasoning effort: those
+  belong to the chat, not to the day.
 - Shared instances (house, ricky, markets): a chat sees and drives only the
   sessions it started, it keeps hearing of them while a terminal drives them,
   and `session_search` from a chat sees only that chat's sessions plus common

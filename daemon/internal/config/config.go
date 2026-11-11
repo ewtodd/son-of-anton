@@ -95,6 +95,8 @@ type Config struct {
 		Model                string `toml:"model"`
 		SingleUser           bool   `toml:"single_user"`
 		GroupSessionsPerUser *bool  `toml:"group_sessions_per_user"`
+		DailyReset           *bool  `toml:"daily_reset"`
+		DailyResetHour       *int   `toml:"daily_reset_hour"`
 	} `toml:"gateway"`
 	Physics struct {
 		WorkspaceRoot string `toml:"workspace_root"`
@@ -510,6 +512,24 @@ func (c *Config) Getenv(name string) string { return c.envKey(name) }
 // ChatModel is the model for chat sessions: gateway.model when set, else the
 // default model ("").
 func (c *Config) ChatModel() string { return strings.TrimSpace(c.Gateway.Model) }
+
+// ChatResetHour is the local hour at which a chat's conversation starts over:
+// gateway.daily_reset (default true) at gateway.daily_reset_hour (default 4).
+// ok is false when the reset is off. An hour outside 0-23 falls back to 4,
+// and warn says so.
+func (c *Config) ChatResetHour() (hour int, ok bool, warn string) {
+	if c.Gateway.DailyReset != nil && !*c.Gateway.DailyReset {
+		return 0, false, ""
+	}
+	h := c.Gateway.DailyResetHour
+	if h == nil {
+		return 4, true, ""
+	}
+	if *h < 0 || *h > 23 {
+		return 4, true, fmt.Sprintf("gateway.daily_reset_hour = %d is not an hour (0-23); chats start over at 4", *h)
+	}
+	return *h, true, ""
+}
 
 // WorkerHours is relay.worker_hours: the hour workers may start and the hour
 // they stop (0-23, wrapping midnight). ok is false when workers may run at

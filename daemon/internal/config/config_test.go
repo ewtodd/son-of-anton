@@ -274,6 +274,26 @@ func TestWorkerHours(t *testing.T) {
 	}
 }
 
+func TestChatResetHour(t *testing.T) {
+	for _, c := range []struct {
+		toml     string
+		hour     int
+		ok, warn bool
+	}{
+		{"", 4, true, false},
+		{"[gateway]\ndaily_reset_hour = 0\n", 0, true, false},
+		{"[gateway]\ndaily_reset = true\ndaily_reset_hour = 6\n", 6, true, false},
+		{"[gateway]\ndaily_reset = false\ndaily_reset_hour = 6\n", 0, false, false},
+		{"[gateway]\ndaily_reset_hour = 24\n", 4, true, true},
+		{"[gateway]\ndaily_reset_hour = -1\n", 4, true, true},
+	} {
+		hour, ok, warn := load(t, home(t, c.toml, "")).ChatResetHour()
+		if hour != c.hour || ok != c.ok || (warn != "") != c.warn {
+			t.Errorf("%q: got %d, %v, %q", c.toml, hour, ok, warn)
+		}
+	}
+}
+
 // An approval or clarify question waiting longer than prompt_notify_after
 // seconds nudges the user with notify-send; 0 or less never does.
 func TestPromptNotifyAfter(t *testing.T) {

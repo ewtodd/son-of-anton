@@ -102,7 +102,9 @@ her which model answered the last one. In a chat: `/new`, `/stop`, `/status`,
 model is not being served, the chat is told once per outage —
 `<model> is not being served; asking son-of-anton` where she falls back to
 `model.default`, `<model> is not being served; pick another model` where she
-does not. Subagents a session
+does not. A chat starts a fresh conversation with the first message after 4am
+(`[gateway] daily_reset`, `daily_reset_hour`), keeping its `/model`;
+`/new` does it any time. Subagents a session
 delegates work to run on the parent's model, or `[delegation] model` when you
 set one; a `task` call may pin `model` for that call.
 

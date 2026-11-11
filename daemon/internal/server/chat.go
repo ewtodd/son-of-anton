@@ -505,8 +505,10 @@ func (s *Server) chatRunner(r *agent.Runner, stamp string, l *live) {
 	}
 }
 
-// createChat makes a chat's session.
-func (s *Server) createChat(ctx context.Context, stamp string) (string, error) {
+// createChat makes a chat's session. It keeps the model and effort of prev,
+// the session a daily reset replaces (zero for none): /model pins the chat,
+// not the day's conversation.
+func (s *Server) createChat(ctx context.Context, stamp string, prev store.Session) (string, error) {
 	ep, err := s.cfg.Endpoint(s.cfg.ChatModel())
 	if err != nil {
 		return "", err
@@ -523,19 +525,24 @@ func (s *Server) createChat(ctx context.Context, stamp string) (string, error) {
 		return "", err
 	}
 	defer sess.Close()
-	// No model of its own: the chat follows the instance's chat model.
-	if err := s.st.UpdateSessionSettings(ctx, sess.ID(), "", "", string(mode)); err != nil {
+	// Model "" follows the instance's chat model.
+	if err := s.st.UpdateSessionSettings(ctx, sess.ID(), prev.Model, prev.ReasoningEffort, string(mode)); err != nil {
 		return "", err
 	}
 	return sess.ID(), nil
 }
 
 // chatLive returns the chat's current session, loaded, making one if the chat
-// has none. The caller holds cs.sessMu.
+// has none or its day is over (chatDayOver). The caller holds cs.sessMu.
 func (s *Server) chatLive(ctx context.Context, cs *chatState) (*live, error) {
 	id, err := s.st.ChatSession(ctx, cs.stamp)
+	var prev store.Session
+	if err == nil && s.chatDayOver(ctx, id, time.Now()) {
+		prev, _ = s.st.Session(ctx, id)
+		err = store.ErrNotFound
+	}
 	if errors.Is(err, store.ErrNotFound) {
-		if id, err = s.createChat(ctx, cs.stamp); err == nil {
+		if id, err = s.createChat(ctx, cs.stamp, prev); err == nil {
 			err = s.st.SetChatSession(ctx, cs.stamp, id)
 		}
 	}
@@ -543,6 +550,38 @@ func (s *Server) chatLive(ctx context.Context, cs *chatState) (*live, error) {
 		return nil, err
 	}
 	return s.load(ctx, id)
+}
+
+// chatDayOver says whether a chat's session id gives way to a new one: the
+// daily reset is on, no turn is running in it, and nothing has happened in it
+// since the reset hour last came round, so a conversation that runs past
+// midnight carries on until it goes quiet over the reset hour.
+func (s *Server) chatDayOver(ctx context.Context, id string, now time.Time) bool {
+	hour, on, warn := s.cfg.ChatResetHour()
+	if warn != "" {
+		log.Printf("signal: %s", warn)
+	}
+	if !on {
+		return false
+	}
+	if l := s.loaded(id); l != nil && l.chatRunning() {
+		return false
+	}
+	sum, err := s.st.SessionSummary(ctx, id)
+	if err != nil {
+		return false
+	}
+	return sum.Updated.Before(lastReset(now.In(prompt.LocalZone()), hour))
+}
+
+// lastReset is the latest time at or before now that the clock in now's zone
+// read hour:00.
+func lastReset(now time.Time, hour int) time.Time {
+	t := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, now.Location())
+	if t.After(now) {
+		t = time.Date(now.Year(), now.Month(), now.Day()-1, hour, 0, 0, 0, now.Location())
+	}
+	return t
 }
 
 // socketSession is a session as the socket may see it: a chat's (gateway
