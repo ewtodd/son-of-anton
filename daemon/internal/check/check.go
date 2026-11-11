@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -51,8 +52,14 @@ var Recheck = Question{Questions[0].ID, Questions[0].Instructions,
 	"Your reply still says you did something that no tool call in this turn did. Make the tool call now, or say " +
 		"plainly that you have not done it."}
 
-// NotePrefix marks the note as the checker's, not the user's.
-const NotePrefix = "[A check by son-of-anton, not a message from the user] "
+// NotePrefix marks the note as the checker's, not the user's, and NoteSuffix
+// ends it: on 2026-11-10 Bolt answered a note with no such ending as if it were
+// the conversation ("Understood. I will check cronjobs ... before answering"),
+// and that reply went to the chat.
+const (
+	NotePrefix = "[A check by son-of-anton, not a message from the user] "
+	NoteSuffix = " Then write your reply to the user's latest message. This note needs no answer of its own."
+)
 
 // Config is the resolved [checker] table.
 type Config struct {
@@ -60,8 +67,11 @@ type Config struct {
 	Models          []string // served-model prefixes the check applies to
 	Timeout         time.Duration
 	Cutoffs         map[string]float64
-	RecheckCutoff   float64
-	MaxRetries      int
+	// Questions are the ids of Questions the first draft is asked (all of
+	// them when empty).
+	Questions     []string
+	RecheckCutoff float64
+	MaxRetries    int
 }
 
 // ConfigFrom resolves [checker]; ok says it is configured (a base URL and at
@@ -89,6 +99,7 @@ func ConfigFrom(c *config.Config) (Config, bool) {
 	if k.MaxRetries != nil {
 		cfg.MaxRetries = *k.MaxRetries
 	}
+	cfg.Questions = k.Questions
 	return cfg, true
 }
 
@@ -212,18 +223,44 @@ func (k *Checker) ask(ctx context.Context, state string, qs []Question) (map[str
 	return ps, nil
 }
 
+// first are the questions a first draft is asked: those Config.Questions
+// enables, less "unchecked" once the turn has made a tool call. The head cannot
+// tell whether a call checked the state in question; on the fiona replay every
+// draft it flagged came from a turn without one, and on 2026-11-10 it flagged
+// the reply to a check-in the turn had just written down (0.93).
+func (k *Checker) first(in Input) []Question {
+	var qs []Question
+	for _, q := range Questions {
+		if len(k.cfg.Questions) > 0 && !slices.Contains(k.cfg.Questions, q.ID) {
+			continue
+		}
+		if q.ID == "unchecked" && len(in.Steps) > 0 {
+			continue
+		}
+		qs = append(qs, q)
+	}
+	return qs
+}
+
 // Review checks a draft. attempt is how many times the turn's draft has been
-// sent back already: the first draft gets every question at its cut-off, a
-// retried one only Recheck at RecheckCutoff, and none past MaxRetries. note
-// is "" when the draft stands; otherwise it is the message that sends it back.
-// A checker that fails or times out lets the draft stand (err says why).
+// sent back already: the first draft gets the questions first gives it, each
+// at its cut-off, a retried one only Recheck at RecheckCutoff (when claim is
+// asked at all), and none past MaxRetries. note is "" when the draft stands;
+// otherwise it is the message that sends it back. A checker that fails or
+// times out lets the draft stand (err says why).
 func (k *Checker) Review(ctx context.Context, in Input, attempt int) (note string, flags []string, err error) {
 	if attempt >= k.cfg.MaxRetries {
 		return "", nil, nil
 	}
-	qs, cutoff := Questions, func(q string) float64 { return k.cfg.Cutoffs[q] }
+	qs, cutoff := k.first(in), func(q string) float64 { return k.cfg.Cutoffs[q] }
 	if attempt > 0 {
-		qs, cutoff = []Question{Recheck}, func(string) float64 { return k.cfg.RecheckCutoff }
+		qs, cutoff = nil, func(string) float64 { return k.cfg.RecheckCutoff }
+		if len(k.cfg.Questions) == 0 || slices.Contains(k.cfg.Questions, Recheck.ID) {
+			qs = []Question{Recheck}
+		}
+	}
+	if len(qs) == 0 {
+		return "", nil, nil
 	}
 	ps, err := k.ask(ctx, State(in), qs)
 	if err != nil {
@@ -239,5 +276,5 @@ func (k *Checker) Review(ctx context.Context, in Input, attempt int) (note strin
 	if len(nudges) == 0 {
 		return "", nil, nil
 	}
-	return NotePrefix + strings.Join(nudges, " "), flags, nil
+	return NotePrefix + strings.Join(nudges, " ") + NoteSuffix, flags, nil
 }

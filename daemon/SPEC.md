@@ -528,14 +528,22 @@ matches) and starts the same cooldown.
   included), this turn's tool calls then results per step (arguments cut at
   600 characters, results at 1500, the message and the draft at 3000), and the
   draft: byte for byte the text the replay's `checker.py` built, which the
-  heads were fitted on. A first draft is asked three questions, each against
-  its own cut-off (`cutoffs`, default 0.5): `claim` (says it did something no
-  tool call did), `unchecked` (answers a question about current state with no
-  tool call that checked it), `offtopic` (does not answer the latest message).
-  A retried draft is asked only `claim`, at `recheck_cutoff` (0.5), since a
-  nudged model tends to answer with an invented "I've logged it". A flagged
-  draft goes back with a note naming each problem, as a user message prefixed
-  "[A check by son-of-anton, not a message from the user]"; the draft and the
+  heads were fitted on. A first draft is asked up to three questions, those
+  `questions` lists (default all), each against its own cut-off (`cutoffs`,
+  default 0.5): `claim` (says it did something no tool call did), `unchecked`
+  (answers a question about current state with no tool call that checked it),
+  `offtopic` (does not answer the latest message). `unchecked` is asked only
+  of a turn that made no tool call: the head cannot tell which state a call
+  checked, every draft it caught on the replay came from a turn without one,
+  and on 2026-11-10 it flagged (0.93) the reply to a check-in the turn had just
+  written to the notes. A retried draft is asked only `claim`, at
+  `recheck_cutoff` (0.5), since a nudged model tends to answer with an invented
+  "I've logged it"; with `claim` off, a retry is not checked. A flagged draft
+  goes back with a note naming each problem, as a user message prefixed
+  "[A check by son-of-anton, not a message from the user]" and ending with an
+  instruction to write the reply to the user's latest message: on 2026-11-10,
+  without it, Bolt answered the note itself ("Understood. I will check
+  cronjobs ... before answering"), and that reached the chat. The draft and the
   note ride that request only and are never stored, and the chat sees only the
   reply that stands. At most `max_retries` (2) drafts go back per turn. Not
   checked: answers under tool_choice none (the step budget: the notes ask for

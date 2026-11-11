@@ -59,6 +59,7 @@ type Config struct {
 		Cutoffs        map[string]float64 `toml:"cutoffs"`
 		RecheckCutoff  *float64           `toml:"recheck_cutoff"`
 		MaxRetries     *int               `toml:"max_retries"`
+		Questions      []string           `toml:"questions"` // ids asked of a first draft; empty: all
 	} `toml:"checker"`
 	Approvals struct {
 		Mode string `toml:"mode"`

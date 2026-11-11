@@ -7,12 +7,37 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/check"
+	"github.com/ewtodd/son-of-anton/daemon/internal/config"
 )
+
+func TestConfigFromReadsTheCheckerTable(t *testing.T) {
+	home := t.TempDir()
+	toml := "[checker]\nbase_url = \"http://fiona:8084/v1/\"\nmodels = [\"eklow/\"]\nquestions = [\"claim\", \"unchecked\"]\n" +
+		"max_retries = 1\n[checker.cutoffs]\nclaim = 0.7342\n"
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := config.Load(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, ok := check.ConfigFrom(c)
+	if !ok || cfg.BaseURL != "http://fiona:8084/v1" || strings.Join(cfg.Questions, ",") != "claim,unchecked" ||
+		cfg.MaxRetries != 1 || cfg.Cutoffs["claim"] != 0.7342 || cfg.Cutoffs["offtopic"] != 0.5 || cfg.Timeout != 3*time.Second {
+		t.Fatalf("ConfigFrom = %+v, %v", cfg, ok)
+	}
+	if _, ok := check.ConfigFrom(&config.Config{}); ok {
+		t.Fatal("no [checker] table, no checker")
+	}
+}
 
 var ctx = context.Background()
 
@@ -66,6 +91,7 @@ func server(t *testing.T, ps map[string]float64, status int) (*httptest.Server, 
 			ids = append(ids, id)
 			answers[id] = map[string]any{"noul": ps[id]}
 		}
+		slices.Sort(ids)
 		asked = append(asked, ids)
 		if status != 0 {
 			w.WriteHeader(status)
@@ -89,9 +115,41 @@ func TestTheFirstDraftGetsEveryQuestionAtItsCutoff(t *testing.T) {
 	if err != nil || len(*asked) != 1 || len((*asked)[0]) != 3 {
 		t.Fatalf("err %v, asked %v", err, *asked)
 	}
-	want := check.NotePrefix + check.Questions[1].Nudge + " " + check.Questions[2].Nudge
+	want := check.NotePrefix + check.Questions[1].Nudge + " " + check.Questions[2].Nudge + check.NoteSuffix
 	if note != want || len(flags) != 2 || !strings.HasPrefix(flags[0], "unchecked 0.95") {
 		t.Fatalf("note %q flags %v; claim 0.6 is under its 0.73, unchecked over its 0.59, offtopic at its 0.44 (the cut-offs were chosen as p >= cut-off)", note, flags)
+	}
+}
+
+// The question's premise is a turn without a tool call that checked the state;
+// once the turn has made one, the head cannot tell which state it checked.
+func TestUncheckedIsAskedOnlyOfATurnWithoutToolCalls(t *testing.T) {
+	srv, asked := server(t, map[string]float64{"unchecked": 0.93}, 0)
+	k := checker(srv.URL)
+	logged := check.Input{Steps: []check.Step{{Calls: []check.Call{{Name: "write_file", Arguments: "{}"}}, Results: []string{"ok"}}},
+		Draft: "Logged it."}
+	if note, _, err := k.Review(ctx, logged, 0); note != "" || err != nil || slices.Contains((*asked)[0], "unchecked") {
+		t.Fatalf("note %q err %v asked %v; a turn that called a tool is not asked unchecked", note, err, *asked)
+	}
+	if note, _, _ := k.Review(ctx, check.Input{Draft: "It ran."}, 0); !strings.Contains(note, check.Questions[1].Nudge) {
+		t.Fatalf("note %q asked %v; a turn without tool calls still is", note, *asked)
+	}
+}
+
+func TestQuestionsLimitWhatADraftIsAsked(t *testing.T) {
+	srv, asked := server(t, map[string]float64{"claim": 0.9, "unchecked": 0.9, "offtopic": 0.9}, 0)
+	cfg := check.Config{BaseURL: srv.URL + "/v1", Timeout: time.Second, MaxRetries: 2, RecheckCutoff: 0.5,
+		Cutoffs: map[string]float64{"claim": 0.5, "unchecked": 0.5, "offtopic": 0.5}, Questions: []string{"claim", "unchecked"}}
+	if _, flags, _ := check.New(cfg).Review(ctx, check.Input{Draft: "d"}, 0); strings.Join((*asked)[0], ",") != "claim,unchecked" || len(flags) != 2 {
+		t.Fatalf("asked %v flags %v; offtopic is off", *asked, flags)
+	}
+	cfg.Questions = []string{"unchecked"}
+	k := check.New(cfg)
+	if note, _, _ := k.Review(ctx, check.Input{Draft: "d"}, 1); note != "" || len(*asked) != 1 {
+		t.Fatalf("note %q asked %v; without claim a retry is not rechecked", note, *asked)
+	}
+	if note, _, _ := k.Review(ctx, check.Input{Steps: []check.Step{{}}, Draft: "d"}, 0); note != "" || len(*asked) != 1 {
+		t.Fatalf("note %q asked %v; nothing left to ask, nothing is sent", note, *asked)
 	}
 }
 
@@ -112,7 +170,7 @@ func TestARetryIsAskedOnlyAboutClaims(t *testing.T) {
 	srv, asked := server(t, map[string]float64{"claim": 0.6, "unchecked": 0.99}, 0)
 	k := checker(srv.URL)
 	note, _, err := k.Review(ctx, check.Input{Draft: "d"}, 1)
-	if err != nil || len(*asked) != 1 || strings.Join((*asked)[0], ",") != "claim" || note != check.NotePrefix+check.Recheck.Nudge {
+	if err != nil || len(*asked) != 1 || strings.Join((*asked)[0], ",") != "claim" || note != check.NotePrefix+check.Recheck.Nudge+check.NoteSuffix {
 		t.Fatalf("note %q err %v asked %v; 0.6 is over the recheck cut-off 0.5", note, err, *asked)
 	}
 	if note, _, _ := k.Review(ctx, check.Input{Draft: "d"}, 2); note != "" || len(*asked) != 1 {
