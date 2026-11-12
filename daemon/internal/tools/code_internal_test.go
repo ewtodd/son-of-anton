@@ -69,28 +69,28 @@ func TestHeadTailKeepsTheEndsAndCountsTheRest(t *testing.T) {
 
 func TestRPCAnswers(t *testing.T) {
 	calls := 0
-	s := &rpcServer{token: "tok", allowed: []string{"terminal", "read_file"}, call: func(_ context.Context, name string, args json.RawMessage) string {
+	s := &rpcServer{token: "tok", allowed: []string{"Bash", "Read"}, call: func(_ context.Context, name string, args json.RawMessage) string {
 		calls++
-		if name == "terminal" && strings.Contains(string(args), "background") {
-			t.Errorf("terminal kept background: %s", args)
+		if name == "Bash" && strings.Contains(string(args), "background") {
+			t.Errorf("Bash kept run_in_background: %s", args)
 		}
 		return `{"ok": true,
  "n": 1}`
 	}}
 	answer := func(line string) string { return s.handle(context.Background(), []byte(line)) }
-	if got := answer(`{"tool":"terminal","args":{},"token":"nope"}`); !strings.Contains(got, "Unauthorized RPC request") || calls != 0 {
+	if got := answer(`{"tool":"Bash","args":{},"token":"nope"}`); !strings.Contains(got, "Unauthorized RPC request") || calls != 0 {
 		t.Errorf("wrong token = %s", got)
 	}
-	if got := answer(`{"tool":"patch","args":{},"token":"tok"}`); !strings.Contains(got, "Tool 'patch' is not available in execute_code. Available: read_file, terminal") {
+	if got := answer(`{"tool":"Edit","args":{},"token":"tok"}`); !strings.Contains(got, "Tool 'Edit' is not available in execute_code. Available: Bash, Read") {
 		t.Errorf("unavailable = %s", got)
 	}
-	if got := answer(`{"tool":"terminal","args":{"command":"ls","background":true,"notify_on_complete":true},"token":"tok"}`); got != `{"ok":true,"n":1}` {
+	if got := answer(`{"tool":"Bash","args":{"command":"ls","run_in_background":true},"token":"tok"}`); got != `{"ok":true,"n":1}` {
 		t.Errorf("a result is one line: %q", got)
 	}
 	for range codeMaxToolCalls - 1 {
-		answer(`{"tool":"read_file","args":{},"token":"tok"}`)
+		answer(`{"tool":"Read","args":{},"token":"tok"}`)
 	}
-	if got := answer(`{"tool":"read_file","args":{},"token":"tok"}`); !strings.Contains(got, "Tool call limit reached (50)") || s.made() != codeMaxToolCalls {
+	if got := answer(`{"tool":"Read","args":{},"token":"tok"}`); !strings.Contains(got, "Tool call limit reached (50)") || s.made() != codeMaxToolCalls {
 		t.Errorf("the 51st call = %s after %d", got, s.made())
 	}
 	if got := answer(`not json`); !strings.Contains(got, "Invalid RPC request") {

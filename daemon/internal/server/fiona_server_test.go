@@ -56,9 +56,9 @@ func TestWorkerHoursAndNoInstanceName(t *testing.T) {
 func TestTheChatsToolsAndNotesFolder(t *testing.T) {
 	fake := fakellm.New(t,
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{
-			call("w1", "write_file", `{"path":"ideas.md","content":"a garden plan"}`),
-			call("w2", "write_file", `{"path":"/tmp/fiona-escape.md","content":"x"}`),
-			call("r1", "read_file", `{"path":"../../config.toml"}`),
+			call("w1", "Write", `{"file_path":"ideas.md","content":"a garden plan"}`),
+			call("w2", "Write", `{"file_path":"/tmp/fiona-escape.md","content":"x"}`),
+			call("r1", "Read", `{"file_path":"../../config.toml"}`),
 		}},
 		fakellm.Turn{Content: "noted"},
 	)
@@ -67,7 +67,7 @@ func TestTheChatsToolsAndNotesFolder(t *testing.T) {
 	r.reply(sigGroup, "noted")
 	names := toolNames(t, fake.Request(0))
 	sort.Strings(names)
-	if strings.Join(names, ",") != "clarify,cronjob,memory,patch,read_file,relay,reminder,search_files,session_search,todo,web_extract,web_search,write_file" {
+	if strings.Join(names, ",") != "AskUserQuestion,Edit,Glob,Grep,Read,TodoWrite,WebFetch,WebSearch,Write,cronjob,memory,relay,reminder,session_search" {
 		t.Fatalf("a chat's tools = %v", names)
 	}
 	notes := filepath.Join(r.h.home, "notes", "gateway")

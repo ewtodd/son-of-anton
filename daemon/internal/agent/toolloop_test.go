@@ -468,8 +468,8 @@ func TestTheRealToolsGoThroughTheSessionsGate(t *testing.T) {
 	st := newStore(t)
 	work := t.TempDir()
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "terminal", `{"command":"echo made > made.txt"}`)}},
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c2", "terminal", `{"command":"rm -r made.txt"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "Bash", `{"command":"echo made > made.txt"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c2", "Bash", `{"command":"rm -r made.txt"}`)}},
 		fakellm.Turn{Content: "done"},
 	)
 	r := toolRunner(t, st, fake, tools.Builtin()...)

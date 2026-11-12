@@ -22,7 +22,7 @@ func TestAWebResultIsStoredAsUntrustedData(t *testing.T) {
 	t.Setenv("SEARXNG_URL", searx.URL)
 	t.Setenv("WEB_EXTRACT_URL", "")
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("w1", "web_search", `{"query":"go language"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("w1", "WebSearch", `{"query":"go language"}`)}},
 		fakellm.Turn{Content: "found it"},
 	)
 	h := newHarness(t, fake, "[web]\nsearch_fallback = \"none\"\n")
@@ -31,12 +31,12 @@ func TestAWebResultIsStoredAsUntrustedData(t *testing.T) {
 	c.attach(id, "driver")
 	c.send(id, "look it up")
 	rows := toolRows(c.turn())
-	if len(rows) != 1 || !strings.HasPrefix(rows[0], "<untrusted_tool_result source=\"web_search\">\n") ||
+	if len(rows) != 1 || !strings.HasPrefix(rows[0], "<untrusted_tool_result source=\"WebSearch\">\n") ||
 		!strings.Contains(rows[0], `"backend":"searxng"`) || !strings.HasSuffix(rows[0], "\n</untrusted_tool_result>") {
 		t.Fatalf("the stored row = %v", rows)
 	}
 	names := strings.Join(toolNames(t, fake.Request(0)), ",")
-	if !strings.Contains(names, "web_search") || !strings.Contains(names, "web_extract") {
+	if !strings.Contains(names, "WebSearch") || !strings.Contains(names, "WebFetch") {
 		t.Fatalf("a session's tools = %s", names)
 	}
 	var sent string

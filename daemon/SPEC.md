@@ -67,7 +67,7 @@ session the daemon owns. Kinds:
 |---|---|---|
 | `interactive` | TUI, or the chat's `relay` tool | the attached TUI; with none, the chat that owns it |
 | `chat` | Signal chat | that chat |
-| `child` | the `task` tool (subagent) | its parent session's loop |
+| `child` | the `Task` tool (subagent) | its parent session's loop |
 | `cron` | the scheduler | nobody (runs its prompt) |
 | `oneshot` | `son-of-anton -q` / `-z` | the invoking client |
 
@@ -152,15 +152,15 @@ The daemon is the only writer of `state.db`. Clients never open it.
   the attaching client gets the warning; the bounded catalog lookup runs on a
   short-lived goroutine after the session lock is released, so it never stalls
   streaming nor the connection's read loop.
-- **Background receipts** (owner, 2026-11-06). A `notify_on_complete`
-  background process ends in a receipt the daemon composes and tags:
+- **Background receipts** (owner, 2026-11-06). A background command (Bash's
+  `run_in_background`) ends in a receipt the daemon composes and tags:
   `[background receipt] process <id> exited with code <N>`, then the command
   and the output tail. The stock prompt carries the rule that a message
   starting with it is a daemon report, not the user's voice, answered
   tersely. Receipts that arrive together run as one turn, whether drained at
   once or queued while the session was busy: the batch drives at most one
-  turn. Reading a finished process's output through `process` withdraws its
-  queued receipt, so a wait or poll is never paid for twice.
+  turn. Reading a finished command's output with `BashOutput`, or stopping it
+  with `KillShell`, withdraws its queued receipt, so it is never paid for twice.
 
 ## 6. Data
 
@@ -178,18 +178,18 @@ or the turn errors; there is no side model and no text summary. A user
 message's images and a tool result's images ride the wire as `image_url`
 parts after the text part (invariant 2 covers them: the reference and its
 bytes are persisted — `media` is content-addressed, so hydration is
-byte-stable). `read_file` on an image attaches it; chat attachments attach
+byte-stable). `Read` on an image attaches it; chat attachments attach
 natively and still land in `cache/signal` for the model to reach with tools;
 queued and steered messages carry their images through the queue. A model
 takes images when config says so: the model's route `supports_vision`, else
 `[model].supports_vision`, else true — a text-only model (or a transcript
 carrying images for one) fails the read or the turn with that as the error,
 and nothing is quietly dropped. A `.svg`'s bytes are text above all: its
-source is what `read_file` returns (so it stays editable), with the render
+source is what `Read` returns (so it stays editable), with the render
 attached beside it when the session sees images and `rsvg-convert` works.
 Text that merely looks like an image — bytes opening "BM…" with no BMP
 header, or a `<svg>` inside prose, code or an HTML page — reads as text;
-and when an image's bytes will not attach, `read_file` falls back to them
+and when an image's bytes will not attach, `Read` falls back to them
 as text, an error only when they are binary.
 
 **Empty sessions (owner, 2026-11-06).** A session that never got a turn is
@@ -291,7 +291,7 @@ after a compaction summary — was sent at that time; a later time is known only
 if the model can run `date`, so fiona (who has no terminal) must not guess it.
 A multimodal user
 message is one text part (the stamped `api_content`) followed by one
-`image_url` part per image: chat attachments and `read_file` results carry
+`image_url` part per image: chat attachments and `Read` results carry
 images explicitly (section 6), on `supports_vision` models.
 
 | session | layers | recall |
@@ -314,25 +314,56 @@ chosen is fixed for the session like any other prompt (invariant 1).
 
 ## 8. Tools (v1)
 
-Short schemas (the Python schemas trimmed in `85300ef3` are the starting
-wording). Measured use over play's history is in parentheses.
+**Claude Code's shapes (owner, 2026-11-12).** Where Claude Code has a
+counterpart, a builtin tool takes its name, its parameter names and its
+behaviour: most models are trained on Anthropic-style tools, and Claude models
+may later run in soa through the API. The descriptions are soa's own words,
+written from what each tool does (README, Provenance). A call by a tool's old
+name (a resumed session's history shows the model those) gets an error naming
+the tool that replaced it and its parameters, when the session has it. The
+counts in parentheses are play's history under the old names.
 
-- `terminal` with background processes and completion notices, and `process`
-  (3111 / 292 calls). Reference: `tools/terminal_tool.py`,
-  `tools/process_registry.py`.
-- `read_file`, `write_file`, `patch`, `search_files` (ripgrep) (1735, 317,
-  1358, 554), with LSP diagnostics appended after writes and patches
-  (`agent/lsp/`).
-- `execute_code` (213), `todo` (145), `clarify` (11).
+- `Bash {command, timeout?, description?, run_in_background?}` (was
+  `terminal`, 3111 calls): `timeout` in milliseconds, 180000 unless set,
+  600000 at most; the shell's cd and exports carry over. A
+  `run_in_background` command returns a `bash_id` at once and always ends in
+  a receipt where one can be delivered (section 5). `BashOutput {bash_id,
+  filter?}` shows what it printed since the last look (`filter`, a regular
+  expression, keeps the matching lines and passes the rest over), its state
+  and exit code, and `KillShell {shell_id}` stops it with its process group
+  (was `process`, 292). `process`'s list, wait and log paging have no
+  counterpart: an unknown id's error lists the session's shells, the receipt
+  stands in for wait, and paging old output is gone. Reference:
+  `tools/terminal_tool.py`, `tools/process_registry.py`.
+- `Read {file_path, offset?, limit?}`, `Write {file_path, content}`,
+  `Edit {file_path, old_string, new_string, replace_all?}`, `Glob {pattern,
+  path?}` and `Grep {pattern, path?, glob?, type?, output_mode?, -i?, -n?,
+  -A?, -B?, -C?, multiline?, head_limit?}` (ripgrep) (were `read_file`,
+  `write_file`, `patch`, `search_files`: 1735, 317, 1358, 554). Read numbers
+  lines as `cat -n` does, 2000 a call. Write over an existing file needs a
+  Read of all of it in this session, Edit a Read of any part, and both refuse
+  a file whose bytes changed since; a new file needs none. Edit falls back to
+  indentation- and whitespace-tolerant matching and answers with a unified
+  diff. Write refuses content that is Read's numbered display (either
+  format). LSP diagnostics are appended after writes and edits (`agent/lsp/`).
+- `execute_code` (213), whose Python functions are the tools in snake case
+  (`read`, `write`, `edit`, `glob`, `grep`, `bash`, `web_search`,
+  `web_fetch`); `TodoWrite {todos: [{content, status, activeForm}]}` (was
+  `todo`, 145), the whole list each call, shown in the TUI's sidebar;
+  `AskUserQuestion {questions: [{question, header, options: [{label,
+  description}], multiSelect}]}` (was `clarify`, 11), one to four questions
+  asked in turn, each with a free answer always possible.
 - `memory` (rules and facts, section 11) and `session_search` (section 11).
-- `web_search` (SearXNG) and `web_extract` (`WEB_EXTRACT_URL`) (41, 5),
-  `cronjob` (5). `vision_analyze` (123 calls in the old history) is not
-  ported: the owner ruled it out (2026-11-06) — images go to the model's own
-  vision encoder as message parts, or the model gets an error
-  (section 6's Images).
+- `WebSearch {query, allowed_domains?, blocked_domains?}` (SearXNG) and
+  `WebFetch {url, prompt}` (`WEB_EXTRACT_URL`) (were `web_search` and
+  `web_extract`: 41, 5), `cronjob` (5). No model condenses a fetched page:
+  WebFetch returns the page itself with the prompt beside it. `vision_analyze`
+  (123 calls in the old history) is not ported: the owner ruled it out
+  (2026-11-06) — images go to the model's own vision encoder as message
+  parts, or the model gets an error (section 6's Images).
 - MCP tools behind deferred search (`tool_search` / `tool_describe` /
   `tool_call`), so MCP schemas never ride every request.
-- `task` (subagents, section 9) and `relay` (chat sessions only, section 12).
+- `Task` (subagents, section 9) and `relay` (chat sessions only, section 12).
 
 ## 9. Subagents (opencode v1.19.5 model)
 
@@ -341,19 +372,19 @@ Reference: opencode tag `v1.19.5`, `packages/opencode/src/tool/task.ts` and
 `subagent-footer.tsx`. The Python `delegate_task` was offered on every request
 and never called once; do not port it.
 
-- `task {description, prompt, subagent_type, task_id?, background?, model?}`
-  creates a `child` session (`parent_id` set) titled "<description> (@<type>
+- `Task {description, prompt, subagent_type, task_id?, run_in_background?,
+  model?}` (the types are `Explore` and `general-purpose`) creates a `child` session (`parent_id` set) titled "<description> (@<type>
   subagent)". Foreground by default: the parent's tool call returns the
-  child's final message plus `task_id`. `background: true` returns at once and
+  child's final message plus `task_id`. `run_in_background: true` returns at once and
   the result arrives as a notice when the child finishes. `task_id` resumes the
   same child. `model` pins the child's model; without it the child takes the
   parent's, or the instance's `[delegation] model` when that is set. Depth
-  limit 1 (configurable). Several `task` calls in one assistant message run
+  limit 1 (configurable). Several `Task` calls in one assistant message run
   concurrently.
 - A child's tools and permissions are derived from the parent's. Its approval
   and question requests surface in the parent's driver, which blocks the
   parent's prompt until they are answered.
-- TUI: a parent turn that called `task` shows "<leader>down view subagents".
+- TUI: a parent turn that called `Task` shows "<leader>down view subagents".
   `<leader>down` enters the first child, `left`/`right` cycle siblings, `up`
   returns to the parent (active only inside a child with no dialog open). A
   child view has no prompt; a footer shows the subagent's label, "(N of M)",
@@ -368,7 +399,7 @@ and never called once; do not port it.
   / `/deny <id>`).
 - Approvals are durable rows: the first answer from any driver wins.
 - **The nudge** (owner, 2026-11-06; the Python fork's `prompt_notify_after`):
-  an approval or clarify question that waits unanswered longer than
+  an approval or an AskUserQuestion question that waits unanswered longer than
   `agent.prompt_notify_after` seconds (default 120, 0 or less off) fires
   `notify-send --app-name="Son of Anton"` with the subject or question (best
   effort: without notify-send or a notification daemon nothing happens).
@@ -451,7 +482,7 @@ matches) and starts the same cooldown.
     Signal; she answers questions, looks things up on the web, reads images,
     keeps notes and memories;
   - what she cannot do: her file tools reach only her notes folder, she runs
-    no commands, and web_search / web_extract read the internet, not this
+    no commands, and WebSearch / WebFetch read the internet, not this
     machine; anything needing a command or a file outside her notes goes to
     a worker through `relay`;
   - handing work over: the user's own words, then context from her memory or
@@ -485,10 +516,10 @@ matches) and starts the same cooldown.
   gateway-scope rules only (owner, 2026-11-08: the common ones are about
   son-of-anton work) and the date line.
 - The chat is relay-only on every instance: `relay`, `memory`,
-  `session_search`, `clarify`, `cronjob`, `reminder`, `todo`, `web_search`,
-  `web_extract`, and read/patch/write confined to
-  `notes/gateway/`. No terminal, no execute_code, no MCP, no `task`.
-  Signal-bound cron gets the same set less `clarify`, `relay`, `cronjob` and
+  `session_search`, `AskUserQuestion`, `cronjob`, `reminder`, `TodoWrite`,
+  `WebSearch`, `WebFetch`, and `Read` / `Write` / `Edit` / `Glob` / `Grep`
+  confined to `notes/gateway/`. No Bash, no execute_code, no MCP, no `Task`.
+  Signal-bound cron gets the same set less `AskUserQuestion`, `relay`, `cronjob` and
   `reminder`,
   runs in the notes folder whatever its workdir, and keeps the cron model, so
   it is not fiona (owner, 2026-11-08: before, it had every tool but clarify,

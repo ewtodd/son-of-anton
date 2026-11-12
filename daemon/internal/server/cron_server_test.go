@@ -107,7 +107,7 @@ func TestACronJobRunsAndIsRecorded(t *testing.T) {
 		t.Fatal("the cron hint must name the [SILENT] marker")
 	}
 	for _, n := range toolNames(t, fake.Request(0)) {
-		if n == "cronjob" || n == "clarify" || n == "task" {
+		if n == "cronjob" || n == "AskUserQuestion" || n == "Task" {
 			t.Fatalf("a cron run has %s", n)
 		}
 	}
@@ -186,7 +186,7 @@ func TestCronDeliversToTheOriginChat(t *testing.T) {
 }
 
 // SPEC 12: a job that delivers to Signal has the chat's limits (its tools but
-// clarify, relay and cronjob; files in the notes folder only; the notes folder
+// AskUserQuestion, relay and cronjob; files in the notes folder only; the notes folder
 // as its directory whatever its workdir) and a prompt that says so in place of
 // the coding guidance. So does a job set up in a chat that delivers nowhere. A
 // local job from outside a chat keeps every tool and the coding guidance.
@@ -195,8 +195,8 @@ func TestASignalJobHasTheChatsLimits(t *testing.T) {
 	escape := filepath.Join(t.TempDir(), "escape.md")
 	fake := fakellm.New(t,
 		fakellm.Turn{When: "the signal job", ToolCalls: []fakellm.ToolCall{
-			call("w1", "write_file", `{"path":"chores.md","content":"tally"}`),
-			call("w2", "write_file", `{"path":"`+escape+`","content":"x"}`),
+			call("w1", "Write", `{"file_path":"chores.md","content":"tally"}`),
+			call("w2", "Write", `{"file_path":"`+escape+`","content":"x"}`),
 		}},
 		fakellm.Turn{When: "the signal job", Content: "Chores logged."},
 		fakellm.Turn{When: "the local job", Content: "local done"},
@@ -232,7 +232,7 @@ func TestASignalJobHasTheChatsLimits(t *testing.T) {
 	sig := request("the signal job")
 	names := toolNames(t, sig)
 	sort.Strings(names)
-	if got := strings.Join(names, ","); got != "memory,patch,read_file,search_files,session_search,todo,web_extract,web_search,write_file" {
+	if got := strings.Join(names, ","); got != "Edit,Glob,Grep,Read,TodoWrite,WebFetch,WebSearch,Write,memory,session_search" {
 		t.Fatalf("a Signal job's tools = %s", got)
 	}
 	if sys := system(sig); !strings.HasPrefix(sys, prompt.SignalJobIdentity()+"\n\nYour notes folder: "+notes) || strings.Contains(sys, prompt.Guidance) {
@@ -251,7 +251,7 @@ func TestASignalJobHasTheChatsLimits(t *testing.T) {
 	quiet := request("the quiet chat job")
 	names = toolNames(t, quiet)
 	sort.Strings(names)
-	if got := strings.Join(names, ","); got != "memory,patch,read_file,search_files,session_search,todo,web_extract,web_search,write_file" {
+	if got := strings.Join(names, ","); got != "Edit,Glob,Grep,Read,TodoWrite,WebFetch,WebSearch,Write,memory,session_search" {
 		t.Fatalf("a job set up in a chat that delivers nowhere has tools %s; it keeps the chat's limits", got)
 	}
 	if sys := system(quiet); !strings.HasPrefix(sys, prompt.SignalJobIdentity()+"\n\nYour notes folder: "+notes) {
@@ -259,7 +259,7 @@ func TestASignalJobHasTheChatsLimits(t *testing.T) {
 	}
 
 	local := request("the local job")
-	if names := strings.Join(toolNames(t, local), ","); !strings.Contains(names, "terminal") {
+	if names := strings.Join(toolNames(t, local), ","); !strings.Contains(names, "Bash") {
 		t.Fatalf("a local job keeps every tool: %s", names)
 	}
 	if sys := system(local); !strings.HasPrefix(sys, prompt.DefaultIdentity+"\n\n"+prompt.Guidance) {

@@ -1,6 +1,6 @@
 package tools
 
-// The patch tool's diff renderer, exercised on the edit script directly: the
+// Edit's diff renderer, exercised on the edit script directly: the
 // results the model reads must show each changed and context line exactly
 // once.
 

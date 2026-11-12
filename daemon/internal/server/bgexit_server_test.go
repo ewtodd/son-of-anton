@@ -11,7 +11,7 @@ import (
 
 func TestABackgroundProcessEndingUpdatesTheSession(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("b1", "terminal", `{"command":"sleep 0.3","background":true}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("b1", "Bash", `{"command":"sleep 0.3","run_in_background":true}`)}},
 		fakellm.Turn{Content: "started"},
 	)
 	h := newHarness(t, fake, "")

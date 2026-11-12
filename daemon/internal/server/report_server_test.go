@@ -20,7 +20,7 @@ func TestFionaSendsAWorkersReport(t *testing.T) {
 	fake := fakellm.New(t,
 		fakellm.Turn{When: asFiona, ToolCalls: []fakellm.ToolCall{relayCall("r1", map[string]any{"action": "send", "new_in": dir, "message": "fix the build"})}},
 		fakellm.Turn{When: asFiona, Content: "On it."},
-		fakellm.Turn{When: asWorker, ToolCalls: []fakellm.ToolCall{terminal("c1", "echo compiled-ok")}},
+		fakellm.Turn{When: asWorker, ToolCalls: []fakellm.ToolCall{bashCall("c1", "echo compiled-ok")}},
 		fakellm.Turn{When: asWorker, Content: "build fixed: a missing import"},
 		fakellm.Turn{When: "build fixed: a missing import", Content: "The build is fixed."},
 		fakellm.Turn{When: asFiona, ToolCalls: []fakellm.ToolCall{relayCall("r2", map[string]any{"action": "report"})}},

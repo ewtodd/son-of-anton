@@ -505,9 +505,9 @@ func call(id, name, args string) fakellm.ToolCall {
 	return fakellm.ToolCall{ID: id, Name: name, Arguments: args}
 }
 
-func terminal(id, command string) fakellm.ToolCall {
+func bashCall(id, command string) fakellm.ToolCall {
 	b, _ := json.Marshal(map[string]any{"command": command})
-	return call(id, "terminal", string(b))
+	return call(id, "Bash", string(b))
 }
 
 // waitUntil polls cond until it holds or the wait runs out.

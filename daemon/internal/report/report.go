@@ -101,8 +101,10 @@ var (
 
 // quiet are the tools whose result the report leaves out: the call's line
 // says what it did, and the result is a file, an edit or another session's
-// transcript (a task's subagent follows its call).
-var quiet = map[string]bool{"read_file": true, "write_file": true, "patch": true, "todo": true, "memory": true, "task": true}
+// transcript (a Task's subagent follows its call). The old names (read_file,
+// ...) are for sessions stored before the tools took Claude Code's.
+var quiet = map[string]bool{"Read": true, "Write": true, "Edit": true, "TodoWrite": true, "memory": true, "Task": true,
+	"read_file": true, "write_file": true, "patch": true, "todo": true, "task": true}
 
 // Build is the report's data for s, its times in loc.
 func Build(s Session, loc *time.Location) Doc {
@@ -174,7 +176,7 @@ func entries(s Session, loc *time.Location) []Entry {
 					e.Output, e.More = clip(output(c.Name, r.Content))
 				}
 				out = append(out, e)
-				if f := taskResultRE.FindStringSubmatch(r.Content); c.Name == "task" && f != nil {
+				if f := taskResultRE.FindStringSubmatch(r.Content); isTask(c.Name) && f != nil {
 					if child, ok := children[f[1]]; ok && !claimed[f[1]] {
 						claimed[f[1]] = true
 						out = append(out, subagent(child, loc))

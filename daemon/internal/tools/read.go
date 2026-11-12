@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,47 +15,62 @@ import (
 
 const (
 	readDefaultLimit = 2000
-	readMaxLimit     = 2000
 	readMaxLineChars = 2000
 	readBudgetChars  = 100_000
 	similarFileLimit = 5
 	binarySniffBytes = 8192
 )
 
-type readFileTool struct{}
+type readTool struct{}
 
-func (readFileTool) Schema() provider.Tool {
+func (readTool) Schema() provider.Tool {
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
-		Name: "read_file",
-		Description: "Return the contents of a text file, each line prefixed with its number as NUMBER|TEXT. " +
-			"Long files come back in windows: continue with offset and limit. This replaces cat, head and tail.",
+		Name: "Read",
+		Description: "Show a file's contents. Text comes back numbered the way cat -n numbers it: the line number, a tab, then the line, " +
+			"counting from 1. One call returns up to 2000 lines, and any line over 2000 characters is cut short; " +
+			"page through a longer file with offset and limit. An image file is attached for you to look at, when this session's model takes images. " +
+			"A file must have been read in this session before Write may replace it or Edit may change it. " +
+			"Prefer this to cat, head or tail.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "path": {"type": "string", "description": "The file to read: absolute, relative to the working directory, or starting with ~/."},
-    "offset": {"type": "integer", "description": "First line to return, counting from 1.", "default": 1, "minimum": 1},
-    "limit": {"type": "integer", "description": "How many lines to return, at most 2000.", "default": 2000, "maximum": 2000}
+    "file_path": {"type": "string", "description": "The file to read: an absolute path, one relative to the working directory, or one starting with ~/."},
+    "offset": {"type": "integer", "description": "The line to start at, counting from 1. Give it for a file too long to read at once.", "minimum": 1},
+    "limit": {"type": "integer", "description": "How many lines to show (2000 unless you set it). Give it for a file too long to read at once.", "minimum": 1}
   },
-  "required": ["path"]
+  "required": ["file_path"]
 }`),
 	}}
 }
 
-type readFileArgs struct {
-	Path   string `json:"path"`
-	Offset int    `json:"offset"`
-	Limit  int    `json:"limit"`
+type readArgs struct {
+	FilePath string `json:"file_path"`
+	Offset   int    `json:"offset"`
+	Limit    int    `json:"limit"`
 }
 
-func (readFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (string, error) {
-	var a readFileArgs
+// pathArg is a file tool's file_path, or why there is none: a call that sent
+// the old path parameter is told the parameter's new name.
+func pathArg(raw json.RawMessage, filePath string) (string, string) {
+	if filePath != "" {
+		return filePath, ""
+	}
+	if jsonHasStringField(raw, "path") {
+		return "", "file_path is required; this tool takes the file as file_path, not path"
+	}
+	return "", "file_path is required"
+}
+
+func (readTool) Run(ctx context.Context, env *Env, args json.RawMessage) (string, error) {
+	var a readArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return errorResult("invalid arguments: " + err.Error()), nil
 	}
-	if a.Path == "" {
-		return errorResult("path is required"), nil
+	path, msg := pathArg(args, a.FilePath)
+	if msg != "" {
+		return errorResult(msg), nil
 	}
-	abs, err := env.Policy.Resolve(env.State.Cwd(), a.Path)
+	abs, err := env.Policy.Resolve(env.State.Cwd(), path)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
@@ -65,23 +81,28 @@ func (readFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 	if err != nil {
 		if os.IsNotExist(err) {
 			return jsonResult(map[string]any{
-				"error":         "No such file: " + a.Path,
+				"error":         "No such file: " + path,
 				"similar_files": similarFiles(env, abs),
 			})
 		}
 		return errorResult(err.Error()), nil
 	}
 	if fi.IsDir() {
-		return errorResult(abs + " is a directory; read a file inside it"), nil
+		return errorResult(abs + " is a directory; read a file inside it, or list it with Glob or ls"), nil
 	}
 	data, err := envReadFile(env, abs)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
+	stamp := readStamp{size: int64(len(data)), sum: sha256.Sum256(data)}
 	mime := SniffImage(data)
 	if mime != "" {
 		if mime != "image/svg+xml" {
-			if out := readImage(ctx, env, a.Path, abs, data, mime); out != "" {
+			if out, ok := readImage(ctx, env, path, abs, data, mime); out != "" {
+				if ok {
+					stamp.whole = true
+					env.State.recordRead(abs, stamp, 0, 0)
+				}
 				return out, nil
 			}
 			// The sniff said image, and this session could attach images,
@@ -96,23 +117,15 @@ func (readFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 
 	lines := splitLines(string(data))
 	total := len(lines)
-	offset := a.Offset
-	if offset < 1 {
-		offset = 1
-	}
+	stamp.lines = total
+	offset := max(a.Offset, 1)
 	limit := a.Limit
 	if limit <= 0 {
 		limit = readDefaultLimit
 	}
-	if limit > readMaxLimit {
-		limit = readMaxLimit
-	}
 
-	start := offset - 1
-	end := start + limit
-	if end > total {
-		end = total
-	}
+	start := min(offset-1, total)
+	end := min(start+min(limit, total), total)
 	var b strings.Builder
 	emitted := 0
 	for i := start; i < end; i++ {
@@ -120,7 +133,7 @@ func (readFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 		if len(line) > readMaxLineChars {
 			line = line[:readMaxLineChars] + " ... [truncated]"
 		}
-		formatted := fmt.Sprintf("%d|%s", i+1, line)
+		formatted := catLine(i+1, line)
 		if b.Len()+len(formatted)+1 > readBudgetChars && emitted > 0 {
 			break
 		}
@@ -141,11 +154,16 @@ func (readFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 	if truncated && nextOffset < total {
 		result["next_offset"] = nextOffset + 1
 	}
-	env.State.SetReadStamp(abs, readStamp{
-		mtime:   fi.ModTime().UnixNano(),
-		size:    fi.Size(),
-		partial: offset > 1 || truncated,
-	})
+	switch {
+	case total == 0:
+		result["note"] = "The file exists but is empty."
+	case offset > total:
+		result["note"] = fmt.Sprintf("The file has only %d lines, so offset %d is past its end; nothing was shown.", total, offset)
+	}
+	if total == 0 {
+		stamp.whole = true
+	}
+	env.State.recordRead(abs, stamp, start, start+emitted)
 	if mime == "image/svg+xml" {
 		// An SVG answer is source first — the model reads and edits it —
 		// and, when it can be drawn, the render rides beside the source.
@@ -154,6 +172,11 @@ func (readFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (st
 		}
 	}
 	return jsonResult(result)
+}
+
+// catLine is line n as Read shows it, numbered the way cat -n numbers lines.
+func catLine(n int, line string) string {
+	return fmt.Sprintf("%6d\t%s", n, line)
 }
 
 // attachSVGRender renders an SVG beside its source. When the session cannot
@@ -176,22 +199,23 @@ func attachSVGRender(ctx context.Context, env *Env, abs string, data []byte) map
 
 // readImage returns an image as a multimodal result: the text names the file
 // and the image itself rides the result as an image part, straight to the
-// model's vision encoder. A model without vision gets an error instead, and
-// bytes the decoders refuse come back as "" for the caller to read as text.
-func readImage(ctx context.Context, env *Env, path, abs string, data []byte, mime string) string {
+// model's vision encoder; attached says it did. A model without vision gets an
+// error instead, and bytes the decoders refuse come back as "" for the caller
+// to read as text.
+func readImage(ctx context.Context, env *Env, path, abs string, data []byte, mime string) (out string, attached bool) {
 	if !env.Vision || env.Attach == nil {
 		return errorResult(fmt.Sprintf(
 			"'%s' is an image, and this session's model (%s) has no vision, so it cannot be attached. "+
 				"Turn it into text yourself (an OCR or a converter) and read that, or come back on a vision-capable model.",
-			path, env.Model))
+			path, env.Model)), false
 	}
-	out, outMime, note, err := PrepareImage(data, mime)
+	img, outMime, note, err := PrepareImage(data, mime)
 	if err != nil {
-		return ""
+		return "", false
 	}
-	id, err := env.Attach.Add(ctx, outMime, filepath.Base(abs), out)
+	id, err := env.Attach.Add(ctx, outMime, filepath.Base(abs), img)
 	if err != nil {
-		return errorResult("the image could not be attached: " + err.Error())
+		return errorResult("the image could not be attached: " + err.Error()), false
 	}
 	res := map[string]any{
 		"content":   fmt.Sprintf("Read image '%s' (%s, %d bytes). The image is attached to this result.", path, outMime, len(data)),
@@ -203,9 +227,9 @@ func readImage(ctx context.Context, env *Env, path, abs string, data []byte, mim
 	}
 	b, err := jsonResult(res)
 	if err != nil {
-		return errorResult(err.Error())
+		return errorResult(err.Error()), false
 	}
-	return b
+	return b, true
 }
 
 // isBinary reports whether data looks binary: a NUL byte in the first 8 KiB

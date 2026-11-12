@@ -15,7 +15,7 @@ import (
 
 func TestAStepMessageGoesInOnceTheRunningToolEnds(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "sleep 0.5; echo finished")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c1", "sleep 0.5; echo finished")}},
 		fakellm.Turn{Content: "took it in"},
 	)
 	h := newHarness(t, fake, "")
@@ -82,7 +82,7 @@ func TestAStepMessageNeverCutsAReplyOff(t *testing.T) {
 func TestAStepMessageWaitsForTheToolsOfTheReplyItArrivedDuring(t *testing.T) {
 	rel := make(chan struct{})
 	fake := fakellm.New(t,
-		fakellm.Turn{Content: "let me look", ChunkRunes: 4, Release: rel, ToolCalls: []fakellm.ToolCall{terminal("c1", "echo finished")}},
+		fakellm.Turn{Content: "let me look", ChunkRunes: 4, Release: rel, ToolCalls: []fakellm.ToolCall{bashCall("c1", "echo finished")}},
 		fakellm.Turn{Content: "took it in"},
 	)
 	h := newHarness(t, fake, "")
@@ -106,7 +106,7 @@ func TestAStepMessageWaitsForTheToolsOfTheReplyItArrivedDuring(t *testing.T) {
 
 func TestStepMessagesGoInTogether(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "sleep 0.5")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c1", "sleep 0.5")}},
 		fakellm.Turn{Content: "both"},
 	)
 	h := newHarness(t, fake, "")
@@ -131,7 +131,7 @@ func TestStepMessagesGoInTogether(t *testing.T) {
 // the turn to end, behind what was sent for the next step.
 func TestAStepMessageGoesAheadOfTheQueue(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "sleep 0.5")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c1", "sleep 0.5")}},
 		fakellm.Turn{Content: "step done"},
 		fakellm.Turn{Content: "queued done"},
 	)
@@ -155,7 +155,7 @@ func TestAStepMessageGoesAheadOfTheQueue(t *testing.T) {
 
 func TestAMessageQueuedOnPurposeOutlastsAToolStep(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "sleep 0.5")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c1", "sleep 0.5")}},
 		fakellm.Turn{Content: "first turn done"},
 		fakellm.Turn{Content: "queued done"},
 	)
@@ -177,7 +177,7 @@ func TestAMessageQueuedOnPurposeOutlastsAToolStep(t *testing.T) {
 
 func TestAnInterruptLeavesAStepMessageQueued(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "sleep 30")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c1", "sleep 30")}},
 		fakellm.Turn{Content: "ran it"},
 	)
 	h := newHarness(t, fake, "")

@@ -10,7 +10,7 @@ const workerPrompt = `You are working on a physics analysis problem on your own.
 
 Your run directory is {RUN_DIR}. Every command you run starts there, inside a sandbox: there is no network, the data is mounted read-only at {DATA}, you can write only in the run directory, and your home is {RUN_DIR}/.home.
 
-Installed: python3 with ROOT (PyROOT and RDataFrame), uproot, awkward, numpy, scipy, pandas, matplotlib, scikit-learn, xgboost, h5py and Analysis-Utilities; root and rootls; g++ and make. Compile against ROOT with: g++ -O2 prog.cpp $(root-config --cflags --libs) -o prog. A command is stopped after its timeout (180 s unless you give one, 600 s at most): run anything longer with the terminal's background mode and check on it. Try a full pass over the data on a small slice first.
+Installed: python3 with ROOT (PyROOT and RDataFrame), uproot, awkward, numpy, scipy, pandas, matplotlib, scikit-learn, xgboost, h5py and Analysis-Utilities; root and rootls; g++ and make. Compile against ROOT with: g++ -O2 prog.cpp $(root-config --cflags --libs) -o prog. A command is stopped after its timeout (3 minutes unless you set one, 10 at most; Bash takes it in milliseconds): run anything longer with Bash's run_in_background and check on it with BashOutput. Try a full pass over the data on a small slice first.
 
 You are scored on RESULTS.txt in the run directory and on nothing else: one line per key, key = value, the value a plain number with no units, no uncertainty and nothing else on the line. The keys are: {KEYS}. Write the file as soon as you have values, and update it as they improve.
 

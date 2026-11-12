@@ -679,13 +679,14 @@ func (l *live) approveAs(ctx context.Context, req approval.Request, child string
 func (l *live) ask(ctx context.Context, q tools.Question) ([]string, error) {
 	id := newID("qu_")
 	p := &pendingQuestion{ch: make(chan answer, 1), q: q}
-	choices := q.Choices
+	choices, descs := q.Choices, q.Descriptions
 	if choices == nil {
-		choices = []string{}
+		choices, descs = []string{}, []string{}
 	}
 	l.mu.Lock()
 	l.questions[id] = p
-	l.request("question.request", id, map[string]any{"question_id": id, "text": q.Text, "choices": choices, "multi_select": q.MultiSelect})
+	l.request("question.request", id, map[string]any{"question_id": id, "text": q.Text, "header": q.Header, "choices": choices,
+		"descriptions": descs, "multi_select": q.MultiSelect, "number": q.Number, "of": q.Of})
 	if l.chat != nil {
 		l.chat.question(id, q)
 	}

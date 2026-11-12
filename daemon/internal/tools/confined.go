@@ -42,14 +42,14 @@ func envWriteAtomic(env *Env, abs, content string) (int, bool, error) {
 	return writeAtomic(abs, content)
 }
 
-// rgCommand is ripgrep for the search tool. In a sandboxed session it runs
+// rgCommand is ripgrep for Glob and Grep. In a sandboxed session it runs
 // inside the sandbox, by its Nix store path (visible there), so symlinks are
 // resolved in the namespace where only the allowed roots exist; if that is
 // not possible there is no search, never one on the host.
 func rgCommand(ctx context.Context, env *Env, args ...string) (*exec.Cmd, error) {
 	rg, err := exec.LookPath("rg")
 	if err != nil {
-		return nil, errors.New("search_files runs on ripgrep and rg was not found")
+		return nil, errors.New("Glob and Grep run on ripgrep, and rg was not found")
 	}
 	if env.Sandbox == nil {
 		return exec.CommandContext(ctx, "rg", args...), nil
@@ -58,7 +58,7 @@ func rgCommand(ctx context.Context, env *Env, args ...string) (*exec.Cmd, error)
 		rg = real
 	}
 	if !strings.HasPrefix(rg, "/nix/store/") {
-		return nil, errors.New("search_files cannot run in the sandbox: ripgrep is " + rg + ", outside the Nix store")
+		return nil, errors.New("Glob and Grep cannot run in the sandbox: ripgrep is " + rg + ", outside the Nix store")
 	}
 	return env.Sandbox.CommandContext(ctx, nil, append([]string{rg}, args...)...)
 }

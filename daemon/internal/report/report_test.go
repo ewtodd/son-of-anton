@@ -159,13 +159,21 @@ func TestSummaryAndIsError(t *testing.T) {
 		{"todo", `{"todos":[{},{}]}`, "2 items"},
 		{"task", `{"description":"Look","subagent_type":"explore","background":true}`, "Explore Task (background) — Look"},
 		{"web_search", `{"query":"x"}`, `{"query":"x"}`},
+		{"Bash", `{"command":"go   test\n./...","description":"Run them"}`, "go test ./..."},
+		{"Grep", `{"pattern":"func main","output_mode":"content"}`, "func main"},
+		{"KillShell", `{"shell_id":"bash_ab12"}`, "kill bash_ab12"},
+		{"AskUserQuestion", `{"questions":[{"question":"Which?"},{"question":"And?"}]}`, "Which? (+1 more)"},
+		{"WebFetch", `{"url":"https://example.com","prompt":"p"}`, "https://example.com"},
+		{"WebSearch", `{"query":"x"}`, "x"},
+		{"Task", `{"description":"Look","subagent_type":"general-purpose","run_in_background":true}`, "General-Purpose Task (background) — Look"},
 	} {
 		if got := report.Summary(c[0], c[1]); got != c[2] {
 			t.Errorf("Summary(%s) = %q, want %q", c[0], got, c[2])
 		}
 	}
 	if !report.IsError("terminal", `{"error":"no"}`) || report.IsError("terminal", `{"error":""}`) ||
-		!report.IsError("task", "<task id=\"x\" state=\"error\">\nboom") || report.IsError("task", "<task id=\"x\" state=\"completed\">") {
+		!report.IsError("task", "<task id=\"x\" state=\"error\">\nboom") || report.IsError("task", "<task id=\"x\" state=\"completed\">") ||
+		!report.IsError("Task", "<task id=\"x\" state=\"error\">\nboom") {
 		t.Fatal("IsError")
 	}
 }
@@ -228,5 +236,42 @@ func TestRenderWithoutTypst(t *testing.T) {
 	_, err := report.Render(context.Background(), report.Session{ID: "s"}, time.UTC)
 	if err == nil || !strings.Contains(err.Error(), "typst") || !strings.Contains(err.Error(), "cmarker") {
 		t.Fatalf("Render without typst: %v", err)
+	}
+}
+
+// The fixture above is a session stored before the tools took Claude Code's
+// names; one stored after reads the same way.
+func TestBuildWithTheToolsNewNames(t *testing.T) {
+	out, _ := json.Marshal(map[string]any{"output": "ok  store", "exit_code": 0})
+	child := report.Session{ID: "20261112_100100_child1", Kind: "child", Title: "Find it (@Explore subagent)", Agent: "Explore",
+		Messages: []report.Message{{Role: "user", Content: "Find it.", TS: ts(60 * time.Second)}}}
+	s := report.Session{ID: "s", Messages: []report.Message{
+		{Role: "assistant", TS: ts(0), ToolCalls: calls(t,
+			[3]string{"c1", "Bash", `{"command":"go test ./internal/store/","description":"Run the store tests"}`},
+			[3]string{"c2", "Read", `{"file_path":"internal/store/store.go"}`},
+			[3]string{"c3", "Edit", `{"file_path":"a.go","old_string":"x","new_string":"y"}`},
+			[3]string{"c4", "Task", `{"description":"Find it","prompt":"find it","subagent_type":"Explore"}`},
+			[3]string{"c5", "TodoWrite", `{"todos":[{"content":"a","status":"pending","activeForm":"A"}]}`},
+		)},
+		toolMsg("c1", "Bash", string(out)),
+		toolMsg("c2", "Read", `{"content":"     1\tpackage store"}`),
+		toolMsg("c3", "Edit", `{"success":true,"diff":"--- a/a.go"}`),
+		toolMsg("c4", "Task", `<task id="20261112_100100_child1" state="completed">`+"\nfound\n</task>"),
+		toolMsg("c5", "TodoWrite", `{"todos":[{"content":"a","status":"pending","activeForm":"A"}]}`),
+	}, Children: []report.Session{child}}
+	want := []report.Entry{
+		{Type: "tool", Name: "Bash", Summary: "go test ./internal/store/", Output: "ok  store"},
+		{Type: "tool", Name: "Read", Summary: "internal/store/store.go"},
+		{Type: "tool", Name: "Edit", Summary: "a.go"},
+		{Type: "tool", Name: "Task", Summary: "Explore Task — Find it"},
+		{Type: "subagent", Title: "Find it", Agent: "Explore", Entries: []report.Entry{
+			{Type: "user", TS: "2026-11-08 09:31", Text: "Find it."},
+		}},
+		{Type: "tool", Name: "TodoWrite", Summary: "1 item"},
+	}
+	got := report.Build(s, time.UTC).Entries
+	if !reflect.DeepEqual(got, want) {
+		g, _ := json.MarshalIndent(got, "", " ")
+		t.Fatalf("entries:\n%s", g)
 	}
 }

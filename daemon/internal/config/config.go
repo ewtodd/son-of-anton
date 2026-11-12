@@ -22,7 +22,7 @@ type Config struct {
 		Provider        string `toml:"provider"`
 		ReasoningEffort any    `toml:"reasoning_effort"`
 		// SupportsVision declares that every model here takes image parts:
-		// user images ride their turns and read_file attaches read images.
+		// user images ride their turns and Read attaches read images.
 		// A per-model route under the provider overrides it; unset is true
 		// (every model is vision-capable unless the config says otherwise).
 		SupportsVision *bool `toml:"supports_vision"`
@@ -39,7 +39,7 @@ type Config struct {
 		// time; default true.
 		MessageTimestamps *bool `toml:"message_timestamps"`
 		// PromptNotifyAfter is how many seconds an unanswered approval or
-		// clarify question waits before notify-send nudges the user (0 or
+		// AskUserQuestion question waits before notify-send nudges the user (0 or
 		// less: never); default 120.
 		PromptNotifyAfter *int `toml:"prompt_notify_after"`
 	} `toml:"agent"`
@@ -373,7 +373,7 @@ func (c *Config) Routes() map[string][]string {
 	return out
 }
 
-// PromptNotifyAfter is how many seconds an unanswered approval or clarify
+// PromptNotifyAfter is how many seconds an unanswered approval or AskUserQuestion
 // question waits before the daemon nudges the user with notify-send. The
 // default is 120; 0 or less turns the nudge off.
 func (c *Config) PromptNotifyAfter() int {

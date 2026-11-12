@@ -26,7 +26,7 @@ func WebConfig(cfg *config.Config, home string) *tools.Web {
 		Jina:           orDefault(w.JinaURL, "https://r.jina.ai/"),
 		Fallbacks:      w.ExtractFallbacks,
 		AllowPrivate:   w.AllowPrivateURLs,
-		CacheDir:       filepath.Join(home, "cache", "web_extract"),
+		CacheDir:       filepath.Join(home, "cache", "web_fetch"),
 	}
 	if strings.ToLower(strings.TrimSpace(w.SearchFallback)) != "none" {
 		out.DuckDuckGo = orDefault(w.DuckDuckGoURL, "https://html.duckduckgo.com/html/")

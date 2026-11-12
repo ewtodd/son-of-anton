@@ -37,9 +37,9 @@ func TestFionaSeesWhatTheChatSends(t *testing.T) {
 	}
 	fake := fakellm.New(t,
 		fakellm.Turn{When: asFiona, ToolCalls: []fakellm.ToolCall{
-			{ID: "f1", Name: "read_file", ArgumentsFunc: args(func(h string) map[string]any { return map[string]any{"path": sent(t, h, "_notes.txt")} })},
-			{ID: "w1", Name: "write_file", ArgumentsFunc: args(func(h string) map[string]any {
-				return map[string]any{"path": filepath.Join(h, "cache", "signal", "planted.txt"), "content": "x"}
+			{ID: "f1", Name: "Read", ArgumentsFunc: args(func(h string) map[string]any { return map[string]any{"file_path": sent(t, h, "_notes.txt")} })},
+			{ID: "w1", Name: "Write", ArgumentsFunc: args(func(h string) map[string]any {
+				return map[string]any{"file_path": filepath.Join(h, "cache", "signal", "planted.txt"), "content": "x"}
 			})},
 		}},
 		fakellm.Turn{When: asFiona, Content: "A red square, and your notes."},
@@ -57,7 +57,7 @@ func TestFionaSeesWhatTheChatSends(t *testing.T) {
 	r.sig.Push(env)
 	r.reply(sigGroup, "A red square, and your notes.")
 	if f := toolResult(t, fake, "f1"); !strings.Contains(str(f, "content"), "feed the cat") {
-		t.Fatalf("read_file on an attachment = %v", f)
+		t.Fatalf("Read on an attachment = %v", f)
 	}
 	if w := toolResult(t, fake, "w1"); !strings.Contains(str(w, "error"), "outside the notes folder") {
 		t.Fatalf("a write next to the attachments = %v", w)

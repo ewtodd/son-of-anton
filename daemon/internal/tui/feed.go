@@ -286,7 +286,7 @@ func (b *block) drawReasoning(w int, th *theme) []string {
 // has it. An expanded row wraps its whole label, continuation rows indented 2.
 func (b *block) drawTool(w int, th *theme, now time.Time, spin int) []string {
 	suffix := ""
-	task := b.name == "task"
+	task := isTask(b.name)
 	switch {
 	case b.running:
 		if s := int(now.Sub(b.started).Seconds()); s >= 1 && !task {

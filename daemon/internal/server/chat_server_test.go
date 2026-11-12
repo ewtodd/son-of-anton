@@ -155,7 +155,7 @@ func TestAChatMessageGetsAnAnswer(t *testing.T) {
 	}
 	names := toolNames(t, fake.Request(0))
 	sort.Strings(names)
-	if strings.Join(names, ",") != "clarify,cronjob,memory,patch,read_file,relay,reminder,search_files,session_search,todo,web_extract,web_search,write_file" {
+	if strings.Join(names, ",") != "AskUserQuestion,Edit,Glob,Grep,Read,TodoWrite,WebFetch,WebSearch,Write,cronjob,memory,relay,reminder,session_search" {
 		t.Fatalf("a chat's tools = %v", names)
 	}
 	var start, stop bool
@@ -322,7 +322,8 @@ func TestAChatApprovesARule(t *testing.T) {
 
 func TestAChatAnswersAQuestion(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("q1", "clarify", `{"question":"Which flavour?","choices":["vanilla","chocolate"]}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("q1", "AskUserQuestion", `{"questions":[{"question":"Which flavour?","header":"","multiSelect":false,
+			"options":[{"label":"vanilla","description":""},{"label":"chocolate","description":""}]}]}`)}},
 		fakellm.Turn{Content: "picked"},
 	)
 	r := newChatRig(t, fake, "")
@@ -336,8 +337,47 @@ func TestAChatAnswersAQuestion(t *testing.T) {
 			result = str(m, "content")
 		}
 	}
-	if !strings.Contains(result, "chocolate") {
+	if !strings.Contains(result, `"answer":"chocolate"`) {
 		t.Fatalf("the answer = %s", result)
+	}
+}
+
+// A call's questions come to the chat one after another, each saying which of
+// them it is; an answer is an option's number, its text in any case, a list
+// of numbers for a question that takes several, or the user's own words.
+func TestAChatAnswersSeveralQuestionsInTurn(t *testing.T) {
+	fake := fakellm.New(t,
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("q1", "AskUserQuestion", `{"questions":[
+			{"question":"Which flavour?","header":"Flavour","multiSelect":false,"options":[{"label":"vanilla","description":"plain"},{"label":"chocolate","description":"dark"}]},
+			{"question":"Which toppings?","header":"Toppings","multiSelect":true,"options":[{"label":"nuts","description":""},{"label":"sauce","description":""},{"label":"sprinkles","description":""}]},
+			{"question":"Which size?","header":"Size","multiSelect":false,"options":[{"label":"small","description":""},{"label":"large","description":""}]},
+			{"question":"Cup or cone?","header":"Holder","multiSelect":false,"options":[{"label":"cup","description":""},{"label":"cone","description":""}]}]}`)}},
+		fakellm.Turn{Content: "ordered"},
+	)
+	r := newChatRig(t, fake, "")
+	r.say("order for me")
+	r.reply(sigGroup, "❓ (1 of 4) Flavour: Which flavour?\n\n  1. vanilla — plain\n  2. chocolate — dark\n\n"+
+		"Answer with a number, the text of an option, or something else of your own.")
+	r.say("2")
+	r.reply(sigGroup, "❓ (2 of 4) Toppings: Which toppings?\n\n  1. nuts\n  2. sauce\n  3. sprinkles\n\n"+
+		"Answer with one or more numbers (such as 1, 3), the texts of options, or something else of your own.")
+	r.say("1, 3")
+	r.replyLike(sigGroup, "❓ (3 of 4) Size: Which size?")
+	r.say("LARGE")
+	r.replyLike(sigGroup, "❓ (4 of 4) Holder: Cup or cone?")
+	r.say("a cone, please")
+	r.reply(sigGroup, "ordered")
+	var result string
+	for _, m := range wire(t, fake, 1) {
+		if str(m, "role") == "tool" {
+			result = str(m, "content")
+		}
+	}
+	for _, want := range []string{`{"answer":"chocolate","question":"Which flavour?"}`, `{"answer":["nuts","sprinkles"],"question":"Which toppings?"}`,
+		`{"answer":"large","question":"Which size?"}`, `{"answer":"a cone, please","question":"Cup or cone?"}`} {
+		if !strings.Contains(result, want) {
+			t.Fatalf("the answers = %s; want %s", result, want)
+		}
 	}
 }
 

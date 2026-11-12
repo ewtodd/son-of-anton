@@ -86,10 +86,17 @@ type toolCall struct {
 	Arguments string `json:"arguments"`
 }
 
-// callsTask reports whether any of the calls is a task.
+// isTask says whether a tool is Task, under its name or the one it had before
+// the tools took Claude Code's (task, in stored sessions).
+func isTask(name string) bool { return name == "Task" || name == "task" }
+
+// isTodo is isTask for TodoWrite (todo before).
+func isTodo(name string) bool { return name == "TodoWrite" || name == "todo" }
+
+// callsTask reports whether any of the calls is a Task.
 func callsTask(calls []toolCall) bool {
 	for _, c := range calls {
-		if c.Name == "task" {
+		if isTask(c.Name) {
 			return true
 		}
 	}
@@ -135,16 +142,32 @@ func toolSummary(name, arguments string) string {
 	if json.Unmarshal([]byte(arguments), &args) != nil {
 		args = nil
 	}
-	if name == "task" {
+	if isTask(name) {
 		return ellipsizeRunes(squash(taskLabel(args)), 120)
 	}
 	key := map[string]string{
+		"Bash": "command", "Read": "file_path", "Write": "file_path", "Edit": "file_path",
+		"Glob": "pattern", "Grep": "pattern", "BashOutput": "bash_id", "WebFetch": "url", "WebSearch": "query",
 		"terminal": "command", "read_file": "path", "write_file": "path", "patch": "path",
 		"search_files": "pattern", "clarify": "question",
 	}[name]
 	text := ""
 	if key != "" {
 		text, _ = args[key].(string)
+	}
+	switch name {
+	case "KillShell":
+		if id, _ := args["shell_id"].(string); id != "" {
+			text = "kill " + id
+		}
+	case "AskUserQuestion":
+		if qs, _ := args["questions"].([]any); len(qs) > 0 {
+			q, _ := qs[0].(map[string]any)
+			text, _ = q["question"].(string)
+			if len(qs) > 1 {
+				text += fmt.Sprintf(" (+%d more)", len(qs)-1)
+			}
+		}
 	}
 	if text == "" {
 		text = arguments
@@ -195,14 +218,17 @@ func titlecase(s string) string {
 	return b.String()
 }
 
-// taskLabel is a task call's row label, as the daemon's summary has it.
+// taskLabel is a Task call's row label, as the daemon's summary has it
+// (background was run_in_background's name before the rename).
 func taskLabel(args map[string]any) string {
 	agent, _ := args["subagent_type"].(string)
 	if agent == "" {
-		agent = "general"
+		agent = "general-purpose"
 	}
 	bg := ""
-	if b, _ := args["background"].(bool); b {
+	if b, _ := args["run_in_background"].(bool); b {
+		bg = " (background)"
+	} else if b, _ := args["background"].(bool); b {
 		bg = " (background)"
 	}
 	desc, _ := args["description"].(string)

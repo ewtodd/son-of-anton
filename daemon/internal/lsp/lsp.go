@@ -1,5 +1,5 @@
 // Package lsp asks a file's language server for diagnostics after an edit,
-// so write_file and patch can report the errors the edit introduced. One
+// so Write and Edit can report the errors the edit introduced. One
 // server process runs per (server, project root), started on first use and
 // stopped when idle or when the service closes. Nothing here may fail or
 // hold up a write: every problem ends as "no report".

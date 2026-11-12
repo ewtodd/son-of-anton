@@ -49,7 +49,7 @@ func TestHandoffMovesAWaitingApproval(t *testing.T) {
 	dir := t.TempDir()
 	fake := fakellm.New(t,
 		fakellm.Turn{When: asFiona, Content: "Hello."},
-		fakellm.Turn{When: asWorker, ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
+		fakellm.Turn{When: asWorker, ToolCalls: []fakellm.ToolCall{bashCall("c1", "chmod 777 f.txt")}},
 		fakellm.Turn{When: workerNotice, Content: "It is with me."},
 	)
 	r := newChatRig(t, fake, singleUser)

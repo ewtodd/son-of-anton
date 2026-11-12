@@ -4,62 +4,59 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 )
 
-type patchTool struct{}
+type editTool struct{}
 
-func (patchTool) Schema() provider.Tool {
+func (editTool) Schema() provider.Tool {
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
-		Name: "patch",
-		Description: "Change part of an existing file by swapping one piece of text for another. " +
-			"Give enough of the surrounding text in old_string that it occurs only once, or set replace_all to change every occurrence. " +
-			"Differences in indentation or runs of spaces do not stop a match. " +
-			"The reply is a unified diff of what changed.",
+		Name: "Edit",
+		Description: "Change part of a file by replacing one piece of text with another. " +
+			"The file must have been read with Read in this session, and the edit is refused if it changed on disk since. " +
+			"old_string has to occur exactly once: include enough of the lines around it to make it unique, or set replace_all to change every occurrence. " +
+			"Copy old_string from the file's text, without the line numbers Read puts in front of each line. " +
+			"When nothing matches exactly, a match that differs only in indentation or runs of spaces is accepted. " +
+			"An empty old_string creates a file that does not exist yet. The reply is a unified diff of the change.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "path": {"type": "string", "description": "The file to modify."},
-    "old_string": {"type": "string", "description": "The text to be replaced. It must occur exactly once in the file, unless replace_all is true."},
-    "new_string": {"type": "string", "description": "What to put in its place. It cannot equal old_string."},
-    "replace_all": {"type": "boolean", "description": "Change every occurrence rather than insisting on a single one. Defaults to false.", "default": false}
+    "file_path": {"type": "string", "description": "The file to change: an absolute path, one relative to the working directory, or one starting with ~/."},
+    "old_string": {"type": "string", "description": "The exact text to replace."},
+    "new_string": {"type": "string", "description": "The text to put in its place; it must differ from old_string."},
+    "replace_all": {"type": "boolean", "description": "Replace every occurrence of old_string instead of requiring exactly one. Defaults to false.", "default": false}
   },
-  "required": ["path", "old_string", "new_string"]
+  "required": ["file_path", "old_string", "new_string"]
 }`),
 	}}
 }
 
-type patchArgs struct {
-	Path       string `json:"path"`
+type editArgs struct {
+	FilePath   string `json:"file_path"`
 	OldString  string `json:"old_string"`
 	NewString  string `json:"new_string"`
 	ReplaceAll bool   `json:"replace_all"`
-	Mode       string `json:"mode"`
 }
 
 // span is a half-open byte range in the file content.
 type span struct{ start, end int }
 
-func (patchTool) Run(ctx context.Context, env *Env, args json.RawMessage) (string, error) {
-	var a patchArgs
+func (editTool) Run(ctx context.Context, env *Env, args json.RawMessage) (string, error) {
+	var a editArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return errorResult("invalid arguments: " + err.Error()), nil
 	}
-	if a.Mode == "patch" {
-		return errorResult("Multi-file patch text is not accepted; send path, old_string and new_string"), nil
-	}
-	if a.Path == "" {
-		return errorResult("path is required"), nil
-	}
-	if a.OldString == "" {
-		return errorResult("old_string cannot be empty"), nil
+	path, msg := pathArg(args, a.FilePath)
+	if msg != "" {
+		return errorResult(msg), nil
 	}
 	if a.OldString == a.NewString {
 		return errorResult("new_string is identical to old_string, so there is nothing to change"), nil
 	}
-	abs, err := env.Policy.Resolve(env.State.Cwd(), a.Path)
+	abs, err := env.Policy.Resolve(env.State.Cwd(), path)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
@@ -67,38 +64,63 @@ func (patchTool) Run(ctx context.Context, env *Env, args json.RawMessage) (strin
 	if check.Denied {
 		return errorResult(check.Reason), nil
 	}
-	if v := env.Gate.Write(ctx, abs, check.Protected); !v.Allowed {
-		return errorResult(v.Message), nil
+	fi, err := envStat(env, abs)
+	if os.IsNotExist(err) {
+		if a.OldString != "" {
+			return jsonResult(map[string]any{"error": "No such file: " + path, "similar_files": similarFiles(env, abs)})
+		}
+		return writeEdit(ctx, env, abs, path, check.Protected, "", a.NewString)
+	}
+	if err != nil {
+		return errorResult("cannot read " + path + ": " + err.Error()), nil
+	}
+	if fi.IsDir() {
+		return errorResult(abs + " is a directory"), nil
+	}
+	if why := changeRefusal(env, abs, path, false); why != "" {
+		return errorResult(why), nil
 	}
 	content, err := envReadFile(env, abs)
 	if err != nil {
-		return errorResult("cannot read " + a.Path + ": " + err.Error()), nil
+		return errorResult("cannot read " + path + ": " + err.Error()), nil
 	}
 	text := string(content)
+	if a.OldString == "" {
+		if strings.TrimSpace(text) != "" {
+			return errorResult(path + " already has content, and an empty old_string only creates a new file or fills an empty one. " +
+				"Give the text to replace as old_string, or replace the whole file with Write."), nil
+		}
+		return writeEdit(ctx, env, abs, path, check.Protected, text, a.NewString)
+	}
 
 	spans, strategy := findMatches(text, a.OldString)
 	if len(spans) == 0 {
-		// An already-applied patch is a no-op success.
+		// An already-applied edit is a no-op success.
 		if len(a.NewString) >= 8 && strings.Contains(text, a.NewString) {
-			out, _ := jsonResult(map[string]any{"success": true, "no_change": true, "resolved_path": abs})
-			return out, nil
+			return jsonResult(map[string]any{"success": true, "no_change": true, "resolved_path": abs})
 		}
-		return errorResult(fmt.Sprintf("old_string does not occur in %s (%s)", a.Path, strategyHint())), nil
+		return errorResult(fmt.Sprintf("old_string does not occur in %s (%s)", path, strategyHint())), nil
 	}
 	if len(spans) > 1 && !a.ReplaceAll {
 		lines := matchLineNumbers(text, spans)
 		return errorResult(fmt.Sprintf("old_string occurs %d times in %s (lines %s); include more of the surrounding text so only one matches, or set replace_all",
-			len(spans), a.Path, strings.Join(lines, ", "))), nil
+			len(spans), path, strings.Join(lines, ", "))), nil
 	}
 	if len(spans) > 1 && a.ReplaceAll && strategy != "exact" {
 		return errorResult("replace_all needs an exact match; this one only matched loosely, so add context and replace a single block"), nil
 	}
+	return writeEdit(ctx, env, abs, path, check.Protected, text, applySpans(text, spans, a.NewString, a.OldString, strategy))
+}
 
-	newText := applySpans(text, spans, a.NewString, a.OldString, strategy)
-	diff := unifiedDiff(a.Path, text, newText)
+// writeEdit asks the gate, then replaces old (the file's text, "" for a new
+// file) with text and answers with the diff.
+func writeEdit(ctx context.Context, env *Env, abs, path string, protected bool, old, text string) (string, error) {
+	if v := env.Gate.Write(ctx, abs, protected); !v.Allowed {
+		return errorResult(v.Message), nil
+	}
+	diff := unifiedDiff(path, old, text)
 	edit := env.LSP.Begin(abs)
-	warning := stalenessWarning(env, abs)
-	if _, _, err := envWriteAtomic(env, abs, newText); err != nil {
+	if _, _, err := envWriteAtomic(env, abs, text); err != nil {
 		return errorResult(err.Error()), nil
 	}
 	result := map[string]any{
@@ -106,13 +128,10 @@ func (patchTool) Run(ctx context.Context, env *Env, args json.RawMessage) (strin
 		"diff":          diff,
 		"resolved_path": abs,
 	}
-	if warning != "" {
-		result["_warning"] = warning
-	}
-	if report := edit.Finish(ctx, newText); report != "" {
+	if report := edit.Finish(ctx, text); report != "" {
 		result["lsp_diagnostics"] = report
 	}
-	refreshStamp(env, abs)
+	stampWritten(env, abs, text)
 	return jsonResult(result)
 }
 
@@ -417,7 +436,7 @@ func unifiedDiff(path, old, new string) string {
 // lcsOps returns the edit script as ' ' (equal), '-' (delete) and '+' (add).
 func lcsOps(a, b []string) []byte {
 	n, m := len(a), len(b)
-	// Cap the table for pathologically large inputs; patch targets are small.
+	// Cap the table for pathologically large inputs; edited files are small.
 	if n*m > 4_000_000 {
 		return naiveReplaceOps(a, b)
 	}

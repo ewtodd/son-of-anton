@@ -1,4 +1,4 @@
-// Package subagent is the task tool: it runs a subagent as a child session
+// Package subagent is the Task tool: it runs a subagent as a child session
 // and returns the child's final message. The server supplies the Spawner
 // that makes and runs the child session.
 package subagent
@@ -20,12 +20,12 @@ var taskText string
 //go:embed explore.txt
 var exploreText string
 
-// BackgroundDescription is added to the task tool's description when the
-// background parameter is offered. BackgroundStarted and BackgroundUpdated
+// BackgroundDescription is added to the Task tool's description when the
+// run_in_background parameter is offered. BackgroundStarted and BackgroundUpdated
 // are the results of a background launch and of a message sent to a
 // background task that is still running.
 const (
-	BackgroundDescription = "Background option: set background to true and the task call returns at once while the subagent keeps working. " +
+	BackgroundDescription = "Background option: set run_in_background to true and the Task call returns at once while the subagent keeps working. " +
 		"The result arrives later as a message of its own. Leave it false (the default) when your next step needs the answer. " +
 		"Use it only for work that is independent of what you do meanwhile."
 	BackgroundStarted = "The subagent is running in the background and its result will be delivered here when it is done.\n" +
@@ -42,18 +42,18 @@ type Type struct {
 	Tools                     []string
 }
 
-// Builtin is the agent types: explore and general.
+// Builtin is the agent types: Explore and general-purpose.
 func Builtin() []Type {
 	return []Type{
 		{
-			Name: "explore",
+			Name: "Explore",
 			Description: "Read-only searcher for finding things in a codebase: files by name pattern, code by keyword, or an answer to a question about how something works. " +
 				"In the prompt, give the depth you want: quick, medium or very thorough.",
 			Prompt: strings.TrimSpace(exploreText),
-			Tools:  []string{"terminal", "read_file", "search_files"},
+			Tools:  []string{"Bash", "Read", "Glob", "Grep"},
 		},
 		{
-			Name:        "general",
+			Name:        "general-purpose",
 			Description: "Full-capability agent for any job that needs several steps: research, investigation, or changes to make. Use it to run separate jobs side by side.",
 			Prompt: "Another agent has handed you one job. Carry it out completely without asking anything back; " +
 				"nobody will answer. Finish with a single message holding what the job asked for. " +
@@ -62,27 +62,31 @@ func Builtin() []Type {
 	}
 }
 
-// Lookup finds a type by name.
+// Lookup finds a type by name, in any case. A child session stored before the
+// types took Claude Code's names says "general" for general-purpose.
 func Lookup(types []Type, name string) (Type, bool) {
+	if name == "general" {
+		name = "general-purpose"
+	}
 	for _, t := range types {
-		if t.Name == name {
+		if strings.EqualFold(t.Name, name) {
 			return t, true
 		}
 	}
 	return Type{}, false
 }
 
-// ChildMay says whether a subagent may have the tool: never task (depth is
-// 1), todo, clarify (nobody answers) or memory.
+// ChildMay says whether a subagent may have the tool: never Task (depth is
+// 1), TodoWrite, AskUserQuestion (nobody answers) or memory.
 func ChildMay(tool string) bool {
 	switch tool {
-	case "task", "memory", "clarify", "todo":
+	case "Task", "memory", "AskUserQuestion", "TodoWrite":
 		return false
 	}
 	return true
 }
 
-// Description is the task tool's description: the text in task.txt, the
+// Description is the Task tool's description: the text in task.txt, the
 // background paragraph when offered, then the available types by name.
 func Description(types []Type, background bool) string {
 	d := taskText
@@ -113,7 +117,7 @@ func Render(id, state, summary, text string) string {
 	return strings.Join(append(parts, label, text, "</task>"), "\n")
 }
 
-// Request is one task call.
+// Request is one Task call.
 type Request struct {
 	Description, Prompt, TaskID string
 	// Model pins the child's model; "" inherits the parent's (or, for a call
@@ -136,12 +140,12 @@ type taskTool struct {
 	spawn      Spawner
 }
 
-// Tool is the task tool. background offers the background parameter.
+// Tool is the Task tool. background offers the run_in_background parameter.
 func Tool(types []Type, background bool, spawn Spawner) tools.Tool {
 	return taskTool{types, background, spawn}
 }
 
-// Concurrent says task calls of one message run together.
+// Concurrent says Task calls of one message run together.
 func (taskTool) Concurrent() bool { return true }
 
 func (t taskTool) Schema() provider.Tool {
@@ -153,13 +157,13 @@ func (t taskTool) Schema() provider.Tool {
 		"model":         map[string]string{"type": "string", "description": "The model the subagent runs on, pinned for this task. Omit to inherit the parent's model (or the instance's delegation model)."},
 	}
 	if t.background {
-		props["background"] = map[string]string{"type": "boolean", "description": "true to return immediately and receive the result later as a message; do not wait for or poll it"}
+		props["run_in_background"] = map[string]string{"type": "boolean", "description": "true to return immediately and receive the result later as a message; do not wait for or poll it"}
 	}
 	params, _ := json.Marshal(map[string]any{
 		"type": "object", "properties": props, "required": []string{"description", "prompt", "subagent_type"},
 	})
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
-		Name: "task", Description: Description(t.types, t.background), Parameters: params,
+		Name: "Task", Description: Description(t.types, t.background), Parameters: params,
 	}}
 }
 
@@ -170,7 +174,7 @@ func (t taskTool) Run(ctx context.Context, env *tools.Env, args json.RawMessage)
 		SubagentType string `json:"subagent_type"`
 		TaskID       string `json:"task_id"`
 		Model        string `json:"model"`
-		Background   bool   `json:"background"`
+		Background   bool   `json:"run_in_background"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "invalid arguments: " + err.Error(), nil

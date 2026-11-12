@@ -1,6 +1,6 @@
 package server_test
 
-// Phase 4a through the daemon: the task tool runs child sessions
+// Phase 4a through the daemon: the Task tool runs child sessions
 // (daemon/phases/04a-subagents.md). Child requests are told apart in the
 // fake by their type's prompt, which no parent request contains.
 
@@ -19,7 +19,7 @@ import (
 
 const explorePrompt = "You are a read-only code explorer."
 
-func task(id, args string) fakellm.ToolCall { return call(id, "task", args) }
+func task(id, args string) fakellm.ToolCall { return call(id, "Task", args) }
 
 func toolNames(t *testing.T, req map[string]any) []string {
 	t.Helper()
@@ -44,7 +44,7 @@ func toolRows(evs []map[string]any) []string {
 
 func TestATaskRunsAChildAndReturnsItsAnswer(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Find the thing","prompt":"look for the thing","subagent_type":"explore"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Find the thing","prompt":"look for the thing","subagent_type":"Explore"}`)}},
 		fakellm.Turn{When: explorePrompt, Content: "found it at /a/b"},
 		fakellm.Turn{Content: "done"},
 	)
@@ -61,8 +61,8 @@ func TestATaskRunsAChildAndReturnsItsAnswer(t *testing.T) {
 	}
 	child := obj(created[0], "child")
 	id := str(child, "id")
-	if str(child, "parent_id") != parent || str(child, "kind") != "child" || str(child, "agent") != "explore" ||
-		str(child, "title") != "Find the thing (@explore subagent)" {
+	if str(child, "parent_id") != parent || str(child, "kind") != "child" || str(child, "agent") != "Explore" ||
+		str(child, "title") != "Find the thing (@Explore subagent)" {
 		t.Fatalf("child = %v", child)
 	}
 	if done := of(evs, "child.done"); len(done) != 1 || str(done[0], "child_id") != id || str(done[0], "status") != "done" {
@@ -77,10 +77,10 @@ func TestATaskRunsAChildAndReturnsItsAnswer(t *testing.T) {
 	if !strings.HasPrefix(sys, explorePrompt) || str(childReq[1], "content") != "look for the thing" {
 		t.Fatalf("the child's request: system %.80q, user %q", sys, str(childReq[1], "content"))
 	}
-	if names := strings.Join(toolNames(t, fake.Request(1)), ","); names != "terminal,read_file,search_files" {
+	if names := strings.Join(toolNames(t, fake.Request(1)), ","); names != "Bash,Read,Glob,Grep" {
 		t.Fatalf("explore's tools = %s", names)
 	}
-	if parentTools := strings.Join(toolNames(t, fake.Request(0)), ","); !strings.Contains(parentTools, "task") {
+	if parentTools := strings.Join(toolNames(t, fake.Request(0)), ","); !strings.Contains(parentTools, "Task") {
 		t.Fatalf("the parent has task: %s", parentTools)
 	}
 
@@ -110,11 +110,11 @@ func rendezvous(self, other string) string {
 func TestTasksInOneMessageRunConcurrently(t *testing.T) {
 	fake := fakellm.New(t,
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{
-			task("t1", `{"description":"A","prompt":"do job alpha","subagent_type":"general"}`),
-			task("t2", `{"description":"B","prompt":"do job beta","subagent_type":"general"}`),
+			task("t1", `{"description":"A","prompt":"do job alpha","subagent_type":"general-purpose"}`),
+			task("t2", `{"description":"B","prompt":"do job beta","subagent_type":"general-purpose"}`),
 		}},
-		fakellm.Turn{When: "do job alpha", ToolCalls: []fakellm.ToolCall{terminal("a1", rendezvous("alpha", "beta"))}},
-		fakellm.Turn{When: "do job beta", ToolCalls: []fakellm.ToolCall{terminal("b1", rendezvous("beta", "alpha"))}},
+		fakellm.Turn{When: "do job alpha", ToolCalls: []fakellm.ToolCall{bashCall("a1", rendezvous("alpha", "beta"))}},
+		fakellm.Turn{When: "do job beta", ToolCalls: []fakellm.ToolCall{bashCall("b1", rendezvous("beta", "alpha"))}},
 		fakellm.Turn{When: "do job alpha", Content: "alpha done"},
 		fakellm.Turn{When: "do job beta", Content: "beta done"},
 		fakellm.Turn{Content: "both done"},
@@ -138,15 +138,15 @@ func TestTasksInOneMessageRunConcurrently(t *testing.T) {
 	if len(rows) != 2 || !strings.Contains(rows[0], "alpha done") || !strings.Contains(rows[1], "beta done") {
 		t.Fatalf("results in call order: %v", rows)
 	}
-	if names := strings.Join(toolNames(t, fake.Request(1)), ","); strings.Contains(names, "task") || strings.Contains(names, "memory") ||
-		strings.Contains(names, "clarify") || strings.Contains(names, "todo") || !strings.Contains(names, "terminal") {
-		t.Fatalf("general's tools = %s; the parent's, without task, memory, clarify and todo", names)
+	if names := "," + strings.Join(toolNames(t, fake.Request(1)), ",") + ","; strings.Contains(names, ",Task,") || strings.Contains(names, ",memory,") ||
+		strings.Contains(names, ",AskUserQuestion,") || strings.Contains(names, ",TodoWrite,") || !strings.Contains(names, ",Bash,") {
+		t.Fatalf("general-purpose's tools = %s; the parent's, without Task, memory, AskUserQuestion and TodoWrite", names)
 	}
 }
 
 func TestABackgroundTaskReportsBackAsANotice(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Look around","prompt":"look around","subagent_type":"explore","background":true}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Look around","prompt":"look around","subagent_type":"Explore","run_in_background":true}`)}},
 		fakellm.Turn{When: explorePrompt, Content: "bg result"},
 		fakellm.Turn{Content: "launched"},
 		fakellm.Turn{Content: "got it"},
@@ -180,8 +180,8 @@ func TestAChildsApprovalAsksTheParentsDriver(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Fix perms","prompt":"open up f.txt","subagent_type":"explore"}`)}},
-		fakellm.Turn{When: explorePrompt, ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Fix perms","prompt":"open up f.txt","subagent_type":"Explore"}`)}},
+		fakellm.Turn{When: explorePrompt, ToolCalls: []fakellm.ToolCall{bashCall("c1", "chmod 777 f.txt")}},
 		fakellm.Turn{When: explorePrompt, Content: "opened"},
 		fakellm.Turn{Content: "ok"},
 	)
@@ -204,7 +204,7 @@ func TestAChildsApprovalAsksTheParentsDriver(t *testing.T) {
 
 func TestInterruptingTheParentCancelsItsChildren(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Wait","prompt":"wait forever","subagent_type":"explore"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Wait","prompt":"wait forever","subagent_type":"Explore"}`)}},
 		fakellm.Turn{When: explorePrompt, Hang: true},
 	)
 	h := newHarness(t, fake, "")
@@ -231,16 +231,16 @@ func TestInterruptingTheParentCancelsItsChildren(t *testing.T) {
 func TestTaskIDContinuesTheSameChild(t *testing.T) {
 	var childID string
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Remember","prompt":"remember the number seven","subagent_type":"explore"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Remember","prompt":"remember the number seven","subagent_type":"Explore"}`)}},
 		fakellm.Turn{When: explorePrompt, Content: "remembered"},
 		fakellm.Turn{Content: "ok"},
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "t2", Name: "task", ArgumentsFunc: func() string {
-			b, _ := json.Marshal(map[string]any{"description": "Recall", "prompt": "which number was it", "subagent_type": "explore", "task_id": childID})
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "t2", Name: "Task", ArgumentsFunc: func() string {
+			b, _ := json.Marshal(map[string]any{"description": "Recall", "prompt": "which number was it", "subagent_type": "Explore", "task_id": childID})
 			return string(b)
 		}}}},
 		fakellm.Turn{When: "which number was it", Content: "seven"},
 		fakellm.Turn{Content: "it was seven"},
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t3", `{"description":"Bogus","prompt":"x","subagent_type":"explore","task_id":"20260101_000000_000000"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t3", `{"description":"Bogus","prompt":"x","subagent_type":"Explore","task_id":"20260101_000000_000000"}`)}},
 		fakellm.Turn{Content: "no such task"},
 	)
 	h := newHarness(t, fake, "")
@@ -274,7 +274,7 @@ func TestTaskIDContinuesTheSameChild(t *testing.T) {
 // (it is never indexed): its answer is already the parent's tool result.
 func TestSessionSearchNeverFindsAChild(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Find the ledger","prompt":"find the wombat ledger","subagent_type":"explore"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Find the ledger","prompt":"find the wombat ledger","subagent_type":"Explore"}`)}},
 		fakellm.Turn{When: explorePrompt, Content: "the wombat ledger is in /srv"},
 		fakellm.Turn{Content: "all done here"},
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("s1", "session_search", `{"query":"wombat"}`)}},

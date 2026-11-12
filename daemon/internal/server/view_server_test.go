@@ -42,9 +42,9 @@ func TestUsageAndContextSurviveARestart(t *testing.T) {
 
 func TestATaskRowFollowsItsChild(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Find the thing","prompt":"look for the thing","subagent_type":"explore"}`)}},
-		fakellm.Turn{When: explorePrompt, ToolCalls: []fakellm.ToolCall{terminal("a1", "sleep 0.2; echo one")}},
-		fakellm.Turn{When: explorePrompt, ToolCalls: []fakellm.ToolCall{terminal("a2", "echo two")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{task("t1", `{"description":"Find the thing","prompt":"look for the thing","subagent_type":"Explore"}`)}},
+		fakellm.Turn{When: explorePrompt, ToolCalls: []fakellm.ToolCall{bashCall("a1", "sleep 0.2; echo one")}},
+		fakellm.Turn{When: explorePrompt, ToolCalls: []fakellm.ToolCall{bashCall("a2", "echo two")}},
 		fakellm.Turn{When: explorePrompt, Content: "found it", PromptTokens: 500, CompletionTokens: 7},
 		fakellm.Turn{Content: "done"},
 	)
@@ -60,7 +60,7 @@ func TestATaskRowFollowsItsChild(t *testing.T) {
 	}
 	id := str(obj(of(evs, "child.created")[0], "child"), "id")
 	prog := of(evs, "child.progress")
-	if len(prog) != 2 || str(prog[0], "child_id") != id || str(prog[0], "name") != "terminal" ||
+	if len(prog) != 2 || str(prog[0], "child_id") != id || str(prog[0], "name") != "Bash" ||
 		str(prog[0], "summary") != "sleep 0.2; echo one" || num(prog[0], "tool_calls") != 1 ||
 		str(prog[1], "summary") != "echo two" || num(prog[1], "tool_calls") != 2 {
 		t.Fatalf("child.progress = %v", prog)
@@ -82,8 +82,8 @@ func TestATaskRowFollowsItsChild(t *testing.T) {
 func TestBackgroundAndFailedTaskRows(t *testing.T) {
 	fake := fakellm.New(t,
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{
-			task("t1", `{"description":"Look around","prompt":"look around","subagent_type":"general","background":true}`),
-			task("t2", `{"description":"Carry on","prompt":"more","subagent_type":"explore","task_id":"20260101_000000_000000"}`),
+			task("t1", `{"description":"Look around","prompt":"look around","subagent_type":"general-purpose","run_in_background":true}`),
+			task("t2", `{"description":"Carry on","prompt":"more","subagent_type":"Explore","task_id":"20260101_000000_000000"}`),
 		}},
 		fakellm.Turn{When: generalPrompt, Content: "bg done"},
 		fakellm.Turn{Content: "launched"},
@@ -100,7 +100,7 @@ func TestBackgroundAndFailedTaskRows(t *testing.T) {
 	for _, e := range of(evs, "tool.start") {
 		summaries[str(e, "call_id")] = str(e, "summary")
 	}
-	if summaries["t1"] != "General Task (background) — Look around" || summaries["t2"] != "Explore Task — Carry on" {
+	if summaries["t1"] != "General-Purpose Task (background) — Look around" || summaries["t2"] != "Explore Task — Carry on" {
 		t.Fatalf("summaries = %v", summaries)
 	}
 	failed := map[string]bool{}

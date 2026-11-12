@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
-	"sync"
 	"unicode/utf8"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
@@ -18,18 +18,18 @@ type Web struct {
 	// Fallbacks names the opt-in readers tried for a blocked page, in
 	// order: "wayback", "jina".
 	Fallbacks []string
-	// AllowPrivate lets web_extract read private and loopback addresses.
+	// AllowPrivate lets WebFetch read private and loopback addresses.
 	AllowPrivate bool
 	// CacheDir is where the full text of a long page is saved.
 	CacheDir string
 }
 
 const (
-	maxExtractURLs   = 5
 	defaultCharLimit = 15000
-	minCharLimit     = 2000
 	defaultSearchN   = 5
-	maxSearchN       = 100
+	// searchFilteredN is how many results a domain-filtered search asks the
+	// engine for, to have some left once the filter has run.
+	searchFilteredN = 50
 )
 
 const webNotConfigured = "web access is not set up"
@@ -51,13 +51,17 @@ func (webSearchTool) Concurrent() bool { return true }
 
 func (webSearchTool) Schema() provider.Tool {
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
-		Name:        "web_search",
-		Description: "Look something up on the web. Each result has a title, a URL and a snippet; five come back unless you ask for another number. The query goes to the configured search engine as written, so its operators (site:, filetype:, intitle:, a minus sign, quoted phrases) work if that engine supports them.",
+		Name: "WebSearch",
+		Description: "Search the web. Each result has a title, a URL and a snippet, five at most. The query goes to the configured search engine as written, " +
+			"so its operators (site:, filetype:, a minus sign, quoted phrases) work where that engine supports them. " +
+			"allowed_domains keeps only results from those sites, and blocked_domains leaves theirs out. " +
+			"To read a result, fetch it with WebFetch.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "query": {"type": "string", "description": "What to search for, in the form you would type into a search engine."},
-    "limit": {"type": "integer", "description": "How many results to return. Defaults to 5.", "minimum": 1, "maximum": 100, "default": 5}
+    "query": {"type": "string", "minLength": 2, "description": "What to search for, as you would type it into a search engine."},
+    "allowed_domains": {"type": "array", "items": {"type": "string"}, "description": "Only return results from these domains (a domain covers its subdomains)."},
+    "blocked_domains": {"type": "array", "items": {"type": "string"}, "description": "Never return results from these domains."}
   },
   "required": ["query"]
 }`),
@@ -68,98 +72,129 @@ func (webSearchTool) Run(ctx context.Context, env *Env, args json.RawMessage) (s
 	if env.Web == nil {
 		return errorResult(webNotConfigured), nil
 	}
-	var in map[string]any
-	if err := json.Unmarshal(args, &in); err != nil {
+	var a struct {
+		Query   string   `json:"query"`
+		Allowed []string `json:"allowed_domains"`
+		Blocked []string `json:"blocked_domains"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
 		return errorResult("invalid arguments: " + err.Error()), nil
 	}
-	query, _ := in["query"].(string)
-	query = strings.TrimSpace(query)
+	query := strings.TrimSpace(a.Query)
 	if query == "" {
 		return errorResult("query is required"), nil
 	}
-	limit := defaultSearchN
-	if n, ok := argInt(in, "limit"); ok {
-		limit = int(min(max(n, 1), maxSearchN))
+	allowed, blocked := cleanDomains(a.Allowed), cleanDomains(a.Blocked)
+	if len(allowed) == 0 && len(blocked) == 0 {
+		return env.Web.search(ctx, query, defaultSearchN, nil), nil
 	}
-	return env.Web.search(ctx, query, limit), nil
+	if len(allowed) == 1 {
+		query += " site:" + allowed[0]
+	}
+	keep := func(raw string) bool {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return false
+		}
+		host := strings.ToLower(u.Hostname())
+		return (len(allowed) == 0 || onDomain(host, allowed)) && !onDomain(host, blocked)
+	}
+	return env.Web.search(ctx, query, defaultSearchN, keep), nil
 }
 
-type webExtractTool struct{}
+// cleanDomains turns what a model sends as domains ("https://www.Example.com/")
+// into bare lower-case hosts.
+func cleanDomains(in []string) []string {
+	var out []string
+	for _, d := range in {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if _, rest, ok := strings.Cut(d, "://"); ok {
+			d = rest
+		}
+		d, _, _ = strings.Cut(d, "/")
+		d = strings.TrimSuffix(strings.TrimPrefix(d, "www."), ".")
+		if d != "" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
 
-func (webExtractTool) Concurrent() bool { return true }
+// onDomain says whether host is one of domains or a subdomain of one.
+func onDomain(host string, domains []string) bool {
+	for _, d := range domains {
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
+}
 
-func (webExtractTool) Schema() provider.Tool {
+type webFetchTool struct{}
+
+func (webFetchTool) Concurrent() bool { return true }
+
+func (webFetchTool) Schema() provider.Tool {
 	return provider.Tool{Type: "function", Function: provider.ToolFunction{
-		Name: "web_extract",
-		Description: "Fetch web pages and return their text as markdown, unsummarized. PDF links work too; give the link itself. " +
-			"A page up to the character budget (15000 unless you change it) comes back in full. A longer one comes back as its beginning and end, " +
-			"with a footer giving the file where the whole text was saved and the read_file call that reads the part left out. " +
-			"Images show up as [IMAGE: alt text] and link addresses are dropped. " +
-			"Each page is requested directly first; if the site refuses, the configured fallbacks are tried, and an error comes back only when all of them fail.",
+		Name: "WebFetch",
+		Description: "Fetch a web page (or a PDF, by its own link) and return its text as markdown, so you can answer prompt from it. " +
+			"No model condenses the page here: the reply is the page itself, unsummarized, with your prompt repeated beside it. " +
+			"A page over 15000 characters comes back as its beginning and end, with a footer naming the file that holds all of it " +
+			"and the Read call that shows the part left out. Images appear as [IMAGE: alt text] and link addresses are dropped. " +
+			"The page is requested directly first; if the site refuses, the configured fallbacks are tried. " +
+			"Only http and https addresses work, never ones on this machine or its private network.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "urls": {"type": "array", "items": {"type": "string"}, "description": "The pages to fetch, at most 5 per call.", "maxItems": 5},
-    "char_limit": {"type": "integer", "description": "How many characters of each page to return, 15000 by default. Longer pages are cut to their start and end, and the whole text is kept on disk. Raise it to see more of a long page directly.", "minimum": 2000}
+    "url": {"type": "string", "format": "uri", "description": "The address of the page to fetch."},
+    "prompt": {"type": "string", "description": "What you want to learn from the page."}
   },
-  "required": ["urls"]
+  "required": ["url", "prompt"]
 }`),
 	}}
 }
 
-func (webExtractTool) Run(ctx context.Context, env *Env, args json.RawMessage) (string, error) {
+func (webFetchTool) Run(ctx context.Context, env *Env, args json.RawMessage) (string, error) {
 	if env.Web == nil {
 		return errorResult(webNotConfigured), nil
 	}
-	var in map[string]any
-	if err := json.Unmarshal(args, &in); err != nil {
+	var a struct {
+		URL    string `json:"url"`
+		Prompt string `json:"prompt"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
 		return errorResult("invalid arguments: " + err.Error()), nil
 	}
-	items, _ := in["urls"].([]any)
-	if len(items) == 0 {
-		return errorResult("urls must be a non-empty list"), nil
-	}
-	items = items[:min(len(items), maxExtractURLs)]
-	budget := defaultCharLimit
-	if n, ok := argInt(in, "char_limit"); ok {
-		budget = int(max(n, minCharLimit))
-	}
-
-	urls := make([]string, len(items))
-	for i, it := range items {
-		urls[i] = extractURL(it)
-	}
-	for _, u := range urls {
-		if name := sensitiveQueryParam(u); name != "" {
-			return jsonResult(map[string]any{"success": false, "error": "Refused: the URL carries what looks like a credential in its query string (" + name +
-				"). The fallback readers are outside services that would see it. Take the secret out of the URL."})
+	u := strings.TrimSpace(a.URL)
+	if u == "" {
+		if jsonHasField(args, "urls") {
+			return errorResult("url is required: WebFetch reads one page per call, given as url"), nil
 		}
+		return errorResult("url is required"), nil
 	}
-	results := make([]extractResult, len(urls))
-	var wg sync.WaitGroup
-	for i, u := range urls {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			results[i] = env.Web.extract(ctx, u, budget)
-		}()
+	if name := sensitiveQueryParam(u); name != "" {
+		return errorResult("Refused: the URL carries what looks like a credential in its query string (" + name +
+			"). The fallback readers are outside services that would see it. Take the secret out of the URL."), nil
 	}
-	wg.Wait()
-	return jsonOut(map[string]any{"results": results}), nil
+	r := env.Web.extract(ctx, u, defaultCharLimit)
+	if r.Error != nil {
+		return jsonOut(map[string]any{"url": r.URL, "error": *r.Error}), nil
+	}
+	out := map[string]any{"url": r.URL, "title": r.Title, "content": r.Content, "via": r.Via}
+	if p := strings.TrimSpace(a.Prompt); p != "" {
+		out["prompt"] = p
+	}
+	return jsonOut(out), nil
 }
 
-// extractURL is the URL of an item of the urls list: a string, or (models
-// forward whole search results) an object with a url or href.
-func extractURL(v any) string {
-	if m, ok := v.(map[string]any); ok {
-		if s, _ := m["url"].(string); s != "" {
-			v = s
-		} else {
-			v = m["href"]
-		}
+// jsonHasField reports whether the raw arguments carry the field at all.
+func jsonHasField(raw json.RawMessage, field string) bool {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil {
+		return false
 	}
-	s, _ := v.(string)
-	return strings.TrimSpace(s)
+	_, ok := m[field]
+	return ok
 }
 
 // sensitiveQueryParams are the query parameter names that carry credentials
@@ -199,10 +234,10 @@ var delimiterToken = regexp.MustCompile(`(?i)untrusted_tool_result`)
 const untrustedMinChars = 32
 
 // WrapUntrusted marks the result of a tool whose output an outsider controls
-// (web_search, web_extract, any mcp_ tool) as data, not instructions. Other
+// (WebSearch, WebFetch, any mcp_ tool) as data, not instructions. Other
 // tools' results and results under 32 characters pass unchanged.
 func WrapUntrusted(tool, content string) string {
-	if tool != "web_search" && tool != "web_extract" && !strings.HasPrefix(tool, "mcp_") {
+	if tool != "WebSearch" && tool != "WebFetch" && !strings.HasPrefix(tool, "mcp_") {
 		return content
 	}
 	if utf8.RuneCountInString(content) < untrustedMinChars {

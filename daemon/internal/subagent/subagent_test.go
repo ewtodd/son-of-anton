@@ -1,6 +1,6 @@
 package subagent_test
 
-// Phase 4a: the task tool's text, types and result format.
+// Phase 4a: the Task tool's text, types and result format.
 
 import (
 	"context"
@@ -14,28 +14,35 @@ import (
 
 func TestTheBuiltinTypes(t *testing.T) {
 	types := subagent.Builtin()
-	explore, ok := subagent.Lookup(types, "explore")
+	explore, ok := subagent.Lookup(types, "Explore")
 	if !ok || !strings.HasPrefix(explore.Description, "Read-only searcher for finding things in a codebase") ||
 		!strings.HasPrefix(explore.Prompt, "You are a read-only code explorer.") {
 		t.Fatalf("explore = %+v", explore)
 	}
-	if strings.Join(explore.Tools, ",") != "terminal,read_file,search_files" {
+	if explore.Name != "Explore" || strings.Join(explore.Tools, ",") != "Bash,Read,Glob,Grep" {
 		t.Fatalf("explore tools = %v", explore.Tools)
 	}
-	general, ok := subagent.Lookup(types, "general")
-	if !ok || !strings.HasPrefix(general.Description, "Full-capability agent for any job that needs several steps") || general.Prompt == "" || general.Tools != nil {
+	general, ok := subagent.Lookup(types, "general-purpose")
+	if !ok || general.Name != "general-purpose" || !strings.HasPrefix(general.Description, "Full-capability agent for any job that needs several steps") || general.Prompt == "" || general.Tools != nil {
 		t.Fatalf("general = %+v; every tool its parent may give it", general)
 	}
 	if _, ok := subagent.Lookup(types, "nope"); ok {
 		t.Fatal("unknown type")
 	}
-	for _, name := range []string{"task", "memory", "clarify", "todo"} {
+	// A child session stored before the types took Claude Code's names names
+	// its type explore or general.
+	for old, now := range map[string]string{"explore": "Explore", "general": "general-purpose", "EXPLORE": "Explore"} {
+		if typ, ok := subagent.Lookup(types, old); !ok || typ.Name != now {
+			t.Errorf("Lookup(%q) = %+v, want %s", old, typ, now)
+		}
+	}
+	for _, name := range []string{"Task", "memory", "AskUserQuestion", "TodoWrite"} {
 		if subagent.ChildMay(name) {
 			t.Errorf("a child may not use %s", name)
 		}
 	}
-	if !subagent.ChildMay("terminal") {
-		t.Error("a child may use terminal")
+	if !subagent.ChildMay("Bash") {
+		t.Error("a child may use Bash")
 	}
 }
 
@@ -45,21 +52,21 @@ func TestTheDescriptionCoversTheTool(t *testing.T) {
 		"Hand a self-contained job to a subagent",
 		"Pick the subagent by name with subagent_type.",
 		"Do the job yourself when it is small",
-		"Several task calls in one message run at the same time.",
+		"Several Task calls in one message run at the same time.",
 		"The result carries a task_id.",
-		"\nSubagent types:\n- explore: Read-only searcher for finding things in a codebase",
+		"\nSubagent types:\n- Explore: Read-only searcher for finding things in a codebase",
 	} {
 		if !strings.Contains(d, want) {
 			t.Errorf("description lacks %q", want)
 		}
 	}
-	if strings.Index(d, "- explore:") > strings.Index(d, "- general:") {
+	if strings.Index(d, "- Explore:") > strings.Index(d, "- general-purpose:") {
 		t.Error("agents are listed by name")
 	}
 	if strings.Contains(d, "Background option:") {
 		t.Error("the background paragraph appears only when background is offered")
 	}
-	if !strings.Contains(subagent.Description(subagent.Builtin(), true), "Background option: set background to true") {
+	if !strings.Contains(subagent.Description(subagent.Builtin(), true), "Background option: set run_in_background to true") {
 		t.Error("the background paragraph")
 	}
 }
@@ -91,18 +98,18 @@ func TestTheToolCallsTheSpawner(t *testing.T) {
 	if err := json.Unmarshal(s.Function.Parameters, &params); err != nil {
 		t.Fatal(err)
 	}
-	if s.Function.Name != "task" || strings.Join(params.Required, ",") != "description,prompt,subagent_type" ||
-		params.Properties["task_id"] == nil || params.Properties["background"] == nil {
+	if s.Function.Name != "Task" || strings.Join(params.Required, ",") != "description,prompt,subagent_type" ||
+		params.Properties["task_id"] == nil || params.Properties["run_in_background"] == nil || params.Properties["model"] == nil {
 		t.Fatalf("schema = %s", s.Function.Parameters)
 	}
 	if c, ok := tool.(interface{ Concurrent() bool }); !ok || !c.Concurrent() {
-		t.Fatal("task calls in one message run concurrently")
+		t.Fatal("Task calls in one message run concurrently")
 	}
-	out, err := tool.Run(context.Background(), &tools.Env{}, json.RawMessage(`{"description":"Find it","prompt":"look for it","subagent_type":"explore"}`))
+	out, err := tool.Run(context.Background(), &tools.Env{}, json.RawMessage(`{"description":"Find it","prompt":"look for it","subagent_type":"Explore"}`))
 	if err != nil || out != subagent.Render("child-1", "completed", "", "the answer") {
 		t.Fatalf("Run = %q, %v", out, err)
 	}
-	if got.Description != "Find it" || got.Prompt != "look for it" || got.Type.Name != "explore" || got.Background || got.TaskID != "" {
+	if got.Description != "Find it" || got.Prompt != "look for it" || got.Type.Name != "Explore" || got.Background || got.TaskID != "" {
 		t.Fatalf("request = %+v", got)
 	}
 	out, _ = tool.Run(context.Background(), &tools.Env{}, json.RawMessage(`{"description":"x","prompt":"y","subagent_type":"nope"}`))
@@ -114,7 +121,7 @@ func TestTheToolCallsTheSpawner(t *testing.T) {
 func TestTheTaskToolAndItsParametersAreDescribed(t *testing.T) {
 	s := subagent.Tool(subagent.Builtin(), true, nil).Schema()
 	if strings.TrimSpace(s.Function.Description) == "" {
-		t.Fatal("the task tool has no description")
+		t.Fatal("the Task tool has no description")
 	}
 	var params struct {
 		Properties map[string]struct {
@@ -126,7 +133,22 @@ func TestTheTaskToolAndItsParametersAreDescribed(t *testing.T) {
 	}
 	for name, p := range params.Properties {
 		if strings.TrimSpace(p.Description) == "" {
-			t.Errorf("task parameter %s has no description", name)
+			t.Errorf("Task parameter %s has no description", name)
 		}
+	}
+}
+
+func TestRunInBackgroundReachesTheSpawner(t *testing.T) {
+	var got subagent.Request
+	spawn := func(_ context.Context, _ *tools.Env, req subagent.Request) (subagent.Result, error) {
+		got = req
+		return subagent.Result{ID: "c", State: "running"}, nil
+	}
+	args := json.RawMessage(`{"description":"d","prompt":"p","subagent_type":"general-purpose","run_in_background":true}`)
+	if _, _ = subagent.Tool(subagent.Builtin(), true, spawn).Run(context.Background(), &tools.Env{}, args); !got.Background {
+		t.Fatal("run_in_background must start the subagent in the background")
+	}
+	if _, _ = subagent.Tool(subagent.Builtin(), false, spawn).Run(context.Background(), &tools.Env{}, args); got.Background {
+		t.Fatal("a Task tool that does not offer the background runs it in the foreground")
 	}
 }

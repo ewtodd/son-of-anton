@@ -4,7 +4,7 @@ package server_test
 // (daemon/phases/07c-code-vision.md); execute_code needs a Python 3, so the
 // tests that run scripts skip without one. The phase's other tool changed:
 // vision_analyze is gone entirely, and images reach the model's own vision
-// encoder as message parts (a read_file result, a chat attachment) — a
+// encoder as message parts (a Read result, a chat attachment) — a
 // text-only model gets an error instead.
 
 import (
@@ -63,8 +63,8 @@ func TestExecuteCodeCallsTheSessionsTools(t *testing.T) {
 	}
 	fake := fakellm.New(t,
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{
-			code("x1", "import json, os\nfrom son_of_anton_tools import read_file, terminal\n"+
-				"r = read_file('notes.txt')\nt = terminal('echo from-terminal')\n"+
+			code("x1", "import json, os\nfrom son_of_anton_tools import read, bash\n"+
+				"r = read('notes.txt')\nt = bash('echo from-bash')\n"+
 				"print(json.dumps({'lines': r['total_lines'], 'out': t['output'].strip(), 'exit': t['exit_code'], "+
 				"'key': os.environ.get('MY_API_KEY'), 'rpc': bool(os.environ.get('SON_OF_ANTON_RPC_TOKEN')), 'cwd': os.getcwd()}))"),
 			code("x2", "print('before')\n1/0"),
@@ -87,7 +87,7 @@ func TestExecuteCodeCallsTheSessionsTools(t *testing.T) {
 		t.Fatalf("the script's output = %v", ok)
 	}
 	if ok["status"] != "success" || ok["exit_code"] != float64(0) || ok["tool_calls_made"] != float64(2) ||
-		printed["lines"] != float64(3) || printed["out"] != "from-terminal" || printed["exit"] != float64(0) ||
+		printed["lines"] != float64(3) || printed["out"] != "from-bash" || printed["exit"] != float64(0) ||
 		printed["key"] != nil || printed["rpc"] != true || printed["cwd"] != cwd {
 		t.Fatalf("execute_code = %v, printed %v", ok, printed)
 	}
@@ -108,7 +108,7 @@ func TestExecuteCodeCallsTheSessionsTools(t *testing.T) {
 			desc = str(fn, "description")
 		}
 	}
-	if !strings.HasPrefix(desc, "Execute a Python 3 script that drives this session's tools") || !strings.Contains(desc, "terminal(command: str") ||
+	if !strings.HasPrefix(desc, "Execute a Python 3 script that drives this session's tools") || !strings.Contains(desc, "bash(command: str") ||
 		strings.Contains(desc, "cross_profile") || strings.Contains(desc, "venv's python") {
 		t.Fatalf("the schema = %q", desc)
 	}
@@ -123,7 +123,7 @@ func TestADangerousCallFromAScriptAsksTheDriver(t *testing.T) {
 	}
 	fake := fakellm.New(t,
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{
-			code("x1", "from son_of_anton_tools import terminal\nr = terminal('chmod 777 f.txt')\nprint(r.get('status'), r.get('exit_code'))"),
+			code("x1", "from son_of_anton_tools import bash\nr = bash('chmod 777 f.txt')\nprint(r.get('status'), r.get('exit_code'))"),
 		}},
 		fakellm.Turn{Content: "done"},
 	)
@@ -220,7 +220,7 @@ func TestReadFileAttachesTheImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("r1", "read_file", `{"path":"pic.png"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("r1", "Read", `{"file_path":"pic.png"}`)}},
 		fakellm.Turn{Content: "done"},
 	)
 	h := newHarness(t, fake, "")
@@ -245,7 +245,7 @@ func TestReadFileAttachesTheImage(t *testing.T) {
 	}
 	// The row's own fields ride the image path too: a tool message without
 	// its call id and tool name is not the message that was sent.
-	if wire := toolWire(t, fake, 1); str(wire, "tool_call_id") != "r1" || str(wire, "name") != "read_file" {
+	if wire := toolWire(t, fake, 1); str(wire, "tool_call_id") != "r1" || str(wire, "name") != "Read" {
 		t.Fatalf("the wire tool message lost its fields: %v", wire)
 	}
 	for _, p := range parts {
@@ -302,7 +302,7 @@ func TestReadImageErrorsOnATextOnlyModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("r1", "read_file", `{"path":"pic.png"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("r1", "Read", `{"file_path":"pic.png"}`)}},
 		fakellm.Turn{Content: "done"},
 	)
 	h := writeHomeVision(t, home, fake.URL, "false")
@@ -338,7 +338,7 @@ func hostileBMP() []byte {
 	return b
 }
 
-// A read_file of a hostile image reaches PrepareImage on the model's turn:
+// A Read of a hostile image reaches PrepareImage on the model's turn:
 // it must answer the model with an error and leave the daemon serving, not
 // panic soa-d (and its session) out of the air.
 func TestABadImageFailsTheReadNotTheDaemon(t *testing.T) {
@@ -347,7 +347,7 @@ func TestABadImageFailsTheReadNotTheDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("r1", "read_file", `{"path":"bad.bmp"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("r1", "Read", `{"file_path":"bad.bmp"}`)}},
 		fakellm.Turn{Content: "still here"},
 		fakellm.Turn{Content: "done again"},
 	)
@@ -373,7 +373,7 @@ func TestABadImageFailsTheReadNotTheDaemon(t *testing.T) {
 
 // Text that merely looks like an image reads as text (owner, 2026-11-06): a
 // file whose bytes start "BM25", markdown or code that mentions <svg>, and
-// images.go itself — read_file's own source, which holds the string. A real
+// images.go itself — Read's own source, which holds the string. A real
 // .svg reads as its source too, so it stays editable; a session with vision
 // is handed the render beside it when rsvg-convert works, and a session
 // without sees the source alone and is told nothing is missing.
@@ -407,7 +407,7 @@ func TestReadFileReadsTextThatMerelyLooksLikeAnImage(t *testing.T) {
 	}
 	var calls []fakellm.ToolCall
 	for i, name := range []string{"BM25.txt", "notes.md", "icon.tsx", "page.html", "images.go", "pict.svg"} {
-		calls = append(calls, call(fmt.Sprintf("r%d", i), "read_file", fmt.Sprintf(`{"path":%q}`, name)))
+		calls = append(calls, call(fmt.Sprintf("r%d", i), "Read", fmt.Sprintf(`{"file_path":%q}`, name)))
 	}
 	fake := fakellm.New(t,
 		fakellm.Turn{ToolCalls: calls},
@@ -425,13 +425,13 @@ func TestReadFileReadsTextThatMerelyLooksLikeAnImage(t *testing.T) {
 	for i, name := range []string{"BM25.txt", "notes.md", "icon.tsx", "page.html", "images.go", "pict.svg"} {
 		res := decodeRow(t, rows[i])
 		if res["error"] != nil {
-			t.Fatalf("read_file(%s) = %v; plain text, and images.go among it, must read", name, res)
+			t.Fatalf("Read(%s) = %v; plain text, and images.go among it, must read", name, res)
 		}
 		if !strings.Contains(str(res, "content"), strings.TrimSpace(strings.SplitN(files[name], "\n", 2)[0])) {
-			t.Fatalf("read_file(%s) did not read the source: %.200v", name, res)
+			t.Fatalf("Read(%s) did not read the source: %.200v", name, res)
 		}
 		if name != "pict.svg" && obj(res, "image") != nil {
-			t.Fatalf("read_file(%s) attached an image: %v", name, res)
+			t.Fatalf("Read(%s) attached an image: %v", name, res)
 		}
 	}
 	// The .svg: its source is what came back, and, with rsvg-convert on PATH
@@ -466,7 +466,7 @@ func TestASVGFileReadsWithoutVision(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("r1", "read_file", `{"path":"pict.svg"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("r1", "Read", `{"file_path":"pict.svg"}`)}},
 		fakellm.Turn{Content: "done"},
 	)
 	h := writeHomeVision(t, home, fake.URL, "false")

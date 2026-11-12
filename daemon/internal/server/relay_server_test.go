@@ -87,7 +87,7 @@ func TestARelayedTaskReportsBack(t *testing.T) {
 		t.Fatal("the worker runs as son-of-anton with the user's request")
 	}
 	names := strings.Join(toolNames(t, fake.Request(wi)), ",")
-	if strings.Contains(names, "relay") || !strings.Contains(names, "terminal") {
+	if strings.Contains(names, "relay") || !strings.Contains(names, "Bash") {
 		t.Fatalf("a worker's tools = %s", names)
 	}
 	ni := requestWith(t, fake, "build fixed: a missing import")
@@ -204,7 +204,7 @@ func TestAWorkersApprovalAsksItsChat(t *testing.T) {
 	fake := fakellm.New(t,
 		fakellm.Turn{When: asFiona, ToolCalls: []fakellm.ToolCall{relayCall("r1", map[string]any{"action": "send", "new_in": dir, "message": "make f.txt writable"})}},
 		fakellm.Turn{When: asFiona, Content: "Asked the worker."},
-		fakellm.Turn{When: asWorker, ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
+		fakellm.Turn{When: asWorker, ToolCalls: []fakellm.ToolCall{bashCall("c1", "chmod 777 f.txt")}},
 		fakellm.Turn{When: asWorker, Content: "it is writable now"},
 		fakellm.Turn{When: "it is writable now", Content: "Done, f.txt is writable."},
 	)
@@ -231,7 +231,7 @@ func TestAPickedUpWorkerAsksTheTerminal(t *testing.T) {
 		fakellm.Turn{When: "first done", Content: "First is done."},
 		fakellm.Turn{When: asFiona, ToolCalls: []fakellm.ToolCall{relayCall("r2", map[string]any{"action": "send", "message": "second job"})}},
 		fakellm.Turn{When: asFiona, Content: "Queued for the terminal."},
-		fakellm.Turn{When: asWorker, ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
+		fakellm.Turn{When: asWorker, ToolCalls: []fakellm.ToolCall{bashCall("c1", "chmod 777 f.txt")}},
 		fakellm.Turn{When: asWorker, Content: "second done"},
 		fakellm.Turn{When: "second done", Content: "Second is done."},
 	)

@@ -415,5 +415,5 @@ func (w *Web) fitToBudget(raw, content string, budget int) (string, error) {
 	omitted := len(runes) - utf8.RuneCountInString(head) - utf8.RuneCountInString(tail)
 	middle := strings.Count(head, "\n") + 1
 	return fmt.Sprintf("%s\n\n[... %d characters left out ...]\n\n%s\n\n[Shortened: the page is %d characters long. All of it is saved in %s; "+
-		"the cut part begins at line %d, so read_file with offset=%d shows it.]", head, omitted, tail, len(runes), path, middle, middle), nil
+		"the cut part begins at line %d, so Read with offset=%d shows it.]", head, omitted, tail, len(runes), path, middle, middle), nil
 }

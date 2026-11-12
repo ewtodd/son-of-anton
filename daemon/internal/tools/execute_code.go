@@ -72,13 +72,15 @@ func (t executeCodeTool) Schema() provider.Tool {
 		}
 	}
 	var examples []string
-	for _, n := range []string{"web_search", "terminal"} {
+	for _, n := range []string{"WebSearch", "Bash"} {
 		if slices.Contains(have, n) {
-			examples = append(examples, n)
+			examples = append(examples, scriptTools[n].fn)
 		}
 	}
 	if len(examples) == 0 {
-		examples = have[:min(2, len(have))]
+		for _, n := range have[:min(2, len(have))] {
+			examples = append(examples, scriptTools[n].fn)
+		}
 	}
 	imports := "..."
 	if len(examples) > 0 {
@@ -89,7 +91,7 @@ func (t executeCodeTool) Schema() provider.Tool {
 		"branching on what came back, or looping over pages or files. A single call, a result you want to " +
 		"read whole, or anything that involves the user is better done as an ordinary tool call.\n\n" +
 		"The functions, imported with `from son_of_anton_tools import ...`:\n" + strings.Join(lines, "\n") + "\n\n" +
-		"A script gets 5 minutes, 50 calls and 50 KB of stdout, and terminal() cannot background anything. " +
+		"A script gets 5 minutes, 50 calls and 50 KB of stdout, and bash() cannot background anything. " +
 		"It runs in the session's working directory with the standard library. Whatever it prints to stdout is " +
 		"returned. Three helpers need no import: json_parse(text), shell_quote(s) and " +
 		"retry(fn, max_attempts=3, delay=2)."
@@ -123,7 +125,7 @@ func (t executeCodeTool) Run(ctx context.Context, env *Env, args json.RawMessage
 	if _, hasCode := in["code"]; !hasCode {
 		if _, hasCommand := in["command"]; hasCommand {
 			return errorResult("This tool takes Python source in 'code'; a 'command' was sent instead. " +
-				"For a shell command call terminal, and for Python send the source as code."), nil
+				"For a shell command call Bash, and for Python send the source as code."), nil
 		}
 	}
 	var code string
@@ -133,7 +135,7 @@ func (t executeCodeTool) Run(ctx context.Context, env *Env, args json.RawMessage
 		}
 	}
 	if strings.TrimSpace(code) == "" {
-		return errorResult("'code' is empty. Send the Python source to run; for a shell command, call terminal."), nil
+		return errorResult("'code' is empty. Send the Python source to run; for a shell command, call Bash."), nil
 	}
 	if env.NoScripts != "" {
 		return codeError(env.NoScripts), nil
@@ -525,11 +527,10 @@ func (s *rpcServer) handle(ctx context.Context, line []byte) string {
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
-	if req.Tool == "terminal" {
+	if req.Tool == "Bash" {
 		var m map[string]json.RawMessage
 		if json.Unmarshal(args, &m) == nil {
-			delete(m, "background")
-			delete(m, "notify_on_complete")
+			delete(m, "run_in_background")
 			args, _ = json.Marshal(m)
 		}
 	}

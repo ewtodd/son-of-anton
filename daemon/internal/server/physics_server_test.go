@@ -45,7 +45,7 @@ func tcall(id, name string, args map[string]any) fakellm.ToolCall {
 }
 
 func writeResults(id, content string) fakellm.ToolCall {
-	return tcall(id, "write_file", map[string]any{"path": "RESULTS.txt", "content": content})
+	return tcall(id, "Write", map[string]any{"file_path": "RESULTS.txt", "content": content})
 }
 
 func reviewCall(id, verdict, feedback string) fakellm.ToolCall {
@@ -301,10 +301,10 @@ func TestPhysicsRunPasses(t *testing.T) {
 		}
 		return strings.Join(names, ",")
 	}
-	if got := toolNames(wr[0]); got != "terminal,process,read_file,write_file,patch,search_files,todo" {
+	if got := toolNames(wr[0]); got != "Bash,BashOutput,KillShell,Read,Write,Edit,Glob,Grep,TodoWrite" {
 		t.Errorf("the worker's tools: %s", got)
 	}
-	if got := toolNames(mr[0]); got != "read_file,search_files,review" {
+	if got := toolNames(mr[0]); got != "Read,Glob,Grep,review" {
 		t.Errorf("the manager's tools: %s", got)
 	}
 
@@ -333,7 +333,7 @@ func TestPhysicsRunPasses(t *testing.T) {
 					t.Errorf("tool_call lacks %s: %s", k, line)
 				}
 			}
-			if _, has := ev["exit_code"]; has && ev["tool"] != "terminal" {
+			if _, has := ev["exit_code"]; has && ev["tool"] != "Bash" {
 				t.Errorf("a %v call has an exit code: %s", ev["tool"], line)
 			}
 		default:
@@ -524,20 +524,20 @@ func TestPhysicsNoRequestCarriesTheSpec(t *testing.T) {
 		return func() string { b, _ := json.Marshal(f()); return string(b) }
 	}
 	read := func(p func() string) func() map[string]any {
-		return func() map[string]any { return map[string]any{"path": p()} }
+		return func() map[string]any { return map[string]any{"file_path": p()} }
 	}
 	e = newPhys(t, false, "",
 		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{
-			{ID: "w1", Name: "read_file", ArgumentsFunc: argsFor(read(spec))},
-			{ID: "w2", Name: "search_files", ArgumentsFunc: argsFor(func() map[string]any {
+			{ID: "w1", Name: "Read", ArgumentsFunc: argsFor(read(spec))},
+			{ID: "w2", Name: "Grep", ArgumentsFunc: argsFor(func() map[string]any {
 				return map[string]any{"pattern": "expected", "path": specDir()}
 			})},
 			writeResults("w3", goodResults),
 		}}),
 		wt(fakellm.Turn{Content: "done"}),
 		mt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{
-			{ID: "m1", Name: "read_file", ArgumentsFunc: argsFor(read(spec))},
-			tcall("m2", "read_file", map[string]any{"path": "RESULTS.txt"}),
+			{ID: "m1", Name: "Read", ArgumentsFunc: argsFor(read(spec))},
+			tcall("m2", "Read", map[string]any{"file_path": "RESULTS.txt"}),
 			reviewCall("m3", "accept", "fine"),
 		}}),
 		mt(fakellm.Turn{Content: "Done."}),
@@ -723,7 +723,7 @@ func TestPhysicsSessionLimitInterrupt(t *testing.T) {
 		t.Errorf("progress:\n%s", lines)
 	}
 	log := readFile(t, filepath.Join(str(w, "dir"), "logs", "session-1.md"))
-	if !strings.Contains(log, "write_file") {
+	if !strings.Contains(log, "Write") {
 		t.Errorf("session-1.md:\n%s", log)
 	}
 }
@@ -937,7 +937,7 @@ func TestPhysicsLogsAndEventLogWithTheSandbox(t *testing.T) {
 	// records the call with the exit code.
 	cmd := `i=1; while [ $i -le 100 ]; do echo line$i; i=$((i+1)); done; pwd; (exit 3)`
 	e := newPhys(t, true, "",
-		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("w1", cmd), writeResults("w2", goodResults)}}),
+		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("w1", cmd), writeResults("w2", goodResults)}}),
 		wt(fakellm.Turn{Content: "done"}),
 		mt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{reviewCall("r1", "accept", "ok")}}),
 		mt(fakellm.Turn{Content: "Done."}),
@@ -948,7 +948,7 @@ func TestPhysicsLogsAndEventLogWithTheSandbox(t *testing.T) {
 		t.Fatalf("run: %v", r)
 	}
 	log := readFile(t, filepath.Join(dir, "logs", "session-1.md"))
-	for _, want := range []string{"# Work session 1", "2 tool calls", "1. terminal", cmd, "exit code 3", "line1\n", "line30\n", "[56 lines omitted]", "line87\n", "line100\n" + dir, "2. write_file", "RESULTS.txt"} {
+	for _, want := range []string{"# Work session 1", "2 tool calls", "1. Bash", cmd, "exit code 3", "line1\n", "line30\n", "[56 lines omitted]", "line87\n", "line100\n" + dir, "2. Write", "RESULTS.txt"} {
 		if !strings.Contains(log, want) {
 			t.Errorf("session-1.md lacks %q:\n%s", want, log)
 		}
@@ -960,15 +960,15 @@ func TestPhysicsLogsAndEventLogWithTheSandbox(t *testing.T) {
 	for _, line := range strings.Split(strings.TrimSpace(readFile(t, filepath.Join(dir, "EVENT_LOG.jsonl"))), "\n") {
 		var ev map[string]any
 		_ = json.Unmarshal([]byte(line), &ev)
-		if ev["kind"] == "tool_call" && ev["tool"] == "terminal" {
+		if ev["kind"] == "tool_call" && ev["tool"] == "Bash" {
 			sawTerminal = true
 			if ev["exit_code"] != float64(3) || ev["agent"] != "worker" || ev["session"] != float64(1) {
-				t.Errorf("terminal tool_call: %s", line)
+				t.Errorf("Bash tool_call: %s", line)
 			}
 		}
 	}
 	if !sawTerminal {
-		t.Error("no terminal tool_call in EVENT_LOG.jsonl")
+		t.Error("no Bash tool_call in EVENT_LOG.jsonl")
 	}
 }
 
@@ -976,7 +976,7 @@ func TestPhysicsLogClipsLongOutput(t *testing.T) {
 	// At most 4,000 characters per call.
 	cmd := `i=1; while [ $i -le 20 ]; do echo "` + strings.Repeat("x", 300) + `$i"; i=$((i+1)); done`
 	e := newPhys(t, true, "",
-		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("w1", cmd), writeResults("w2", goodResults)}}),
+		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("w1", cmd), writeResults("w2", goodResults)}}),
 		wt(fakellm.Turn{Content: "done"}),
 		mt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{reviewCall("r1", "accept", "ok")}}),
 		mt(fakellm.Turn{Content: "Done."}),
@@ -1000,7 +1000,7 @@ func (e *physEnv) plant(f func(dir string)) func() string {
 		if len(ents) == 1 {
 			f(filepath.Join(e.root, ents[0].Name()))
 		}
-		return `{"path":"RESULTS.txt","content":` + fmt.Sprintf("%q", goodResults) + `}`
+		return `{"file_path":"RESULTS.txt","content":` + fmt.Sprintf("%q", goodResults) + `}`
 	}
 }
 
@@ -1033,7 +1033,7 @@ func TestPhysicsDaemonWritesStayBeneathTheRunDirectory(t *testing.T) {
 		_ = os.Symlink(out, filepath.Join(dir, "logs"))
 	}
 	e = newPhys(t, false, "",
-		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "w1", Name: "write_file", ArgumentsFunc: func() string { return e.plant(plant)() }}}}),
+		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "w1", Name: "Write", ArgumentsFunc: func() string { return e.plant(plant)() }}}}),
 		wt(fakellm.Turn{Content: "done"}),
 		mt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{reviewCall("r1", "accept", "ok")}}),
 		mt(fakellm.Turn{Content: "Done."}),
@@ -1070,7 +1070,7 @@ func TestPhysicsResultsSymlinkIsUnreadable(t *testing.T) {
 	var e *physEnv
 	plant := func(dir string) { _ = os.Symlink(secret, filepath.Join(dir, "RESULTS.txt")) }
 	e = newPhys(t, false, "",
-		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "w1", Name: "read_file", ArgumentsFunc: func() string { e.plant(plant)(); return `{"path":"PROBLEM.md"}` }}}}),
+		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "w1", Name: "Read", ArgumentsFunc: func() string { e.plant(plant)(); return `{"file_path":"PROBLEM.md"}` }}}}),
 		wt(fakellm.Turn{Content: "done"}),
 		mt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{reviewCall("r1", "accept", "ok")}}),
 		mt(fakellm.Turn{Content: "Done."}),
@@ -1101,14 +1101,14 @@ func TestPhysicsManagerCannotReadOrSearchThroughASymlink(t *testing.T) {
 		_ = os.Symlink(out, filepath.Join(dir, "dirlink"))
 	}
 	e = newPhys(t, true, "",
-		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "w1", Name: "write_file", ArgumentsFunc: func() string { return e.plant(plant)() }}}}),
+		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "w1", Name: "Write", ArgumentsFunc: func() string { return e.plant(plant)() }}}}),
 		wt(fakellm.Turn{Content: "done"}),
 		mt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{
-			tcall("m1", "read_file", map[string]any{"path": "filelink"}),
-			tcall("m2", "read_file", map[string]any{"path": "dirlink/victim"}),
-			tcall("m3", "search_files", map[string]any{"pattern": "OUTSIDE", "path": "dirlink"}),
-			tcall("m4", "search_files", map[string]any{"pattern": "OUTSIDE-SECRET"}),
-			tcall("m5", "read_file", map[string]any{"path": "RESULTS.txt"}),
+			tcall("m1", "Read", map[string]any{"file_path": "filelink"}),
+			tcall("m2", "Read", map[string]any{"file_path": "dirlink/victim"}),
+			tcall("m3", "Grep", map[string]any{"output_mode": "content", "pattern": "OUTSIDE", "path": "dirlink"}),
+			tcall("m4", "Grep", map[string]any{"output_mode": "content", "pattern": "OUTSIDE-SECRET"}),
+			tcall("m5", "Read", map[string]any{"file_path": "RESULTS.txt"}),
 			reviewCall("m6", "accept", "ok"),
 		}}),
 		mt(fakellm.Turn{Content: "Done."}),
@@ -1150,19 +1150,19 @@ func TestPhysicsDataIsReadableAtTheNamedAndTheResolvedPath(t *testing.T) {
 	cmd := "cat %s/events.root; echo; echo x > %s/w; echo rc=$?"
 	e = newPhys(t, true, "",
 		wt(fakellm.Turn{ToolCalls: []fakellm.ToolCall{
-			{ID: "w1", Name: "terminal", ArgumentsFunc: func() string {
+			{ID: "w1", Name: "Bash", ArgumentsFunc: func() string {
 				b, _ := json.Marshal(map[string]any{"command": fmt.Sprintf(cmd, link, link) + "; " + fmt.Sprintf(cmd, e.dataDir, e.dataDir)})
 				return string(b)
 			}},
-			{ID: "w2", Name: "read_file", ArgumentsFunc: func() string { return `{"path":` + fmt.Sprintf("%q", link+"/events.root") + `}` }},
-			{ID: "w3", Name: "read_file", ArgumentsFunc: func() string {
-				return `{"path":` + fmt.Sprintf("%q", e.dataDir+"/events.root") + `}`
+			{ID: "w2", Name: "Read", ArgumentsFunc: func() string { return `{"file_path":` + fmt.Sprintf("%q", link+"/events.root") + `}` }},
+			{ID: "w3", Name: "Read", ArgumentsFunc: func() string {
+				return `{"file_path":` + fmt.Sprintf("%q", e.dataDir+"/events.root") + `}`
 			}},
-			{ID: "w4", Name: "write_file", ArgumentsFunc: func() string {
-				return `{"path":` + fmt.Sprintf("%q", link+"/new.txt") + `,"content":"x"}`
+			{ID: "w4", Name: "Write", ArgumentsFunc: func() string {
+				return `{"file_path":` + fmt.Sprintf("%q", link+"/new.txt") + `,"content":"x"}`
 			}},
-			{ID: "w5", Name: "write_file", ArgumentsFunc: func() string {
-				return `{"path":` + fmt.Sprintf("%q", e.dataDir+"/new.txt") + `,"content":"x"}`
+			{ID: "w5", Name: "Write", ArgumentsFunc: func() string {
+				return `{"file_path":` + fmt.Sprintf("%q", e.dataDir+"/new.txt") + `,"content":"x"}`
 			}},
 		}}),
 		wt(fakellm.Turn{Content: "done"}),
@@ -1182,16 +1182,16 @@ func TestPhysicsDataIsReadableAtTheNamedAndTheResolvedPath(t *testing.T) {
 	}
 	_ = json.Unmarshal([]byte(res["w1"]), &term)
 	if strings.Count(term.Output, "DATA") != 2 || strings.Count(term.Output, "rc=1") != 2 {
-		t.Errorf("terminal at both paths: %q", res["w1"])
+		t.Errorf("Bash at both paths: %q", res["w1"])
 	}
 	for _, id := range []string{"w2", "w3"} {
 		if !strings.Contains(res[id], "DATA") {
-			t.Errorf("read_file %s: %q", id, res[id])
+			t.Errorf("Read %s: %q", id, res[id])
 		}
 	}
 	for _, id := range []string{"w4", "w5"} {
 		if !strings.Contains(res[id], "error") {
-			t.Errorf("write_file %s was not refused: %q", id, res[id])
+			t.Errorf("Write %s was not refused: %q", id, res[id])
 		}
 	}
 	if _, err := os.Stat(filepath.Join(e.dataDir, "new.txt")); err == nil {

@@ -31,11 +31,17 @@ type searchHit struct {
 	Position    int    `json:"position"`
 }
 
-// search answers web_search: SearXNG first, then DuckDuckGo when it is set.
-func (w *Web) search(ctx context.Context, query string, limit int) string {
+// search answers WebSearch: SearXNG first, then DuckDuckGo when it is set.
+// keep, when not nil, says which result URLs may be shown; the engine is then
+// asked for more results, and limit applies to those kept.
+func (w *Web) search(ctx context.Context, query string, limit int, keep func(string) bool) string {
 	var notes, failures []string
+	fetch := limit
+	if keep != nil {
+		fetch = searchFilteredN
+	}
 	if w.SearXNG != "" {
-		hits, err := w.searchSearXNG(ctx, query, limit)
+		hits, err := w.searchSearXNG(ctx, query, fetch)
 		switch {
 		case err != nil:
 			notes = append(notes, "searxng: "+err.Error())
@@ -44,19 +50,19 @@ func (w *Web) search(ctx context.Context, query string, limit int) string {
 		case len(hits) > 0 && !answersQuery(query, hits):
 			notes = append(notes, "searxng: results did not match the query")
 		default:
-			return searchAnswer("searxng", hits, nil)
+			return searchAnswer("searxng", hits, nil, keep, limit)
 		}
 		failures = append(failures, notes...)
 	}
 	if w.DuckDuckGo != "" {
-		hits, err := w.searchDuckDuckGo(ctx, query, limit)
+		hits, err := w.searchDuckDuckGo(ctx, query, fetch)
 		switch {
 		case err != nil:
 			failures = append(failures, "duckduckgo: "+err.Error())
 		case len(hits) > 0 && !answersQuery(query, hits):
 			failures = append(failures, "duckduckgo: results did not match the query")
 		default:
-			return searchAnswer("duckduckgo", hits, notes)
+			return searchAnswer("duckduckgo", hits, notes, keep, limit)
 		}
 	}
 	if len(failures) == 0 {
@@ -65,7 +71,20 @@ func (w *Web) search(ctx context.Context, query string, limit int) string {
 	return jsonOut(map[string]any{"success": false, "error": strings.Join(failures, "; ")})
 }
 
-func searchAnswer(backend string, hits []searchHit, notes []string) string {
+func searchAnswer(backend string, hits []searchHit, notes []string, keep func(string) bool, limit int) string {
+	if keep != nil {
+		var kept []searchHit
+		for _, h := range hits {
+			if keep(h.URL) && len(kept) < limit {
+				h.Position = len(kept) + 1
+				kept = append(kept, h)
+			}
+		}
+		if len(kept) == 0 && len(hits) > 0 {
+			notes = append(notes, fmt.Sprintf("none of the %d results the engine gave passed the domain filter", len(hits)))
+		}
+		hits = kept
+	}
 	if hits == nil {
 		hits = []searchHit{}
 	}

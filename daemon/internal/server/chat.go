@@ -142,6 +142,7 @@ type pendingReq struct {
 	l        *live
 	question bool
 	choices  []string // an approval's offered choices, or a question's options
+	multi    bool     // a question that takes several of its options
 }
 
 func (h *chatHub) state(stamp string) *chatState {
@@ -358,7 +359,7 @@ func (cs *chatState) askQuestion(l *live, id string, q tools.Question, prefix st
 		cs.mu.Unlock()
 		return
 	}
-	cs.pending = append(cs.pending, pendingReq{id: id, l: l, question: true, choices: q.Choices})
+	cs.pending = append(cs.pending, pendingReq{id: id, l: l, question: true, choices: q.Choices, multi: q.MultiSelect})
 	cs.mu.Unlock()
 	cs.say(questionText(q, prefix))
 }
@@ -433,16 +434,75 @@ func approvalText(req approval.Request, choices []string, id string, many bool, 
 	return text, styles
 }
 
+// questionText is the chat's message for a question: its place among the
+// call's questions when there are several, its header, the question, and the
+// numbered options with what each means.
 func questionText(q tools.Question, prefix string) string {
-	text := "❓ " + prefix + q.Text
+	text := "❓ " + prefix
+	if q.Of > 1 {
+		text += fmt.Sprintf("(%d of %d) ", q.Number, q.Of)
+	}
+	if q.Header != "" {
+		text += q.Header + ": "
+	}
+	text += q.Text
 	if len(q.Choices) == 0 {
 		return text
 	}
 	text += "\n"
 	for i, c := range q.Choices {
 		text += "\n  " + strconv.Itoa(i+1) + ". " + c
+		if i < len(q.Descriptions) && q.Descriptions[i] != "" {
+			text += " — " + q.Descriptions[i]
+		}
+	}
+	if q.MultiSelect {
+		return text + "\n\nAnswer with one or more numbers (such as 1, 3), the texts of options, or something else of your own."
 	}
 	return text + "\n\nAnswer with a number, the text of an option, or something else of your own."
+}
+
+// chatAnswers reads a chat message as the answer to a question with these
+// options: an option's number, its text in any case, or for a question that
+// takes several, a list of those (1, 3 or 1 and 3); anything else is the
+// answer in the user's own words.
+func chatAnswers(text string, choices []string, multi bool) []string {
+	answer := strings.TrimSpace(text)
+	pick := func(tok string) (string, bool) {
+		tok = strings.TrimSpace(tok)
+		if n, err := strconv.Atoi(tok); err == nil && n >= 1 && n <= len(choices) {
+			return choices[n-1], true
+		}
+		for _, c := range choices {
+			if strings.EqualFold(c, tok) {
+				return c, true
+			}
+		}
+		return "", false
+	}
+	if c, ok := pick(answer); ok {
+		return []string{c}
+	}
+	if multi {
+		toks := strings.FieldsFunc(strings.ReplaceAll(answer, " and ", ","), func(r rune) bool { return r == ',' || r == ';' })
+		if len(toks) == 1 {
+			toks = strings.Fields(answer)
+		}
+		var picked []string
+		for _, t := range toks {
+			c, ok := pick(t)
+			if !ok {
+				return []string{answer}
+			}
+			if !slices.Contains(picked, c) {
+				picked = append(picked, c)
+			}
+		}
+		if len(picked) > 0 {
+			return picked
+		}
+	}
+	return []string{answer}
 }
 
 // ---- chat sessions (the server's side) ----
@@ -952,17 +1012,7 @@ func (h *chatHub) answerWaiting(cs *chatState, text string) bool {
 	if q == nil {
 		return false
 	}
-	answer := strings.TrimSpace(text)
-	if n, err := strconv.Atoi(answer); err == nil && n >= 1 && n <= len(question.choices) {
-		answer = question.choices[n-1]
-	} else {
-		for _, c := range question.choices {
-			if strings.EqualFold(c, answer) {
-				answer = c
-			}
-		}
-	}
-	if e := question.l.answerQuestion(question.id, []string{answer}); e != nil {
+	if e := question.l.answerQuestion(question.id, chatAnswers(text, question.choices, question.multi)); e != nil {
 		return false // already resolved: the message is an ordinary one
 	}
 	return true

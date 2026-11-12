@@ -6,62 +6,78 @@ import (
 )
 
 // The module a script imports (son_of_anton_tools) is generated from one
-// table: for each tool its parameters, what it returns and a sentence about
-// it. The same table gives the Python function and the line the schema
-// shows the model, so the two cannot drift apart.
+// table: for each tool its Python function, its parameters, what it returns
+// and a sentence about it. The same table gives the Python function and the
+// line the schema shows the model, so the two cannot drift apart.
 
 // sandboxTools are the tools a script may call, in the order the schema
 // lists them.
-var sandboxTools = []string{"web_search", "web_extract", "read_file", "write_file", "search_files", "patch", "terminal"}
+var sandboxTools = []string{"WebSearch", "WebFetch", "Read", "Write", "Glob", "Grep", "Edit", "Bash"}
 
 // scriptParam is one parameter of a script-side function. def is the Python
-// literal of its default; empty means the parameter is required.
-type scriptParam struct{ name, typ, def string }
+// literal of its default; empty means the parameter is required. key is the
+// tool's own name for it when that is no Python name ("-i"), else "".
+type scriptParam struct{ name, typ, def, key string }
 
 type scriptTool struct {
+	fn      string // the Python function
 	params  []scriptParam
 	about   string // what the function does
 	returns string // the dict it returns
 }
 
 var scriptTools = map[string]scriptTool{
-	"web_search": {
-		params:  []scriptParam{{"query", "str", ""}, {"limit", "int", "5"}},
-		about:   "Search the web.",
+	"WebSearch": {
+		fn:      "web_search",
+		params:  []scriptParam{{"query", "str", "", ""}, {"allowed_domains", "list", "None", ""}, {"blocked_domains", "list", "None", ""}},
+		about:   "Search the web, five results at most.",
 		returns: `{"data": {"web": [{"url", "title", "description"}, ...]}}`,
 	},
-	"web_extract": {
-		params:  []scriptParam{{"urls", "list", ""}, {"char_limit", "int", "None"}},
-		about:   "Fetch pages as markdown, without summarizing them. A page longer than char_limit (15000 when unset) keeps its head and tail, the whole text is saved on disk and the path is in the content footer.",
-		returns: `{"results": [{"url", "title", "content", "error"}, ...]}`,
+	"WebFetch": {
+		fn:      "web_fetch",
+		params:  []scriptParam{{"url", "str", "", ""}, {"prompt", "str", `""`, ""}},
+		about:   "Fetch a page as markdown, unsummarized. A page over 15000 characters keeps its head and tail; the whole text is saved on disk and the path is in the content footer.",
+		returns: `{"url", "title", "content"} or {"url", "error"}`,
 	},
-	"read_file": {
-		params:  []scriptParam{{"path", "str", ""}, {"offset", "int", "1"}, {"limit", "int", "2000"}},
-		about:   "Read lines from a file, counting from 1.",
+	"Read": {
+		fn:      "read",
+		params:  []scriptParam{{"file_path", "str", "", ""}, {"offset", "int", "None", ""}, {"limit", "int", "None", ""}},
+		about:   "Read a file's lines, numbered from 1 as cat -n numbers them (2000 unless limit says otherwise).",
 		returns: `{"content": "...", "total_lines": N}`,
 	},
-	"write_file": {
-		params:  []scriptParam{{"path", "str", ""}, {"content", "str", ""}},
-		about:   "Replace a file's whole contents.",
-		returns: `{"status": ...}`,
+	"Write": {
+		fn:      "write",
+		params:  []scriptParam{{"file_path", "str", "", ""}, {"content", "str", "", ""}},
+		about:   "Replace a file's whole contents. A file that exists must have been read whole first.",
+		returns: `{"bytes_written": N, ...}`,
 	},
-	"search_files": {
+	"Glob": {
+		fn:      "glob",
+		params:  []scriptParam{{"pattern", "str", "", ""}, {"path", "str", "None", ""}},
+		about:   "List the files matching a glob such as \"**/*.py\", newest first.",
+		returns: `{"files": [...]}`,
+	},
+	"Grep": {
+		fn: "grep",
 		params: []scriptParam{
-			{"pattern", "str", ""}, {"target", "str", `"content"`}, {"path", "str", `"."`},
-			{"file_glob", "str", "None"}, {"limit", "int", "50"}, {"offset", "int", "0"},
-			{"output_mode", "str", `"content"`}, {"context", "int", "0"},
+			{"pattern", "str", "", ""}, {"path", "str", "None", ""}, {"glob", "str", "None", ""}, {"type", "str", "None", ""},
+			{"output_mode", "str", `"files_with_matches"`, ""}, {"ignore_case", "bool", "False", "-i"},
+			{"line_numbers", "bool", "True", "-n"}, {"after", "int", "None", "-A"}, {"before", "int", "None", "-B"},
+			{"context", "int", "None", "-C"}, {"multiline", "bool", "False", ""}, {"head_limit", "int", "None", ""},
 		},
-		about:   `Search inside files (target="content") or find files by name (target="files").`,
-		returns: `{"matches": [...]}`,
+		about:   `Search inside files with a regular expression; output_mode is "files_with_matches", "content" or "count".`,
+		returns: `{"files": [...]}, {"content": "..."} or {"counts": [...]}`,
 	},
-	"patch": {
-		params:  []scriptParam{{"path", "str", ""}, {"old_string", "str", ""}, {"new_string", "str", ""}, {"replace_all", "bool", "False"}},
-		about:   "Replace old_string with new_string in a file.",
-		returns: `{"status": ...}`,
+	"Edit": {
+		fn:      "edit",
+		params:  []scriptParam{{"file_path", "str", "", ""}, {"old_string", "str", "", ""}, {"new_string", "str", "", ""}, {"replace_all", "bool", "False", ""}},
+		about:   "Replace old_string with new_string in a file read earlier.",
+		returns: `{"success": true, "diff": "..."}`,
 	},
-	"terminal": {
-		params:  []scriptParam{{"command", "str", ""}, {"timeout", "int", "None"}, {"workdir", "str", "None"}},
-		about:   "Run a shell command and wait for it; no background mode.",
+	"Bash": {
+		fn:      "bash",
+		params:  []scriptParam{{"command", "str", "", ""}, {"timeout", "int", "None", ""}, {"description", "str", "None", ""}},
+		about:   "Run a shell command and wait for it (timeout in milliseconds); no background mode.",
 		returns: `{"output": "...", "exit_code": N}`,
 	},
 }
@@ -78,11 +94,12 @@ func (t scriptTool) signature() string {
 	return strings.Join(parts, ", ")
 }
 
-// toolDocLines are the schema's lines for the tools, built from the table.
+// toolDocLines are the schema's lines for the tools, built from the table and
+// keyed by tool name.
 var toolDocLines = func() map[string]string {
 	m := make(map[string]string, len(scriptTools))
 	for name, t := range scriptTools {
-		m[name] = fmt.Sprintf("  %s(%s) -> dict\n    %s Returns %s", name, t.signature(), t.about, t.returns)
+		m[name] = fmt.Sprintf("  %s(%s) -> dict\n    %s Returns %s", t.fn, t.signature(), t.about, t.returns)
 	}
 	return m
 }()
@@ -99,10 +116,14 @@ func stubModule(names []string) string {
 		}
 		fields := make([]string, len(t.params))
 		for i, p := range t.params {
-			fields[i] = fmt.Sprintf("%q: %s", p.name, p.name)
+			key := p.key
+			if key == "" {
+				key = p.name
+			}
+			fields[i] = fmt.Sprintf("%q: %s", key, p.name)
 		}
 		fmt.Fprintf(&b, "\n\ndef %s(%s):\n    %q\n    return _call(%q, {%s})\n",
-			n, t.signature(), t.about+" Returns "+t.returns, n, strings.Join(fields, ", "))
+			t.fn, t.signature(), t.about+" Returns "+t.returns, n, strings.Join(fields, ", "))
 	}
 	return b.String()
 }

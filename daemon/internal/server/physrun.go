@@ -270,17 +270,17 @@ func (r *physRun) onToolEnd(l *live, callID, tool, result string, d time.Duratio
 	pc := r.calls[callID]
 	delete(r.calls, callID)
 	fields := map[string]any{"agent": l.agent, "session": r.session, "tool": tool, "duration_s": d.Seconds()}
-	if tool == "terminal" && res.ExitCode != nil {
+	if tool == "Bash" && res.ExitCode != nil {
 		fields["exit_code"] = *res.ExitCode
 	}
 	r.events.Add("tool_call", fields)
 	if l.agent == "worker" {
 		out := res.Output
-		if tool != "terminal" {
+		if tool != "Bash" {
 			out = result
 		}
 		c := physics.Call{Session: r.session, Tool: tool, Summary: callSummary(tool, pc.args), Duration: d.Seconds(), Output: out}
-		if tool == "terminal" {
+		if tool == "Bash" {
 			c.ExitCode = res.ExitCode
 		}
 		if b, err := json.Marshal(c); err == nil {
@@ -307,14 +307,16 @@ func callSummary(tool, args string) string {
 	s := func(k string) string { v, _ := a[k].(string); return v }
 	var out string
 	switch tool {
-	case "terminal":
+	case "Bash":
 		out = s("command")
-	case "read_file", "write_file", "patch":
-		out = s("path")
-	case "search_files":
+	case "Read", "Write", "Edit":
+		out = s("file_path")
+	case "Glob", "Grep":
 		out = s("pattern")
-	case "process":
-		out = strings.TrimSpace(s("action") + " " + s("session_id"))
+	case "BashOutput":
+		out = s("bash_id")
+	case "KillShell":
+		out = "kill " + s("shell_id")
 	}
 	if out == "" {
 		out = args

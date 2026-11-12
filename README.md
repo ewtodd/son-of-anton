@@ -76,6 +76,22 @@ transcript, a sidebar on wide screens (`ctrl+b`), the prompt below.
 - Under a routed model (maitred's `auto`), the meta row and the context bar
   show the model that answered and its window.
 
+## Tools
+
+Wherever Claude Code has a counterpart, the agent's builtin tools take its
+names, parameters and behaviour, the shape most models are trained on:
+`Bash` (with `BashOutput` and `KillShell` for commands left running in the
+background), `Read`, `Write`, `Edit`, `Glob`, `Grep`, `TodoWrite`,
+`AskUserQuestion`, `WebSearch`, `WebFetch` and `Task`. `Write` and `Edit` need
+a `Read` of the file earlier in the session, and refuse a file that changed on
+disk since. `WebFetch` returns the page itself, with the prompt beside it;
+no model condenses it. soa's own tools keep their own shape: `memory`,
+`session_search`, `cronjob`, `reminder`, `relay`, `execute_code` and the MCP
+trio (`tool_search`, `tool_describe`, `tool_call`). Sessions from before the
+change keep their tool rows under the old names (`terminal`, `read_file`, …)
+in the terminal UI and in reports, and a model that calls an old name is told
+which tool replaced it.
+
 ## Signal
 
 Each instance answers its own Signal groups (all can share one signal-cli
@@ -106,7 +122,7 @@ does not. A chat starts a fresh conversation with the first message after 4am
 (`[gateway] daily_reset`, `daily_reset_hour`), keeping its `/model`;
 `/new` does it any time. Subagents a session
 delegates work to run on the parent's model, or `[delegation] model` when you
-set one; a `task` call may pin `model` for that call.
+set one; a `Task` call may pin `model` for that call.
 
 With `[checker]`, a reply from one of its `models` is read by a small judge
 (a laya-style `/v1/systemone` endpoint) before it reaches the chat: one that
@@ -223,6 +239,10 @@ code follows opencode's closely (the palette, the subagent footer, small
 formatters); that stays. No code of physics-intern remains. The daemon design and
 permission modes come from the archived
 [temple](https://github.com/ewtodd/temple) harness.
+
+The builtin tools' names and parameters are Claude Code's (since November
+2026), so that models trained on them call them as they expect; their
+descriptions are soa's own, written from what each tool does.
 
 ## AI Full Disclosure
 

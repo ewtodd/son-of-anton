@@ -14,18 +14,18 @@ import (
 	"github.com/ewtodd/son-of-anton/daemon/internal/tui"
 )
 
-// explorePrompt is in an explore child's system prompt, never the parent's.
+// explorePrompt is in an Explore child's system prompt, never the parent's.
 const explorePrompt = "You are a read-only code explorer."
 
 func taskCall(id, args string) fakellm.ToolCall {
-	return fakellm.ToolCall{ID: id, Name: "task", Arguments: args}
+	return fakellm.ToolCall{ID: id, Name: "Task", Arguments: args}
 }
 
 var doneDetail = regexp.MustCompile(`↳ 1 toolcall · \d+(ms|\.\ds)`)
 
 func TestATaskRowAndItsChildsView(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{taskCall("t1", `{"description":"Find the thing","prompt":"look for the thing","subagent_type":"explore"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{taskCall("t1", `{"description":"Find the thing","prompt":"look for the thing","subagent_type":"Explore"}`)}},
 		fakellm.Turn{When: explorePrompt, ToolCalls: []fakellm.ToolCall{terminal("a1", "echo child-ran")}},
 		fakellm.Turn{When: explorePrompt, Content: "found it in the child", PromptTokens: 1200, CompletionTokens: 34},
 		fakellm.Turn{Content: "the parent is done"},
@@ -67,8 +67,8 @@ func TestATaskRowAndItsChildsView(t *testing.T) {
 func TestSteppingBetweenSiblings(t *testing.T) {
 	fake := fakellm.New(t,
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{
-			taskCall("t1", `{"description":"First look","prompt":"look one","subagent_type":"explore"}`),
-			taskCall("t2", `{"description":"Second look","prompt":"look two","subagent_type":"explore"}`),
+			taskCall("t1", `{"description":"First look","prompt":"look one","subagent_type":"Explore"}`),
+			taskCall("t2", `{"description":"Second look","prompt":"look two","subagent_type":"Explore"}`),
 		}},
 		fakellm.Turn{When: "look one", Content: "answer one"},
 		fakellm.Turn{When: "look two", Content: "answer two"},
@@ -110,7 +110,7 @@ func TestSteppingBetweenSiblings(t *testing.T) {
 func TestARunningChildStreamsIntoItsView(t *testing.T) {
 	rel := make(chan struct{})
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{taskCall("t1", `{"description":"Slow look","prompt":"look slowly","subagent_type":"explore"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{taskCall("t1", `{"description":"Slow look","prompt":"look slowly","subagent_type":"Explore"}`)}},
 		fakellm.Turn{When: explorePrompt, Content: "partial then the rest", ChunkRunes: 8, Release: rel},
 		fakellm.Turn{Content: "parent wrapped up"},
 	)
@@ -132,7 +132,7 @@ func TestARunningChildStreamsIntoItsView(t *testing.T) {
 
 func TestAChildsApprovalNamesTheTask(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{taskCall("t1", `{"description":"Open it up","prompt":"open up f.txt","subagent_type":"general"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{taskCall("t1", `{"description":"Open it up","prompt":"open up f.txt","subagent_type":"general-purpose"}`)}},
 		fakellm.Turn{When: "open up f.txt", ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
 		fakellm.Turn{When: "open up f.txt", Content: "opened"},
 		fakellm.Turn{Content: "all set"},
@@ -143,14 +143,14 @@ func TestAChildsApprovalNamesTheTask(t *testing.T) {
 	}
 	a := open(t, d, tui.Options{})
 	send(a, "fix the perms")
-	waitScreen(t, a, "General Task — Open it up: The agent asks to run a command", "chmod 777 f.txt")
+	waitScreen(t, a, "General-Purpose Task — Open it up: The agent asks to run a command", "chmod 777 f.txt")
 	a.Press("1")
 	waitScreen(t, a, "all set")
 }
 
 func TestAResumedSessionShowsItsTasks(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{taskCall("t1", `{"description":"Find the thing","prompt":"look for the thing","subagent_type":"explore"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{taskCall("t1", `{"description":"Find the thing","prompt":"look for the thing","subagent_type":"Explore"}`)}},
 		fakellm.Turn{When: explorePrompt, ToolCalls: []fakellm.ToolCall{terminal("a1", "echo child-ran")}},
 		fakellm.Turn{When: explorePrompt, Content: "found it in the child"},
 		fakellm.Turn{Content: "the parent is done"},

@@ -478,7 +478,7 @@ func (s *Server) physicsRunner(r *agent.Runner, rec store.Session) error {
 	}
 	// The manager reads through the same confined opener as the worker, from a
 	// sandbox with the run directory bound read-only and nothing writable.
-	r.Tools = s.reg.Only("read_file", "search_files").With(reviewTool{srv: s, run: run.ID})
+	r.Tools = s.reg.Only("Read", "Glob", "Grep").With(reviewTool{srv: s, run: run.ID})
 	r.Sandbox = &sandbox.Policy{
 		RunDir: run.RunDir, Runtime: filepath.Dir(s.cfg.Physics.Python), Home: filepath.Join(run.RunDir, ".home"), ReadOnly: true,
 	}

@@ -242,7 +242,7 @@ func peek(t *testing.T, d *daemon, id string) (map[string]any, []map[string]any)
 
 func terminal(id, cmd string) fakellm.ToolCall {
 	b, _ := json.Marshal(map[string]string{"command": cmd})
-	return fakellm.ToolCall{ID: id, Name: "terminal", Arguments: string(b)}
+	return fakellm.ToolCall{ID: id, Name: "Bash", Arguments: string(b)}
 }
 
 // lastMessage is the last message of request i, as raw JSON text.
@@ -344,20 +344,30 @@ func TestEscDeniesAnApproval(t *testing.T) {
 }
 
 func TestAQuestionIsAnsweredFromTheModal(t *testing.T) {
+	two := `{"questions":[
+		{"question":"Which flavour?","header":"Flavour","multiSelect":false,"options":[
+			{"label":"vanilla","description":"plain and sweet"},{"label":"chocolate","description":"dark"}]},
+		{"question":"Which toppings?","header":"Toppings","multiSelect":true,"options":[
+			{"label":"nuts","description":"crunchy"},{"label":"sprinkles","description":"colourful"},{"label":"sauce","description":"warm"}]}]}`
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "q1", Name: "clarify", Arguments: `{"question":"Which flavour?","choices":["vanilla","chocolate"]}`}}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "q1", Name: "AskUserQuestion", Arguments: two}}},
 		fakellm.Turn{Content: "chocolate it is"},
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "q2", Name: "clarify", Arguments: `{"question":"Your name?"}`}}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "q2", Name: "AskUserQuestion", Arguments: `{"questions":[{"question":"Your name?","header":"Name","multiSelect":false,"options":[]}]}`}}},
 		fakellm.Turn{Content: "nice to meet you"},
 	)
 	d := newDaemon(t, fake)
 	a := open(t, d, tui.Options{})
 	send(a, "ice cream")
-	waitScreen(t, a, "Son of Anton has a question", "Which flavour?", "vanilla", "chocolate", "Other…")
+	waitScreen(t, a, "Son of Anton has a question (1 of 2)", "Flavour", "Which flavour?", "vanilla  plain and sweet", "chocolate  dark", "Other…")
 	a.Press("down", "enter")
+	waitScreen(t, a, "Son of Anton has a question (2 of 2)", "Toppings", "[ ] 1. nuts  crunchy", "space toggle")
+	a.Press("1", "3")
+	waitScreen(t, a, "[x] 1. nuts", "[x] 3. sauce")
+	a.Press("enter")
 	waitScreen(t, a, "chocolate it is")
-	if m := lastMessage(fake, 1); !strings.Contains(m, "chocolate") {
-		t.Fatalf("the clarify result = %s", m)
+	m := lastMessage(fake, 1)
+	if !strings.Contains(m, `\"answer\":\"chocolate\"`) || !strings.Contains(m, `\"answer\":[\"nuts\",\"sauce\"]`) {
+		t.Fatalf("the AskUserQuestion result = %s", m)
 	}
 
 	send(a, "hello")

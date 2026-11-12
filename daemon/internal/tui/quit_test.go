@@ -50,7 +50,7 @@ func TestQuitAsksWhileATurnRuns(t *testing.T) {
 
 func TestQuitAsksInFrontOfAnOpenApproval(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "terminal", Arguments: `{"command":"rm -rf ./scratch"}`}}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "Bash", Arguments: `{"command":"rm -rf ./scratch"}`}}},
 		fakellm.Turn{Content: "denied, then"},
 	)
 	d := newDaemon(t, fake)

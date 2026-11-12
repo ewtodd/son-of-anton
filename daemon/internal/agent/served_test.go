@@ -14,11 +14,11 @@ import (
 func TestTheServedModelReachesShellCommands(t *testing.T) {
 	st := newStore(t)
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "terminal", `{"command":"echo model=$SOA_MODEL"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "Bash", `{"command":"echo model=$SOA_MODEL"}`)}},
 		fakellm.Turn{Content: "ok"},
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c2", "terminal", `{"command":"echo model=$SOA_MODEL"}`)}, ServedModel: "radiance/qwen3.8-27b"},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c2", "Bash", `{"command":"echo model=$SOA_MODEL"}`)}, ServedModel: "radiance/qwen3.8-27b"},
 		fakellm.Turn{Content: "ok", ServedModel: "radiance/qwen3.8-27b"},
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c3", "terminal", `{"command":"echo model=$SOA_MODEL"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c3", "Bash", `{"command":"echo model=$SOA_MODEL"}`)}},
 		fakellm.Turn{Content: "ok"},
 	)
 	s, _ := toolRunner(t, st, fake, tools.Builtin()...).NewSession(ctx, "interactive", t.TempDir())

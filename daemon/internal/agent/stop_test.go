@@ -242,9 +242,9 @@ func TestSetModeAppliesToTheNextCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "terminal", `{"command":"chmod 777 f.txt"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "Bash", `{"command":"chmod 777 f.txt"}`)}},
 		fakellm.Turn{Content: "blocked"},
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c2", "terminal", `{"command":"chmod 777 f.txt"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c2", "Bash", `{"command":"chmod 777 f.txt"}`)}},
 		fakellm.Turn{Content: "ran"},
 	)
 	r := toolRunner(t, st, fake, tools.Builtin()...)
@@ -265,7 +265,7 @@ func TestSetModeAppliesToTheNextCommand(t *testing.T) {
 func TestBackgroundProcessesCanBeCountedAndKilled(t *testing.T) {
 	st := newStore(t)
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "terminal", `{"command":"sleep 30","background":true}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "Bash", `{"command":"sleep 30","run_in_background":true}`)}},
 		fakellm.Turn{Content: "started"},
 	)
 	s, _ := toolRunner(t, st, fake, tools.Builtin()...).NewSession(ctx, "interactive", t.TempDir())
@@ -291,7 +291,7 @@ func TestBackgroundProcessesCanBeCountedAndKilled(t *testing.T) {
 func TestOnNotifyFiresWhenANoticeIsQueued(t *testing.T) {
 	st := newStore(t)
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "terminal", `{"command":"sleep 0.2; echo bg-done","background":true,"notify_on_complete":true}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "Bash", `{"command":"sleep 0.2; echo bg-done","run_in_background":true}`)}},
 		fakellm.Turn{Content: "ok"},
 	)
 	r := toolRunner(t, st, fake, tools.Builtin()...)

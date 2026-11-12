@@ -26,7 +26,7 @@ func tool(id, name string, args map[string]any) fakellm.ToolCall {
 }
 
 func results(id, content string) fakellm.ToolCall {
-	return tool(id, "write_file", map[string]any{"path": "RESULTS.txt", "content": content})
+	return tool(id, "Write", map[string]any{"file_path": "RESULTS.txt", "content": content})
 }
 
 // physHome is a home whose daemon is serving, with a physics config and a

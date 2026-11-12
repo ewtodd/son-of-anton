@@ -26,7 +26,10 @@ type modal struct {
 
 	// question
 	text     string
+	header   string   // its short label, "" for none
+	of       string   // "2 of 3" when it is one of several, else ""
 	options  []string // the question's choices, then "Other…"
+	descs    []string // what each choice means, index for index ("" for none)
 	multi    bool
 	picked   map[int]bool
 	typing   bool // typing an answer (Other, or no choices)
@@ -45,12 +48,21 @@ var approvalChoices = map[string]choice{
 
 func newModal(kind string, p map[string]any) *modal {
 	if kind == "question.request" {
-		md := &modal{question: true, id: str(p, "question_id"), text: str(p, "text"), picked: map[int]bool{}}
+		md := &modal{question: true, id: str(p, "question_id"), text: str(p, "text"), header: str(p, "header"), picked: map[int]bool{}}
 		md.multi, _ = p["multi_select"].(bool)
+		if n, of := num(p, "number"), num(p, "of"); of > 1 {
+			md.of = fmt.Sprintf("%d of %d", n, of)
+		}
+		descs, _ := p["descriptions"].([]any)
 		if raw, ok := p["choices"].([]any); ok {
-			for _, c := range raw {
+			for i, c := range raw {
 				if s, ok := c.(string); ok {
 					md.options = append(md.options, s)
+					d := ""
+					if i < len(descs) {
+						d, _ = descs[i].(string)
+					}
+					md.descs = append(md.descs, d)
 				}
 			}
 		}
@@ -289,7 +301,14 @@ func (md *modal) view(w int, th *theme) []string {
 		}
 	}
 	if md.question {
-		add(th.bld.Render("Son of Anton has a question"))
+		title := "Son of Anton has a question"
+		if md.of != "" {
+			title += " (" + md.of + ")"
+		}
+		add(th.bld.Render(ellipsize(title, inner)))
+		if md.header != "" {
+			add(th.acc.Render(ellipsize(clean(md.header), inner)))
+		}
 		add("")
 		for _, l := range wrapText(clean(md.text), inner) {
 			add(l)
@@ -310,7 +329,11 @@ func (md *modal) view(w int, th *theme) []string {
 						mark = "[x] "
 					}
 				}
-				row(i, md.sel, o, "", mark)
+				desc := ""
+				if i < len(md.descs) {
+					desc = clean(md.descs[i])
+				}
+				row(i, md.sel, o, desc, mark)
 			}
 		}
 		add("")

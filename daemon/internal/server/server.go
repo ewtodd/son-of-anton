@@ -147,11 +147,11 @@ type Server struct {
 	cfg     *config.Config
 	st      *store.Store
 	reg     *tools.Registry // the builtin tools (a child's are drawn from it)
-	regTask *tools.Registry // reg plus the task tool: an interactive session's
-	regChat *tools.Registry // a chat session's: notes, memory, recall, web, vision, cron, relay; no terminal
-	regCron *tools.Registry // a cron job's: every builtin tool but clarify
+	regTask *tools.Registry // reg plus the Task tool: an interactive session's
+	regChat *tools.Registry // a chat session's: notes, memory, recall, web, vision, cron, relay; no Bash
+	regCron *tools.Registry // a cron job's: every builtin tool but AskUserQuestion
 	// regSignalCron is a Signal-bound cron job's: the chat's tools but
-	// clarify, relay and cronjob.
+	// AskUserQuestion, relay and cronjob.
 	regSignalCron *tools.Registry
 	cron          *cronSched
 	web           *tools.Web   // the web tools' settings, shared by every session
@@ -225,19 +225,19 @@ func New(o Options) (*Server, error) {
 	s.cron = s.newCron()
 	cronTool := tools.CronJob(o.Home)
 	s.regTask = tools.NewRegistry(append(base, subagent.Tool(subagent.Builtin(), true, s.spawnTask), cronTool)...)
-	s.regChat = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "clarify", "memory", "session_search", "web_search", "web_extract").With(cronTool, tools.Reminder(), tools.RelayTool())
+	s.regChat = s.reg.Only("Read", "Write", "Edit", "Glob", "Grep", "TodoWrite", "AskUserQuestion", "memory", "session_search", "WebSearch", "WebFetch").With(cronTool, tools.Reminder(), tools.RelayTool())
 	var cronTools []string
 	for _, n := range s.reg.Names() {
-		if n != "clarify" {
+		if n != "AskUserQuestion" {
 			cronTools = append(cronTools, n)
 		}
 	}
 	s.regCron = s.reg.Only(cronTools...)
 	// SPEC 12: a cron job that delivers to Signal or was set up in a chat has
-	// the chat's limits, less clarify (nobody is there), relay (it has no chat
+	// the chat's limits, less AskUserQuestion (nobody is there), relay (it has no chat
 	// to relay from) and cronjob. With every tool, play's 7am check-in hunted
 	// through tool_search and the shell for a way to send its message itself.
-	s.regSignalCron = s.reg.Only("read_file", "write_file", "patch", "search_files", "todo", "memory", "session_search", "web_search", "web_extract")
+	s.regSignalCron = s.reg.Only("Read", "Write", "Edit", "Glob", "Grep", "TodoWrite", "memory", "session_search", "WebSearch", "WebFetch")
 	s.web = WebConfig(cfg, o.Home)
 	s.chats = s.newChatHub()
 	s.base, s.stop = context.WithCancel(context.Background())

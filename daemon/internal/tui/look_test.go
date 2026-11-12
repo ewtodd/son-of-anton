@@ -122,7 +122,7 @@ func TestTheWordmarkFitsTheRoom(t *testing.T) {
 func TestTheSidebar(t *testing.T) {
 	fake := fakellm.New(t,
 		fakellm.Turn{Content: "done", PromptTokens: 250, CompletionTokens: 50},
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "b1", Name: "terminal", Arguments: `{"command":"sleep 60","background":true}`}}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "b1", Name: "Bash", Arguments: `{"command":"sleep 60","run_in_background":true}`}}},
 		fakellm.Turn{Content: "started"},
 	)
 	d := newDaemon(t, fake)

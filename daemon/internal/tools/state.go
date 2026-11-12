@@ -1,18 +1,42 @@
 package tools
 
 import (
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"sync"
 	"syscall"
 )
 
-// readStamp records what a read_file saw, so a later write_file can warn when
-// the file changed underneath the session.
+// readStamp records which file Read saw and which of its lines, so Write and
+// Edit can refuse a file this session has not read, or one that changed on
+// disk since. seen is the line ranges read while the file held these bytes;
+// whole is set when there are no lines to count (an image, an empty file) or
+// the session wrote the file itself.
 type readStamp struct {
-	mtime   int64
-	size    int64
-	partial bool
+	size  int64
+	sum   [sha256.Size]byte
+	lines int
+	seen  []lineRange
+	whole bool
+}
+
+// lineRange is a half-open range of 0-based line indexes.
+type lineRange struct{ start, end int }
+
+// covers says whether the session has seen every line of the file.
+func (st readStamp) covers() bool {
+	if st.whole {
+		return true
+	}
+	next := 0
+	for _, r := range st.seen {
+		if r.start > next {
+			return false
+		}
+		next = max(next, r.end)
+	}
+	return next >= st.lines
 }
 
 // State is a session's mutable tool state: the session cwd, a private 0700
@@ -26,7 +50,6 @@ type State struct {
 	closed  bool
 	procs   map[string]*bgProc
 	notes   []note
-	todos   []todoItem
 	onNote  func() // called, with no lock held, after a notice is queued
 	onExit  func() // called, with no lock held, after a background process exits
 }
@@ -74,19 +97,56 @@ func (s *State) SnapshotPath() string {
 	return filepath.Join(s.tempDir, "env.sh")
 }
 
-// ReadStamp returns the recorded read for a path.
-func (s *State) ReadStamp(path string) (readStamp, bool) {
+func (s *State) readStamp(path string) (readStamp, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, ok := s.stamps[path]
 	return st, ok
 }
 
-// SetReadStamp records a read (partial when the read did not cover the file).
-func (s *State) SetReadStamp(path string, st readStamp) {
+// recordRead adds lines [start, end) of the file st stamps to what the session
+// has seen of path. A stamp of other bytes than the recorded one starts over.
+func (s *State) recordRead(path string, st readStamp, start, end int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if old, ok := s.stamps[path]; ok && old.sum == st.sum && old.size == st.size {
+		st.seen, st.whole = old.seen, old.whole || st.whole
+	}
+	if end > start {
+		st.seen = mergeRange(st.seen, lineRange{start, end})
+	}
+	s.stamps[path] = st
+}
+
+func (s *State) setStamp(path string, st readStamp) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stamps[path] = st
+}
+
+// mergeRange inserts r into rs, which is sorted and disjoint, joining the
+// ranges r overlaps or touches.
+func mergeRange(rs []lineRange, r lineRange) []lineRange {
+	out := make([]lineRange, 0, len(rs)+1)
+	placed := false
+	for _, x := range rs {
+		switch {
+		case x.end < r.start:
+			out = append(out, x)
+		case r.end < x.start:
+			if !placed {
+				out = append(out, r)
+				placed = true
+			}
+			out = append(out, x)
+		default:
+			r = lineRange{min(r.start, x.start), max(r.end, x.end)}
+		}
+	}
+	if !placed {
+		out = append(out, r)
+	}
+	return out
 }
 
 // Close kills the session's background processes and removes its private temp
@@ -143,7 +203,7 @@ func (s *State) KillBackground() int {
 	n := 0
 	for _, p := range s.procs {
 		if !p.exited {
-			p.consumed = true
+			p.consumed, p.killed = true, true
 			p.signal(syscall.SIGKILL)
 			n++
 		}

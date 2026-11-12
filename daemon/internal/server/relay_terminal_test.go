@@ -192,7 +192,7 @@ func TestAChatTakesOverAWaitingApproval(t *testing.T) {
 			}
 			var desk string
 			fake := fakellm.New(t,
-				fakellm.Turn{When: asWorker, ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
+				fakellm.Turn{When: asWorker, ToolCalls: []fakellm.ToolCall{bashCall("c1", "chmod 777 f.txt")}},
 				fakellm.Turn{When: asFiona, ToolCalls: []fakellm.ToolCall{relaySendTo("r1", &desk, "and when that is done, stop")}},
 				fakellm.Turn{When: asFiona, Content: "Queued."},
 				fakellm.Turn{When: asWorker, Content: "it is writable"},

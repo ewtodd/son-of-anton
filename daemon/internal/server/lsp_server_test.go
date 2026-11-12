@@ -1,6 +1,6 @@
 package server_test
 
-// Phase 7d through the daemon: write_file and patch report the errors an
+// Phase 7d through the daemon: Write and Edit report the errors an
 // edit introduced, from the file's language server
 // (daemon/phases/07d-lsp.md). The server is this test binary started again
 // (TestFakeLSPServerProcess): it publishes an error for each line with
@@ -140,18 +140,18 @@ func gitProject(t *testing.T) string {
 }
 
 func writeCall(id, path, content string) fakellm.ToolCall {
-	b, _ := json.Marshal(map[string]string{"path": path, "content": content})
-	return call(id, "write_file", string(b))
+	b, _ := json.Marshal(map[string]string{"file_path": path, "content": content})
+	return call(id, "Write", string(b))
 }
 
 func TestEditsReportTheErrorsTheyIntroduce(t *testing.T) {
 	proj := gitProject(t)
 	outside := t.TempDir()
-	patch, _ := json.Marshal(map[string]string{"path": "src/a.py", "old_string": "x = 1", "new_string": "x = 2\ny = 3"})
+	patch, _ := json.Marshal(map[string]string{"file_path": "src/a.py", "old_string": "x = 1", "new_string": "x = 2\ny = 3"})
 	fake := fakellm.New(t,
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{
 			writeCall("w1", "src/a.py", "x = 1\nERROR_HERE\n"),
-			call("p1", "patch", string(patch)),
+			call("p1", "Edit", string(patch)),
 			writeCall("w2", "src/b.py", "WARN_HERE\n"),
 			writeCall("w3", "src/c.py", "EVIL_HERE\n"),
 			writeCall("w4", filepath.Join(outside, "d.py"), "ERROR_HERE\n"),

@@ -104,10 +104,10 @@ func runCalls(t *testing.T, w world, calls ...fakellm.ToolCall) []string {
 }
 
 func term(id, command string) fakellm.ToolCall {
-	return tc(id, "terminal", map[string]any{"command": command})
+	return tc(id, "Bash", map[string]any{"command": command})
 }
 
-// shellOut is the output of a terminal result.
+// shellOut is the output of a Bash result.
 func shellOut(t *testing.T, result string) string {
 	t.Helper()
 	var r struct {
@@ -190,7 +190,7 @@ func TestSandboxedBackgroundProcessDiesWithTheSession(t *testing.T) {
 	w := newWorld(t, rt)
 	const marker = "987654.25"
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{tc("c1", "terminal", map[string]any{"command": "echo up > bg.txt; sleep " + marker, "background": true})}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{tc("c1", "Bash", map[string]any{"command": "echo up > bg.txt; sleep " + marker, "run_in_background": true})}},
 		fakellm.Turn{Content: "started"},
 	)
 	s, err := sandboxRunner(t, newStore(t), fake, w).NewSession(ctx, "interactive", w.run)
@@ -240,16 +240,16 @@ func TestSandboxedFileToolsReachOnlyTheRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := runCalls(t, w,
-		tc("c1", "read_file", map[string]any{"path": filepath.Join(w.outside, "secret")}),
-		tc("c2", "write_file", map[string]any{"path": filepath.Join(w.data, "new.txt"), "content": "x"}),
-		tc("c3", "read_file", map[string]any{"path": filepath.Join(w.run, "secret-link")}),
-		tc("c4", "read_file", map[string]any{"path": filepath.Join(w.run, "out", "secret")}),
-		tc("c5", "write_file", map[string]any{"path": filepath.Join(w.run, "out", "planted.txt"), "content": "x"}),
-		tc("c6", "patch", map[string]any{"path": filepath.Join(w.data, "events.txt"), "old_string": "DATAFILE", "new_string": "changed"}),
-		tc("c7", "search_files", map[string]any{"pattern": "TOPSECRET", "path": w.outside}),
-		tc("c8", "read_file", map[string]any{"path": filepath.Join(w.data, "events.txt")}),
-		tc("c9", "write_file", map[string]any{"path": "notes/a.txt", "content": "inside"}),
-		tc("c10", "search_files", map[string]any{"pattern": "TOPSECRET", "path": filepath.Join(w.run, "out")}),
+		tc("c1", "Read", map[string]any{"file_path": filepath.Join(w.outside, "secret")}),
+		tc("c2", "Write", map[string]any{"file_path": filepath.Join(w.data, "new.txt"), "content": "x"}),
+		tc("c3", "Read", map[string]any{"file_path": filepath.Join(w.run, "secret-link")}),
+		tc("c4", "Read", map[string]any{"file_path": filepath.Join(w.run, "out", "secret")}),
+		tc("c5", "Write", map[string]any{"file_path": filepath.Join(w.run, "out", "planted.txt"), "content": "x"}),
+		tc("c6", "Edit", map[string]any{"file_path": filepath.Join(w.data, "events.txt"), "old_string": "DATAFILE", "new_string": "changed"}),
+		tc("c7", "Grep", map[string]any{"pattern": "TOPSECRET", "path": w.outside, "output_mode": "content"}),
+		tc("c8", "Read", map[string]any{"file_path": filepath.Join(w.data, "events.txt")}),
+		tc("c9", "Write", map[string]any{"file_path": "notes/a.txt", "content": "inside"}),
+		tc("c10", "Grep", map[string]any{"pattern": "TOPSECRET", "path": filepath.Join(w.run, "out"), "output_mode": "content"}),
 	)
 	for i := 0; i < 7; i++ {
 		if !strings.Contains(res[i], `"error"`) {
@@ -296,7 +296,7 @@ func TestSandboxedSessionOffersTheSandboxToolsOnly(t *testing.T) {
 	for _, tl := range fake.Request(0)["tools"].([]any) {
 		names = append(names, tl.(map[string]any)["function"].(map[string]any)["name"].(string))
 	}
-	if got, want := strings.Join(names, ","), "terminal,process,read_file,write_file,patch,search_files,todo"; got != want {
+	if got, want := strings.Join(names, ","), "Bash,BashOutput,KillShell,Read,Write,Edit,Glob,Grep,TodoWrite"; got != want {
 		t.Errorf("tools = %s, want %s", got, want)
 	}
 }
@@ -306,7 +306,7 @@ func TestSandboxUnavailableRunsNothing(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // no bwrap
 	res := runCalls(t, w,
 		term("c1", "touch "+filepath.Join(w.run, "ran.txt")),
-		tc("c2", "terminal", map[string]any{"command": "touch " + filepath.Join(w.run, "bg.txt"), "background": true}),
+		tc("c2", "Bash", map[string]any{"command": "touch " + filepath.Join(w.run, "bg.txt"), "run_in_background": true}),
 	)
 	for i, r := range res {
 		if !strings.Contains(r, "sandbox is unavailable") {
@@ -341,7 +341,7 @@ func TestSandboxedSessionIsYoloButHardlineStillRefuses(t *testing.T) {
 	}
 }
 
-// search_files runs ripgrep inside the sandbox: a file outside the roots,
+// Glob and Grep run ripgrep inside the sandbox: a file outside the roots,
 // reached through a symlink in the run directory, is never reported, and a
 // match in the run directory is.
 func TestSandboxedSearchRunsInsideTheSandbox(t *testing.T) {
@@ -360,10 +360,10 @@ func TestSandboxedSearchRunsInsideTheSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := runCalls(t, w,
-		tc("c1", "search_files", map[string]any{"pattern": "TOPSECRET", "path": w.run}),
-		tc("c2", "search_files", map[string]any{"pattern": "needle", "path": w.run}),
-		tc("c3", "search_files", map[string]any{"pattern": "*", "target": "files", "path": w.run}),
-		tc("c4", "search_files", map[string]any{"pattern": "DATAFILE", "path": w.data}),
+		tc("c1", "Grep", map[string]any{"pattern": "TOPSECRET", "path": w.run, "output_mode": "content"}),
+		tc("c2", "Grep", map[string]any{"pattern": "needle", "path": w.run}),
+		tc("c3", "Glob", map[string]any{"pattern": "**", "path": w.run}),
+		tc("c4", "Grep", map[string]any{"pattern": "DATAFILE", "path": w.data}),
 	)
 	if strings.Contains(res[0], "secret") || strings.Contains(res[0], "out/") || strings.Count(res[0], "TOPSECRET") != 1 {
 		t.Errorf("search reached outside the roots (only mine.txt may match): %s", res[0])

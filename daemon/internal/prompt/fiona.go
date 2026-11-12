@@ -9,7 +9,7 @@ import (
 // one) can and cannot reach.
 const signalReach = "- Your file tools reach only your notes folder. Nothing else on this machine is in your reach " +
 	"(repositories, /etc/nixos, other folders), and you cannot run commands.\n" +
-	"- web_search and web_extract read the internet. They cannot see this machine."
+	"- WebSearch and WebFetch read the internet. They cannot see this machine."
 
 // FionaIdentity is a chat session's identity and guidance: fiona, the front
 // desk of the instance named instance ("" leaves the name out). hours is the
@@ -82,7 +82,7 @@ func FionaIdentity(instance string, hours *[2]int, group *Group) string {
 // to a Signal chat: the default identity, then the Signal side's limits in
 // place of the coding guidance (Options.Signal). Such a job runs on the cron
 // model, not fiona's, so it is not fiona; it has a chat's tools without
-// relay or clarify, and nobody to ask.
+// relay or AskUserQuestion, and nobody to ask.
 func SignalJobIdentity() string {
 	return strings.Join([]string{
 		DefaultIdentity,

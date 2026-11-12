@@ -114,7 +114,7 @@ type model struct {
 	copiedN int
 	copyAt  time.Time
 
-	// the session's todo list, from the latest todo tool result
+	// the session's todo list, from the latest TodoWrite result
 	todos []todoRow
 
 	spin       int
@@ -205,7 +205,8 @@ type todoRow struct {
 	Status  string
 }
 
-// setTodos reads a todo tool result's complete list.
+// setTodos reads a TodoWrite result's complete list (or a todo one, stored
+// before the rename).
 func (m *model) setTodos(result string) {
 	var r struct {
 		Todos []struct {
@@ -306,10 +307,10 @@ func (m *model) drawHistory(res attachResult, resumed bool) (tasks []taskRes) {
 				break
 			}
 			b.output = msg.Content
-			if b.name == "todo" && msg.Content != "" {
+			if isTodo(b.name) && msg.Content != "" {
 				m.setTodos(msg.Content)
 			}
-			if b.name == "task" {
+			if isTask(b.name) {
 				if f := taskResultRE.FindStringSubmatch(msg.Content); f != nil {
 					tasks = append(tasks, taskRes{msg.ToolCallID, f[1], f[2]})
 					b.isErr = b.isErr || f[2] == "error"
@@ -497,7 +498,7 @@ func (m *model) onEvent(ev client.Event) tea.Cmd {
 		}
 		m.feed.add(&block{kind: bkTool, callID: id, name: str(p, "name"), label: squash(clean(str(p, "summary"))),
 			running: true, started: time.Now()})
-		if str(p, "name") == "task" {
+		if isTask(str(p, "name")) {
 			// A call that continues a child has no child.created: its row is this one.
 			var args struct {
 				TaskID string `json:"task_id"`
@@ -517,7 +518,7 @@ func (m *model) onEvent(ev client.Event) tea.Cmd {
 		b.took = time.Duration(num(p, "duration_ms")) * time.Millisecond
 		b.output = str(p, "result")
 		b.ver++
-		if str(p, "name") == "todo" && b.output != "" {
+		if isTodo(str(p, "name")) && b.output != "" {
 			m.setTodos(b.output)
 		}
 	case "compaction":

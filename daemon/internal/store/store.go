@@ -310,7 +310,7 @@ type Session struct {
 	// as "signal:<id>". Together they are the wall (Readable).
 	Scope string
 	Chat  string
-	// Agent is a child session's subagent type ("explore"); "" otherwise.
+	// Agent is a child session's subagent type ("Explore"); "" otherwise.
 	Agent string
 	// Owner is the chat stamp that started an interactive session or took it
 	// on: a chat drives it whenever no terminal does. "" otherwise. It is not

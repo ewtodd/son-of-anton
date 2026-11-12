@@ -75,7 +75,7 @@ func (s *Server) childRunner(r *agent.Runner, l *live, rec store.Session) *agent
 // childEnd is how a child's run ended.
 type childEnd struct{ status, text, errMsg string }
 
-// spawnTask is the task tool's Spawner: it makes (or continues) a child
+// spawnTask is the Task tool's Spawner: it makes (or continues) a child
 // session of the calling session, runs it, and reports how it ended. No lock
 // is held while the child runs.
 func (s *Server) spawnTask(ctx context.Context, env *tools.Env, req subagent.Request) (subagent.Result, error) {

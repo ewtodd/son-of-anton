@@ -179,7 +179,7 @@ func TestUnderARoutedModelTheWindowIsTheServedModels(t *testing.T) {
 func TestTheServedModelShowsMidTurn(t *testing.T) {
 	hold := make(chan struct{})
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("t1", "terminal", `{"command":"true"}`)}, ServedModel: "small/model", PromptTokens: 300, CompletionTokens: 50},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("t1", "Bash", `{"command":"true"}`)}, ServedModel: "small/model", PromptTokens: 300, CompletionTokens: 50},
 		fakellm.Turn{Content: "done", ServedModel: "small/model", Release: hold},
 	)
 	fake.SetModels("auto", "small/model")

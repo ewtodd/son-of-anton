@@ -78,7 +78,7 @@ func toolCall(id, name, args string) fakellm.ToolCall {
 // A tool row folds to one line until expanded; its output is then visible.
 func TestAToolRowExpandsToItsOutput(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{toolCall("c1", "read_file", `{"path":"note.txt"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{toolCall("c1", "Read", `{"file_path":"note.txt"}`)}},
 		fakellm.Turn{Content: "done"},
 	)
 	d := newDaemon(t, fake)
@@ -95,10 +95,11 @@ func TestAToolRowExpandsToItsOutput(t *testing.T) {
 	waitScreen(t, a, "visible-content")
 }
 
-// The todo tool's complete list stays in the sidebar.
+// TodoWrite's complete list stays in the sidebar, and comes back with a
+// resumed session.
 func TestTodosStayInTheSidebar(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{toolCall("c1", "todo", `{"todos":[{"id":"1","content":"run the tests","status":"completed"},{"id":"2","content":"write docs","status":"pending"}]}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{toolCall("c1", "TodoWrite", `{"todos":[{"content":"run the tests","status":"completed","activeForm":"Running the tests"},{"content":"write docs","status":"pending","activeForm":"Writing docs"}]}`)}},
 		fakellm.Turn{Content: "done"},
 	)
 	d := newDaemon(t, fake)
@@ -106,4 +107,12 @@ func TestTodosStayInTheSidebar(t *testing.T) {
 	a.Resize(160, 40)
 	send(a, "plan the work")
 	waitScreen(t, a, "todo", "✓ run the tests", "· write docs")
+	idle(t, a)
+	id := a.Session()
+	a.Press("ctrl+q")
+	waitExit(t, a)
+
+	b := open(t, d, tui.Options{Resume: id})
+	b.Resize(160, 40)
+	waitScreen(t, b, "done", "✓ run the tests", "· write docs")
 }

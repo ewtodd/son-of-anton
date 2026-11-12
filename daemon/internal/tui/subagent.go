@@ -74,7 +74,7 @@ func (m *model) onChildEvent(ev client.Event) tea.Cmd {
 func messageCallsTask(msg map[string]any) bool {
 	calls, _ := msg["tool_calls"].([]any)
 	for _, c := range calls {
-		if o, ok := c.(map[string]any); ok && str(o, "name") == "task" {
+		if o, ok := c.(map[string]any); ok && isTask(str(o, "name")) {
 			return true
 		}
 	}

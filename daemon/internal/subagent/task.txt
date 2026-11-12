@@ -9,7 +9,7 @@ How it works:
 - Say whether the subagent should change files or only look and report. It cannot tell on its own. If there is a way to check the work, such as a test command, include it.
 - Its final message comes back to you as the tool result. The user does not see it, so tell the user what matters.
 - The result carries a task_id. Pass that id in a later call to continue the same subagent with everything it already knows; without it, each call starts fresh.
-- Several task calls in one message run at the same time. Use that for independent jobs.
+- Several Task calls in one message run at the same time. Use that for independent jobs.
 - While a subagent works on something, do not do the same work yourself. Take up a different part, or wait.
 - Treat its report as reliable unless it contradicts something you have seen.
 - If a type's description says to use it proactively, do so without waiting to be asked.

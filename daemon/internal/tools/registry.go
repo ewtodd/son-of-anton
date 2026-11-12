@@ -1,5 +1,7 @@
-// Package tools implements the daemon's builtin tools: terminal,
-// process, read_file, write_file, patch, search_files, todo and clarify. Results are JSON objects;
+// Package tools implements the daemon's builtin tools, named and shaped like
+// Claude Code's where it has a counterpart (Bash, BashOutput, KillShell, Read,
+// Write, Edit, Glob, Grep, TodoWrite, AskUserQuestion, WebSearch, WebFetch),
+// and soa's own (memory, session_search, execute_code, ...). Results are JSON objects;
 // a tool reports failures as {"error": "..."} and reserves returned errors
 // for infrastructure failures the loop should surface.
 package tools
@@ -24,7 +26,7 @@ type Env struct {
 	Policy paths.Policy
 	Gate   *approval.Gate
 	State  *State
-	// Ask answers clarify questions; nil means nobody can answer.
+	// Ask answers AskUserQuestion; nil means nobody can answer.
 	Ask Questioner
 	// AsyncDelivery says whether a background completion notice can ever be
 	// delivered in this run.
@@ -32,7 +34,7 @@ type Env struct {
 	// Model is the model serving this step; shell commands see it as
 	// $SOA_MODEL (for a commit's Model: line).
 	Model string
-	// Sandbox, when set, runs every terminal and process command inside it
+	// Sandbox, when set, runs every Bash command, background ones too, inside it
 	// (never unsandboxed: when it is unavailable the command does not run).
 	Sandbox *sandbox.Policy
 	// CommandHome is the HOME of the commands the tools run ("" keeps the
@@ -58,7 +60,7 @@ type Env struct {
 	// WallChat walls a gateway caller to one chat's sessions and the common
 	// ones; "" lets it read every session.
 	WallChat string
-	// Web configures web_search and web_extract (nil: they say they are not
+	// Web configures WebSearch and WebFetch (nil: they say they are not
 	// configured).
 	Web *Web
 	// MCP reaches the MCP servers (nil: none is configured).
@@ -168,18 +170,20 @@ func (r *Registry) Only(names ...string) *Registry {
 // Builtin is the builtin tool set, in canonical order.
 func Builtin() []Tool {
 	return []Tool{
-		terminalTool{},
-		processTool{},
-		readFileTool{},
-		writeFileTool{},
-		patchTool{},
-		searchFilesTool{},
-		todoTool{},
-		clarifyTool{},
+		bashTool{},
+		bashOutputTool{},
+		killShellTool{},
+		readTool{},
+		writeTool{},
+		editTool{},
+		globTool{},
+		grepTool{},
+		todoWriteTool{},
+		askUserQuestionTool{},
 		memoryTool{},
 		sessionSearchTool{},
 		webSearchTool{},
-		webExtractTool{},
+		webFetchTool{},
 		executeCodeTool{},
 	}
 }

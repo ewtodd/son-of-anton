@@ -383,7 +383,7 @@ func (m *model) sidebar(h int, now time.Time) []string {
 	}
 	label("session usage")
 	add(fmt.Sprintf("in %s · out %s · %d calls", fmtTokens(s.In), fmtTokens(s.Out), s.Calls), th.mut)
-	// The todo list stays in the sidebar: the latest todo tool result is the
+	// The todo list stays in the sidebar: the latest TodoWrite result is the
 	// complete checklist.
 	label("todo")
 	if len(m.todos) == 0 {

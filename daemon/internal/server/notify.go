@@ -1,4 +1,4 @@
-// Desktop nudges: an approval or a clarify question that waits unanswered
+// Desktop nudges: an approval or an AskUserQuestion question that waits unanswered
 // pokes the user with notify-send, so a turn blocked in another window or
 // on another surface is not forgotten.
 package server

@@ -162,7 +162,7 @@ func TestATurnStreamsAndCommits(t *testing.T) {
 
 func TestToolEventsAndCommittedRows(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "echo tooled")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c1", "echo tooled")}},
 		fakellm.Turn{Content: "done"},
 	)
 	h := newHarness(t, fake, "")
@@ -175,7 +175,7 @@ func TestToolEventsAndCommittedRows(t *testing.T) {
 	if len(start) != 1 || len(end) != 1 {
 		t.Fatalf("events = %v", kinds(evs))
 	}
-	if str(start[0], "call_id") != "c1" || str(start[0], "name") != "terminal" ||
+	if str(start[0], "call_id") != "c1" || str(start[0], "name") != "Bash" ||
 		!strings.Contains(str(start[0], "arguments"), "echo tooled") || !strings.Contains(str(start[0], "summary"), "echo tooled") {
 		t.Fatalf("tool.start = %v; it carries the call id, the name, the raw arguments and a one-line summary", start[0])
 	}
@@ -187,10 +187,10 @@ func TestToolEventsAndCommittedRows(t *testing.T) {
 		t.Fatalf("committed rows = %v", roleList(ms))
 	}
 	calls := objs(ms[1], "tool_calls")
-	if len(calls) != 1 || str(calls[0], "id") != "c1" || str(calls[0], "name") != "terminal" || !strings.Contains(str(calls[0], "arguments"), "echo tooled") {
+	if len(calls) != 1 || str(calls[0], "id") != "c1" || str(calls[0], "name") != "Bash" || !strings.Contains(str(calls[0], "arguments"), "echo tooled") {
 		t.Fatalf("the assistant row's tool calls = %v; flattened to {id, name, arguments}", ms[1]["tool_calls"])
 	}
-	if str(ms[2], "tool_call_id") != "c1" || str(ms[2], "tool_name") != "terminal" || !strings.Contains(str(ms[2], "content"), "tooled") {
+	if str(ms[2], "tool_call_id") != "c1" || str(ms[2], "tool_name") != "Bash" || !strings.Contains(str(ms[2], "content"), "tooled") {
 		t.Fatalf("tool row = %v", ms[2])
 	}
 	toolEnd, toolRow := indexOf(evs, "tool.end"), -1
@@ -206,7 +206,7 @@ func TestToolEventsAndCommittedRows(t *testing.T) {
 
 func TestToolErrorsAreFlagged(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "read_file", `{"path":"/definitely/not/here.txt"}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "Read", `{"file_path":"/definitely/not/here.txt"}`)}},
 		fakellm.Turn{Content: "no file"},
 	)
 	h := newHarness(t, fake, "")
@@ -222,7 +222,7 @@ func TestToolErrorsAreFlagged(t *testing.T) {
 
 func TestQueuedSendsRunInOrder(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "sleep 0.5; echo one")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c1", "sleep 0.5; echo one")}},
 		fakellm.Turn{Content: "a done"},
 		fakellm.Turn{Content: "b done"},
 		fakellm.Turn{Content: "c done"},
@@ -337,7 +337,7 @@ func TestInterruptRecordsTheTurn(t *testing.T) {
 }
 
 func TestInterruptStopsARunningTool(t *testing.T) {
-	fake := fakellm.New(t, fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "sleep 30")}})
+	fake := fakellm.New(t, fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c1", "sleep 30")}})
 	h := newHarness(t, fake, "")
 	c := h.dial()
 	id := c.create(t.TempDir())
@@ -358,7 +358,7 @@ func TestInterruptStopsARunningTool(t *testing.T) {
 
 func TestSendNowSteersAfterTheRunningTool(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "sleep 0.5; echo finished")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c1", "sleep 0.5; echo finished")}},
 		fakellm.Turn{Content: "steered ok"},
 	)
 	h := newHarness(t, fake, "")
@@ -410,7 +410,7 @@ func TestSendNowDuringTheModelRequestKeepsWhatStreamed(t *testing.T) {
 
 func TestQueueSteerAndRemove(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "sleep 0.5; echo x")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c1", "sleep 0.5; echo x")}},
 		fakellm.Turn{Content: "after all"},
 	)
 	h := newHarness(t, fake, "")
@@ -468,9 +468,9 @@ func TestApprovalsGoToTheDriver(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c1", "chmod 777 f.txt")}},
 		fakellm.Turn{Content: "done"},
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c2", "chmod 666 f.txt")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c2", "chmod 666 f.txt")}},
 		fakellm.Turn{Content: "denied ok"},
 	)
 	h := newHarness(t, fake, "")
@@ -524,7 +524,7 @@ func TestAPendingApprovalReplaysOnAttach(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c1", "chmod 777 f.txt")}},
 		fakellm.Turn{Content: "done"},
 	)
 	h := newHarness(t, fake, "")
@@ -547,9 +547,16 @@ func TestAPendingApprovalReplaysOnAttach(t *testing.T) {
 	}
 }
 
-func TestClarifyGoesToTheDriver(t *testing.T) {
+// askTwo is an AskUserQuestion call of two questions, the second multiSelect.
+const askTwo = `{"questions":[
+	{"question":"Which?","header":"Pick","multiSelect":false,"options":[{"label":"a","description":"the first"},{"label":"b","description":"the second"}]},
+	{"question":"Which sides?","header":"Sides","multiSelect":true,"options":[{"label":"left","description":"west"},{"label":"right","description":"east"},{"label":"top","description":"north"}]}]}`
+
+// The questions of one call reach the driver one after another, each with
+// its header, its options' descriptions and its place among them.
+func TestAskUserQuestionGoesToTheDriver(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "clarify", `{"question":"Which?","choices":["a","b"]}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "AskUserQuestion", askTwo)}},
 		fakellm.Turn{Content: "ok"},
 	)
 	h := newHarness(t, fake, "")
@@ -558,15 +565,58 @@ func TestClarifyGoesToTheDriver(t *testing.T) {
 	c.attach(id, "driver")
 	c.send(id, "ask me")
 	q := c.await("question.request")
-	if str(q, "text") != "Which?" || strings.Join(strs(q, "choices"), ",") != "a,b" || q["multi_select"] != false {
+	if str(q, "text") != "Which?" || str(q, "header") != "Pick" || strings.Join(strs(q, "choices"), ",") != "a,b" ||
+		strings.Join(strs(q, "descriptions"), ",") != "the first,the second" || q["multi_select"] != false || num(q, "number") != 1 || num(q, "of") != 2 {
 		t.Fatalf("question.request = %v", q)
 	}
 	c.ok("question.answer", map[string]any{"session": id, "question_id": str(q, "question_id"), "answers": []string{"b"}})
 	c.fails("question.answer", map[string]any{"session": id, "question_id": str(q, "question_id"), "answers": []string{"a"}}, codeNotPending)
+	q2 := c.await("question.request")
+	if str(q2, "text") != "Which sides?" || q2["multi_select"] != true || num(q2, "number") != 2 || num(q2, "of") != 2 || str(q2, "question_id") == str(q, "question_id") {
+		t.Fatalf("the second question.request = %v", q2)
+	}
+	c.ok("question.answer", map[string]any{"session": id, "question_id": str(q2, "question_id"), "answers": []string{"left", "top"}})
+	found := false
 	for _, m := range committed(c.turn()) {
-		if str(m, "role") == "tool" && !strings.Contains(str(m, "content"), `"user_response":"b"`) {
-			t.Fatalf("clarify result = %q", str(m, "content"))
+		if str(m, "role") == "tool" {
+			found = true
+			if !strings.Contains(str(m, "content"), `{"answer":"b","question":"Which?"}`) ||
+				!strings.Contains(str(m, "content"), `{"answer":["left","top"],"question":"Which sides?"}`) {
+				t.Fatalf("AskUserQuestion result = %q", str(m, "content"))
+			}
 		}
+	}
+	if !found {
+		t.Fatal("no tool row")
+	}
+}
+
+// A model that calls a tool by its old name, as a resumed session's history
+// shows it, is told the new name and its parameters.
+func TestAnOldToolNameIsToldItsNewOne(t *testing.T) {
+	fake := fakellm.New(t,
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{
+			call("c1", "read_file", `{"path":"notes.txt"}`),
+			call("c2", "terminal", `{"command":"true"}`),
+			call("c3", "no_such_tool", `{}`),
+		}},
+		fakellm.Turn{Content: "ok"},
+	)
+	h := newHarness(t, fake, "")
+	c := h.dial()
+	id := c.create(t.TempDir())
+	c.attach(id, "driver")
+	c.send(id, "go")
+	got := map[string]string{}
+	for _, m := range committed(c.turn()) {
+		if str(m, "role") == "tool" {
+			got[str(m, "tool_call_id")] = str(m, "content")
+		}
+	}
+	if !strings.Contains(got["c1"], "read_file is now Read (file_path, offset, limit)") ||
+		!strings.Contains(got["c2"], "terminal is now Bash (command, timeout in milliseconds, description, run_in_background)") ||
+		!strings.Contains(got["c3"], "unknown tool: no_such_tool") {
+		t.Fatalf("results = %v", got)
 	}
 }
 
@@ -664,7 +714,7 @@ func TestSessionListModelsAndSettings(t *testing.T) {
 	}
 	fake := fakellm.New(t,
 		fakellm.Turn{Content: "a"},
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("c1", "chmod 777 f.txt")}},
 		fakellm.Turn{Content: "b"},
 	)
 	fake.SetModels("test-model", "live-model")
@@ -722,7 +772,7 @@ func TestSessionListModelsAndSettings(t *testing.T) {
 
 func TestABackgroundNoticeStartsATurn(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "terminal", `{"command":"sleep 0.3; echo bgdone","background":true,"notify_on_complete":true}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "Bash", `{"command":"sleep 0.3; echo bgdone","run_in_background":true}`)}},
 		fakellm.Turn{Content: "started it"},
 		fakellm.Turn{Content: "saw it"},
 	)
@@ -754,8 +804,8 @@ func TestBackgroundReceiptsArriveAsOneTurn(t *testing.T) {
 	rel := make(chan struct{})
 	fake := fakellm.New(t,
 		fakellm.Turn{ToolCalls: []fakellm.ToolCall{
-			call("c1", "terminal", `{"command":"sleep 1; echo alpha done","background":true,"notify_on_complete":true}`),
-			call("c2", "terminal", `{"command":"sleep 1; echo beta done","background":true,"notify_on_complete":true}`),
+			call("c1", "Bash", `{"command":"sleep 1; echo alpha done","run_in_background":true}`),
+			call("c2", "Bash", `{"command":"sleep 1; echo beta done","run_in_background":true}`),
 		}},
 		fakellm.Turn{Content: "started both", Release: rel},
 		fakellm.Turn{Content: "collected both"},
@@ -781,7 +831,7 @@ func TestBackgroundReceiptsArriveAsOneTurn(t *testing.T) {
 
 func TestStopKillsBackgroundProcesses(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "terminal", `{"command":"sleep 30","background":true}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "Bash", `{"command":"sleep 30","run_in_background":true}`)}},
 		fakellm.Turn{Content: "started"},
 	)
 	h := newHarness(t, fake, "")
@@ -840,7 +890,7 @@ func TestCommitIsATemplatedTurn(t *testing.T) {
 
 func TestShutdownRecordsTheTurnAndCleansUp(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "terminal", `{"command":"sleep 30","background":true}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "Bash", `{"command":"sleep 30","run_in_background":true}`)}},
 		fakellm.Turn{Content: "ok"},
 		fakellm.Turn{Hang: true},
 	)

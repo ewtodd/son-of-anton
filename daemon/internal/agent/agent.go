@@ -80,7 +80,7 @@ type Runner struct {
 	Approver  approval.Approver
 	Allowlist approval.Allowlist
 	// AsyncDelivery says whether a background completion notice can ever be
-	// delivered in this run; Ask answers clarify (nil: nobody can).
+	// delivered in this run; Ask answers AskUserQuestion (nil: nobody can).
 	AsyncDelivery bool
 	Ask           tools.Questioner
 	// Compaction configures summarizing a long transcript.
@@ -115,7 +115,7 @@ type Runner struct {
 	SessionState func(ctx context.Context, id string) string
 	// WallChat walls session_search to one chat (tools.Env.WallChat).
 	WallChat string
-	// Web configures web_search and web_extract (tools.Env.Web).
+	// Web configures WebSearch and WebFetch (tools.Env.Web).
 	Web *tools.Web
 	// Vision reports whether a model takes image parts: a read image is
 	// attached to its tool result and a user message's images are sent as
@@ -213,16 +213,6 @@ func (r *Runner) Resume(ctx context.Context, id string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	stored, err := r.Store.Messages(ctx, id)
-	if err != nil {
-		_ = s.Close()
-		return nil, err
-	}
-	for i := len(stored) - 1; i >= 0; i-- {
-		if stored[i].Role == "tool" && stored[i].ToolName == "todo" && s.state.RestoreTodos(stored[i].Content) == nil {
-			break
-		}
-	}
 	return s, nil
 }
 
@@ -277,8 +267,8 @@ func (r *Runner) newSession(id, prompt, cwd string) (*Session, error) {
 
 // sandboxToolNames are the tools a sandboxed session is offered: nothing that
 // reaches the network, the instance's memory or other sessions, and no
-// clarify (nobody answers).
-var sandboxToolNames = []string{"terminal", "process", "read_file", "write_file", "patch", "search_files", "todo"}
+// AskUserQuestion (nobody answers).
+var sandboxToolNames = []string{"Bash", "BashOutput", "KillShell", "Read", "Write", "Edit", "Glob", "Grep", "TodoWrite"}
 
 // sandboxed makes s a session that runs inside pol: yolo mode with nobody to
 // ask (hardline rules still refuse; a protected write has no approver, so it
@@ -883,6 +873,10 @@ func (s *Session) runOneCall(ctx context.Context, env *tools.Env, call provider.
 	}
 	tool, ok := reg.Lookup(call.Function.Name)
 	if !ok {
+		has := func(n string) bool { _, ok := reg.Lookup(n); return ok }
+		if msg := tools.RenamedTool(call.Function.Name, has); msg != "" {
+			return errorJSON(msg)
+		}
 		return errorJSON("unknown tool: " + call.Function.Name)
 	}
 	if !json.Valid([]byte(call.Function.Arguments)) {

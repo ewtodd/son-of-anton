@@ -109,7 +109,7 @@ func TestUsageErrors(t *testing.T) {
 func toolTurns(command string) []fakellm.Turn {
 	args, _ := json.Marshal(map[string]string{"command": command})
 	return []fakellm.Turn{
-		{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "terminal", Arguments: string(args)}}},
+		{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "Bash", Arguments: string(args)}}},
 		{Content: "done"},
 	}
 }

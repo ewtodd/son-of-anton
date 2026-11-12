@@ -120,7 +120,7 @@ func TestTUIResumingAnUnknownSessionFailsBeforeTheScreen(t *testing.T) {
 
 func TestTheDaemonCannotGainPrivileges(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "terminal", Arguments: `{"command":"grep NoNewPrivs /proc/self/status"}`}}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "Bash", Arguments: `{"command":"grep NoNewPrivs /proc/self/status"}`}}},
 		fakellm.Turn{Content: "done"},
 	)
 	home := shortHome(t, fake)

@@ -1,6 +1,6 @@
 package server_test
 
-// Desktop nudges: an approval or a clarify question that waits longer than
+// Desktop nudges: an approval or an AskUserQuestion question that waits longer than
 // agent.prompt_notify_after gets a notify-send (the Python's nudge, owner
 // 2026-11-06); answering it cancels the pending one, and 0 turns the nudge
 // off.
@@ -22,7 +22,7 @@ func TestAWaitingApprovalNudges(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("a1", "chmod 777 f.txt")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("a1", "chmod 777 f.txt")}},
 		fakellm.Turn{Content: "moving on"},
 	)
 	h := newHarness(t, fake, "[agent]\nprompt_notify_after = 1\n")
@@ -44,9 +44,9 @@ func TestAWaitingApprovalNudges(t *testing.T) {
 	}
 }
 
-func TestAWaitingClarifyQuestionNudges(t *testing.T) {
+func TestAWaitingQuestionNudges(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("q1", "clarify", `{"question":"Which figure is wrong?","choices":["a","b"]}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("q1", "AskUserQuestion", `{"questions":[{"question":"Which figure is wrong?","header":"Figure","multiSelect":false,"options":[{"label":"a","description":"the first"},{"label":"b","description":"the second"}]}]}`)}},
 		fakellm.Turn{Content: "thanks"},
 	)
 	h := newHarness(t, fake, "[agent]\nprompt_notify_after = 1\n")
@@ -74,7 +74,7 @@ func TestPromptNotifyAfterZeroDisablesTheNudge(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{terminal("a1", "chmod 777 f.txt")}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{bashCall("a1", "chmod 777 f.txt")}},
 		fakellm.Turn{Content: "moving on"},
 	)
 	h := newHarness(t, fake, "[agent]\nprompt_notify_after = 0\n")

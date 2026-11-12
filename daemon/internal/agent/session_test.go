@@ -1,8 +1,8 @@
 package agent_test
 
-// Phase 1b session behavior: a session owns its background processes, its
-// todo list survives a resume, notifications drain through the session, and
-// clarify reaches the runner's questioner.
+// Phase 1b session behavior: a session owns its background processes,
+// receipts drain through the session, AskUserQuestion reaches the runner's
+// questioner, and an old tool name is answered with its replacement.
 
 import (
 	"context"
@@ -28,7 +28,7 @@ func storedResult(t *testing.T, content string) map[string]any {
 func TestClosingASessionKillsItsBackgroundProcesses(t *testing.T) {
 	st := newStore(t)
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "terminal", `{"command":"sleep 30","background":true}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "Bash", `{"command":"sleep 30","run_in_background":true}`)}},
 		fakellm.Turn{Content: "started"},
 	)
 	s, _ := toolRunner(t, st, fake, tools.Builtin()...).NewSession(ctx, "interactive", t.TempDir())
@@ -47,33 +47,36 @@ func TestClosingASessionKillsItsBackgroundProcesses(t *testing.T) {
 	}
 }
 
-func TestResumeRestoresTheTodoList(t *testing.T) {
+// A resumed session's history names tools by their old names; a model that
+// calls one is told what replaced it, and a call to an old tool the session
+// never had is just unknown.
+func TestAnOldToolNameIsAnsweredWithItsReplacement(t *testing.T) {
 	st := newStore(t)
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "todo", `{"todos":[{"id":"1","content":"remember me","status":"in_progress"}]}`)}},
-		fakellm.Turn{Content: "planned"},
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c2", "todo", `{}`)}},
-		fakellm.Turn{Content: "still planned"},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{
+			call("c1", "read_file", `{"path":"x.txt"}`),
+			call("c2", "terminal", `{"command":"true"}`),
+		}},
+		fakellm.Turn{Content: "ok"},
 	)
-	s, _ := toolRunner(t, st, fake, tools.Builtin()...).NewSession(ctx, "interactive", t.TempDir())
-	send(t, s, "plan")
-	_ = s.Close()
-
-	resumed, err := toolRunner(t, st, fake, tools.Builtin()...).Resume(ctx, s.ID())
-	if err != nil {
-		t.Fatal(err)
+	r := toolRunner(t, st, fake, tools.Builtin()...)
+	r.Tools = r.Tools.Only("Read", "Write")
+	s, _ := r.NewSession(ctx, "interactive", t.TempDir())
+	defer s.Close()
+	send(t, s, "go")
+	stored, _ := st.Messages(ctx, s.ID())
+	if e, _ := storedResult(t, stored[2].Content)["error"].(string); !strings.Contains(e, "read_file is now Read (file_path, offset, limit)") {
+		t.Fatalf("an old name = %s", stored[2].Content)
 	}
-	send(t, resumed, "what is the plan")
-	ms := full(t, fake.Messages(3))
-	if last := ms[len(ms)-1]; last.Role != "tool" || !strings.Contains(last.Content, "remember me") {
-		t.Fatalf("after a resume the todo list comes back from the transcript: %+v", last)
+	if e, _ := storedResult(t, stored[3].Content)["error"].(string); e != "unknown tool: terminal" {
+		t.Fatalf("an old name whose replacement the session lacks = %s", stored[3].Content)
 	}
 }
 
-func TestNotificationsDrainThroughTheSession(t *testing.T) {
+func TestReceiptsDrainThroughTheSession(t *testing.T) {
 	st := newStore(t)
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "terminal", `{"command":"echo bg-done","background":true,"notify_on_complete":true}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "Bash", `{"command":"echo bg-done","run_in_background":true}`)}},
 		fakellm.Turn{Content: "ok"},
 	)
 	r := toolRunner(t, st, fake, tools.Builtin()...)
@@ -92,25 +95,26 @@ func TestNotificationsDrainThroughTheSession(t *testing.T) {
 	}
 }
 
-func TestWithoutAsyncDeliveryNotifyIsRefused(t *testing.T) {
+func TestWithoutAsyncDeliveryTheResultSaysToCheck(t *testing.T) {
 	st := newStore(t)
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "terminal", `{"command":"true","background":true,"notify_on_complete":true}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "Bash", `{"command":"true","run_in_background":true}`)}},
 		fakellm.Turn{Content: "ok"},
 	)
 	s, _ := toolRunner(t, st, fake, tools.Builtin()...).NewSession(ctx, "interactive", t.TempDir())
 	defer s.Close()
 	send(t, s, "go")
 	stored, _ := st.Messages(ctx, s.ID())
-	if storedResult(t, stored[2].Content)["notify_unsupported"] != true {
+	if note, _ := storedResult(t, stored[2].Content)["note"].(string); !strings.Contains(note, "check on it with BashOutput") {
 		t.Fatalf("result = %s", stored[2].Content)
 	}
 }
 
-func TestClarifyReachesTheRunnersQuestioner(t *testing.T) {
+func TestAskUserQuestionReachesTheRunnersQuestioner(t *testing.T) {
 	st := newStore(t)
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "clarify", `{"question":"Tabs or spaces?","choices":["tabs","spaces"]}`)}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{call("c1", "AskUserQuestion",
+			`{"questions":[{"question":"Tabs or spaces?","header":"Indent","multiSelect":false,"options":[{"label":"tabs","description":"one per level"},{"label":"spaces","description":"four per level"}]}]}`)}},
 		fakellm.Turn{Content: "tabs it is"},
 	)
 	r := toolRunner(t, st, fake, tools.Builtin()...)
@@ -122,11 +126,12 @@ func TestClarifyReachesTheRunnersQuestioner(t *testing.T) {
 	s, _ := r.NewSession(ctx, "interactive", t.TempDir())
 	defer s.Close()
 	send(t, s, "format it")
-	if asked.Text != "Tabs or spaces?" {
+	if asked.Text != "Tabs or spaces?" || asked.Header != "Indent" {
 		t.Fatalf("asked %+v", asked)
 	}
 	stored, _ := st.Messages(ctx, s.ID())
-	if storedResult(t, stored[2].Content)["user_response"] != "tabs" {
-		t.Fatalf("clarify result = %s", stored[2].Content)
+	answers, _ := storedResult(t, stored[2].Content)["answers"].([]any)
+	if len(answers) != 1 || answers[0].(map[string]any)["answer"] != "tabs" {
+		t.Fatalf("AskUserQuestion result = %s", stored[2].Content)
 	}
 }

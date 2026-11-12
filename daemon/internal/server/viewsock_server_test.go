@@ -349,7 +349,7 @@ func TestAViewerLeavesAWorkerToItsChat(t *testing.T) {
 		fakellm.Turn{When: asWorker, Content: "desk work done"},
 		fakellm.Turn{When: asFiona, ToolCalls: []fakellm.ToolCall{relaySendTo("r1", &desk, "make f.txt writable")}},
 		fakellm.Turn{When: asFiona, Content: "Sent."},
-		fakellm.Turn{When: asWorker, ToolCalls: []fakellm.ToolCall{terminal("c1", "chmod 777 f.txt")}},
+		fakellm.Turn{When: asWorker, ToolCalls: []fakellm.ToolCall{bashCall("c1", "chmod 777 f.txt")}},
 		fakellm.Turn{When: asWorker, Content: "it is writable"},
 		fakellm.Turn{When: workerNotice, Content: "f.txt is writable."},
 	)

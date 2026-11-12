@@ -65,7 +65,7 @@ func runIn(t *testing.T, args ...string) (int, string, string) {
 
 func TestOneshotPrintsOnlyTheFinalAnswer(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{Content: "thinking out loud", ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "terminal", Arguments: `{"command":"echo hi"}`}}},
+		fakellm.Turn{Content: "thinking out loud", ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "Bash", Arguments: `{"command":"echo hi"}`}}},
 		fakellm.Turn{Content: "the answer"},
 	)
 	home := testHome(t, fake)
@@ -77,7 +77,7 @@ func TestOneshotPrintsOnlyTheFinalAnswer(t *testing.T) {
 
 func TestOneshotUsageFile(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "terminal", Arguments: `{"command":"true"}`}}, PromptTokens: 100, CompletionTokens: 10, CachedTokens: 40},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "Bash", Arguments: `{"command":"true"}`}}, PromptTokens: 100, CompletionTokens: 10, CachedTokens: 40},
 		fakellm.Turn{Content: "done", PromptTokens: 120, CompletionTokens: 5, ReasoningTokens: 2},
 	)
 	home := testHome(t, fake)
@@ -193,9 +193,9 @@ func TestSystemPromptWithoutTheRuleGetsNoSendTimePrefix(t *testing.T) {
 	}
 }
 
-func TestOneshotSessionAndClarify(t *testing.T) {
+func TestOneshotSessionAndAskUserQuestion(t *testing.T) {
 	fake := fakellm.New(t,
-		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "clarify", Arguments: `{"question":"Which one?","choices":["a","b"]}`}}},
+		fakellm.Turn{ToolCalls: []fakellm.ToolCall{{ID: "c1", Name: "AskUserQuestion", Arguments: `{"questions":[{"question":"Which one?","header":"Pick","multiSelect":false,"options":[{"label":"a","description":"the first"},{"label":"b","description":"the second"}]}]}`}}},
 		fakellm.Turn{Content: "picked a"},
 	)
 	home := testHome(t, fake)
@@ -203,7 +203,7 @@ func TestOneshotSessionAndClarify(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
 	if !bytes.Contains(bytes.ToLower(fake.Messages(1)[3]), []byte("no one")) {
-		t.Fatalf("clarify in a oneshot answers at once: %s", fake.Messages(1)[3])
+		t.Fatalf("AskUserQuestion in a oneshot answers at once: %s", fake.Messages(1)[3])
 	}
 	st, err := store.Open(filepath.Join(home, "soa-d.db"))
 	if err != nil {
