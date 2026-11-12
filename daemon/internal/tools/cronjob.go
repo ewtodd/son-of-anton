@@ -59,7 +59,7 @@ func (t cronjobTool) Schema() provider.Tool {
   "properties": {
     "action": {"type": "string", "description": "What to do: create, list, update, pause, resume, remove or run."},
     "job_id": {"type": "string", "description": "The job to act on (its id or its name). Needed by every action except create and list."},
-    "prompt": {"type": "string", "description": "For create, the instructions the job will follow each time; they must make sense with no other context. For run, extra instructions for that single run."},
+    "prompt": {"type": "string", "description": "For create, the instructions the job will follow each time; they must make sense with no other context. For update, the whole new prompt, which replaces the old one: start from the prompt list shows and change what the user asked. For run, extra instructions for that single run."},
     "schedule": {"type": "string", "description": "When to run; create needs it. Four forms: a delay such as '30m' (one run, that long from now); an interval such as 'every 2h' (repeating); a five-field cron expression such as '0 9 * * *' (repeating); or a timestamp such as '2026-06-01T09:00:00' (one run). A timestamp with no UTC offset is read as local time in the timezone named in your system prompt, so give the time the user stated and do not convert it. Pick a repeating form only if the user wants repetition."},
     "name": {"type": "string", "description": "A short name for the job."},
     "repeat": {"type": "integer", "description": "How many times to run before the job ends. One-time schedules run once and repeating ones never end, unless this says otherwise."},
@@ -626,11 +626,6 @@ func repeatDisplay(j cron.Job) string {
 }
 
 func formatJob(j cron.Job) map[string]any {
-	prompt := fmt.Sprint(orEmpty(j["prompt"]))
-	preview := prompt
-	if r := []rune(prompt); len(r) > 100 {
-		preview = string(r[:100]) + "..."
-	}
 	deliver := j["deliver"]
 	if _, ok := j["deliver"]; !ok {
 		deliver = "local"
@@ -640,7 +635,7 @@ func formatJob(j cron.Job) map[string]any {
 		enabled = b
 	}
 	out := map[string]any{
-		"job_id": j["id"], "name": j["name"], "prompt_preview": preview,
+		"job_id": j["id"], "name": j["name"], "prompt": fmt.Sprint(orEmpty(j["prompt"])),
 		"model": j["model"], "provider": j["provider"], "base_url": j["base_url"],
 		"schedule": j["schedule_display"], "repeat": repeatDisplay(j), "deliver": deliver,
 		"next_run_at": j["next_run_at"], "last_run_at": j["last_run_at"], "last_status": j["last_status"],

@@ -367,6 +367,48 @@ func TestWriteFileWarnsWhenTheFileChangedSinceItWasRead(t *testing.T) {
 	}
 }
 
+// On 2026-11-10 and 11 a chat model wrote read_file's display of a notes file back
+// with write_file, and the file took a layer of line numbers each time.
+func TestWriteFileRefusesReadFilesOutputPastedBack(t *testing.T) {
+	f := setup(t, nil)
+	p := f.write(t, "notes.md", "# Notes\n\n- a\n")
+	shown := f.call(t, "read_file", map[string]any{"path": "notes.md"})
+	result, _ := json.Marshal(shown)
+	for name, content := range map[string]string{
+		"read_file's content":        str(shown, "content") + "\n",
+		"read_file's whole result":   string(result),
+		"a stretch from an offset":   "7|x\n8|y\n9|z",
+		"numbers stacked by repeats": "1|1|# Notes\n2|2|\n3|3|- a",
+	} {
+		if r := f.call(t, "write_file", map[string]any{"path": "notes.md", "content": content}); !strings.Contains(str(r, "error"), "read_file's output") {
+			t.Errorf("%s: write = %v", name, r)
+		}
+	}
+	if read(t, p) != "# Notes\n\n- a\n" {
+		t.Fatalf("the file changed: %q", read(t, p))
+	}
+	for _, content := range []string{
+		"| a | b |\n|---|---|\n| 1 | 2 |\n", "1|only one line\n", "1|a\n3|b\n", "01|a\n02|b\n", "0|a\n1|b\n",
+		"+1|a\n+2|b\n", `{"content": "1|a"}`,
+	} {
+		if r := f.call(t, "write_file", map[string]any{"path": "ok.txt", "content": content}); isErr(r) {
+			t.Errorf("%q was refused: %v", content, r)
+		}
+	}
+}
+
+// On 2026-11-12 the same model put its whole call, path and all, inside content.
+func TestWriteFileSaysWhenTheArgumentsAreInsideContent(t *testing.T) {
+	f := setup(t, nil)
+	nested, _ := json.Marshal(map[string]any{"content": "hello", "path": "x.txt"})
+	if r := f.call(t, "write_file", map[string]any{"content": string(nested)}); !strings.Contains(str(r, "error"), "itself a JSON object holding path and content") {
+		t.Fatalf("write = %v", r)
+	}
+	if r := f.call(t, "write_file", map[string]any{"content": "hello"}); str(r, "error") != "path is required" {
+		t.Fatalf("a plain missing path = %v", r)
+	}
+}
+
 func TestWriteFileRequiresContent(t *testing.T) {
 	f := setup(t, nil)
 	if r := f.call(t, "write_file", map[string]any{"path": "x.txt"}); !isErr(r) {

@@ -1,6 +1,7 @@
 package tools_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/cron"
@@ -48,5 +49,23 @@ func TestListLeavesOutJobsThatHaveRunForTheLastTime(t *testing.T) {
 	all := call(t, cj, env, `{"action":"list","include_completed":true}`)
 	if got := names(all); len(got) != 3 || all["completed_left_out"] != nil {
 		t.Fatalf("list with include_completed = %v", all)
+	}
+}
+
+// An update replaces the whole prompt, so list shows all of it: from a
+// 100-character preview ending in "...", a chat model rewrote a daily job's
+// prompt as the preview plus one sentence.
+func TestListShowsEachJobsWholePrompt(t *testing.T) {
+	t.Setenv("SON_OF_ANTON_TIMEZONE", "UTC")
+	home := t.TempDir()
+	cj, env := tools.CronJob(home), chatEnv(home, "signal:dm:+15551111111")
+	long := strings.Repeat("Ask how the day went, kindly. ", 12) + "Then stop."
+	if res := call(t, cj, env, `{"action":"create","name":"long","schedule":"every 1d","prompt":"`+long+`"}`); res["success"] != true {
+		t.Fatalf("create = %v", res)
+	}
+	list := call(t, cj, env, `{"action":"list"}`)
+	jobs, _ := list["jobs"].([]any)
+	if len(jobs) != 1 || str(jobs[0].(map[string]any), "prompt") != long {
+		t.Fatalf("list = %v", list)
 	}
 }

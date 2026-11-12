@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/ewtodd/son-of-anton/daemon/internal/provider"
 )
@@ -40,10 +42,19 @@ func (writeFileTool) Run(ctx context.Context, env *Env, args json.RawMessage) (s
 		return errorResult("invalid arguments: " + err.Error()), nil
 	}
 	if a.Path == "" {
+		if jsonHasStringField(json.RawMessage(a.Content), "path") {
+			return errorResult("path is required. The content you gave is itself a JSON object holding path and content: " +
+				"pass path and content as write_file's own arguments, with content as the file's text alone."), nil
+		}
 		return errorResult("path is required"), nil
 	}
 	if a.Content == "" && !jsonHasStringField(args, "content") {
 		return errorResult("content is required"), nil
+	}
+	if readFileEcho(a.Content) {
+		return errorResult("Nothing was written: this content is read_file's output, not the file's text. Its lines start " +
+			"with the line numbers and '|' that read_file adds when it shows a file. Write the text without them, or use " +
+			"patch to add or change only the lines that change."), nil
 	}
 	abs, err := env.Policy.Resolve(env.State.Cwd(), a.Path)
 	if err != nil {
@@ -88,6 +99,42 @@ func jsonHasStringField(raw json.RawMessage, field string) bool {
 	var s string
 	v, ok := m[field]
 	return ok && json.Unmarshal(v, &s) == nil
+}
+
+// readFileEcho reports whether content is read_file's display of a file rather
+// than a file's text: two or more lines numbered consecutively as read_file
+// prints them ("12|..."), either as content itself or as the string content
+// of a JSON object (read_file's whole result). A model that copies a read back
+// into write_file saves the numbers into every line, once per round trip.
+func readFileEcho(content string) bool {
+	var wrapped struct {
+		Content *string `json:"content"`
+	}
+	if json.Unmarshal([]byte(content), &wrapped) == nil && wrapped.Content != nil && numberedLines(*wrapped.Content) {
+		return true
+	}
+	return numberedLines(content)
+}
+
+func numberedLines(s string) bool {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) < 2 {
+		return false
+	}
+	first := 0
+	for i, line := range lines {
+		num, _, ok := strings.Cut(line, "|")
+		n, err := strconv.Atoi(num)
+		if !ok || err != nil || num != strconv.Itoa(n) || n < 1 {
+			return false
+		}
+		if i == 0 {
+			first = n
+		} else if n != first+i {
+			return false
+		}
+	}
+	return true
 }
 
 // writeAtomic writes content to abs via a temp file + rename, creating parent
