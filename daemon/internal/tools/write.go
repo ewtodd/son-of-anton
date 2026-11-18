@@ -22,7 +22,9 @@ func (writeTool) Schema() provider.Tool {
 		Description: "Save text as a file, replacing whatever the file held; missing parent directories are created. " +
 			"A new file can be written straight away. A file that already exists must have been read in full with Read in this session, " +
 			"and the write is refused if the file changed on disk after that read. " +
-			"To change part of a file, use Edit: it sends only the change.",
+			"To change part of a file, or to add an entry to a long note (a log, a digest), use Edit: it sends only the change. " +
+			"content is the file's own text, never Read's output: strip the line numbers Read puts in front of each line " +
+			"and write real line breaks, not \\n escape sequences.",
 		Parameters: json.RawMessage(`{
   "type": "object",
   "properties": {

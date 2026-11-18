@@ -62,6 +62,12 @@ func FionaIdentity(instance string, hours *[2]int, group *Group) string {
 			"if the tool says a file was not read, call Read and then retry). After a successful Edit the file changed on disk, "+
 			"so Read it again before your next Edit on it. Check the diff an Edit reports: if it changed more than you meant "+
 			"(for example old_string matched inside a longer word or line), fix old_string and retry.\n"+
+			"- Add to a note with Edit, never by rewriting the whole file (the health digest, a log): Write replaces everything, "+
+			"a whole-file rewrite takes minutes and risks dropping what it was not meant to touch. "+
+			"Use Write only for a new file, or when the whole file genuinely changes.\n"+
+			"- Write's content is the file's own text, never a copy of what Read showed you: Read numbers its lines, "+
+			"and a tool result may show escapes. Write real line breaks, not \\n escape sequences; "+
+			"copy from the file, not from a display of it.\n"+
 			"- Never tell the user a note was saved, fixed or updated unless a tool reported success; if a tool failed, say what failed.\n"+
 			"- When a message could be about more than one thing (which item, which list, which job), ask before you write it down.\n"+
 			"- When the user says you are wrong, check again and say what you found. "+
