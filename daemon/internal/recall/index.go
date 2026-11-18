@@ -16,7 +16,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -119,7 +121,9 @@ func (x *Index) desired() (items []item, keep []string) {
 		rel, _ := filepath.Rel(root, dir)
 		top := strings.Split(rel, string(filepath.Separator))[0]
 		scope := "common"
+		scopeDir := root
 		if top != "." {
+			scopeDir = filepath.Join(root, top)
 			if s, ok := memory.NormalizeScope(top); ok {
 				scope = s
 			}
@@ -140,14 +144,29 @@ func (x *Index) desired() (items []item, keep []string) {
 				keep = append(keep, noteKind+":"+p+"#")
 				continue
 			}
+			sub, _ := filepath.Rel(scopeDir, p) // e.g. "horror-movies/log.md"
 			for i, c := range chunkText(string(b), x.cfg.MaxChunkChars) {
 				items = append(items, item{key: fmt.Sprintf("%s:%s#%d", noteKind, p, i), kind: noteKind, scope: scope,
-					label: e.Name(), text: c, hash: x.hashOf(c)})
+					label: noteLabel(sub, c.section), text: c.text, hash: x.hashOf(c.text)})
 			}
 		}
 	}
 	walk(root)
 	return items, keep
+}
+
+// noteLabel names a note chunk the way a reader sees it: the file's path
+// under its scope folder, then the heading chain it sits in ("horror-movies/
+// log.md › ## Watched › ### Undergrad"). Without a heading the path alone is
+// the label; without a path the raw name is.
+func noteLabel(sub, section string) string {
+	if sub == "" {
+		return section
+	}
+	if section == "" {
+		return sub
+	}
+	return sub + " › " + section
 }
 
 // refresh brings the index up to date, embedding only what changed.
@@ -275,7 +294,8 @@ func (x *Index) rerank(ctx context.Context, query string, cands []scored) ([]sco
 	var kept []scored
 	for i, s := range scores {
 		if s >= x.cfg.RerankMinScore {
-			kept = append(kept, scored{s, cands[i].hit})
+			c := cands[i]
+			kept = append(kept, scored{s, c.hit, c.file, c.idx})
 		}
 	}
 	sort.SliceStable(kept, func(i, j int) bool { return kept[i].score > kept[j].score })
@@ -423,24 +443,28 @@ func canon(scope string) string {
 	return "common"
 }
 
-// scored is an index hit.
+// scored is an index hit. file and idx are set for note hits: the note's
+// absolute path and the chunk index the hit came from, so recall can expand
+// the hit to its whole section.
 type scored struct {
 	score float64
 	hit
+	file string
+	idx  int
 }
 
 // search ranks the index against a query vector for the scopes it may see.
 // facts says how many facts the index holds at all.
 func (x *Index) search(ctx context.Context, scope string, qv []float32, kinds ...string) (hits []scored, facts int, err error) {
-	rows, err := x.db.QueryContext(ctx, `SELECT kind, scope, label, text, vec FROM items`)
+	rows, err := x.db.QueryContext(ctx, `SELECT key, kind, scope, label, text, vec FROM items`)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var kind, sc, label, text string
+		var key, kind, sc, label, text string
 		var vec []byte
-		if err := rows.Scan(&kind, &sc, &label, &text, &vec); err != nil {
+		if err := rows.Scan(&key, &kind, &sc, &label, &text, &vec); err != nil {
 			return nil, 0, err
 		}
 		if kind == factKind {
@@ -456,7 +480,19 @@ func (x *Index) search(ctx context.Context, scope string, qv []float32, kinds ..
 		if !ok {
 			continue
 		}
-		hits = append(hits, scored{cosine(qv, decode(vec)), hit{label, text}})
+		s := scored{cosine(qv, decode(vec)), hit{label, text}, "", -1}
+		if kind == noteKind {
+			// key is "<noteKind>:<path>#<index>"; the note's path has no colon
+			// and the index is decimal.
+			if rest, found := strings.CutPrefix(key, noteKind+":"); found {
+				if path, n, ok2 := strings.Cut(rest, "#"); ok2 {
+					if i, err2 := strconv.Atoi(n); err2 == nil {
+						s.file, s.idx = path, i
+					}
+				}
+			}
+		}
+		hits = append(hits, s)
 	}
 	return hits, facts, rows.Err()
 }
@@ -512,12 +548,155 @@ func (x *Index) semantic(ctx context.Context, scope, query string) ([]hit, int, 
 	sort.SliceStable(good, func(i, j int) bool { return good[i].score > good[j].score })
 	good = x.reranked(ctx, query, good)
 	good = good[:min(len(good), max(x.cfg.TopK, 1))]
-	hits := make([]hit, len(good))
-	for i, s := range good {
-		hits[i] = s.hit
-	}
-	return hits, facts, nil
+	return x.expandNoteSections(good), facts, nil
 }
+
+// noteSection is one heading block of a note file.
+type noteSection struct {
+	name  string // heading chain, "" for a preamble with no heading
+	start int    // first line
+	end   int    // one past the last line
+}
+
+// expandNoteSections turns note hits into whole-section hits: every note hit
+// is replaced by the section of its file that holds it (heading blocks cut at
+// "##"-level boundaries, capped), sections deduplicated and ranked by their
+// best hit. Facts pass through. A file whose hit cannot be matched to its
+// section (or that vanished) keeps its chunk hit as it is. The result keeps
+// the hits' order (each file's sections replace its first hit's place) and is
+// bounded: at most three sections per file and at most 2*noteSectionChars
+// runes each.
+func (x *Index) expandNoteSections(good []scored) []hit {
+	// The sections of every hit file, computed once, keyed by path.
+	byFile := map[string][]scored{}
+	order := []string{}
+	for _, s := range good {
+		if s.file == "" {
+			continue
+		}
+		if _, ok := byFile[s.file]; !ok {
+			order = append(order, s.file)
+		}
+		byFile[s.file] = append(byFile[s.file], s)
+	}
+	sections := map[string][]hit{}
+	for _, f := range order {
+		sections[f] = x.noteSections(f, byFile[f][0].hit.label, byFile[f])
+	}
+	// Emit in the hits' order: a fact at its place, a file's sections at the
+	// place of its first hit.
+	seen := map[string]bool{}
+	var out []hit
+	for _, s := range good {
+		if s.file == "" {
+			out = append(out, s.hit)
+			continue
+		}
+		if seen[s.file] {
+			continue
+		}
+		seen[s.file] = true
+		out = append(out, sections[s.file]...)
+	}
+	return out
+}
+
+// noteSections expands a file's hits to their sections: the heading blocks
+// holding each hit, deduplicated, in the hits' order, capped. label is the
+// file's own label (its path and the chunk's heading chain); a hit whose
+// chunk is not in the file's current text stays a raw chunk.
+func (x *Index) noteSections(file, label string, hits []scored) []hit {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		out := make([]hit, len(hits))
+		for i, s := range hits {
+			out[i] = s.hit
+		}
+		return out
+	}
+	lines := normalizeLines(string(b))
+	secs := splitSections(lines)
+	chunks := chunkLines(lines, x.cfg.MaxChunkChars)
+	secOf := make([]int, len(chunks))
+	for i, c := range chunks {
+		secOf[i] = sectionAt(secs, c.start)
+	}
+	byText := map[string]int{} // chunk text -> first chunk index
+	for i, c := range chunks {
+		if _, ok := byText[c.text]; !ok {
+			byText[c.text] = i
+		}
+	}
+	sub := strings.SplitN(label, " › ", 2)[0]
+	var out []hit
+	seen := map[int]bool{}
+	total := 0
+	for _, s := range hits {
+		ci, ok := byText[s.hit.text]
+		if !ok {
+			// A chunk of an older version of the file: keep it as it is.
+			out = append(out, s.hit)
+			continue
+		}
+		si := secOf[ci]
+		if seen[si] {
+			continue
+		}
+		sec := secs[si]
+		text := cutRunes(strings.Join(lines[sec.start:sec.end], "\n"), noteSectionChars)
+		seen[si] = true
+		total += runeLen(text) + runeLen(sec.name)
+		if len(out) >= 3 || total > 2*noteSectionChars {
+			break
+		}
+		name := sub
+		if sec.name != "" {
+			name = sub + " › " + sec.name
+		}
+		out = append(out, hit{name, text})
+	}
+	return out
+}
+
+// splitSections cuts lines into heading blocks: each section starts at a
+// "#"- or "##"-level heading (or line 0) and ends where the next one begins.
+func splitSections(lines []string) []noteSection {
+	if len(lines) == 0 {
+		return nil
+	}
+	var bounds []int
+	for i, l := range lines {
+		m := sectionHeadingRE.FindString(strings.TrimLeft(l, " \t"))
+		if m != "" {
+			bounds = append(bounds, i)
+		}
+	}
+	if len(bounds) == 0 {
+		return []noteSection{{"", 0, len(lines)}}
+	}
+	var out []noteSection
+	start := 0
+	for _, b := range bounds {
+		if b > start {
+			out = append(out, noteSection{headingChain(lines, start), start, b})
+		}
+		start = b
+	}
+	out = append(out, noteSection{headingChain(lines, start), start, len(lines)})
+	return out
+}
+
+// sectionAt is the index of the section holding line i.
+func sectionAt(sections []noteSection, i int) int {
+	for k, s := range sections {
+		if i >= s.start && i < s.end {
+			return k
+		}
+	}
+	return len(sections) - 1
+}
+
+var sectionHeadingRE = regexp.MustCompile(`^#{1,2}[ \t]+`)
 
 // reranked is good (best first by cosine) as the reranker orders its first
 // RerankCandidates, when a reranker is configured. Without one, while it

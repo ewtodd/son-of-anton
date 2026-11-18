@@ -18,6 +18,7 @@ func (editTool) Schema() provider.Tool {
 		Description: "Change part of a file by replacing one piece of text with another. " +
 			"The file must have been read with Read in this session, and the edit is refused if it changed on disk since. " +
 			"old_string has to occur exactly once: include enough of the lines around it to make it unique, or set replace_all to change every occurrence. " +
+			"old_string must start and end on a word boundary: a match that cuts a longer word is refused (take the whole word, or more of the line). " +
 			"Copy old_string from the file's text, without the line numbers Read puts in front of each line. " +
 			"When nothing matches exactly, a match that differs only in indentation or runs of spaces is accepted. " +
 			"An empty old_string creates a file that does not exist yet. The reply is a unified diff of the change.",
@@ -93,8 +94,11 @@ func (editTool) Run(ctx context.Context, env *Env, args json.RawMessage) (string
 		return writeEdit(ctx, env, abs, path, check.Protected, text, a.NewString)
 	}
 
-	spans, strategy := findMatches(text, a.OldString)
+	spans, strategy, unsafeLine := findMatches(text, a.OldString)
 	if len(spans) == 0 {
+		if unsafeLine > 0 {
+			return errorResult(fmt.Sprintf("old_string occurs in %s only inside a larger word (line %d); take the whole word, or more of the surrounding text", path, unsafeLine)), nil
+		}
 		// An already-applied edit is a no-op success.
 		if len(a.NewString) >= 8 && strings.Contains(text, a.NewString) {
 			return jsonResult(map[string]any{"success": true, "no_change": true, "resolved_path": abs})
@@ -105,6 +109,9 @@ func (editTool) Run(ctx context.Context, env *Env, args json.RawMessage) (string
 		lines := matchLineNumbers(text, spans)
 		return errorResult(fmt.Sprintf("old_string occurs %d times in %s (lines %s); include more of the surrounding text so only one matches, or set replace_all",
 			len(spans), path, strings.Join(lines, ", "))), nil
+	}
+	if unsafeLine > 0 && a.ReplaceAll {
+		return errorResult(fmt.Sprintf("replace_all would also match inside a larger word (line %d); take the whole word or add more context", unsafeLine)), nil
 	}
 	if len(spans) > 1 && a.ReplaceAll && strategy != "exact" {
 		return errorResult("replace_all needs an exact match; this one only matched loosely, so add context and replace a single block"), nil
@@ -140,19 +147,70 @@ func strategyHint() string {
 }
 
 // findMatches locates old in text with the three strategies, in order:
-// exact substring, line-trimmed (re-indented), whitespace-normalized.
-// It returns the matched spans and the strategy that found them.
-func findMatches(text, old string) ([]span, string) {
+// exact substring, line-trimmed (re-indented), whitespace-normalized. It
+// returns the matched spans, the strategy that found them, and the first line
+// where old matched only inside a larger word (0 when none): a partial-word
+// match is refused, because replacing it silently corrupts the word around
+// its matched part.
+func findMatches(text, old string) ([]span, string, int) {
+	type attempt struct {
+		spans []span
+		ok    bool
+		name  string
+	}
+	var attempts []attempt
 	if s := exactSpans(text, old); len(s) > 0 {
-		return s, "exact"
+		attempts = append(attempts, attempt{s, true, "exact"})
 	}
 	if s, ok := lineTrimmedSpans(text, old); ok && len(s) > 0 {
-		return s, "line-trimmed"
+		attempts = append(attempts, attempt{s, true, "line-trimmed"})
 	}
 	if s, ok := whitespaceSpans(text, old); ok && len(s) > 0 {
-		return s, "whitespace-normalized"
+		attempts = append(attempts, attempt{s, true, "whitespace-normalized"})
 	}
-	return nil, "none"
+	for _, a := range attempts {
+		ok, bad := wordSafeSpans(text, a.spans)
+		if len(ok) > 0 {
+			return ok, a.name, 0
+		}
+		if bad > 0 {
+			return nil, a.name, bad
+		}
+	}
+	return nil, "none", 0
+}
+
+// wordSafeSpans keeps the spans that start and end on a word boundary (the
+// neighbor of each end is not a letter, digit or underscore), returning the
+// first line number of a span that is not.
+func wordSafeSpans(text string, spans []span) ([]span, int) {
+	var out []span
+	bad := 0
+	for _, sp := range spans {
+		if boundsWord(text, sp) {
+			out = append(out, sp)
+			continue
+		}
+		if bad == 0 {
+			bad = strings.Count(text[:sp.start], "\n") + 1
+		}
+	}
+	return out, bad
+}
+
+// boundsWord reports whether sp starts and ends at a word boundary.
+func boundsWord(text string, sp span) bool {
+	if sp.start > 0 && isWordByte(text[sp.start-1]) {
+		return false
+	}
+	if sp.end < len(text) && isWordByte(text[sp.end]) {
+		return false
+	}
+	return true
+}
+
+func isWordByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 // exactSpans finds every occurrence of old in text.

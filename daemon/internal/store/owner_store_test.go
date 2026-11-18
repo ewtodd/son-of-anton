@@ -67,6 +67,7 @@ func TestWorkersBecomeSessionsWithAnOwner(t *testing.T) {
 		`UPDATE sessions SET kind = 'worker' WHERE id = '` + worker.ID + `'`,
 		`UPDATE schema_version SET version = 16`,
 		`DROP TABLE IF EXISTS media`,
+		`DROP TABLE IF EXISTS read_stamps`,
 		`ALTER TABLE messages DROP COLUMN images`,
 		`ALTER TABLE queue DROP COLUMN images`,
 	}
@@ -78,7 +79,7 @@ func TestWorkersBecomeSessionsWithAnOwner(t *testing.T) {
 	db.Close()
 
 	st = open(t, path)
-	if v, err := st.SchemaVersion(); err != nil || v != 19 {
+	if v, err := st.SchemaVersion(); err != nil || v != 20 {
 		t.Fatalf("schema version %d, %v", v, err)
 	}
 	got, err := st.Session(ctx, worker.ID)

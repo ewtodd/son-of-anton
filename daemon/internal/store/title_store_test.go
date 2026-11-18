@@ -32,6 +32,7 @@ func TestARetitledRowBecomesUser(t *testing.T) {
 	for _, q := range []string{
 		`UPDATE sessions SET title = 'Named by its model', title_source = 'retitle' WHERE id = '` + s.ID + `'`,
 		`UPDATE schema_version SET version = 18`,
+		`DROP TABLE IF EXISTS read_stamps`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
@@ -40,7 +41,7 @@ func TestARetitledRowBecomesUser(t *testing.T) {
 	db.Close()
 
 	st = open(t, path)
-	if v, err := st.SchemaVersion(); err != nil || v != 19 {
+	if v, err := st.SchemaVersion(); err != nil || v != 20 {
 		t.Fatalf("schema version %d, %v", v, err)
 	}
 	got, err := st.Session(ctx, s.ID)

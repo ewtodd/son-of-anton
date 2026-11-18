@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+
+	"github.com/ewtodd/son-of-anton/daemon/internal/store"
 )
 
 // readStamp records which file Read saw and which of its lines, so Write and
@@ -122,6 +124,46 @@ func (s *State) setStamp(path string, st readStamp) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stamps[path] = st
+}
+
+// Stamps returns the session's read stamps in the store's shape, for saving
+// when the session closes (a chat unloads between turns).
+func (s *State) Stamps() map[string]store.ReadStamp {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]store.ReadStamp, len(s.stamps))
+	for p, st := range s.stamps {
+		out[p] = store.ReadStamp{Path: p, Size: st.size, Sum: append([]byte(nil), st.sum[:]...),
+			Lines: st.lines, Seen: toSeen(st.seen), Whole: st.whole}
+	}
+	return out
+}
+
+// RestoreStamps sets the session's read stamps from the store's record, taken
+// when the session was last running (a chat unloads its session between turns).
+func (s *State) RestoreStamps(records map[string]store.ReadStamp) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, st := range records {
+		if len(st.Sum) != sha256.Size {
+			continue
+		}
+		var sum [sha256.Size]byte
+		copy(sum[:], st.Sum)
+		seen := make([]lineRange, len(st.Seen))
+		for i, r := range st.Seen {
+			seen[i] = lineRange{r.Start, r.End}
+		}
+		s.stamps[st.Path] = readStamp{size: st.Size, sum: sum, lines: st.Lines, seen: seen, whole: st.Whole}
+	}
+}
+
+func toSeen(rs []lineRange) []store.SeenRange {
+	out := make([]store.SeenRange, len(rs))
+	for i, r := range rs {
+		out[i] = store.SeenRange{Start: r.start, End: r.end}
+	}
+	return out
 }
 
 // mergeRange inserts r into rs, which is sorted and disjoint, joining the

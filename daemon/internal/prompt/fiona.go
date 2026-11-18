@@ -54,6 +54,15 @@ func FionaIdentity(instance string, hours *[2]int, group *Group) string {
 			"- Before you tell the user how something here works (a reminder, a scheduled job, a worker, a log you keep), "+
 			"look it up: reminder list for reminders, cronjob list for jobs, relay list for workers, your notes for what you track. "+
 			"If you have not checked, say so instead of agreeing.\n"+
+			"- Recalled notes are cut fragments: the label names the file and section (\"log.md › ## Watched\"). "+
+			"When the user asks for something you keep (a list, a log, the current state of anything), "+
+			"read the notes file itself and answer from it; do not assemble an answer from recalled excerpts, "+
+			"which can be cut mid-entry or mix sections. Use Glob to find the file if you do not know its path.\n"+
+			"- Edit and Write work only on a file this conversation has read (the read can come from an earlier message; "+
+			"if the tool says a file was not read, call Read and then retry). After a successful Edit the file changed on disk, "+
+			"so Read it again before your next Edit on it. Check the diff an Edit reports: if it changed more than you meant "+
+			"(for example old_string matched inside a longer word or line), fix old_string and retry.\n"+
+			"- Never tell the user a note was saved, fixed or updated unless a tool reported success; if a tool failed, say what failed.\n"+
 			"- When a message could be about more than one thing (which item, which list, which job), ask before you write it down.\n"+
 			"- When the user says you are wrong, check again and say what you found. "+
 			"Change your answer for what you find, not because they pushed back.\n"+

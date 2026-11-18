@@ -605,6 +605,22 @@ func TestEditNeedsAReadAndAnUnchangedFile(t *testing.T) {
 	}
 }
 
+func TestEditRefusesAMatchThatCutsAWord(t *testing.T) {
+	f := setup(t, nil)
+	p := f.write(t, "g.txt", "- The Ritual (2017, David Bruckner) — **watched twice, \"solid\"**\n- Gerald's Game (2017, Mike Flanagan)\n- Perfect Blue (1997, Satoshi Kon)\n")
+	f.readThen(t, "g.txt")
+	// The regression from the movie log: this old_string only matches inside
+	// "Gerald's Game"; the edit must be refused, not mangle the file.
+	r := f.call(t, "Edit", map[string]any{"file_path": "g.txt", "old_string": "rald's Game (2017, Mike Flanagan)", "new_string": "Gerald's Game (2017, Mike Flanagan)"})
+	if !strings.Contains(str(r, "error"), "only inside a larger word") || read(t, p) != "- The Ritual (2017, David Bruckner) — **watched twice, \"solid\"**\n- Gerald's Game (2017, Mike Flanagan)\n- Perfect Blue (1997, Satoshi Kon)\n" {
+		t.Fatalf("a partial-word edit = %v; file %q", r, read(t, p))
+	}
+	// The whole entry on its boundary still edits.
+	if r := f.call(t, "Edit", map[string]any{"file_path": "g.txt", "old_string": "- Gerald's Game (2017, Mike Flanagan)", "new_string": "- Gerald's Game (2017, Mike Flanagan) — watched twice"}); r["success"] != true || !strings.Contains(read(t, p), "— watched twice") {
+		t.Fatalf("the whole entry edit = %v; file %q", r, read(t, p))
+	}
+}
+
 func TestEditRefusesAmbiguityUnlessReplaceAll(t *testing.T) {
 	f := setup(t, nil)
 	p := f.write(t, "d.txt", "x = 1\ny = 2\nx = 1\n")

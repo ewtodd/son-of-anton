@@ -85,7 +85,7 @@ func (x *Index) IndexMessages(ctx context.Context, sessionID, scope string, rows
 		}
 		for i, c := range chunkText(m.Content, x.cfg.MaxChunkChars) {
 			want = append(want, item{key: messageKey(sessionID, m.Seq, i), kind: messageKind, scope: scope,
-				label: fmt.Sprintf("session %s message %d", sessionID, m.Seq), text: c, hash: x.hashOf(c)})
+				label: fmt.Sprintf("session %s message %d", sessionID, m.Seq), text: c.text, hash: x.hashOf(c.text)})
 		}
 	}
 	if len(want) == 0 {

@@ -49,3 +49,30 @@ func TestUnifiedDiffKeepsDistantChangesSeparate(t *testing.T) {
 		t.Fatalf("want two hunks:\n%s", d)
 	}
 }
+
+// The regression that corrupted the movie log: "rald's Game (2017, Mike
+// Flanagan)" occurs inside "Gerald's Game (2017, Mike Flanagan)". An edit
+// must refuse a match that cuts a longer word, so the file is not silently
+// mangled into "GeGerald's Game".
+func TestFindMatchesRefusesPartialWord(t *testing.T) {
+	text := "- The Ritual (2017, David Bruckner) — **watched twice, \"solid\"**\n- Gerald's Game (2017, Mike Flanagan)\n- Perfect Blue (1997, Satoshi Kon) — anime\n"
+	spans, strategy, bad := findMatches(text, "rald's Game (2017, Mike Flanagan)")
+	if len(spans) != 0 || bad != 2 {
+		t.Fatalf("want no match and line 2 as the unsafe line, got %v, %q, %d", spans, strategy, bad)
+	}
+	// The whole word on a boundary still matches.
+	spans, _, bad = findMatches(text, "Gerald's Game (2017, Mike Flanagan)")
+	if len(spans) != 1 || bad != 0 {
+		t.Fatalf("the whole entry should match once, got %v, %d", spans, bad)
+	}
+	// A word that stands alone matches; one inside another word does not.
+	text = "one two\nsomeone\n"
+	spans, _, bad = findMatches(text, "one")
+	if len(spans) != 1 || bad != 0 {
+		t.Fatalf("standalone 'one' should match, got %v, %d", spans, bad)
+	}
+	spans, _, bad = findMatches(text, "o")
+	if len(spans) != 0 || bad != 1 {
+		t.Fatalf("'o' cuts words everywhere; want refused with line 1, got %v, %d", spans, bad)
+	}
+}

@@ -247,6 +247,19 @@ UPDATE schema_version SET version = 18;`,
 	// is silent on them and an llm title cannot take the name back.
 	`UPDATE sessions SET title_source = 'user' WHERE title_source = 'retitle';
 UPDATE schema_version SET version = 19;`,
+	// v20: per-session read stamps, so Read-before-Edit survives a chat's
+	// session being unloaded between turns.
+	`CREATE TABLE read_stamps (
+	session_id TEXT NOT NULL REFERENCES sessions(id),
+	path       TEXT NOT NULL,
+	size       INTEGER NOT NULL,
+	sum        BLOB NOT NULL,
+	lines      INTEGER NOT NULL,
+	seen       TEXT NOT NULL,
+	whole      INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (session_id, path)
+);
+UPDATE schema_version SET version = 20;`,
 }
 
 func migrate(db *sql.DB) error {

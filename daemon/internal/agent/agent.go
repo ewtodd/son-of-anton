@@ -189,7 +189,12 @@ func (r *Runner) NewSession(ctx context.Context, kind, cwd string) (*Session, er
 	if err != nil {
 		return nil, err
 	}
-	return r.newSession(sess.ID, text, cwd)
+	s, err := r.newSession(sess.ID, text, cwd)
+	if err != nil {
+		return nil, err
+	}
+	r.wireStamps(ctx, s)
+	return s, nil
 }
 
 // Resume loads a stored session and its prompt. The Prompt builder is called
@@ -213,7 +218,21 @@ func (r *Runner) Resume(ctx context.Context, id string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.wireStamps(ctx, s)
 	return s, nil
+}
+
+// wireStamps gives a fresh session the read stamps its store holds: a chat's
+// session is unloaded between turns and recreated for the next message, so
+// without this a read in one message would not count for an edit in the next.
+// Close saves them again.
+func (r *Runner) wireStamps(ctx context.Context, s *Session) {
+	if r.Store == nil {
+		return
+	}
+	if records, err := r.Store.ReadStamps(ctx, s.id); err == nil {
+		s.state.RestoreStamps(records)
+	}
 }
 
 // fillPrompt builds and stores the prompt of a session stored without one and
@@ -418,7 +437,15 @@ func (s *Session) OnStep(f func()) { s.onStep = f }
 func (s *Session) ID() string { return s.id }
 
 // Close releases the session's tool state, killing its background processes.
-func (s *Session) Close() error { return s.state.Close() }
+func (s *Session) Close() error {
+	// A chat's session is unloaded between turns; save the read stamps while
+	// the state is still here, so a read in one message counts for an edit in
+	// the next.
+	if s.runner.Store != nil {
+		_ = s.runner.Store.PutReadStamps(context.Background(), s.id, s.state.Stamps())
+	}
+	return s.state.Close()
+}
 
 // Notify queues a completion notice (a background subagent finished) for the
 // session.
