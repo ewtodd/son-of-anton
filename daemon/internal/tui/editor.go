@@ -47,7 +47,13 @@ func (m *model) editor() tea.Cmd {
 	done := func(runErr error) tea.Msg {
 		raw, readErr := os.ReadFile(path)
 		_ = os.Remove(path)
-		return applyMsg{func(m *model) tea.Cmd { return m.edited(draft, string(raw), runErr, readErr) }}
+		return applyMsg{func(m *model) tea.Cmd {
+			// bubbletea releases the terminal for the editor and does not
+			// re-enable mouse tracking when it comes back; from then on a
+			// terminal like kitty fakes the wheel as arrow keys, and the
+			// chat box walks the history. Give the mouse back.
+			return tea.Batch(m.edited(draft, string(raw), runErr, readErr), tea.EnableMouseCellMotion)
+		}}
 	}
 	m.editing = true
 	if !m.app.interactive { // no terminal to hand over (the tests)

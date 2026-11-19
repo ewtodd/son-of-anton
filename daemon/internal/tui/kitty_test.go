@@ -291,3 +291,52 @@ func TestTheProtocolIsOffWhileTheEditorRuns(t *testing.T) {
 		at += i + len(want)
 	}
 }
+
+// bubbletea releases the terminal for the editor and does not re-enable
+// mouse tracking when it comes back; without the re-enable a terminal like
+// kitty fakes the wheel as arrow keys for the rest of the session, and the
+// chat box walks the history.
+func TestTheMouseIsBackWhenTheEditorFinishes(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	editor := filepath.Join(dir, "editor.sh")
+	if err := os.WriteFile(editor, []byte("#!/bin/sh\ntouch "+marker+"\n: > \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VISUAL", editor)
+	term := openTerminal(t, newDaemon(t, fakellm.New(t)))
+	waitScreen(t, term.App, "/help")
+	term.Press("ctrl+g")
+	deadline := time.Now().Add(waitFor)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the editor did not run")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Wait for the mouse to come back before quitting, so the order is
+	// settled.
+	const mouseOn, mouseOff = "\x1b[?1002h", "\x1b[?1002l"
+	for {
+		if strings.Count(term.output(), mouseOn) == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the mouse was not re-enabled after the editor, output:\n%q", term.output())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	term.Press("ctrl+q")
+	waitExit(t, term.App)
+
+	out := term.output()
+	if n := strings.Count(out, mouseOff); n != 2 {
+		t.Fatalf("the mouse was disabled %d times, want 2 (the editor and the exit)", n)
+	}
+	if i := strings.LastIndex(out, mouseOn); i < strings.LastIndex(out, protocolOn) {
+		t.Fatalf("the mouse was re-enabled before the editor came back:\n%q", out)
+	}
+}
