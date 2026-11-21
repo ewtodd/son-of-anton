@@ -518,7 +518,12 @@ matches) and starts the same cooldown.
 - The chat is relay-only on every instance: `relay`, `memory`,
   `session_search`, `AskUserQuestion`, `cronjob`, `reminder`, `TodoWrite`,
   `WebSearch`, `WebFetch`, and `Read` / `Write` / `Edit` / `Glob` / `Grep`
-  confined to `notes/gateway/`. No Bash, no execute_code, no MCP, no `Task`.
+  confined to `notes/gateway/` and `[gateway] shared_folders`. No Bash, no
+  execute_code, no MCP, no `Task`. A shared folder is read and written as the
+  notes folder is, and fiona's block (and a Signal job's) names it where it names
+  the notes folder as the limit (owner, 2026-11-20: `/srv/household` was meant
+  for house and play alike, and the notes-only rule had cut both chats and
+  house's workout jobs off from it). Recall does not index it.
   Signal-bound cron gets the same set less `AskUserQuestion`, `relay`, `cronjob` and
   `reminder`,
   runs in the notes folder whatever its workdir, and keeps the cron model, so

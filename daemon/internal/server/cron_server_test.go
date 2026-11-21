@@ -235,7 +235,7 @@ func TestASignalJobHasTheChatsLimits(t *testing.T) {
 	if got := strings.Join(names, ","); got != "Edit,Glob,Grep,Read,TodoWrite,WebFetch,WebSearch,Write,memory,session_search" {
 		t.Fatalf("a Signal job's tools = %s", got)
 	}
-	if sys := system(sig); !strings.HasPrefix(sys, prompt.SignalJobIdentity()+"\n\nYour notes folder: "+notes) || strings.Contains(sys, prompt.Guidance) {
+	if sys := system(sig); !strings.HasPrefix(sys, prompt.SignalJobIdentity(nil)+"\n\nYour notes folder: "+notes) || strings.Contains(sys, prompt.Guidance) {
 		t.Fatalf("a Signal job's prompt:\n%.900s", sys)
 	}
 	if b, err := os.ReadFile(filepath.Join(notes, "chores.md")); err != nil || string(b) != "tally" {
@@ -254,7 +254,7 @@ func TestASignalJobHasTheChatsLimits(t *testing.T) {
 	if got := strings.Join(names, ","); got != "Edit,Glob,Grep,Read,TodoWrite,WebFetch,WebSearch,Write,memory,session_search" {
 		t.Fatalf("a job set up in a chat that delivers nowhere has tools %s; it keeps the chat's limits", got)
 	}
-	if sys := system(quiet); !strings.HasPrefix(sys, prompt.SignalJobIdentity()+"\n\nYour notes folder: "+notes) {
+	if sys := system(quiet); !strings.HasPrefix(sys, prompt.SignalJobIdentity(nil)+"\n\nYour notes folder: "+notes) {
 		t.Fatalf("a quiet chat job's prompt:\n%.400s", sys)
 	}
 

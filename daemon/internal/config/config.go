@@ -111,6 +111,10 @@ type Config struct {
 		GroupSessionsPerUser *bool  `toml:"group_sessions_per_user"`
 		DailyReset           *bool  `toml:"daily_reset"`
 		DailyResetHour       *int   `toml:"daily_reset_hour"`
+		// SharedFolders are folders a chat's file tools (and a Signal-bound
+		// cron job's) may read and write beside the notes folder: one a
+		// house instance and a personal one both keep household files in.
+		SharedFolders []string `toml:"shared_folders"`
 	} `toml:"gateway"`
 	Physics struct {
 		WorkspaceRoot string `toml:"workspace_root"`
@@ -526,6 +530,24 @@ func (c *Config) Getenv(name string) string { return c.envKey(name) }
 // ChatModel is the model for chat sessions: gateway.model when set, else the
 // default model ("").
 func (c *Config) ChatModel() string { return strings.TrimSpace(c.Gateway.Model) }
+
+// SharedFolders is [gateway] shared_folders cleaned: absolute paths only, in
+// order, without duplicates. warns names each entry left out, and why.
+func (c *Config) SharedFolders() (dirs []string, warns []string) {
+	seen := map[string]bool{}
+	for _, d := range c.Gateway.SharedFolders {
+		d = strings.TrimSpace(d)
+		switch {
+		case d == "":
+		case !filepath.IsAbs(d):
+			warns = append(warns, fmt.Sprintf("[gateway] shared_folders: %q is not an absolute path; left out", d))
+		case !seen[filepath.Clean(d)]:
+			seen[filepath.Clean(d)] = true
+			dirs = append(dirs, filepath.Clean(d))
+		}
+	}
+	return dirs, warns
+}
 
 // ChatResetHour is the local hour at which a chat's conversation starts over:
 // gateway.daily_reset (default true) at gateway.daily_reset_hour (default 4).

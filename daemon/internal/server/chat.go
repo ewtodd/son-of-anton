@@ -507,9 +507,20 @@ func chatAnswers(text string, choices []string, multi bool) []string {
 
 // ---- chat sessions (the server's side) ----
 
-// notesDir is fiona's notes folder: the chat's directory and the only place
-// its file tools reach. Recall indexes it in the gateway scope.
+// notesDir is fiona's notes folder: the chat's directory, and with the
+// shared folders the only place its file tools reach. Recall indexes it in
+// the gateway scope.
 func (s *Server) notesDir() string { return filepath.Join(s.opt.Home, "notes", "gateway") }
+
+// sharedFolders is [gateway] shared_folders: folders a chat's file tools, and
+// a Signal-bound cron job's, read and write beside the notes folder.
+func (s *Server) sharedFolders() []string {
+	dirs, warns := s.cfg.SharedFolders()
+	for _, w := range warns {
+		log.Printf("signal: %s", w)
+	}
+	return dirs
+}
 
 // chatRunner makes r a chat session's runner: gateway scope, the chat
 // toolset, file tools confined to the notes folder, fiona's identity, recall
@@ -518,6 +529,7 @@ func (s *Server) notesDir() string { return filepath.Join(s.opt.Home, "notes", "
 func (s *Server) chatRunner(r *agent.Runner, stamp string, l *live) {
 	r.Scope, r.Chat, r.MemoryScope = "gateway", stamp, "gateway"
 	r.Policy.Confine = s.notesDir()
+	r.Policy.WriteAlso = s.sharedFolders()
 	r.Policy.ReadAlso = []string{filepath.Join(s.opt.Home, "cache", "signal")}
 	r.Cron = s.cronHost(stamp)
 	if chat := s.cfg.ChatModel(); chat != "" && chat != s.cfg.Model.Default && r.Model == chat {
@@ -552,7 +564,7 @@ func (s *Server) chatRunner(r *agent.Runner, stamp string, l *live) {
 		}
 		res, err := prompt.Build(prompt.Options{
 			Home: s.opt.Home, Cwd: ss.Cwd, Scope: "gateway", Memory: true, Signal: true,
-			Identity: prompt.FionaIdentity(strings.TrimSpace(s.cfg.Daemon.Instance), hours, s.chatGroup(ctx, stamp)),
+			Identity: prompt.FionaIdentity(strings.TrimSpace(s.cfg.Daemon.Instance), hours, s.chatGroup(ctx, stamp), s.sharedFolders()),
 			Now:      time.Now().In(prompt.LocalZone()), RulesCharLimit: s.cfg.Memory.RulesCharLimit,
 		})
 		for _, w := range res.Warnings {

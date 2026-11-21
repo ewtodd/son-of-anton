@@ -6,10 +6,24 @@ import (
 )
 
 // signalReach is what the Signal side (a chat, a cron job that delivers to
-// one) can and cannot reach.
-const signalReach = "- Your file tools reach only your notes folder. Nothing else on this machine is in your reach " +
-	"(repositories, /etc/nixos, other folders), and you cannot run commands.\n" +
-	"- WebSearch and WebFetch read the internet. They cannot see this machine."
+// one) can and cannot reach, and outside names what lies beyond it ("your
+// notes", or "your notes and the shared folder"). shared is [gateway]
+// shared_folders; without any the text is what it always was.
+func signalReach(shared []string) (reach, outside string) {
+	where, outside := "only your notes folder", "your notes"
+	switch len(shared) {
+	case 0:
+	case 1:
+		where = "only your notes folder and the shared folder " + shared[0] + ", which other son-of-anton instances on this machine also use"
+		outside = "your notes and the shared folder"
+	default:
+		where = "only your notes folder and the shared folders " + andList(shared) + ", which other son-of-anton instances on this machine also use"
+		outside = "your notes and the shared folders"
+	}
+	return "- Your file tools reach " + where + ". Nothing else on this machine is in your reach " +
+		"(repositories, /etc/nixos, other folders), and you cannot run commands.\n" +
+		"- WebSearch and WebFetch read the internet. They cannot see this machine.", outside
+}
 
 // FionaIdentity is a chat session's identity and guidance: fiona, the front
 // desk of the instance named instance ("" leaves the name out). hours is the
@@ -17,18 +31,20 @@ const signalReach = "- Your file tools reach only your notes folder. Nothing els
 // when the chat is a group session every member shares, whose messages name
 // their senders (the server's fromSender). It stands in for both the default
 // identity and the coding guidance (Options.Signal), so it carries the
-// send-time rule itself.
-func FionaIdentity(instance string, hours *[2]int, group *Group) string {
+// send-time rule itself. shared is [gateway] shared_folders, folders her file
+// tools reach beside the notes folder.
+func FionaIdentity(instance string, hours *[2]int, group *Group, shared []string) string {
 	of := "of this son-of-anton instance"
 	if instance != "" {
 		of += " (" + instance + ")"
 	}
+	reach, outside := signalReach(shared)
 	paras := []string{
 		"You are fiona, the front desk " + of + ". You talk with the user over Signal. " +
 			"You answer questions, look things up on the web, read images, keep notes in your notes folder, " +
 			"and remember things with the memory tool.",
-		"What you can and cannot do:\n" + signalReach + "\n" +
-			"- Anything that needs a command, or a file outside your notes, goes to a son-of-anton worker through the relay tool.",
+		"What you can and cannot do:\n" + reach + "\n" +
+			"- Anything that needs a command, or a file outside " + outside + ", goes to a son-of-anton worker through the relay tool.",
 		"Handing work to a worker:\n" +
 			"- Send the user's request in their own words. A worker cannot see your memory or your notes, " +
 			"so if something there would help, add it after their words, marked as context from you.\n" +
@@ -97,12 +113,14 @@ func FionaIdentity(instance string, hours *[2]int, group *Group) string {
 // to a Signal chat: the default identity, then the Signal side's limits in
 // place of the coding guidance (Options.Signal). Such a job runs on the cron
 // model, not fiona's, so it is not fiona; it has a chat's tools without
-// relay or AskUserQuestion, and nobody to ask.
-func SignalJobIdentity() string {
+// relay or AskUserQuestion, and nobody to ask. shared is [gateway]
+// shared_folders, as for FionaIdentity.
+func SignalJobIdentity(shared []string) string {
+	reach, outside := signalReach(shared)
 	return strings.Join([]string{
 		DefaultIdentity,
-		"This run's reply goes to a Signal chat. What you can and cannot do:\n" + signalReach + "\n" +
-			"- When the job needs a command, or a file outside your notes, say in your reply that it cannot be done from here, and what it needs.",
+		"This run's reply goes to a Signal chat. What you can and cannot do:\n" + reach + "\n" +
+			"- When the job needs a command, or a file outside " + outside + ", say in your reply that it cannot be done from here, and what it needs.",
 		"Time: the job's message starts with the time this run began, in the form " + SentTimeRule + ". " +
 			"Use it for \"today\" and for every date you write in your notes.",
 		"Replies: lead with what matters and keep it short; it is read on a phone. Put independent tool calls in one message.",

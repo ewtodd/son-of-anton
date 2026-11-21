@@ -22,6 +22,10 @@ type Policy struct {
 	Confine string
 	// ReadAlso lists directories a confined policy may read but never write.
 	ReadAlso []string
+	// WriteAlso lists directories a confined policy may read and write as it
+	// does Confine ([gateway] shared_folders: a folder chats of several
+	// instances share).
+	WriteAlso []string
 	// ConfineNote, when set, replaces the notes-folder wording of a refusal: it
 	// names every root the confined tools reach (the sandboxed session).
 	ConfineNote string
@@ -93,11 +97,23 @@ var procReadFiles = map[string]bool{
 	"auxv": true, "pagemap": true, "cmdline": true,
 }
 
-// CheckConfined reports why abs is outside Confine and ReadAlso; nil when it
-// is inside one or nothing is confined.
+// CheckConfined reports why abs is outside Confine, WriteAlso and ReadAlso;
+// nil when it is inside one or nothing is confined.
 func (p Policy) CheckConfined(abs string) error {
-	err := p.checkIn(abs, p.Confine)
+	err := p.checkWritable(abs)
 	for _, d := range p.ReadAlso {
+		if err != nil && p.checkIn(abs, d) == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+// checkWritable reports why abs is outside Confine and WriteAlso, the roots a
+// confined policy writes; nil when it is inside one or nothing is confined.
+func (p Policy) checkWritable(abs string) error {
+	err := p.checkIn(abs, p.Confine)
+	for _, d := range p.WriteAlso {
 		if err != nil && p.checkIn(abs, d) == nil {
 			return nil
 		}
@@ -122,6 +138,10 @@ func (p Policy) checkIn(abs, confine string) error {
 	if !under(real, dir) {
 		if p.ConfineNote != "" {
 			return fmt.Errorf("%s is outside the paths this session may use (%s)", abs, p.ConfineNote)
+		}
+		if len(p.WriteAlso) > 0 {
+			return fmt.Errorf("%s is outside the notes folder (%s) and the shared folders (%s); the chat's file tools reach only those.",
+				abs, p.Confine, strings.Join(p.WriteAlso, ", "))
 		}
 		return fmt.Errorf("%s is outside the notes folder (%s); the chat's file tools reach only it.", abs, p.Confine)
 	}
@@ -166,7 +186,7 @@ var (
 // CheckWrite classifies a write target: denied (never), protected (approval
 // in every mode), or ordinary.
 func (p Policy) CheckWrite(abs string) WriteCheck {
-	if err := p.checkIn(abs, p.Confine); err != nil {
+	if err := p.checkWritable(abs); err != nil {
 		return WriteCheck{Denied: true, Reason: err.Error()}
 	}
 	if err := p.CheckRead(abs); err != nil {

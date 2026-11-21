@@ -40,7 +40,7 @@ func TestPerMemberGroupSessionsAreUnlabelled(t *testing.T) {
 	if got := lastUser(t, fake, 0); got != "hi" {
 		t.Fatalf("a member's own session labelled the message: %q", got)
 	}
-	if sys := systemPrompt(t, fake, 0); !strings.HasPrefix(sys, prompt.FionaIdentity("", nil, nil)) {
+	if sys := systemPrompt(t, fake, 0); !strings.HasPrefix(sys, prompt.FionaIdentity("", nil, nil, nil)) {
 		t.Fatalf("a per-member session's prompt changed:\n%.600s", sys)
 	}
 }

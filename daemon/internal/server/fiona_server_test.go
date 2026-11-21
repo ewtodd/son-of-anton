@@ -4,14 +4,17 @@ package server_test
 // (daemon/phases/05b-fiona.md).
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/ewtodd/son-of-anton/daemon/internal/cron"
 	"github.com/ewtodd/son-of-anton/daemon/internal/fakellm"
 	"github.com/ewtodd/son-of-anton/daemon/internal/prompt"
+	"github.com/ewtodd/son-of-anton/daemon/internal/signal"
 )
 
 func systemPrompt(t *testing.T, fake *fakellm.Server, i int) string {
@@ -31,7 +34,7 @@ func TestFionaIsTheChatsIdentity(t *testing.T) {
 	sys := systemPrompt(t, fake, 0)
 	// fiona's block, then her notes folder; neither the default identity nor
 	// the coding guidance appears in a chat.
-	want := prompt.FionaIdentity("play", nil, nil) + "\n\nYour notes folder: " + filepath.Join(r.h.home, "notes", "gateway")
+	want := prompt.FionaIdentity("play", nil, nil, nil) + "\n\nYour notes folder: " + filepath.Join(r.h.home, "notes", "gateway")
 	if !strings.HasPrefix(sys, want) {
 		t.Fatalf("the chat's identity:\n%.900s", sys)
 	}
@@ -48,7 +51,7 @@ func TestWorkerHoursAndNoInstanceName(t *testing.T) {
 	r.say("hello")
 	r.reply(sigGroup, "hi")
 	sys := systemPrompt(t, fake, 0)
-	if !strings.HasPrefix(sys, prompt.FionaIdentity("", &[2]int{20, 7}, nil)+"\n\n") {
+	if !strings.HasPrefix(sys, prompt.FionaIdentity("", &[2]int{20, 7}, nil, nil)+"\n\n") {
 		t.Fatalf("hours and no instance:\n%.900s", sys)
 	}
 }
@@ -108,5 +111,58 @@ func TestFionaFallsBackWhenHerModelIsDown(t *testing.T) {
 	r.reply(sigGroup, "fiona is back")
 	if m := str(fake.Request(5), "model"); m != "fiona-model" {
 		t.Fatalf("the next request tries fiona's route first: %q", m)
+	}
+}
+
+// [gateway] shared_folders: a chat's file tools, and a Signal-bound cron
+// job's, read and write a shared folder as they do the notes folder, and
+// their prompts say so; outside both stays out of reach.
+func TestSharedFoldersReachChatsAndSignalJobs(t *testing.T) {
+	t.Setenv("SON_OF_ANTON_TIMEZONE", "UTC")
+	shared := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(shared, "workouts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shared, "workouts", "log.md"), []byte("leg day\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	escape := filepath.Join(t.TempDir(), "escape.md")
+	fake := fakellm.New(t,
+		fakellm.Turn{When: "log my rows", ToolCalls: []fakellm.ToolCall{
+			call("s1", "Read", `{"file_path":"`+filepath.Join(shared, "workouts", "log.md")+`"}`),
+			call("s2", "Write", `{"file_path":"`+filepath.Join(shared, "workouts", "rows.md")+`","content":"rows 3x10"}`),
+			call("s3", "Write", `{"file_path":"`+escape+`","content":"x"}`),
+		}},
+		fakellm.Turn{When: "log my rows", Content: "Logged."},
+		fakellm.Turn{When: "the workout job", ToolCalls: []fakellm.ToolCall{
+			call("j1", "Read", `{"file_path":"`+filepath.Join(shared, "workouts", "log.md")+`"}`),
+		}},
+		fakellm.Turn{When: "the workout job", Content: "Legs were last."},
+	)
+	r := newChatRig(t, fake, fmt.Sprintf("cron = true\ncron_tick = 1\n\n[gateway]\nshared_folders = [%q]\n", shared))
+	r.say("log my rows")
+	r.reply(sigGroup, "Logged.")
+	if sys := systemPrompt(t, fake, 0); !strings.Contains(sys, "reach only your notes folder and the shared folder "+shared+", which") {
+		t.Fatalf("the chat's prompt does not name the shared folder:\n%.1200s", sys)
+	}
+	if res := toolResult(t, fake, "s1"); !strings.Contains(str(res, "content"), "leg day") {
+		t.Fatalf("reading the shared folder: %v", res)
+	}
+	if b, err := os.ReadFile(filepath.Join(shared, "workouts", "rows.md")); err != nil || string(b) != "rows 3x10" {
+		t.Fatalf("writing the shared folder: %q, %v", b, err)
+	}
+	if res := toolResult(t, fake, "s3"); !strings.Contains(str(res, "error"), "and the shared folders ("+shared+")") {
+		t.Fatalf("a write outside both: %v", res)
+	}
+	if _, err := os.Stat(escape); err == nil {
+		t.Fatal("a write outside the notes and shared folders happened")
+	}
+
+	origin := map[string]any{"platform": "signal", "chat_id": "group:" + sigGroup, "chat_name": "The Group", "thread_id": nil, "user_id": sigAccount}
+	writeJobs(t, r.h.home, cronJob("ccccccccccc1", "Workout", "the workout job", map[string]any{"deliver": "origin", "origin": origin}))
+	done, _ := signal.Format(cron.Frame("Workout", "ccccccccccc1", "Legs were last."))
+	r.reply(sigGroup, done)
+	if res := toolResult(t, fake, "j1"); !strings.Contains(str(res, "content"), "leg day") {
+		t.Fatalf("a Signal job reading the shared folder: %v", res)
 	}
 }

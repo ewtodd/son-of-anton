@@ -70,3 +70,30 @@ func TestReadAlsoIsReadOnly(t *testing.T) {
 		t.Error("read outside both allowed")
 	}
 }
+
+// WriteAlso ([gateway] shared_folders) is read and written as the notes
+// folder is, symlinks resolved; a refusal names every folder the tools reach.
+func TestWriteAlsoIsReadAndWritten(t *testing.T) {
+	notes, shared, other := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.Symlink(other, filepath.Join(shared, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	p := paths.Policy{Confine: notes, WriteAlso: []string{shared}}
+	for _, in := range []string{filepath.Join(shared, "workouts", "log.md"), filepath.Join(notes, "n.md")} {
+		if err := p.CheckRead(in); err != nil {
+			t.Errorf("read %s: %v", in, err)
+		}
+		if c := p.CheckWrite(in); c.Denied {
+			t.Errorf("write %s: %+v", in, c)
+		}
+	}
+	want := "is outside the notes folder (" + notes + ") and the shared folders (" + shared + "); the chat's file tools reach only those."
+	for _, out := range []string{filepath.Join(other, "x.md"), filepath.Join(shared, "escape", "x.md"), filepath.Join(shared, "..", "y.md")} {
+		if err := p.CheckRead(out); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("read %s: %v", out, err)
+		}
+		if c := p.CheckWrite(out); !c.Denied || !strings.Contains(c.Reason, want) {
+			t.Errorf("write %s: %+v", out, c)
+		}
+	}
+}

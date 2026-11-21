@@ -387,10 +387,12 @@ func (c *cronSched) agentRun(job cron.Job, extra string) (o outcome) {
 	r.MemoryScope = scope
 	signalSide := scope == "gateway"
 	if signalSide {
-		// The chat's limits: its tools (regSignalCron), its notes folder as
-		// the only place the file tools reach, and a prompt that says so.
+		// The chat's limits: its tools (regSignalCron), its notes folder and
+		// the shared folders as the only places the file tools reach, and a
+		// prompt that says so.
 		r.Scope, r.Tools = "gateway", s.regSignalCron
 		r.Policy.Confine = s.notesDir()
+		r.Policy.WriteAlso = s.sharedFolders()
 	}
 	r.Prompt = func(_ context.Context, ss store.Session) (string, error) {
 		o := prompt.Options{
@@ -398,7 +400,7 @@ func (c *cronSched) agentRun(job cron.Job, extra string) (o outcome) {
 			Now: time.Now().In(prompt.LocalZone()), RulesCharLimit: s.cfg.Memory.RulesCharLimit,
 		}
 		if signalSide {
-			o.Signal, o.Identity = true, prompt.SignalJobIdentity()
+			o.Signal, o.Identity = true, prompt.SignalJobIdentity(s.sharedFolders())
 		}
 		res, err := prompt.Build(o)
 		for _, w := range res.Warnings {

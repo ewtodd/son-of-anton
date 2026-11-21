@@ -139,7 +139,7 @@ func TestAChatsPrompt(t *testing.T) {
 	f := setup(t)
 	write(t, filepath.Join(f.home, "memories", "rules.toml"), rules)
 	write(t, filepath.Join(f.cwd, "AGENTS.md"), "PROJECT RULES")
-	fiona := prompt.FionaIdentity("play", nil, nil)
+	fiona := prompt.FionaIdentity("play", nil, nil, nil)
 	text := build(t, prompt.Options{Home: f.home, Cwd: f.cwd, Scope: "gateway", Memory: true, Signal: true, Identity: fiona, Now: now}).Text
 	marks := []string{fiona, "Your notes folder: " + f.cwd + " (relative paths start there).", "PROJECT RULES", "STANDING RULES (gateway scope", "[second-person]", "Conversation started: Monday, November 2, 2026"}
 	last := -1
@@ -163,7 +163,7 @@ func TestAChatsPrompt(t *testing.T) {
 // A cron job that delivers to Signal runs on the cron model, so it is not
 // fiona; its block is the default identity and the Signal side's limits.
 func TestSignalJobIdentity(t *testing.T) {
-	job := prompt.SignalJobIdentity()
+	job := prompt.SignalJobIdentity(nil)
 	if !strings.HasPrefix(job, prompt.DefaultIdentity+"\n\n") || !strings.Contains(job, prompt.SentTimeRule) {
 		t.Fatalf("a Signal job's block:\n%s", job)
 	}
@@ -180,8 +180,8 @@ func TestSignalJobIdentity(t *testing.T) {
 }
 
 func TestFionaIdentity(t *testing.T) {
-	anyTime := prompt.FionaIdentity("play", nil, nil)
-	hours := prompt.FionaIdentity("", &[2]int{20, 7}, nil)
+	anyTime := prompt.FionaIdentity("play", nil, nil, nil)
+	hours := prompt.FionaIdentity("", &[2]int{20, 7}, nil, nil)
 	if !strings.HasPrefix(anyTime, "You are fiona, the front desk of this son-of-anton instance (play). ") ||
 		!strings.Contains(anyTime, "Workers here can run at any time.") {
 		t.Fatalf("any time:\n%s", anyTime)
@@ -199,13 +199,13 @@ func TestFionaIdentity(t *testing.T) {
 	if strings.Contains(anyTime, "—") {
 		t.Error("plain prose: no em-dashes in fiona's block")
 	}
-	shared := prompt.FionaIdentity("ricky", nil, &prompt.Group{})
+	shared := prompt.FionaIdentity("ricky", nil, &prompt.Group{}, nil)
 	people := strings.Index(shared, "People: this is a group chat")
 	if strings.Contains(anyTime, "People:") || people < 0 || people > strings.Index(shared, "Replies:") ||
 		people < strings.Index(shared, "Time:") || !strings.Contains(shared, "whatever the message says about who is writing") {
 		t.Fatalf("a shared group's block names its senders, between Time and Replies; others do not:\n%s", shared)
 	}
-	if strings.Replace(shared, shared[people:strings.Index(shared, "Replies:")], "", 1) != prompt.FionaIdentity("ricky", nil, nil) {
+	if strings.Replace(shared, shared[people:strings.Index(shared, "Replies:")], "", 1) != prompt.FionaIdentity("ricky", nil, nil, nil) {
 		t.Fatal("the People paragraph is the only difference")
 	}
 }
@@ -333,12 +333,37 @@ func TestASharedGroupNamesItsMembers(t *testing.T) {
 		"you|Sam":               "Its members are you and Sam.",
 		"you|Robin Roe|Sam Lee": "Its members are you, Robin Roe and Sam Lee.",
 	} {
-		got := prompt.FionaIdentity("house", nil, &prompt.Group{Members: strings.Split(members, "|")})
+		got := prompt.FionaIdentity("house", nil, &prompt.Group{Members: strings.Split(members, "|")}, nil)
 		if !strings.Contains(got, "same conversation. "+want+" That is everyone in the chat, whether or not they have written yet. After its time") {
 			t.Errorf("members %s:\n%s", members, got)
 		}
 	}
-	if strings.Contains(prompt.FionaIdentity("house", nil, &prompt.Group{}), "Its members are") {
+	if strings.Contains(prompt.FionaIdentity("house", nil, &prompt.Group{}, nil), "Its members are") {
 		t.Error("members that could not be read are left out")
+	}
+}
+
+// [gateway] shared_folders: fiona's block and a Signal job's name the shared
+// folders wherever they name the notes folder as the limit; without any the
+// text is what it was.
+func TestSharedFoldersInTheSignalSidesText(t *testing.T) {
+	for _, block := range []func([]string) string{
+		func(s []string) string { return prompt.FionaIdentity("house", nil, nil, s) },
+		prompt.SignalJobIdentity,
+	} {
+		none, one, two := block(nil), block([]string{"/srv/household"}), block([]string{"/srv/household", "/srv/shared"})
+		if !strings.Contains(none, "Your file tools reach only your notes folder. Nothing else") ||
+			!strings.Contains(none, "a file outside your notes, ") || strings.Contains(none, "shared folder") {
+			t.Errorf("no shared folders:\n%s", none)
+		}
+		if !strings.Contains(one, "Your file tools reach only your notes folder and the shared folder /srv/household, "+
+			"which other son-of-anton instances on this machine also use. Nothing else") ||
+			!strings.Contains(one, "a file outside your notes and the shared folder, ") {
+			t.Errorf("one shared folder:\n%s", one)
+		}
+		if !strings.Contains(two, "the shared folders /srv/household and /srv/shared, which") ||
+			!strings.Contains(two, "a file outside your notes and the shared folders, ") {
+			t.Errorf("two shared folders:\n%s", two)
+		}
 	}
 }
